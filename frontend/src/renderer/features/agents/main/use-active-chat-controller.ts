@@ -147,6 +147,7 @@ export function useActiveChatController(props: {
   workspaceId?: string | null
   projectId?: string | null
   persistedMessages?: RawMessage[]
+  persistedMessagesLoading?: boolean
 }) {
   const {
   chat,
@@ -178,6 +179,7 @@ export function useActiveChatController(props: {
   workspaceId,
   projectId,
   persistedMessages,
+  persistedMessagesLoading,
 } = props
 
 const {
@@ -238,6 +240,7 @@ const chatInvocation = useMainChatInvocation({
     stopAgentId: backendAgentId,
     isActive,
     persistedMessages,
+    persistedMessagesLoading,
     runtimeMessages: backendRuntimeMessages as unknown as Parameters<typeof useMainChatInvocation>[0]["runtimeMessages"],
     existingChat: chat, // Pass existing Chat instance to avoid duplicate
     runtimeStatus: conversationRuntime?.status,

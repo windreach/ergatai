@@ -1,8 +1,10 @@
 "use client"
 
+import { useState, useMemo } from "react"
 import { Button } from "../../../components/ui/button"
 import { ResizableSidebar } from "../../../components/ui/resizable-sidebar"
 import { IconCloseSidebarRight } from "../../../components/ui/icons"
+import { PanelRight, GitCompare, TerminalSquare, Folder, GitBranch } from "lucide-react"
 import { DiffCenterPeekDialog } from "../../changes"
 import { DiffFullPageView } from "../../changes"
 import { DetailsSidebar } from "../../details-sidebar"
@@ -20,6 +22,12 @@ import {
 } from "../components/diff/diff-components"
 import { AgentPlanSidebar } from "../ui/agent-plan-sidebar"
 import { AgentPreview } from "../ui/agent-preview"
+import { getCoreAgentIcon } from "../components/core-agent-selector"
+import { groupAgentChatRequestAtomFamily } from "../collaboration/group-chat-context"
+import { trpc } from "../../../lib/trpc"
+import type { CoreAgentId } from "../lib/agent-contract-api"
+import { useSetAtom } from "jotai"
+import type { AgentBinding } from "../../../../main/lib/trpc/routers/ergatai-shared"
 
  
 export function ChatViewSidebars(props: any) {
@@ -36,6 +44,7 @@ export function ChatViewSidebars(props: any) {
     worktreePath,
     sandboxId,
     repository,
+    teamId,
     isDiffSidebarOpen,
     setIsDiffSidebarOpen,
     diffStats,
@@ -94,6 +103,12 @@ export function ChatViewSidebars(props: any) {
     meta,
     isTerminalSidebarOpen,
     setIsTerminalSidebarOpen,
+    isDetailsSidebarOpen,
+    setIsDetailsSidebarOpen,
+    isSideChatSidebarOpen,
+    setIsSideChatSidebarOpen,
+    detailsSidebarTab,
+    setDetailsSidebarTab,
     _terminalDisplayMode,
     _toggleTerminalHotkey,
     isCommittingCombined,
@@ -103,7 +118,44 @@ export function ChatViewSidebars(props: any) {
     setFilteredDiffFiles,
     handleCommitChanges,
     handleCommitAndPush,
+    backendAgentId,
   } = props
+
+  // Side chat agent state
+  const [sideChatAgentId, setSideChatAgentId] = useState<string | null>(null)
+  const setAgentChatRequest = useSetAtom(groupAgentChatRequestAtomFamily(chatId))
+
+  // Get agent bindings for the chat
+  const agentBindingsQuery = trpc.ergatai.getAgentBindings.useQuery(
+    { chatId },
+    { enabled: !!chatId },
+  )
+  const agentBindings = agentBindingsQuery.data ?? []
+
+  // Filter out the main backend agent to avoid duplication
+  const sideAgents = useMemo(
+    () => agentBindings.filter((binding) => binding.agentId !== backendAgentId),
+    [agentBindings, backendAgentId],
+  )
+
+  const handleOpenAgentSideChat = (binding: AgentBinding) => {
+    const coreAgentId = (binding.agentCommand ?? binding.agentId) as CoreAgentId
+    const isSameAgent = sideChatAgentId === binding.agentId
+
+    if (isSameAgent && isSideChatSidebarOpen) {
+      // Close sidebar if clicking the same agent
+      setIsSideChatSidebarOpen(false)
+    } else {
+      // Open sidebar for this agent
+      setSideChatAgentId(binding.agentId)
+      setIsSideChatSidebarOpen(true)
+      setAgentChatRequest({
+        agentId: coreAgentId,
+        conversationId: binding.conversationId,
+        requestId: Date.now(),
+      })
+    }
+  }
 
   return (
     <>
@@ -329,7 +381,13 @@ export function ChatViewSidebars(props: any) {
 
         {/* Side Chat Sidebar - independent sidebar for agent side chats, coexists with Details */}
         {isUnifiedSidebarEnabled && !isMobileFullscreen && (
-          <SideChatSidebar chatId={chatId} />
+          <SideChatSidebar
+            chatId={chatId}
+            projectPath={worktreePath}
+            repository={repository ?? undefined}
+            sandboxId={sandboxId}
+            teamId={teamId}
+          />
         )}
 
         {/* Unified Details Sidebar - combines all right sidebars into one (rightmost) */}
@@ -413,6 +471,144 @@ export function ChatViewSidebars(props: any) {
               !!fileViewerPath && fileViewerDisplayMode === "side-peek"
             }
           />
+        )}
+
+        {/* Right panel rail (mutually exclusive panels) */}
+        {!isMobileFullscreen && !!worktreePath && (
+          <div className="flex flex-col items-center gap-1 w-10 border-l border-border/50 bg-tl-background py-2 flex-shrink-0">
+            <button
+              type="button"
+              title="Detail"
+              onClick={() => {
+                if (isDetailsSidebarOpen && detailsSidebarTab === "details") setIsDetailsSidebarOpen(false)
+                else {
+                  setDetailsSidebarTab("details")
+                  setIsDetailsSidebarOpen(true)
+                  setIsSideChatSidebarOpen(false)
+                  setIsTerminalSidebarOpen(false)
+                  setIsDiffSidebarOpen(false)
+                }
+              }}
+              className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
+                isDetailsSidebarOpen && detailsSidebarTab === "details"
+                  ? "bg-foreground/10 text-foreground"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              <PanelRight className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title="Files"
+              onClick={() => {
+                if (isDetailsSidebarOpen && detailsSidebarTab === "files") setIsDetailsSidebarOpen(false)
+                else {
+                  setDetailsSidebarTab("files")
+                  setIsDetailsSidebarOpen(true)
+                  setIsSideChatSidebarOpen(false)
+                  setIsTerminalSidebarOpen(false)
+                  setIsDiffSidebarOpen(false)
+                }
+              }}
+              className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
+                isDetailsSidebarOpen && detailsSidebarTab === "files"
+                  ? "bg-foreground/10 text-foreground"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              <Folder className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title="Git"
+              onClick={() => {
+                if (isDetailsSidebarOpen && detailsSidebarTab === "git") setIsDetailsSidebarOpen(false)
+                else {
+                  setDetailsSidebarTab("git")
+                  setIsDetailsSidebarOpen(true)
+                  setIsSideChatSidebarOpen(false)
+                  setIsTerminalSidebarOpen(false)
+                  setIsDiffSidebarOpen(false)
+                }
+              }}
+              className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
+                isDetailsSidebarOpen && detailsSidebarTab === "git"
+                  ? "bg-foreground/10 text-foreground"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              <GitBranch className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title="Changes"
+              onClick={() => {
+                if (isDiffSidebarOpen) setIsDiffSidebarOpen(false)
+                else {
+                  setIsDiffSidebarOpen(true)
+                  setIsDetailsSidebarOpen(false)
+                  setIsSideChatSidebarOpen(false)
+                  setIsTerminalSidebarOpen(false)
+                }
+              }}
+              className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
+                isDiffSidebarOpen
+                  ? "bg-foreground/10 text-foreground"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              <GitCompare className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title="Terminal"
+              onClick={() => {
+                if (isTerminalSidebarOpen) setIsTerminalSidebarOpen(false)
+                else {
+                  setIsTerminalSidebarOpen(true)
+                  setIsDetailsSidebarOpen(false)
+                  setIsSideChatSidebarOpen(false)
+                  setIsDiffSidebarOpen(false)
+                }
+              }}
+              className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
+                isTerminalSidebarOpen
+                  ? "bg-foreground/10 text-foreground"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              <TerminalSquare className="h-4 w-4" />
+            </button>
+            {/* Dynamic agent logos - at the end of rail */}
+            {sideAgents.map((binding) => {
+              const Icon = getCoreAgentIcon(
+                (binding.agentCommand ?? binding.agentId) as CoreAgentId
+              )
+              const isActive =
+                isSideChatSidebarOpen && sideChatAgentId === binding.agentId
+
+              return (
+                <button
+                  key={binding.agentId}
+                  type="button"
+                  title={binding.agentName}
+                  onClick={() => {
+                    handleOpenAgentSideChat(binding)
+                    setIsDetailsSidebarOpen(false)
+                    setIsTerminalSidebarOpen(false)
+                    setIsDiffSidebarOpen(false)
+                  }}
+                  className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
+                    isActive
+                      ? "bg-foreground/10 text-foreground"
+                      : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+                  }`}
+                >
+                  <Icon className="h-4 w-4" />
+                </button>
+              )
+            })}
+          </div>
         )}
     </>
   )

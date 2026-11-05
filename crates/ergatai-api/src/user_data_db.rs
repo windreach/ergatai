@@ -3141,6 +3141,89 @@ pub mod group_agent_bindings {
         Ok(count > 0)
     }
 
+    #[derive(Debug)]
+    pub struct DeletedAgentBinding {
+        pub conversation_ids: Vec<ConversationId>,
+        pub queue_job_id: i64,
+    }
+
+    /// Atomically delete one chat runtime agent binding, its conversation tree,
+    /// and enqueue async removal of physical message tables.
+    ///
+    /// The transaction prevents a partial deletion where the binding is gone
+    /// but the conversation remains, or where conversation metadata is gone
+    /// without a cleanup job for its message table.
+    pub fn delete_agent_and_conversation(
+        chat_id: ChatId,
+        agent_id: i64,
+    ) -> Result<Option<DeletedAgentBinding>> {
+        let db = get_user_data_db();
+        let mut conn = db.lock().unwrap();
+        let transaction = conn.transaction()?;
+
+        let binding = transaction
+            .query_row(
+                "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at
+                 FROM group_agent_bindings
+                 WHERE chat_id = ?1 AND agent_id = ?2",
+                params![chat_id, agent_id],
+                row_to_binding,
+            )
+            .optional()?;
+
+        let Some(binding) = binding else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+
+        let mut stmt = transaction.prepare(
+            "WITH RECURSIVE conversation_tree(conversation_id) AS (
+                SELECT conversation_id
+                FROM conversations
+                WHERE conversation_id = ?1
+                UNION ALL
+                SELECT child.conversation_id
+                FROM conversations child
+                JOIN conversation_tree parent ON child.parent_id = parent.conversation_id
+             )
+             SELECT conversation_id FROM conversation_tree",
+        )?;
+        let conversation_ids = stmt
+            .query_map(params![binding.conversation_id], |row| {
+                row.get::<_, ConversationId>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        transaction.execute(
+            "DELETE FROM group_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
+            params![chat_id, agent_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM conversations WHERE conversation_id = ?1",
+            params![binding.conversation_id],
+        )?;
+
+        let payload = serde_json::to_string(&conversation_ids)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+            .as_secs() as i64;
+        transaction.execute(
+            "INSERT INTO deletion_queue (entity_type, entity_id, action, payload, status, created_at, updated_at) \
+             VALUES ('chat_agent', ?1, 'cleanup_agent', ?2, 'pending', ?3, ?3)",
+            params![agent_id.to_string(), payload, now],
+        )?;
+        let queue_job_id = transaction.last_insert_rowid();
+        transaction.commit()?;
+
+        Ok(Some(DeletedAgentBinding {
+            conversation_ids,
+            queue_job_id,
+        }))
+    }
+
     pub fn delete_by_agent(agent_id: i64) -> Result<usize> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();

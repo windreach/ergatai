@@ -346,3 +346,9 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   pointer-events: auto;
 }
+
+/* Sidebar resize/animation: temporarily remove main content top-left radius to avoid per-frame clip path recalculation */
+[data-resizing="true"] + div,
+[data-animating="true"] + div {
+  border-top-left-radius: 0 !important;
+}

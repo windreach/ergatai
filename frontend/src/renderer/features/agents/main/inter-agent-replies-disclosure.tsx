@@ -15,6 +15,7 @@ import {
   useConversationMessages,
   type Message,
 } from "../hooks/use-conversation-messages"
+import { isErgataiSendMessagePart } from "../lib/ergatai-mcp-detection"
 
 // `Message` is imported from the hook; it is the authoritative shape
 // (id, sequence, role, parts, metadata, conversationId, createdAt).
@@ -102,31 +103,10 @@ type InterAgentTarget = {
   correlationId?: string
 }
 
-function isSendMessageToolPart(candidate: {
-  type?: unknown
-  toolKind?: unknown
-  input?: { target_agent_id?: unknown; message?: unknown }
-}) {
-  if (candidate.toolKind === "inter_agent_send") return true
-
-  // Prefer the structured input contract. Tool names have varied across
-  // runtime versions, so the name is only a compatibility fallback.
-  if (
-    typeof candidate.input?.target_agent_id === "string" &&
-    typeof candidate.input.message === "string"
-  ) {
-    return true
-  }
-
-  if (typeof candidate.type !== "string") return false
-
-  // Persisted tool calls can use either the canonical MCP tool name
-  // (`tool-mcp__<server>__send_message`) or the agent runtime's legacy
-  // adapter name (`tool-Ergatai_MCP_Tools_send_message`).
-  if (candidate.type.startsWith("tool-mcp__")) {
-    return candidate.type.endsWith("__send_message")
-  }
-  return /^tool-(?:Ergatai_MCP_Tools_)?send_message$/i.test(candidate.type)
+function isSendMessageToolPart(candidate: unknown) {
+  // Delegate to the shared, agent-agnostic detector so that differences in
+  // MCP server name normalisation across agents do not break recognition.
+  return isErgataiSendMessagePart(candidate)
 }
 
 function parseToolOutputObject(part: unknown) {
@@ -289,8 +269,26 @@ function AgentReplyDisclosure({
 
     if (hostReplies.length > 0) return hostReplies
 
-    // External agent conversation fallback: prefer persisted turns over the
-    // in-flight streaming preview so the same reply is not rendered twice.
+    // Live streaming previews (in-flight turn) take precedence over stale
+    // persisted turns so the user sees the reply being typed instead of an
+    // older copy. Persisted turns win again once the refetch lands (the
+    // preview is dropped at that point), avoiding duplicate rendering.
+    const externalStreaming = externalMessages
+      .filter((message) => {
+        const metadata = message.metadata as { streaming?: unknown } | null
+        return (
+          message.role === "assistant" &&
+          metadata?.streaming === true &&
+          getMessageText(message).length > 0
+        )
+      })
+      .sort((left, right) => left.sequence - right.sequence)
+      .map((message) => ({ ...message, text: getMessageText(message) }))
+      .filter((message) => message.text.length > 0)
+
+    if (externalStreaming.length > 0) return externalStreaming
+
+    // External agent conversation fallback: persisted turns.
     const externalPersisted = externalMessages
       .filter((message) => {
         const metadata = message.metadata as
@@ -312,14 +310,7 @@ function AgentReplyDisclosure({
     if (externalPersisted.length > 0) return externalPersisted
 
     return externalMessages
-      .filter((message) => {
-        const metadata = message.metadata as { streaming?: unknown } | null
-        return (
-          message.role === "assistant" &&
-          metadata?.streaming === true &&
-          getMessageText(message).length > 0
-        )
-      })
+      .filter((message) => message.role === "assistant" && getMessageText(message).length > 0)
       .sort((left, right) => left.sequence - right.sequence)
       .map((message) => ({ ...message, text: getMessageText(message) }))
       .filter((message) => message.text.length > 0)

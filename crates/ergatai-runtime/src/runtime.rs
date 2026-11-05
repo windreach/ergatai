@@ -379,7 +379,7 @@ impl AgentRuntime {
     #[allow(clippy::too_many_arguments)]
     pub async fn launch_agent_scoped(
         &self,
-        spec: WorkspaceSpec,
+        mut spec: WorkspaceSpec,
         command: &str,
         instruction: Option<&str>,
         chat_id: Option<&str>,
@@ -389,6 +389,8 @@ impl AgentRuntime {
     ) -> ErgataiResult<String> {
         // Check if workspace already exists (e.g., created by CLI POST /api/v1/workspaces).
         // Avoid calling create_workspace again to prevent duplicate workspace entries.
+        // `ergatai_resume_session_id` is a control-plane hint, not a process env var.
+        let resume_session_id = spec.env.remove("ergatai_resume_session_id");
         let existing_workspaces = self.backend.list_workspaces().await.unwrap_or_default();
         let workspace = if existing_workspaces.iter().any(|w| w.id == spec.id) {
             debug!(workspace_id = spec.id, "Reusing existing workspace");
@@ -476,6 +478,11 @@ impl AgentRuntime {
         workspace_with_id
             .metadata
             .insert("conversation_id".to_string(), conversation_id.clone());
+        if let Some(session_id) = resume_session_id {
+            workspace_with_id
+                .metadata
+                .insert("resume_session_id".to_string(), session_id);
+        }
 
         tracing::debug!(
             agent_id = %agent_id,
@@ -945,13 +952,23 @@ impl AgentRuntime {
             })?;
 
         // M2 FIX: Return error instead of silently using empty HashMap on JSON parse failure
-        let environment: std::collections::HashMap<String, String> =
+        let mut environment: std::collections::HashMap<String, String> =
             serde_json::from_str(&suspended.environment).map_err(|e| {
                 ErgataiError::internal(format!(
                     "Failed to parse environment for suspended agent '{}': {}",
                     suspended_id, e
                 ))
             })?;
+
+        // Carry the suspended ACP session into the new runtime process. The
+        // backend uses this hint to attempt `session/load`; if the adapter no
+        // longer owns that session it falls back to a new session.
+        if let Some(session_id) = environment.get("session_id") {
+            environment.insert(
+                "ergatai_resume_session_id".to_string(),
+                session_id.to_string(),
+            );
+        }
 
         // 3. Construct WorkspaceSpec with saved metadata
         let workspace_spec = crate::types::WorkspaceSpec {
@@ -1012,10 +1029,12 @@ impl AgentRuntime {
 
         // 5. Launch new agent process
         let new_agent_id = self
-            .launch_agent(
+            .launch_agent_scoped(
                 workspace_spec,
                 &command,
                 None, // instruction
+                None, // chat_id (the durable conversation binding is restored below)
+                Some(&suspended.conversation_id),
                 Some(&suspended.profile_name),
                 None, // transport (default stdio)
             )
@@ -1057,11 +1076,21 @@ impl AgentRuntime {
         // This is critical for message routing — try_auto_resume_suspended_agent() in messaging
         // relies on finding agents by conversation_id in their metadata.
         {
-            let mut guard = self.registry.write().await;
-            if let Some(agent_info) = guard.get_mut(&new_agent_id) {
-                agent_info.handle.metadata.insert(
-                    "conversation_id".to_string(),
-                    suspended.conversation_id.clone(),
+            let updated = self
+                .registry
+                .update(&new_agent_id, |agent_info| {
+                    agent_info.conversation_id = Some(suspended.conversation_id.clone());
+                    agent_info.handle.metadata.insert(
+                        "conversation_id".to_string(),
+                        suspended.conversation_id.clone(),
+                    );
+                })
+                .await;
+            if updated.is_none() {
+                warn!(
+                    agent_id = %new_agent_id,
+                    conversation_id = %suspended.conversation_id,
+                    "Resumed agent disappeared before conversation binding update"
                 );
             }
         }

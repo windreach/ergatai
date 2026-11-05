@@ -84,8 +84,19 @@ function unwrapAgentEnvelopeText(value: string | null | undefined): string | und
 function normalizeRuntimeToolName(name: string | undefined): string {
   const raw = name?.trim() || "unknown"
   if (raw.startsWith("mcp__")) return raw
-  if (raw.startsWith("Ergatai_MCP_Tools_")) {
-    return `mcp__Ergatai_MCP_Tools__${raw.slice("Ergatai_MCP_Tools_".length)}`
+
+  // Normalise legacy Ergatai MCP adapter names regardless of how the agent
+  // rendered the server name (spaces, casing, separators). We only special-case
+  // the known Ergatai tool names; everything else passes through unchanged.
+  const normalized = raw.replace(/[\s-]+/g, "_")
+  const ERGATAI_MCP_PREFIX = "Ergatai_MCP_Tools_"
+  if (normalized.toLowerCase().startsWith("ergatai_mcp_tools_")) {
+    const tool = normalized.slice(ERGATAI_MCP_PREFIX.length)
+    return `mcp__Ergatai_MCP_Tools__${tool}`
+  }
+  // A bare Ergatai server name followed by a tool (e.g. "ergatai send_message")
+  if (/^Ergatai[_\s-]+/i.test(raw) && /send_message/i.test(raw)) {
+    return "mcp__Ergatai_MCP_Tools__send_message"
   }
   return raw
 }

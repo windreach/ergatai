@@ -1,16 +1,11 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import type { ComponentType } from "react"
 import {
-  Bird,
-  Braces,
   ChevronDown,
-  Gem,
   Plus,
-  Rocket,
-  Sparkles,
   TerminalSquare,
-  Zap,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -23,7 +18,6 @@ import {
   CheckIcon,
   ClaudeCodeIcon,
   CodexIcon,
-  CursorIcon,
 } from "@/components/ui/icons"
 import { cn } from "@/lib/utils"
 import {
@@ -31,6 +25,7 @@ import {
   type CoreAgentId,
   type CoreAgentOption,
 } from "../lib/agent-contract-api"
+import { CORE_AGENT_LOGO_URLS } from "../lib/agent-logo-urls"
 
 interface CoreAgentSelectorProps {
   value?: CoreAgentId
@@ -41,32 +36,53 @@ interface CoreAgentSelectorProps {
   onChangeGroupAgents?: (agentIds: CoreAgentId[]) => void
 }
 
+const FALLBACK_CORE_AGENT_ICONS: Record<string, ComponentType<{ className?: string }>> = {
+  "claude-code": ClaudeCodeIcon,
+  codex: CodexIcon,
+  opencode: TerminalSquare,
+}
+
+const coreAgentLogoComponentCache = new Map<
+  CoreAgentId,
+  ComponentType<{ className?: string }>
+>()
+
 export function getCoreAgentIcon(agentId: CoreAgentId) {
-  if (agentId === "codex") return CodexIcon
-  if (agentId === "cursor") return CursorIcon
-  if (agentId === "opencode") return TerminalSquare
-  if (agentId === "gemini") return Gem
-  if (agentId === "goose") return Bird
-  if (agentId === "cline") return Braces
-  if (agentId === "kiro") return Zap
-  if (agentId === "auggie") return Sparkles
-  if (agentId === "hermes") return Rocket
-  if (agentId === "openclaw") return TerminalSquare
-  return ClaudeCodeIcon
+  const cached = coreAgentLogoComponentCache.get(agentId)
+  if (cached) return cached
+
+  const logoUrl =
+    agentId in CORE_AGENT_LOGO_URLS
+      ? CORE_AGENT_LOGO_URLS[agentId as keyof typeof CORE_AGENT_LOGO_URLS]
+      : undefined
+  const FallbackIcon =
+    FALLBACK_CORE_AGENT_ICONS[agentId] ?? ClaudeCodeIcon
+
+  const Component = function CoreAgentLogo({
+    className,
+  }: {
+    className?: string
+  }) {
+    if (logoUrl) {
+      return (
+        <img
+          src={logoUrl}
+          alt=""
+          className={`${className ?? ""} object-contain`}
+        />
+      )
+    }
+    return <FallbackIcon className={className} />
+  }
+
+  coreAgentLogoComponentCache.set(agentId, Component)
+  return Component
 }
 
 export function getCoreAgentDisplayName(agentId: CoreAgentId): string {
   if (agentId === "claude-code") return "Claude Code"
   if (agentId === "codex") return "Codex"
-  if (agentId === "cursor") return "Cursor"
   if (agentId === "opencode") return "OpenCode"
-  if (agentId === "gemini") return "Gemini"
-  if (agentId === "goose") return "Goose"
-  if (agentId === "cline") return "Cline"
-  if (agentId === "kiro") return "Kiro"
-  if (agentId === "auggie") return "Auggie"
-  if (agentId === "hermes") return "Hermes"
-  if (agentId === "openclaw") return "OpenClaw"
   return agentId
 }
 

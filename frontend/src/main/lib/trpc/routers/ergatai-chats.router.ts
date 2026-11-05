@@ -269,7 +269,12 @@ export const chatsRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      return ergataiFetch<{ status: string; prompt_id: string }>(
+      return ergataiFetch<{
+        status: string
+        prompt_id: string
+        old_agent_id?: string
+        new_agent_id?: string
+      }>(
         `/api/v1/agents/${input.agentId}/prompt`,
         {
           method: "POST",
@@ -308,6 +313,7 @@ export const chatsRouter = router({
       z.object({
         agentId: agentIdSchema,
         promptId: z.string().optional(),
+        conversationId: conversationKeySchema.optional(),
       }),
     )
     .subscription(({ input }) => {
@@ -315,6 +321,7 @@ export const chatsRouter = router({
         return subscribeRawAgentStream(
           input.agentId,
           input.promptId,
+          input.conversationId,
           (event) => {
             emit.next(event)
             if (event.type === "done" || event.type === "error") {

@@ -20,6 +20,10 @@ import { SideChatView, type ActiveSideChatInfo } from "./side-chat-view"
 interface SideChatSidebarProps {
   /** Workspace/chat ID */
   chatId: string
+  projectPath?: string | null
+  repository?: string
+  sandboxId?: string
+  teamId?: string
 }
 
 /**
@@ -27,7 +31,7 @@ interface SideChatSidebarProps {
  * sidebar (opened from the Agents widget / agent rail) instead of replacing
  * its content.
  */
-export function SideChatSidebar({ chatId }: SideChatSidebarProps) {
+export function SideChatSidebar({ chatId, projectPath, repository, sandboxId, teamId }: SideChatSidebarProps) {
   const [isOpen, setIsOpen] = useAtom(sideChatSidebarOpenAtom)
   const panelLinkScopeKey = createPanelLinkScopeKey({ chatId })
   const dispatchPanelLink = useSetAtom(
@@ -103,6 +107,10 @@ export function SideChatSidebar({ chatId }: SideChatSidebarProps) {
           chatId={chatId}
           isActive={isOpen}
           onActiveSideChatChange={setActiveSideChatInfo}
+          projectPath={projectPath}
+          repository={repository}
+          sandboxId={sandboxId}
+          teamId={teamId}
         />
       </div>
     </ResizableSidebar>

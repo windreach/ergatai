@@ -57,6 +57,8 @@ export function KanbanView() {
 
   // Sidebar state for header controls
   const [sidebarOpen, setSidebarOpen] = useAtom(agentsSidebarOpenAtom)
+  const isLinuxTitleBar =
+    typeof window !== "undefined" && window.desktopApi?.platform === "linux"
 
   // Multi-select state
   const [selectedChatIds] = useAtom(selectedAgentChatIdsAtom)
@@ -496,7 +498,7 @@ export function KanbanView() {
       <div className="flex-shrink-0 flex items-center p-1.5">
         <AgentsHeaderControls
           isSidebarOpen={sidebarOpen}
-          onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
+          onToggleSidebar={isLinuxTitleBar ? undefined : () => setSidebarOpen((prev) => !prev)}
         />
       </div>
 

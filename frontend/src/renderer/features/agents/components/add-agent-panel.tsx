@@ -12,13 +12,42 @@ import {
   type AgentProfileWithStatus,
   type AgentRegistration,
   type CoreAgentId,
+  isSupportedCoreAgentProfile,
 } from "../lib/agent-contract-api"
 import { registeredAgentsAtom } from "../atoms"
 import { getCoreAgentIcon } from "./core-agent-selector"
 import { AddAgentDialog } from "./add-agent-dialog"
+import { useCachedRemoteImage } from "@/lib/hooks/use-cached-remote-image"
+import { CORE_AGENT_LOGO_URLS } from "../lib/agent-logo-urls"
 
 interface AddAgentPanelProps {
   className?: string
+}
+
+function AgentAvatar({
+  runtimeId,
+  avatarUrl,
+}: {
+  runtimeId: CoreAgentId
+  avatarUrl?: string
+}) {
+  const logoUrl =
+    avatarUrl || CORE_AGENT_LOGO_URLS[runtimeId as keyof typeof CORE_AGENT_LOGO_URLS]
+  const cachedSrc = useCachedRemoteImage(logoUrl)
+  const RuntimeIcon = getCoreAgentIcon(runtimeId)
+
+  if (cachedSrc) {
+    return (
+      <img
+        src={cachedSrc}
+        alt=""
+        className="h-full w-full object-cover"
+        width={40}
+        height={40}
+      />
+    )
+  }
+  return <RuntimeIcon className="h-5 w-5" />
 }
 
 export function AddAgentPanel({ className }: AddAgentPanelProps) {
@@ -28,13 +57,18 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
 
   // Fetch profiles with installation status from backend
   const profilesQuery = trpc.ergatai.listProfilesWithStatus.useQuery()
-  const profiles = profilesQuery.data?.profiles ?? []
+  // v0.1.0 only markets the supported bundled agents. Custom profiles remain
+  // visible so users can still register their own runtimes.
+  const profiles = (profilesQuery.data?.profiles ?? []).filter((profile) =>
+    isSupportedCoreAgentProfile(profile.name),
+  )
 
   // Auto-register installed profiles into local registered agents (one-time sync)
   useEffect(() => {
     if (!profilesQuery.data) return
     const installed = profilesQuery.data.profiles.filter(
-      (p: AgentProfileWithStatus) => p.installed,
+      (p: AgentProfileWithStatus) =>
+        p.installed && isSupportedCoreAgentProfile(p.name),
     )
     setRegisteredAgents((current) => {
       // Remove stale manual adapter registrations (node + /adapters/ path)
@@ -165,17 +199,7 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border bg-muted/40 text-foreground">
-                      {agent.avatarUrl && /^https?:\/\//i.test(agent.avatarUrl) ? (
-                        <img
-                          src={agent.avatarUrl}
-                          alt=""
-                          className="h-full w-full object-cover"
-                          width={40}
-                          height={40}
-                        />
-                      ) : (
-                        <RuntimeIcon className="h-5 w-5" />
-                      )}
+                      <AgentAvatar runtimeId={agent.runtimeId} avatarUrl={agent.avatarUrl} />
                     </div>
                     <div className="flex items-center gap-1">
                       <Badge variant="outline" className="text-[10px] font-medium">
@@ -215,7 +239,7 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
               <span className="flex h-8 w-8 items-center justify-center rounded-full border border-dashed">
                 <Plus className="h-4 w-4" />
               </span>
-              <span className="text-sm font-medium">New agent</span>
+              <span className="text-sm font-medium">Add agent</span>
             </button>
           </div>
         </section>
@@ -240,7 +264,6 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
               </div>
             ) : (
               profiles.map((profile: AgentProfileWithStatus) => {
-                const Icon = getCoreAgentIcon(profile.name as CoreAgentId)
                 const isInstalled = profile.installed
                 const isInstalling =
                   installMutation.isPending &&
@@ -256,8 +279,8 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
                     className="flex flex-col gap-3 rounded-xl p-3 sm:flex-row sm:items-center"
                   >
                     <div className="flex min-w-0 flex-1 items-center gap-3">
-                      <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-muted/40 text-foreground">
-                        <Icon className="h-5 w-5" />
+                      <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted/40 text-foreground">
+                        <AgentAvatar runtimeId={profile.name as CoreAgentId} avatarUrl={profile.avatar_url ?? undefined} />
                       </div>
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium text-foreground">

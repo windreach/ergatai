@@ -561,6 +561,7 @@ export const AgentInfoSchema = z.object({
   stop_reason: z.string().nullable(),
   continuation_count: z.number(),
   config_options: z.unknown().nullable(),
+  current_model: z.string().nullable(),
   profile: z.string().nullable(),
   capabilities: z.array(z.string()),
   state_changed_at: z.string(),
@@ -585,6 +586,7 @@ export const AgentProfileSchema = z.object({
   agent_type: z.string(),
   package_name: z.string().nullable(),
   avatar_url: z.string().nullable(),
+  native_triggers: z.array(z.unknown()).nullable().optional(),
   created_at: z.string(),
 })
 
@@ -595,6 +597,7 @@ export const AgentProfileWithStatusSchema = z.object({
   agent_type: z.string(),
   package_name: z.string().nullable(),
   avatar_url: z.string().nullable(),
+  native_triggers: z.array(z.unknown()).nullable().optional(),
   installed: z.boolean(),
   created_at: z.string(),
 })

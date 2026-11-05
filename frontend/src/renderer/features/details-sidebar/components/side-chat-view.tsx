@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useAtomValue } from "jotai"
-import { Plus, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { trpc } from "@/lib/trpc"
 import { useConversationRuntime } from "../lib/conversation-runtime-gateway"
@@ -11,16 +10,8 @@ import { attachSideCopyProjectionsToTrace } from "../lib/side-copy-projection"
 import {
   type ChatConversation,
 } from "../lib/chat-contract-api"
-import { getCoreAgentIcon } from "../../agents"
 import { SideChat } from "./side-chat"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import { loadingConversationsAtom } from "../../agents"
-import { LoadingDot } from "../../../components/ui/icons"
 import { useSideChatController } from "../hooks/use-side-chat-controller"
 
 // ============================================================================
@@ -41,9 +32,13 @@ interface SideChatViewProps {
    */
   isActive?: boolean
   onActiveSideChatChange?: (info: ActiveSideChatInfo | null) => void
+  projectPath?: string | null
+  repository?: string
+  sandboxId?: string
+  teamId?: string
 }
 
-export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }: SideChatViewProps) {
+export function SideChatView({ chatId, isActive = true, onActiveSideChatChange, projectPath, repository, sandboxId, teamId }: SideChatViewProps) {
   const controller = useSideChatController(chatId, isActive)
 
   const {
@@ -191,93 +186,6 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
 
   return (
     <>
-      {sideChats.length > 0 && (
-        <div className="flex h-9 w-full min-w-0 flex-shrink-0 items-center border-b border-border/50">
-          <div className="flex min-w-0 items-center gap-1 overflow-x-auto px-1 scrollbar-thin scrollbar-thumb-muted-foreground/20">
-            {sideChats.map((conversation) => {
-              const Icon = getCoreAgentIcon(conversation.agent.id as any)
-              const isActive = conversation.id === activeSideChatId
-              const loadingKey = conversation.backendConversationId ?? conversation.id
-              const isLoading = loadingSideChatIds.has(loadingKey)
-
-              return (
-                <div
-                  key={conversation.id}
-                  className={cn(
-                    "flex h-7 w-28 min-w-24 flex-shrink-0 items-center rounded-md border px-1 transition-colors",
-                    isActive
-                      ? "border-border bg-background text-foreground shadow-sm"
-                      : "border-transparent bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground",
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() => setActiveSideChatId(conversation.id)}
-                    className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-sm px-1 py-0.5 text-left"
-                  >
-                    <div className="relative flex-shrink-0">
-                      <Icon className="h-3.5 w-3.5" />
-                      {isLoading && (
-                        <div
-                          className={cn(
-                            "absolute -bottom-1 -right-1 w-3 h-3 rounded-full flex items-center justify-center",
-                            isActive
-                              ? "bg-[#E8E8E8] dark:bg-[#1B1B1B]"
-                              : "bg-[#F4F4F4] dark:bg-[#101010]",
-                          )}
-                        >
-                          <LoadingDot isLoading={true} className="w-2.5 h-2.5 text-muted-foreground" />
-                        </div>
-                      )}
-                    </div>
-                    <span className="min-w-0 truncate text-xs font-medium">
-                      {conversation.agent.name}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleCloseSideChat(conversation.id)}
-                    aria-label={`Close ${conversation.agent.name} chat`}
-                    className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              )
-            })}
-          </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label="New side chat"
-                className="flex h-7 w-6 flex-shrink-0 items-center justify-center rounded-md bg-muted/40 text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground mr-1"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
-              {availableSideChatAgents.map((agent) => {
-                const Icon = getCoreAgentIcon(agent.id as any)
-
-                return (
-                  <DropdownMenuItem
-                    key={agent.id}
-                    disabled={isCreatingSideChat}
-                    onSelect={() => {
-                      void processAgentRequest(agent)
-                    }}
-                    className="flex items-center gap-2 text-xs"
-                  >
-                    <Icon className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 truncate">{agent.name}</span>
-                  </DropdownMenuItem>
-                )
-              })}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      )}
       {activeSideChat ? (
         agentBindingsQuery.isLoading &&
         !agentBindingsQuery.isError &&
@@ -296,6 +204,10 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
           chatId={chatId}
           isActive={isActive}
           agentId={activeAgentBinding?.agentId ?? null}
+          projectPath={projectPath}
+          repository={repository}
+          sandboxId={sandboxId}
+          teamId={teamId}
           isLoadingMessages={isSideChatMessagesLoading}
           externalMessages={runtimeMessages}
           runtimeStatus={runtime?.status}
@@ -305,27 +217,7 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange }
       ) : (
         <div className="flex flex-1 items-center justify-center">
           <div className="w-full max-w-64 px-6 text-center">
-            <p className="text-sm font-medium">Select an agent to chat</p>
-            <div className="mt-5 space-y-3">
-              {availableSideChatAgents.map((agent) => {
-                const Icon = getCoreAgentIcon(agent.id as any)
-
-                return (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    disabled={isCreatingSideChat}
-                    onClick={() => {
-                      void processAgentRequest(agent)
-                    }}
-                    className="flex w-full items-center gap-2 rounded-lg border border-border/70 bg-background px-3 py-2 text-sm transition-colors hover:bg-accent/50 disabled:opacity-50"
-                  >
-                    <Icon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-                    <span className="truncate">{agent.name}</span>
-                  </button>
-                )
-              })}
-            </div>
+            <p className="text-sm font-medium">Click an agent in the rail to start chatting</p>
           </div>
         </div>
       )}

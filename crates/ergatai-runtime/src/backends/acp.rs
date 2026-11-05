@@ -3258,7 +3258,15 @@ impl AcpBackendInterface for AcpBackend {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
 
         // Look up a previously saved session for this agent (for session/load recovery).
-        let saved_session_id: Option<String> =
+        let resume_session_id = handle.metadata.get("resume_session_id").cloned();
+        let saved_session_id: Option<String> = if let Some(session_id) = resume_session_id {
+            info!(
+                agent_id = %agent_id,
+                session_id = %session_id,
+                "Found resume session hint, will attempt session/load"
+            );
+            Some(session_id)
+        } else {
             self.session_store
                 .as_ref()
                 .and_then(|store| match store.load_session(&agent_id) {
@@ -3284,7 +3292,8 @@ impl AcpBackendInterface for AcpBackend {
                         warn!(error = %e, "Failed to load saved session, creating new");
                         None
                     }
-                });
+                })
+        };
 
         // Clone for the connection task — session_store is shared via Arc.
         let task_session_store = self.session_store.clone();

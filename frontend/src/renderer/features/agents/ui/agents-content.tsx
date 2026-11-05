@@ -94,6 +94,8 @@ export function AgentsContent() {
   )
   const setApiKeyOnboardingCompleted = useSetAtom(apiKeyOnboardingCompletedAtom)
   const [sidebarOpen, setSidebarOpen] = useAtom(agentsSidebarOpenAtom)
+  const isLinuxTitleBar =
+    typeof window !== "undefined" && window.desktopApi?.platform === "linux"
   const [_previewSidebarOpen, setPreviewSidebarOpen] = useAtom(
     agentsPreviewSidebarOpenAtom,
   )
@@ -1153,7 +1155,7 @@ export function AgentsContent() {
               setShouldAnimateConversationsSidebar(true)
               setConversationsSidebarMode("tabs")
             }}
-            onBackToChats={() => setSidebarOpen((prev) => !prev)}
+            onBackToChats={isLinuxTitleBar ? undefined : () => setSidebarOpen((prev) => !prev)}
             isSidebarOpen={sidebarOpen}
             workspaceId={selectedWorkspaceId}
             workspaceName={selectedWorkspace?.name ?? null}
@@ -1204,7 +1206,7 @@ export function AgentsContent() {
                     key={selectedChatId}
                     chatId={selectedChatId}
                     isSidebarOpen={sidebarOpen}
-                    onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
+                    onToggleSidebar={isLinuxTitleBar ? undefined : () => setSidebarOpen((prev) => !prev)}
                     selectedTeamName={undefined}
                     selectedTeamImageUrl={undefined}
                   />

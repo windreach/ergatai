@@ -40,6 +40,130 @@ use ergatai_error::{ErgataiError, ErgataiResult};
 
 use crate::{agent_installer, binary_detection};
 
+/// The plane that owns and executes an agent-native trigger.
+///
+/// `Passthrough` is deliberately the safe default: Ergatai may show the entry
+/// point, but it never changes or interprets the text.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTriggerExecution {
+    Host,
+    Acp,
+    Adapter,
+    Passthrough,
+    Unavailable,
+}
+
+/// Broad semantic category for an optional, agent-specific input trigger.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTriggerKind {
+    Route,
+    Context,
+    Command,
+    Keyword,
+}
+
+/// Where trigger metadata came from. Unknown agent syntax is never registered.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTriggerSource {
+    #[default]
+    Builtin,
+    Acp,
+    Adapter,
+    Manual,
+}
+
+/// Optional declaration for an agent-native input trigger.
+///
+/// This is intentionally an allowlist entry, not a command inventory. Agents
+/// whose syntax is not declared remain fully supported through raw passthrough.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentTriggerSpec {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// A single visible character (for example `@`, `/`, `$`, `#`, `!`).
+    /// NOTE: Using String instead of char for JSON serialization compatibility.
+    /// Validated to contain exactly one character in `validate()`.
+    pub char: String,
+    pub kind: AgentTriggerKind,
+    /// A Rust `regex` pattern evaluated against text before the caret.
+    /// Groups are not required; implementations can derive a query from the match.
+    pub pattern: String,
+    pub execution: AgentTriggerExecution,
+    #[serde(default)]
+    pub source: AgentTriggerSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl AgentTriggerSpec {
+    fn validate(&self) -> ErgataiResult<()> {
+        if self.id.trim().is_empty() {
+            return Err(ErgataiError::InvalidArgument(
+                "Agent trigger id cannot be empty".to_string(),
+            ));
+        }
+        let mut chars = self.char.chars();
+        let valid_char = matches!((chars.next(), chars.next()), (Some(_), None));
+        if !valid_char {
+            return Err(ErgataiError::InvalidArgument(format!(
+                "Agent trigger '{}' must contain exactly one character",
+                self.char
+            )));
+        }
+        if self.pattern.len() > 512 {
+            return Err(ErgataiError::InvalidArgument(
+                "Agent trigger pattern is too long".to_string(),
+            ));
+        }
+        regex::Regex::new(&self.pattern).map_err(|e| {
+            ErgataiError::InvalidArgument(format!(
+                "Invalid agent trigger pattern '{}': {}",
+                self.pattern, e
+            ))
+        })?;
+        Ok(())
+    }
+}
+
+/// Parse and validate persisted/native trigger metadata.
+///
+/// Invalid metadata is rejected rather than silently widened into a global
+/// symbol scanner. Callers can treat a parse failure as "no native triggers".
+pub fn parse_agent_triggers_json(value: Option<&str>) -> ErgataiResult<Vec<AgentTriggerSpec>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let triggers = serde_json::from_str::<Vec<AgentTriggerSpec>>(value).map_err(|e| {
+        ErgataiError::InvalidArgument(format!("Invalid agent trigger metadata: {}", e))
+    })?;
+    for trigger in &triggers {
+        trigger.validate()?;
+    }
+    Ok(triggers)
+}
+
+/// Serialize validated trigger metadata for storage. `None` means "no metadata".
+pub fn agent_triggers_json(
+    triggers: Option<Vec<AgentTriggerSpec>>,
+) -> ErgataiResult<Option<String>> {
+    let Some(triggers) = triggers else {
+        return Ok(None);
+    };
+    for trigger in &triggers {
+        trigger.validate()?;
+    }
+    if triggers.is_empty() {
+        return Ok(None);
+    }
+    serde_json::to_string(&triggers)
+        .map(Some)
+        .map_err(|e| ErgataiError::internal(format!("Failed to serialize triggers: {e}")))
+}
+
 /// Global lock to prevent concurrent adapter downloads.
 /// Multiple concurrent downloads cause TOCTOU races on the staging directory.
 static ADAPTER_DOWNLOAD_LOCK: std::sync::LazyLock<Arc<Mutex<()>>> =
@@ -71,6 +195,9 @@ pub struct AgentRegistration {
     pub models_json: Option<String>,
     /// When models were last detected (Unix timestamp in milliseconds).
     pub models_updated_at: Option<i64>,
+    /// Optional allowlist metadata for agent-native triggers. JSON only; raw
+    /// input remains the source of truth and is passed through when absent.
+    pub native_triggers_json: Option<String>,
 }
 
 impl AgentRegistration {
@@ -89,6 +216,7 @@ impl AgentRegistration {
             created_at: Utc::now(),
             models_json: None,
             models_updated_at: None,
+            native_triggers_json: None,
         }
     }
 
@@ -111,6 +239,7 @@ impl AgentRegistration {
             created_at: Utc::now(),
             models_json: None,
             models_updated_at: None,
+            native_triggers_json: None,
         }
     }
 
@@ -134,6 +263,7 @@ impl AgentRegistration {
             created_at: Utc::now(),
             models_json: None,
             models_updated_at: None,
+            native_triggers_json: None,
         }
     }
 
@@ -157,6 +287,7 @@ impl AgentRegistration {
             created_at: Utc::now(),
             models_json: None,
             models_updated_at: None,
+            native_triggers_json: None,
         }
     }
 
@@ -181,6 +312,7 @@ impl AgentRegistration {
             created_at: Utc::now(),
             models_json: None,
             models_updated_at: None,
+            native_triggers_json: None,
         }
     }
 
@@ -204,6 +336,7 @@ impl AgentRegistration {
             created_at: Utc::now(),
             models_json: None,
             models_updated_at: None,
+            native_triggers_json: None,
         }
     }
 
@@ -224,6 +357,9 @@ impl AgentRegistration {
                 "Agent type cannot be empty".to_string(),
             ));
         }
+        if self.native_triggers_json.is_some() {
+            parse_agent_triggers_json(self.native_triggers_json.as_deref())?;
+        }
         // Validate agent type
         match self.agent_type.to_lowercase().as_str() {
             "acp" | "mcp" => Ok(()),
@@ -233,6 +369,20 @@ impl AgentRegistration {
             ))),
         }
     }
+}
+
+/// Default Codex `$` declaration. This is intentionally passthrough-only.
+fn default_codex_native_triggers_json() -> ErgataiResult<Option<String>> {
+    agent_triggers_json(Some(vec![AgentTriggerSpec {
+        id: "codex-dollar-command".to_string(),
+        agent_id: Some("codex".to_string()),
+        char: "$".to_string(),
+        kind: AgentTriggerKind::Command,
+        pattern: r"(^|\s)\$([A-Za-z0-9_-]+)$".to_string(),
+        execution: AgentTriggerExecution::Passthrough,
+        source: AgentTriggerSource::Manual,
+        description: Some("Codex-native syntax, sent as-is".to_string()),
+    }]))
 }
 
 /// Agent profile with installation status — used by the API to report
@@ -255,6 +405,8 @@ pub struct ProfileWithStatus {
     pub package_name: Option<String>,
     /// Avatar URL for UI display.
     pub avatar_url: Option<String>,
+    /// Optional native-trigger allowlist metadata (JSON).
+    pub native_triggers_json: Option<String>,
     /// Whether the agent's binary is currently detected on the system.
     pub installed: bool,
     /// When the profile was registered (RFC3339 string).
@@ -333,7 +485,8 @@ impl ProfileRegistry {
                 is_managed INTEGER NOT NULL DEFAULT 0,
                 package_name TEXT,
                 avatar_url TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                native_triggers_json TEXT
             )",
             [],
         )
@@ -375,7 +528,8 @@ impl ProfileRegistry {
                     is_managed INTEGER NOT NULL DEFAULT 0,
                     package_name TEXT,
                     avatar_url TEXT,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    native_triggers_json TEXT
                 );
 
                 -- Migrate data: use name as id for backward compatibility
@@ -440,6 +594,31 @@ impl ProfileRegistry {
                 warn!(error = %e, "Failed to add models_updated_at column");
             }
         }
+
+        // Add native_triggers_json for optional native-trigger allowlists.
+        // NULL means unknown/undocumented, which must remain raw passthrough.
+        if let Err(e) = conn
+            .execute_batch("ALTER TABLE agent_registrations ADD COLUMN native_triggers_json TEXT")
+        {
+            if !e.to_string().contains("duplicate column name") {
+                warn!(error = %e, "Failed to add native_triggers_json column");
+            }
+        }
+
+        // Existing installations get the safe Codex declaration on startup, but
+        // only when the profile has no user-provided trigger metadata.
+        let codex_native_triggers = default_codex_native_triggers_json()?;
+        conn.execute(
+            "UPDATE agent_registrations SET native_triggers_json = ?1
+             WHERE name = 'codex' AND native_triggers_json IS NULL",
+            params![codex_native_triggers],
+        )
+        .map_err(|e| {
+            ErgataiError::internal(format!(
+                "Failed to set default Codex native triggers: {}",
+                e
+            ))
+        })?;
 
         // Fix-up migration: opencode ACP uses stdio, not HTTP.
         // Earlier versions incorrectly registered it with transport="http",
@@ -512,9 +691,10 @@ impl ProfileRegistry {
     ///
     /// Commands verified from official documentation:
     /// - OpenCode: https://opencode.ai/docs/acp/
-    /// - Gemini CLI: https://geminicli.com/docs/cli/acp-mode/
-    /// - Goose: https://goose-docs.ai/docs/guides/acp-clients/
-    /// - ACP Registry: https://agentclientprotocol.com/get-started/agents
+    ///
+    /// v0.1.0 intentionally exposes only the supported core agents: Claude,
+    /// Codex, and OpenCode. Other runtimes remain usable through explicit
+    /// custom registrations but are not bundled as supported defaults.
     fn register_default_profiles(&self) -> ErgataiResult<()> {
         // Check if managed adapter releases exist. If so, point profiles at the
         // current managed release. Otherwise, skip managed adapters (they will be
@@ -594,8 +774,8 @@ impl ProfileRegistry {
         })?;
 
         conn.execute(
-            "INSERT OR IGNORE INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT OR IGNORE INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 registration.id,
                 registration.name,
@@ -607,7 +787,8 @@ impl ProfileRegistry {
                 registration.avatar_url,
                 registration.created_at.to_rfc3339(),
                 registration.models_json,
-                registration.models_updated_at
+                registration.models_updated_at,
+                registration.native_triggers_json
             ],
         )
         .map_err(|e| {
@@ -626,8 +807,8 @@ impl ProfileRegistry {
         })?;
 
         conn.execute(
-            "INSERT INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 registration.id,
                 registration.name,
@@ -639,7 +820,8 @@ impl ProfileRegistry {
                 registration.avatar_url,
                 registration.created_at.to_rfc3339(),
                 registration.models_json,
-                registration.models_updated_at
+                registration.models_updated_at,
+                registration.native_triggers_json
             ],
         )
         .map_err(|e| {
@@ -665,7 +847,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json
                  FROM agent_registrations WHERE id = ?1",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -686,7 +868,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json
                  FROM agent_registrations WHERE name = ?1",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -707,7 +889,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json
                  FROM agent_registrations ORDER BY created_at DESC",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -961,62 +1143,6 @@ impl ProfileRegistry {
                 Some("opencode-ai".to_string()),
                 None, // OpenCode ACP uses stdio, not HTTP (see https://opencode.ai/docs/acp/)
             ),
-            // Gemini CLI (已验证 - https://geminicli.com/docs/cli/acp-mode/)
-            AgentRegistration::with_id(
-                "gemini".to_string(),
-                "gemini".to_string(),
-                "gemini --acp".to_string(),
-                "acp".to_string(),
-                Some("@anthropic-ai/claude-code".to_string()),
-            ),
-            // Goose (已验证 - https://goose-docs.ai/docs/guides/acp-clients/)
-            AgentRegistration::with_id(
-                "goose".to_string(),
-                "goose".to_string(),
-                "goose run --acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // Cline (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "cline".to_string(),
-                "cline".to_string(),
-                "cline --acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // Kiro CLI (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "kiro".to_string(),
-                "kiro".to_string(),
-                "kiro-cli acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // Auggie CLI (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "auggie".to_string(),
-                "auggie".to_string(),
-                "auggie --acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // OpenClaw (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "openclaw".to_string(),
-                "openclaw".to_string(),
-                "openclaw acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // Hermes Agent (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "hermes".to_string(),
-                "hermes".to_string(),
-                "hermes acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
         ];
 
         info!(
@@ -1035,15 +1161,18 @@ impl ProfileRegistry {
         claude_cmd: &str,
         codex_cmd: &str,
     ) -> ErgataiResult<()> {
+        let mut codex_registration = AgentRegistration::with_managed(
+            "codex".to_string(),
+            "codex".to_string(),
+            codex_cmd.to_string(),
+            "acp".to_string(),
+            Some("@agentclientprotocol/codex-acp".to_string()),
+        );
+        codex_registration.native_triggers_json = default_codex_native_triggers_json()?;
+
         let defaults = vec![
             // OpenAI Codex CLI adapter (managed)
-            AgentRegistration::with_managed(
-                "codex".to_string(),
-                "codex".to_string(),
-                codex_cmd.to_string(),
-                "acp".to_string(),
-                Some("@agentclientprotocol/codex-acp".to_string()),
-            ),
+            codex_registration,
             // Anthropic Claude Agent adapter (managed)
             AgentRegistration::with_managed(
                 "claude-code".to_string(),
@@ -1060,62 +1189,6 @@ impl ProfileRegistry {
                 "acp".to_string(),
                 Some("opencode-ai".to_string()),
                 None, // OpenCode ACP uses stdio, not HTTP (see https://opencode.ai/docs/acp/)
-            ),
-            // Gemini CLI (已验证 - https://geminicli.com/docs/cli/acp-mode/)
-            AgentRegistration::with_id(
-                "gemini".to_string(),
-                "gemini".to_string(),
-                "gemini --acp".to_string(),
-                "acp".to_string(),
-                Some("@anthropic-ai/claude-code".to_string()),
-            ),
-            // Goose (已验证 - https://goose-docs.ai/docs/guides/acp-clients/)
-            AgentRegistration::with_id(
-                "goose".to_string(),
-                "goose".to_string(),
-                "goose run --acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // Cline (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "cline".to_string(),
-                "cline".to_string(),
-                "cline --acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // Kiro CLI (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "kiro".to_string(),
-                "kiro".to_string(),
-                "kiro-cli acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // Auggie CLI (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "auggie".to_string(),
-                "auggie".to_string(),
-                "auggie --acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // OpenClaw (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "openclaw".to_string(),
-                "openclaw".to_string(),
-                "openclaw acp".to_string(),
-                "acp".to_string(),
-                None,
-            ),
-            // Hermes Agent (已验证 - ACP registry)
-            AgentRegistration::with_id(
-                "hermes".to_string(),
-                "hermes".to_string(),
-                "hermes acp".to_string(),
-                "acp".to_string(),
-                None,
             ),
         ];
 
@@ -1391,7 +1464,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json
                  FROM agent_registrations ORDER BY created_at DESC",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -1409,6 +1482,7 @@ impl ProfileRegistry {
                     row.get::<_, Option<String>>(6)?,
                     row.get::<_, Option<String>>(7)?,
                     created_at_str,
+                    row.get::<_, Option<String>>(11)?,
                 ))
             })
             .map_err(|e| ErgataiError::internal(format!("Failed to list agent profiles: {}", e)))?
@@ -1430,6 +1504,7 @@ impl ProfileRegistry {
                     package_name,
                     avatar_url,
                     created_at,
+                    native_triggers_json,
                 )| {
                     let installed = binary_detection::is_installed(&command);
                     ProfileWithStatus {
@@ -1441,6 +1516,7 @@ impl ProfileRegistry {
                         is_managed,
                         package_name,
                         avatar_url,
+                        native_triggers_json,
                         installed,
                         created_at,
                     }
@@ -1589,6 +1665,7 @@ fn parse_agent_registration_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRe
         created_at,
         models_json: row.get(9)?,
         models_updated_at: row.get(10)?,
+        native_triggers_json: row.get(11)?,
     })
 }
 
@@ -1618,6 +1695,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_register_and_parse_native_triggers() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let registry = ProfileRegistry::new(temp_file.path()).unwrap();
+        let mut registration = AgentRegistration::new(
+            "codex-native".to_string(),
+            "codex acp".to_string(),
+            "acp".to_string(),
+        );
+        registration.native_triggers_json = Some(
+            serde_json::to_string(&[AgentTriggerSpec {
+                id: "codex-dollar".to_string(),
+                agent_id: Some("codex".to_string()),
+                char: "$".to_string(),
+                kind: AgentTriggerKind::Command,
+                pattern: r"(^|\s)\$([A-Za-z0-9_-]+)$".to_string(),
+                execution: AgentTriggerExecution::Passthrough,
+                source: AgentTriggerSource::Manual,
+                description: Some("Sent as-is".to_string()),
+            }])
+            .unwrap(),
+        );
+
+        registry.register(registration).await.unwrap();
+        let stored = registry.get_by_name("codex-native").await.unwrap().unwrap();
+        let triggers = parse_agent_triggers_json(stored.native_triggers_json.as_deref()).unwrap();
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].execution, AgentTriggerExecution::Passthrough);
+    }
+
+    #[tokio::test]
     async fn test_list_registrations() {
         let temp_file = NamedTempFile::new().unwrap();
         let registry = ProfileRegistry::new(temp_file.path()).unwrap();
@@ -1641,12 +1748,21 @@ mod tests {
             .unwrap();
 
         let profiles = registry.list().await.unwrap();
-        // ProfileRegistry::new() registers default built-in profiles, so the
-        // total count is 10 defaults + 2 we just registered. Assert the two
-        // expected profiles are present rather than checking an exact count.
+        // ProfileRegistry::new() registers default built-in profiles. v0.1.0
+        // bundles only Claude/Codex/OpenCode, so unsupported defaults must not
+        // appear in fresh databases.
         let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
         assert!(names.contains(&"agent-1"), "agent-1 not found in {names:?}");
         assert!(names.contains(&"agent-2"), "agent-2 not found in {names:?}");
+        assert!(names.contains(&"opencode"));
+        for unsupported in [
+            "gemini", "goose", "cline", "kiro", "auggie", "hermes", "openclaw",
+        ] {
+            assert!(
+                !names.contains(&unsupported),
+                "unsupported bundled profile {unsupported} found in {names:?}"
+            );
+        }
         assert!(profiles.len() >= 2);
     }
 

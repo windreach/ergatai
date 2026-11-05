@@ -2,6 +2,7 @@
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 
 import { Button } from "../../../components/ui/button"
 import {
@@ -75,13 +76,20 @@ import {
   type CodexThinkingLevel,
 } from "../lib/models"
 import type { DiffTextContext, SelectedTextContext } from "../lib/queue-utils"
-import { useAvailableModels } from "../hooks/use-available-models"
+import {
+  extractRuntimeModelFromConfigOptions,
+  useAvailableModels,
+} from "../hooks/use-available-models"
 import {
   AgentsFileMention,
   AgentsMentionsEditor,
   type AgentsMentionsEditorHandle,
   type FileMentionOption,
 } from "../mentions"
+import {
+  type AgentTriggerMatch,
+  normalizeAgentTriggers,
+} from "../../mentions"
 import { AgentContextIndicator, type MessageTokenData } from "../ui/agent-context-indicator"
 import { AgentDiffTextContextItem } from "../ui/agent-diff-text-context-item"
 import { AgentFileItem } from "../ui/agent-file-item"
@@ -120,6 +128,33 @@ const TEXT_FILE_EXTENSIONS = new Set([
   ".sql", ".graphql", ".gql", ".prisma", ".dockerfile", ".makefile",
   ".gitignore", ".gitattributes", ".editorconfig", ".eslintrc", ".prettierrc",
 ])
+
+/** Non-blocking hint for an explicitly declared native entry point. */
+type NativeTriggerHintPayload = AgentTriggerMatch & { rect: DOMRect }
+
+const AgentNativeTriggerHint = memo(function AgentNativeTriggerHint({
+  match,
+}: {
+  match: NativeTriggerHintPayload | null
+}) {
+  if (!match) return null
+
+  return createPortal(
+    <div
+      className="fixed z-[999] max-w-xs rounded-md border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md"
+      style={{
+        left: match.rect.left,
+        top: match.rect.top + match.rect.height + 6,
+      }}
+    >
+      <div className="font-medium">{match.query || match.trigger.char}</div>
+      <div className="mt-0.5 text-muted-foreground">
+        {match.trigger.description || "Agent-native syntax will be sent as-is."}
+      </div>
+    </div>,
+    document.body,
+  )
+})
 
 export interface ChatInputAreaProps {
   // Editor ref - passed from parent for external access
@@ -519,6 +554,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   const [showSlashDropdown, setShowSlashDropdown] = useState(false)
   const [slashSearchText, setSlashSearchText] = useState("")
   const [slashPosition, setSlashPosition] = useState({ top: 0, left: 0 })
+  const [nativeTriggerMatch, setNativeTriggerMatch] = useState<NativeTriggerHintPayload | null>(null)
 
   // Model dropdown state
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
@@ -555,6 +591,7 @@ export const ChatInputArea = memo(function ChatInputArea({
     console.log("[chat-input-area] agentId:", agentId)
   }, [agentId])
   const [runtimeModel, setRuntimeModel] = useState<string | null>(null)
+  const [runtimeModelKnown, setRuntimeModelKnown] = useState(false)
   const [isDetectingRuntimeModel, setIsDetectingRuntimeModel] = useState(false)
   const requestedRuntimeModelProfileRef = useRef<string | null>(null)
 
@@ -563,6 +600,9 @@ export const ChatInputArea = memo(function ChatInputArea({
   const { data: runtimeAgents } = trpc.ergatai.listAgents.useQuery(undefined, {
     enabled: isRuntimeModelProvider && !!agentId,
     refetchOnWindowFocus: false,
+    // Config options can change when the user changes the model in the agent's
+    // own UI. Poll only while a runtime provider is visible.
+    refetchInterval: 15_000,
   })
   const runtimeProfileName = useMemo(() => {
     const activeAgent = runtimeAgents?.find((agent) => agent.agent_id === agentId)
@@ -570,6 +610,27 @@ export const ChatInputArea = memo(function ChatInputArea({
     // provider command, otherwise profiles can share/clobber model metadata.
     return activeAgent?.profile ?? null
   }, [agentId, runtimeAgents])
+
+  // Native triggers are opt-in metadata. Absent metadata means unknown syntax,
+  // which is intentionally not scanned and is passed through to the agent.
+  const { data: profileTriggerData } = trpc.ergatai.listProfilesWithStatus.useQuery(
+    undefined,
+    {
+      enabled: !isGroupMode,
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
+    },
+  )
+  const nativeTriggers = useMemo(() => {
+    const profileName = runtimeProfileName ?? provider
+    const profile = profileTriggerData?.profiles?.find(
+      (candidate) => candidate.name === profileName,
+    )
+    return normalizeAgentTriggers(profile?.native_triggers)
+  }, [profileTriggerData, provider, runtimeProfileName])
+  const runtimeAgentIsAlive = runtimeAgents?.find(
+    (agent) => agent.agent_id === agentId,
+  )?.is_alive === true
 
   const {
     data: runtimeModelData,
@@ -586,6 +647,10 @@ export const ChatInputArea = memo(function ChatInputArea({
       onSuccess: () => {
         void refetchRuntimeModelData()
       },
+      onError: () => {
+        // Allow another attempt once the agent is ready.
+        requestedRuntimeModelProfileRef.current = null
+      },
     })
   const refreshRuntimeModelDataRef = useRef(refreshRuntimeModelData)
   refreshRuntimeModelDataRef.current = refreshRuntimeModelData
@@ -600,25 +665,45 @@ export const ChatInputArea = memo(function ChatInputArea({
   const runtimeModelLabel = useMemo(() => {
     if (runtimeModel) return runtimeModel
     if (isDetectingRuntimeModel) return "Detecting model…"
+    if (!runtimeModelKnown) return "Current model unknown"
     return "Model unavailable"
-  }, [runtimeModel, isDetectingRuntimeModel])
+  }, [runtimeModel, isDetectingRuntimeModel, runtimeModelKnown])
 
   const RuntimeModelIcon = getCoreAgentIcon(provider as CoreAgentId)
 
   useEffect(() => {
     if (!isRuntimeModelProvider || !agentId || !runtimeProfileName) {
       setRuntimeModel(null)
+      setRuntimeModelKnown(false)
       setIsDetectingRuntimeModel(false)
       requestedRuntimeModelProfileRef.current = null
       return
     }
 
-    const models = runtimeModelData?.models ?? []
-    if (models.length > 0) {
-      setRuntimeModel(runtimeModelData?.current ?? models[0] ?? null)
+    const activeAgent = runtimeAgents?.find((agent) => agent.agent_id === agentId)
+    const currentModel =
+      activeAgent?.current_model?.trim() ||
+      extractRuntimeModelFromConfigOptions(activeAgent?.config_options)
+    if (currentModel) {
+      setRuntimeModel(currentModel)
+      setRuntimeModelKnown(true)
       setIsDetectingRuntimeModel(false)
       return
     }
+
+    if (
+      runtimeModelData?.status === "available" ||
+      runtimeModelData?.status === "unsupported"
+    ) {
+      // The catalog is definitive, but this session did not expose its current
+      // value. Do not display another session's or a stale current model.
+      setRuntimeModel(null)
+      setRuntimeModelKnown(false)
+      setIsDetectingRuntimeModel(false)
+      return
+    }
+
+    if (!runtimeAgentIsAlive) return
 
     if (requestedRuntimeModelProfileRef.current === runtimeProfileName) return
     requestedRuntimeModelProfileRef.current = runtimeProfileName
@@ -633,8 +718,10 @@ export const ChatInputArea = memo(function ChatInputArea({
   }, [
     agentId,
     isRuntimeModelProvider,
+    runtimeAgents,
     runtimeModelData,
     runtimeProfileName,
+    runtimeAgentIsAlive,
   ])
 
   const hiddenModels = useAtomValue(hiddenModelsAtom)
@@ -1525,6 +1612,9 @@ export const ChatInputArea = memo(function ChatInputArea({
                   }}
                   onSlashTrigger={handleSlashTrigger}
                   onCloseSlashTrigger={handleCloseSlashTrigger}
+                  nativeTriggers={nativeTriggers}
+                  onNativeTrigger={setNativeTriggerMatch}
+                  onCloseNativeTrigger={() => setNativeTriggerMatch(null)}
                   onContentChange={handleContentChange}
                   onSubmit={onSubmitWithQuestionAnswer || handleEditorSubmit}
                   onForceSubmit={onForceSend}
@@ -1782,6 +1872,8 @@ export const ChatInputArea = memo(function ChatInputArea({
         chatId={parentChatId}
         mode={conversationMode}
       />
+
+      <AgentNativeTriggerHint match={nativeTriggerMatch} />
     </div>
   )
 }, arePropsEqual)

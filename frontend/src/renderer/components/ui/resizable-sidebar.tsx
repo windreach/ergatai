@@ -444,6 +444,8 @@ export function ResizableSidebar({
               }
             }}
             className={`bg-transparent flex flex-col text-xs h-full relative ${className}`}
+            data-resizing={isResizing || undefined}
+            data-animating={shouldAnimate || undefined}
             style={{
               minWidth: 0,
               maxWidth: maxAllowedWidth,

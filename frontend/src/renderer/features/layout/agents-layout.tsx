@@ -18,6 +18,9 @@ import {
   betaKanbanEnabledAtom,
 } from "../../lib/atoms"
 import { selectedAgentChatIdAtom, selectedWorkspaceAtom, selectedDraftIdAtom, showNewChatFormAtom, desktopViewAtom, fileSearchDialogOpenAtom } from "../agents"
+import { detailsSidebarOpenAtom, detailsSidebarTabAtom, sideChatSidebarOpenAtom } from "../details-sidebar/atoms"
+import { terminalSidebarOpenAtomFamily } from "../terminal/atoms"
+import { diffSidebarOpenAtomFamily } from "../agents/atoms"
 import { trpc } from "../../lib/trpc"
 import { useAgentsHotkeys } from "../agents"
 import { toggleSearchAtom } from "../agents"
@@ -89,17 +92,114 @@ export function AgentsLayout() {
   useUpdateChecker()
 
   const [sidebarOpen, setSidebarOpen] = useAtom(agentsSidebarOpenAtom)
+  const isLinuxTitleBar =
+    typeof window !== "undefined" && window.desktopApi?.platform === "linux"
   const [_sidebarWidth, _setSidebarWidth] = useAtom(agentsSidebarWidthAtom)
   const setSettingsActiveTab = useSetAtom(agentsSettingsDialogActiveTabAtom)
   const setSettingsDialogOpen = useSetAtom(agentsSettingsDialogOpenAtom)
   const desktopView = useAtomValue(desktopViewAtom)
   const setFileSearchDialogOpen = useSetAtom(fileSearchDialogOpenAtom)
   const [selectedChatId, setSelectedChatId] = useAtom(selectedAgentChatIdAtom)
+
+  // Right panel state (for history navigation)
+  const [isDetailsSidebarOpen, setIsDetailsSidebarOpen] = useAtom(detailsSidebarOpenAtom)
+  const [detailsSidebarTab, setDetailsSidebarTab] = useAtom(detailsSidebarTabAtom)
+  const [isSideChatSidebarOpen, setIsSideChatSidebarOpen] = useAtom(sideChatSidebarOpenAtom)
+  const terminalSidebarAtom = useMemo(
+    () => terminalSidebarOpenAtomFamily(selectedChatId || ""),
+    [selectedChatId],
+  )
+  const [isTerminalSidebarOpen, setIsTerminalSidebarOpen] = useAtom(terminalSidebarAtom)
+  const diffSidebarAtom = useMemo(
+    () => diffSidebarOpenAtomFamily(selectedChatId || ""),
+    [selectedChatId],
+  )
+  const [isDiffSidebarOpen, setIsDiffSidebarOpen] = useAtom(diffSidebarAtom)
   const [selectedWorkspace, setSelectedWorkspace] = useAtom(selectedWorkspaceAtom)
   const setSelectedDraftId = useSetAtom(selectedDraftIdAtom)
   const setShowNewChatForm = useSetAtom(showNewChatFormAtom)
   const betaKanbanEnabled = useAtomValue(betaKanbanEnabledAtom)
   const setDesktopView = useSetAtom(desktopViewAtom)
+
+  // Top-level page history for Back/Forward navigation
+  const [pageHistory, setPageHistory] = useState<Array<{
+    desktopView: string | null
+    selectedChatId: string | null
+    sidebarOpen: boolean
+    detailsOpen: boolean
+    detailsTab: string
+    sideChatOpen: boolean
+    terminalOpen: boolean
+    diffOpen: boolean
+  }>>([{
+    desktopView,
+    selectedChatId,
+    sidebarOpen,
+    detailsOpen: isDetailsSidebarOpen,
+    detailsTab: detailsSidebarTab,
+    sideChatOpen: isSideChatSidebarOpen,
+    terminalOpen: isTerminalSidebarOpen,
+    diffOpen: isDiffSidebarOpen,
+  }])
+  const [pageHistoryIndex, setPageHistoryIndex] = useState(0)
+
+  useEffect(() => {
+    const current = pageHistory[pageHistoryIndex]
+    if (
+      desktopView === current?.desktopView &&
+      selectedChatId === current?.selectedChatId &&
+      sidebarOpen === current?.sidebarOpen &&
+      isDetailsSidebarOpen === current?.detailsOpen &&
+      detailsSidebarTab === current?.detailsTab &&
+      isSideChatSidebarOpen === current?.sideChatOpen &&
+      isTerminalSidebarOpen === current?.terminalOpen &&
+      isDiffSidebarOpen === current?.diffOpen
+    )
+      return
+    const trimmed = pageHistory.slice(0, pageHistoryIndex + 1)
+    trimmed.push({
+      desktopView,
+      selectedChatId,
+      sidebarOpen,
+      detailsOpen: isDetailsSidebarOpen,
+      detailsTab: detailsSidebarTab,
+      sideChatOpen: isSideChatSidebarOpen,
+      terminalOpen: isTerminalSidebarOpen,
+      diffOpen: isDiffSidebarOpen,
+    })
+    setPageHistory(trimmed)
+    setPageHistoryIndex(trimmed.length - 1)
+  }, [desktopView, selectedChatId, sidebarOpen, isDetailsSidebarOpen, detailsSidebarTab, isSideChatSidebarOpen, isTerminalSidebarOpen, isDiffSidebarOpen]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handlePageBack = useCallback(() => {
+    if (pageHistoryIndex <= 0) return
+    const nextIndex = pageHistoryIndex - 1
+    const target = pageHistory[nextIndex]
+    setPageHistoryIndex(nextIndex)
+    setDesktopView(target.desktopView as any)
+    setSelectedChatId(target.selectedChatId as any)
+    setSidebarOpen(target.sidebarOpen)
+    setIsDetailsSidebarOpen(target.detailsOpen)
+    setDetailsSidebarTab(target.detailsTab as any)
+    setIsSideChatSidebarOpen(target.sideChatOpen)
+    setIsTerminalSidebarOpen(target.terminalOpen)
+    setIsDiffSidebarOpen(target.diffOpen)
+  }, [pageHistory, pageHistoryIndex, setDesktopView, setSelectedChatId, setSidebarOpen, setIsDetailsSidebarOpen, setDetailsSidebarTab, setIsSideChatSidebarOpen, setIsTerminalSidebarOpen, setIsDiffSidebarOpen])
+
+  const handlePageForward = useCallback(() => {
+    if (pageHistoryIndex >= pageHistory.length - 1) return
+    const nextIndex = pageHistoryIndex + 1
+    const target = pageHistory[nextIndex]
+    setPageHistoryIndex(nextIndex)
+    setDesktopView(target.desktopView as any)
+    setSelectedChatId(target.selectedChatId as any)
+    setSidebarOpen(target.sidebarOpen)
+    setIsDetailsSidebarOpen(target.detailsOpen)
+    setDetailsSidebarTab(target.detailsTab as any)
+    setIsSideChatSidebarOpen(target.sideChatOpen)
+    setIsTerminalSidebarOpen(target.terminalOpen)
+    setIsDiffSidebarOpen(target.diffOpen)
+  }, [pageHistory, pageHistoryIndex, setDesktopView, setSelectedChatId, setSidebarOpen, setIsDetailsSidebarOpen, setDetailsSidebarTab, setIsSideChatSidebarOpen, setIsTerminalSidebarOpen, setIsDiffSidebarOpen])
   const setApiKeyOnboardingCompleted = useSetAtom(apiKeyOnboardingCompletedAtom)
   const setBillingMethod = useSetAtom(billingMethodAtom)
   const claudeLoginModalConfig = useAtomValue(claudeLoginModalConfigAtom)
@@ -303,8 +403,16 @@ export function AgentsLayout() {
       />
       <div className="flex flex-col w-full h-full relative overflow-hidden bg-background select-none">
         {/* Windows Title Bar (only shown on Windows with frameless window) */}
-        <WindowsTitleBar />
-        <div className="flex flex-1 overflow-hidden">
+        <WindowsTitleBar
+          onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+          sidebarOpen={sidebarOpen}
+          onBack={handlePageBack}
+          onForward={handlePageForward}
+          canBack={pageHistoryIndex > 0}
+          canForward={pageHistoryIndex < pageHistory.length - 1}
+          pageTitle={desktopView === "settings" ? "Settings" : ""}
+        />
+        <div className="flex flex-1 overflow-hidden bg-tl-background">
           {/* Left Sidebar - switches between chat list and settings nav */}
           <ResizableSidebar
           isOpen={!isMobile && sidebarOpen}
@@ -319,8 +427,7 @@ export function AgentsLayout() {
           exitWidth={0}
           persistContent={true}
           showResizeTooltip={!isSettingsView}
-          className="overflow-hidden bg-background border-r"
-          style={{ borderRightWidth: "0.5px" }}
+          className="overflow-hidden bg-background"
         >
           {isSettingsView ? (
             <SettingsSidebar />
@@ -328,13 +435,13 @@ export function AgentsLayout() {
             <AgentsSidebar
               desktopUser={desktopUser ? { id: desktopUser.id, email: desktopUser.email, name: desktopUser.name ?? undefined } : null}
               onSignOut={handleSignOut}
-              onToggleSidebar={handleCloseSidebar}
+              onToggleSidebar={isLinuxTitleBar ? undefined : handleCloseSidebar}
             />
           )}
         </ResizableSidebar>
 
           {/* Main Content */}
-          <div className="flex-1 overflow-hidden flex flex-col min-w-0">
+          <div className="flex-1 overflow-hidden flex flex-col min-w-0 rounded-tl-2xl bg-background">
             <AgentsContent />
           </div>
         </div>

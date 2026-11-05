@@ -233,6 +233,48 @@ impl EventLog {
         }
     }
 
+    /// A process restart cannot resume an in-memory streaming turn. Persisted
+    /// `streaming` rows from the previous process are therefore stale and must
+    /// not be replayed as if the agent were still generating.
+    fn recover_stale_streaming(&self) {
+        let Ok(mut conn) = self.conn.lock() else {
+            return;
+        };
+        let Ok(transaction) = conn.transaction() else {
+            warn!("Failed to start stale streaming runtime recovery transaction");
+            return;
+        };
+
+        let state_result = transaction.execute(
+            "UPDATE conversation_runtime_state
+             SET status = 'idle', turn_id = NULL
+             WHERE status = 'streaming'",
+            [],
+        );
+        let turns_result = transaction.execute(
+            "UPDATE conversation_turns
+             SET status = 'completed',
+                 stop_reason = COALESCE(stop_reason, 'recovered_by_restart'),
+                 completed_at_ms = COALESCE(completed_at_ms, updated_at_ms)
+             WHERE status = 'streaming' AND completed_at_ms IS NULL",
+            [],
+        );
+
+        if let (Ok(state_rows), Ok(turn_rows)) = (state_result, turns_result) {
+            if state_rows > 0 || turn_rows > 0 {
+                tracing::info!(
+                    state_rows,
+                    turn_rows,
+                    "Recovered stale streaming conversation runtime state"
+                );
+            }
+        }
+
+        if let Err(error) = transaction.commit() {
+            warn!(error = %error, "Failed to commit stale streaming runtime recovery");
+        }
+    }
+
     fn flush_pending(&self) {
         // Lock the receiver and drain all available records in one critical section.
         // This is safer than taking the receiver out, as it prevents losing the receiver
@@ -435,6 +477,9 @@ impl ConversationRuntimeStore {
                 |error| warn!(error = %error, "Failed to open conversation runtime event log"),
             )
             .ok();
+        if let Some(event_log) = event_log.as_ref() {
+            event_log.recover_stale_streaming();
+        }
         Self::with_event_log(event_log)
     }
 
@@ -872,6 +917,41 @@ mod tests {
         let replay = log.list("conv_1", Some(0));
         assert_eq!(replay.len(), 1);
         assert_eq!(replay[0].sequence, 1);
+
+        drop(log);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn recovers_stale_streaming_state() {
+        let path = std::env::temp_dir().join(format!(
+            "ergatai-runtime-stale-{}-{}.db",
+            std::process::id(),
+            timestamp_ms()
+        ));
+        let log = EventLog::open_at(path.clone()).expect("open event log");
+        let events = [
+            test_runtime_event("conv_1", "turn_1", 0, "a"),
+            test_runtime_event("conv_1", "turn_1", 1, "b"),
+        ];
+        log.append_batch(
+            events
+                .iter()
+                .map(|event| PersistedRuntimeRecord {
+                    event: event.clone(),
+                    status: RuntimeStatus::Streaming,
+                    started_at_ms: Some(1),
+                    updated_at_ms: Some(2),
+                })
+                .collect(),
+        );
+
+        log.recover_stale_streaming();
+        let state = log.load_state("conv_1").expect("persisted state");
+        assert_eq!(state.status, RuntimeStatus::Idle);
+        assert_eq!(state.turn_id, None);
 
         drop(log);
         let _ = std::fs::remove_file(&path);

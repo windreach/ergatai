@@ -2,7 +2,7 @@
 
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
-import { AlignJustify, Plus, TerminalSquare } from "lucide-react"
+import { AlignJustify, Folder, GitBranch, GitCompare, MessageSquare, PanelRight, Plus, TerminalSquare } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "../../../components/ui/button"
 import {
@@ -370,12 +370,13 @@ export function NewChatForm({
     setIsTerminalSidebarOpen(false)
   }, [setIsDetailsSidebarOpen, setIsTerminalSidebarOpen])
 
-  // Clear invalid project from storage
-  useEffect(() => {
-    if (selectedWorkspace && projectsList && !validatedProject) {
-      setSelectedWorkspace(null)
-    }
-  }, [selectedWorkspace, projectsList, validatedProject, setSelectedWorkspace])
+  // 注意：移除了过于激进的清理逻辑，避免竞态条件
+  // validatedProject 已经在渲染时做了空值检查，不需要主动清理 selectedWorkspace
+  // 清理逻辑会导致以下问题：
+  // 1. 在 projectsList 刷新过程中误清空有效选择
+  // 2. 多次快速点击时产生"空项目工作区"
+  // 3. 与 workspace-selector.tsx 的 validSelection 逻辑重复
+
   const [lastSelectedAgentId, setLastSelectedAgentId] = useAtom(
     lastSelectedAgentIdAtom,
   )
@@ -562,8 +563,24 @@ export function NewChatForm({
     },
   )
 
+  // 当 selectedModel 为 undefined 但 models 可用时，初始化 selectedModel
+  useEffect(() => {
+    if (!selectedModel && availableModels.models.length > 0) {
+      const backendCurrent = availableModels.currentModelId
+        ? availableModels.models.find((m) => m.id === availableModels.currentModelId)
+        : null
+      const lastSelected = availableModels.models.find((m) => m.id === lastSelectedModelId)
+      setSelectedModel(backendCurrent || lastSelected || availableModels.models[0])
+    }
+  }, [selectedModel, availableModels.models, availableModels.currentModelId, lastSelectedModelId])
+
   // Sync selectedModel when backend current model or atom value changes
   useEffect(() => {
+    // 安全检查：如果 selectedModel 未定义，跳过同步
+    if (!selectedModel) {
+      return
+    }
+
     // If backend reports a current model, prefer it
     if (availableModels.currentModelId) {
       const backendModel = availableModels.models.find((m) => m.id === availableModels.currentModelId)
@@ -578,7 +595,7 @@ export function NewChatForm({
     if (model && model.id !== selectedModel.id) {
       setSelectedModel(model)
     }
-  }, [availableModels.models, availableModels.currentModelId, lastSelectedModelId, selectedModel.id])
+  }, [availableModels.models, availableModels.currentModelId, lastSelectedModelId, selectedModel])
 
   const hiddenModels = useAtomValue(hiddenModelsAtom)
   const codexUiModels = useMemo(
@@ -1800,7 +1817,7 @@ export function NewChatForm({
             </>
           )}
         </div>
-        {canUseRightSidebar && (
+        {canUseRightSidebar && isMobileFullscreen && (
           <div className="flex items-center gap-1">
             {activeRightSidebar !== "terminal" && (
               <Button
@@ -2287,10 +2304,10 @@ export function NewChatForm({
       )}
         </div>
 
-        {canUseRightSidebar && activeRightSidebar === "details" && (
+        {canUseRightSidebar && activeRightSidebar === "details" && validatedProject && (
           <DetailsSidebar
-            chatId={validatedProject!.id}
-            worktreePath={validatedProject!.path}
+            chatId={validatedProject.id}
+            worktreePath={validatedProject.path}
             planPath={null}
             mode="agent"
             isTerminalSidebarOpen={false}
@@ -2302,19 +2319,95 @@ export function NewChatForm({
 
         {canUseRightSidebar &&
           activeRightSidebar === "terminal" &&
-          terminalDisplayMode === "side-peek" && (
+          terminalDisplayMode === "side-peek" &&
+          validatedProject && (
             <TerminalSidebar
-              chatId={validatedProject!.id}
+              chatId={validatedProject.id}
               scopeKey={terminalScopeKey}
-              cwd={validatedProject!.path}
-              workspaceId={validatedProject!.id}
+              cwd={validatedProject.path}
+              workspaceId={validatedProject.id}
             />
           )}
+
+        {/* Right panel rail (mirrors ChatView) */}
+        {canUseRightSidebar && !isMobileFullscreen && validatedProject && (
+          <div className="flex flex-col items-center gap-1 w-10 border-l border-border/50 bg-tl-background py-2 flex-shrink-0">
+            <button
+              type="button"
+              title="Detail"
+              onClick={() => {
+                if (isDetailsSidebarOpen) setIsDetailsSidebarOpen(false)
+                else {
+                  setIsDetailsSidebarOpen(true)
+                  setIsTerminalSidebarOpen(false)
+                }
+              }}
+              className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
+                isDetailsSidebarOpen
+                  ? "bg-foreground/10 text-foreground"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              <PanelRight className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title="Files"
+              disabled
+              className="h-8 w-8 rounded-md flex items-center justify-center transition-colors text-muted-foreground/40 cursor-not-allowed"
+            >
+              <Folder className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title="Git"
+              disabled
+              className="h-8 w-8 rounded-md flex items-center justify-center transition-colors text-muted-foreground/40 cursor-not-allowed"
+            >
+              <GitBranch className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title="Side Chat"
+              disabled
+              className="h-8 w-8 rounded-md flex items-center justify-center transition-colors text-muted-foreground/40 cursor-not-allowed"
+            >
+              <MessageSquare className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title="Changes"
+              disabled
+              className="h-8 w-8 rounded-md flex items-center justify-center transition-colors text-muted-foreground/40 cursor-not-allowed"
+            >
+              <GitCompare className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title="Terminal"
+              onClick={() => {
+                if (isTerminalSidebarOpen) setIsTerminalSidebarOpen(false)
+                else {
+                  setIsTerminalSidebarOpen(true)
+                  setIsDetailsSidebarOpen(false)
+                }
+              }}
+              className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
+                isTerminalSidebarOpen
+                  ? "bg-foreground/10 text-foreground"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              <TerminalSquare className="h-4 w-4" />
+            </button>
+          </div>
+        )}
       </div>
 
       {canUseRightSidebar &&
         activeRightSidebar === "terminal" &&
-        terminalDisplayMode === "bottom" && (
+        terminalDisplayMode === "bottom" &&
+        validatedProject && (
           <ResizableBottomPanel
             isOpen
             onClose={() => setIsTerminalSidebarOpen(false)}
@@ -2325,10 +2418,10 @@ export function NewChatForm({
             style={{ borderTopWidth: "0.5px" }}
           >
             <TerminalBottomPanelContent
-              chatId={validatedProject!.id}
+              chatId={validatedProject.id}
               scopeKey={terminalScopeKey}
-              cwd={validatedProject!.path}
-              workspaceId={validatedProject!.id}
+              cwd={validatedProject.path}
+              workspaceId={validatedProject.id}
               onClose={() => setIsTerminalSidebarOpen(false)}
             />
           </ResizableBottomPanel>

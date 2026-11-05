@@ -23,11 +23,13 @@ import {
   resolve,
   isAbsolute
 } from "node:path"
+import { createHash } from "node:crypto"
 import {
   app,
   shell
 } from "electron"
 import {
+  mkdirSync,
   watch,
   type FSWatcher
 } from "node:fs"
@@ -664,5 +666,51 @@ export const filesRouter = router({
       await shell.trashItem(input.absolutePath)
       fileListCache.clear()
       return { success: true }
+    }),
+
+  /**
+   * Download a remote image and cache it under ~/.local/share/ergatai/agent-logos.
+   * Returns the absolute local path (or null on failure).
+   *
+   * NOTE: This endpoint fetches arbitrary URLs. Currently only used for custom
+   * agent avatars where core agent logos are bundled as local static assets
+   * (see agent-logo-urls.ts). Consider adding URL validation (scheme + host
+   * allowlist) if this endpoint is exposed to untrusted input.
+   */
+  cacheRemoteImage: publicProcedure
+    .input(z.object({ url: z.string().url() }))
+    .query(async ({ input }) => {
+      try {
+        const home = process.env.HOME || process.env.USERPROFILE || ""
+        const cacheDir = join(home, ".local", "share", "ergatai", "agent-logos")
+        await mkdir(cacheDir, { recursive: true })
+
+        const hash = createHash("sha256").update(input.url).digest("hex")
+        // Determine extension from URL pathname
+        let ext = extname(new URL(input.url).pathname) || ""
+        if (!ext || ext.length > 5) ext = ".img"
+
+        const filePath = join(cacheDir, `${hash}${ext}`)
+
+        try {
+          await stat(filePath)
+          return { path: filePath }
+        } catch {
+          // not cached yet
+        }
+
+        const res = await fetch(input.url)
+        if (!res.ok) {
+          return { path: null }
+        }
+        const buf = Buffer.from(await res.arrayBuffer())
+        const tmpPath = `${filePath}.tmp`
+        await writeFile(tmpPath, buf)
+        await fsRename(tmpPath, filePath)
+        return { path: filePath }
+      } catch (error) {
+        console.error("[files] cacheRemoteImage error:", error)
+        return { path: null }
+      }
     }),
 })

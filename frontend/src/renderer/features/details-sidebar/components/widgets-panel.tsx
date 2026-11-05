@@ -108,7 +108,13 @@ export function WidgetsPanel({
 
         switch (widgetId) {
           case "agents":
-            return <AgentsWidget key="agents" chatId={chatId} />
+            return (
+              <AgentsWidget
+                key="agents"
+                chatId={chatId}
+                activeConversationId={activeConversationId}
+              />
+            )
 
           case "info":
             return (

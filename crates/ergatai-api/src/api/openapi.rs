@@ -11,6 +11,7 @@ use utoipa::OpenApi;
         crate::api::chats::unarchive_chat,
         crate::api::chats::delete_chat,
         crate::api::chats::list_chat_agents,
+        crate::api::chats::delete_chat_agent,
         // Chats - additional handlers
         crate::api::chats::get_agent_graph,
         crate::api::chats::patch_chat,

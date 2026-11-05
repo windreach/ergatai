@@ -58,6 +58,7 @@ export const profilesRouter = router({
         agentType: z.string(),
         packageName: z.string().optional(),
         avatarUrl: z.string().optional(),
+        nativeTriggers: z.array(z.record(z.string(), z.unknown())).optional(),
       }),
     )
     .mutation(async ({ input }) => {
@@ -69,6 +70,7 @@ export const profilesRouter = router({
           agent_type: input.agentType,
           package_name: input.packageName ?? null,
           avatar_url: input.avatarUrl ?? null,
+          native_triggers: input.nativeTriggers ?? null,
         }),
       })
     }),

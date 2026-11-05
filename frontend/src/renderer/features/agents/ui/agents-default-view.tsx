@@ -33,6 +33,8 @@ export function AgentsDefaultView({
   const [, setShowNewChatForm] = useAtom(showNewChatFormAtom)
   const unseenChanges = useAtomValue(agentsUnseenChangesAtom)
   const [sidebarOpen, setSidebarOpen] = useAtom(agentsSidebarOpenAtom)
+  const isLinuxTitleBar =
+    typeof window !== "undefined" && window.desktopApi?.platform === "linux"
   const { mode: collaborationMode } = useCollaborationMode()
 
   const utils = trpc.useUtils()
@@ -110,7 +112,7 @@ export function AgentsDefaultView({
         <div className="flex min-w-0 items-center gap-2">
           <AgentsHeaderControls
             isSidebarOpen={sidebarOpen}
-            onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
+            onToggleSidebar={isLinuxTitleBar ? undefined : () => setSidebarOpen((prev) => !prev)}
             hasUnseenChanges={unseenChanges.size > 0}
           />
         </div>

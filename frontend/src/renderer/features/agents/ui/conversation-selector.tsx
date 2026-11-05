@@ -182,6 +182,8 @@ export function ConversationSelector({
   isTerminalOpen = false,
   chatId,
 }: ConversationSelectorProps) {
+  const isLinuxTitleBar =
+    typeof window !== "undefined" && window.desktopApi?.platform === "linux"
   // Use shallow comparison to prevent re-renders when arrays have same content
   const {
     activeConversationId,
@@ -945,35 +947,7 @@ export function ConversationSelector({
         </div>
       )}
 
-      {/* Diff button - visible on desktop when unified sidebar is disabled OR diff widget is hidden */}
-      {/* Only show if onOpenDiff is provided (clickable action available) */}
-      {!isMobile && canOpenDiff && showDiffButton && onOpenDiff && (
-        <div
-          className="rounded-md bg-background/10 backdrop-blur-[10px] flex items-center justify-center"
-          style={{
-            // @ts-expect-error - WebKit-specific property
-            WebkitAppRegion: "no-drag",
-          }}
-        >
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => onOpenDiff()}
-                className="h-6 w-6 p-0 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md flex items-center justify-center hover:bg-foreground/10"
-              >
-                <DiffIcon className="h-4 w-4" />
-                <span className="sr-only">Open diff</span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">
-              <span>View changes</span>
-              {openDiffHotkey && <Kbd>{openDiffHotkey}</Kbd>}
-            </TooltipContent>
-          </Tooltip>
-        </div>
-      )}
+      {/* Changes access moved to the right rail */}
 
       {/* Terminal button - visible on desktop when unified sidebar is disabled OR terminal widget is hidden, and terminal is not already open */}
       {!isMobile && canOpenTerminal && showTerminalButton && !isTerminalOpen && onOpenTerminal && (

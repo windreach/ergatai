@@ -70,9 +70,9 @@ test.describe.serial("UI interactions", () => {
     await expect(page.getByRole("heading", { level: 1, name: "Task Board" })).toBeVisible()
   })
 
-  test("opens Add Agent from the sidebar", async () => {
-    await pressEnterOn(page.getByRole("button", { name: "Add Agent" }))
-    await expect(page.getByRole("heading", { level: 1, name: "Add Agent" })).toBeVisible()
+  test("opens Manage Agents from the sidebar", async () => {
+    await pressEnterOn(page.getByRole("button", { name: "Manage Agents" }))
+    await expect(page.getByRole("heading", { level: 1, name: "Manage Agents" })).toBeVisible()
   })
 
   test("workspace search accepts input and Escape returns focus away from it", async () => {

@@ -59,6 +59,7 @@ import { GitActivityBadges } from "../ui/git-activity-badges"
 import { ForkContext } from "./fork-context"
 import { MemoizedTextPart } from "./memoized-text-part"
 import { InterAgentRepliesDisclosure } from "./inter-agent-replies-disclosure"
+import { isErgataiSendMessagePart } from "../lib/ergatai-mcp-detection"
 
 // Map first word of an ACP tool title to a canonical Claude Code tool type.
 // Codex tool calls arrive with type = "tool-Read README.md", "tool-Run echo ---",
@@ -691,8 +692,8 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
       return <AgentTaskTool key={idx} part={part} nestedTools={nestedTools} chatStatus={status} />
     }
 
-    // Group agent @mention — intercept send_message MCP tool call
-    if (part.type?.includes("send_message")) {
+    // Group agent @mention — intercept send_message MCP tool call (agent-agnostic)
+    if (isErgataiSendMessagePart(part)) {
       const targetAgent =
         part.input?.target_agent_id as string | undefined
         ?? (part.type.match(/target_agent_id[='"]+(\w+)/)?.[1])
@@ -845,12 +846,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     // MCP tool calls (pattern: tool-mcp__<server>__<tool>)
     // Strict check: must be a tool part AND match send_message pattern
     const isToolPart = part?.type === "tool-use" || part?.type?.startsWith("tool-")
-    const isSendMessageTool =
-      isToolPart &&
-      (typeof part?.type === "string" &&
-        (part.type === "send_message" ||
-         part.type === "tool-mcp__ergatai__send_message" ||
-         part.type.endsWith("__send_message")))
+    const isSendMessageTool = isToolPart && isErgataiSendMessagePart(part)
 
     if (isSendMessageTool) {
       return (

@@ -32,6 +32,10 @@ interface ModelItem {
 interface UseAvailableModelsReturn {
   models: typeof CLAUDE_MODELS
   currentModelId: string | null
+  lastKnownModels: ModelItem[]
+  status: "available" | "unsupported" | "not_detected"
+  source: "acp_config_options" | "none"
+  verifiedAt: number | null
   ollamaModels: string[]
   recommendedModel: string | undefined
   isOffline: boolean
@@ -79,6 +83,67 @@ function mapBackendModelToUI(modelName: string): ModelItem | null {
   return { id, name: displayName, version: "" }
 }
 
+type RuntimeConfigOption = {
+  id?: unknown
+  name?: unknown
+  category?: unknown
+  kind?: unknown
+}
+
+function configSelectorIdentity(value: unknown): string {
+  return typeof value === "string"
+    ? value.replace(/[^a-zA-Z0-9]/g, "").toLowerCase()
+    : ""
+}
+
+function configOptionCategory(value: unknown): string | null {
+  if (typeof value !== "string") return null
+  // Backend serializes Rust enum variants with Debug: "Model", or
+  // `Other("custom")` for unknown categories.
+  const custom = value.match(/Other\("([^"]+)"\)/)
+  return (custom?.[1] ?? value).toLowerCase()
+}
+
+/**
+ * Runtime `current` must come from the active agent, not the profile cache.
+ * A profile can have several sessions and users may change models outside
+ * Ergatai; this reads the live ACP snapshot already returned with agent info.
+ */
+export function extractRuntimeModelFromConfigOptions(
+  options: unknown,
+): string | null {
+  if (!Array.isArray(options)) return null
+
+  const candidates = options.filter((option): option is RuntimeConfigOption => {
+    if (!option || typeof option !== "object") return false
+    const category = configOptionCategory((option as RuntimeConfigOption).category)
+    const id = configSelectorIdentity((option as RuntimeConfigOption).id)
+    const name = configSelectorIdentity((option as RuntimeConfigOption).name)
+    if (category === "mode" || category === "model_config" || category === "thought_level") {
+      return false
+    }
+    return (
+      category === "model" ||
+      id === "model" ||
+      id === "modelselector" ||
+      name === "model" ||
+      name === "modelselector"
+    )
+  })
+
+  const modelOption = candidates.find(
+    (option) => configOptionCategory(option.category) === "model",
+  ) ?? candidates[0]
+  if (!modelOption || typeof modelOption.kind !== "object" || modelOption.kind === null) {
+    return null
+  }
+
+  const kind = modelOption.kind as Record<string, unknown>
+  if (kind.type !== "select") return null
+  const current = kind.currentValue
+  return typeof current === "string" && current.trim() ? current.trim() : null
+}
+
 // ── Hook ──
 
 export function useAvailableModels(agentId?: string | null): UseAvailableModelsReturn {
@@ -98,6 +163,7 @@ export function useAvailableModels(agentId?: string | null): UseAvailableModelsR
     if (!effectiveAgentId || !agents) return null
     return agents.find((a) => a.agent_id === effectiveAgentId) ?? null
   }, [effectiveAgentId, agents])
+  const canRefreshModels = activeAgent?.is_alive === true
 
   // The profile registry is the only authoritative model-cache key. Static
   // model lists remain a UI fallback when no runtime agent has been resolved.
@@ -108,6 +174,16 @@ export function useAvailableModels(agentId?: string | null): UseAvailableModelsR
     { profileName: profileName ?? "" },
     { enabled: !!profileName, refetchOnWindowFocus: false },
   )
+
+  // The runtime selected model is derived from the same agent snapshot that
+  // carries ACP config options. This keeps `current` per-session and lets it
+  // follow manual model changes made in the agent's own UI.
+  const runtimeCurrentModelId = useMemo(() => {
+    const raw =
+      activeAgent?.current_model?.trim() ||
+      extractRuntimeModelFromConfigOptions(activeAgent?.config_options)
+    return raw ? normalizeModelId(raw) : null
+  }, [activeAgent?.config_options, activeAgent?.current_model])
 
   // Debug logging: only log when key values change (not on every render)
   useEffect(() => {
@@ -120,6 +196,10 @@ export function useAvailableModels(agentId?: string | null): UseAvailableModelsR
     })
   }, [agentId, globalAgentId, effectiveAgentId, profileName, modelData?.models?.length])
 
+  // Refresh cache misses from an effect, never during render. Keep one request
+  // per profile so a failed lookup cannot create a mutation loop.
+  const requestedModelProfileRef = useRef<string | null>(null)
+
   const refreshMutation = trpc.ergatai.refreshAgentProfileModels.useMutation({
     onSuccess: (data) => {
       console.log("[useAvailableModels] Refresh success:", { profileName, modelsCount: data.models?.length ?? 0 })
@@ -127,12 +207,12 @@ export function useAvailableModels(agentId?: string | null): UseAvailableModelsR
     },
     onError: (error) => {
       console.error("[useAvailableModels] Refresh failed:", { profileName, error: error.message })
+      // Allow a retry after the agent becomes ready. This covers startup races
+      // where config options are not available yet.
+      requestedModelProfileRef.current = null
     },
   })
 
-  // Refresh cache misses from an effect, never during render. Keep one request
-  // per profile so a failed lookup cannot create a mutation loop.
-  const requestedModelProfileRef = useRef<string | null>(null)
   const refreshMutationRef = useRef(refreshMutation)
   refreshMutationRef.current = refreshMutation
 
@@ -142,17 +222,26 @@ export function useAvailableModels(agentId?: string | null): UseAvailableModelsR
       return
     }
     if (modelData.models.length > 0) return
+    if (!canRefreshModels) {
+      console.log("[useAvailableModels] Refresh skipped: agent not running", {
+        profileName,
+        isAlive: activeAgent?.is_alive ?? false,
+      })
+      return
+    }
     if (requestedModelProfileRef.current === profileName) return
 
     console.log("[useAvailableModels] Triggering refresh for profile:", profileName)
     requestedModelProfileRef.current = profileName
     refreshMutationRef.current.mutate({ profileName })
      
-  }, [modelData, profileName])
+  }, [modelData, profileName, canRefreshModels])
 
   // Map backend response to UI format
   const backendModels = useMemo(() => {
-    if (!modelData || modelData.models.length === 0) return null
+    if (!modelData || modelData.status !== "available" || modelData.models.length === 0) {
+      return null
+    }
 
     const mapped = modelData.models
       .map(mapBackendModelToUI)
@@ -168,14 +257,27 @@ export function useAvailableModels(agentId?: string | null): UseAvailableModelsR
 
     return {
       models: unique,
-      current: modelData.current ? normalizeModelId(modelData.current) : null,
+      current: runtimeCurrentModelId,
     }
+  }, [modelData, runtimeCurrentModelId])
+
+  const lastKnownModels = useMemo(() => {
+    if (modelData?.status !== "unsupported") return []
+    return (modelData.last_known_models ?? [])
+      .map(mapBackendModelToUI)
+      .filter((m): m is NonNullable<typeof m> => m !== null)
   }, [modelData])
 
-  // Use backend models, fall back to hardcoded
-  const baseModels = backendModels && backendModels.models.length > 0
-    ? backendModels.models
-    : CLAUDE_MODELS
+  const status: UseAvailableModelsReturn["status"] = backendModels
+    ? "available"
+    : modelData?.status === "unsupported"
+      ? "unsupported"
+      : "not_detected"
+  const source = backendModels ? "acp_config_options" : "none"
+
+  // No hardcoded fallback here: a generic Claude list is misleading for any
+  // other ACP agent and masks the difference between cached and live state.
+  const baseModels = backendModels?.models ?? []
   const currentModelId = backendModels?.current ?? null
 
   // Ollama status
@@ -194,6 +296,10 @@ export function useAvailableModels(agentId?: string | null): UseAvailableModelsR
     return {
       models: baseModels,
       currentModelId,
+      lastKnownModels,
+      status,
+      source,
+      verifiedAt: modelData?.verified_at ?? null,
       ollamaModels,
       recommendedModel,
       isOffline,
@@ -204,6 +310,10 @@ export function useAvailableModels(agentId?: string | null): UseAvailableModelsR
   return {
     models: baseModels,
     currentModelId,
+    lastKnownModels,
+    status,
+    source,
+    verifiedAt: modelData?.verified_at ?? null,
     ollamaModels,
     recommendedModel,
     isOffline,

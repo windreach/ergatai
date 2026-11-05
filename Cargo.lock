@@ -1286,6 +1286,7 @@ dependencies = [
  "nix",
  "parking_lot",
  "percent-encoding",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

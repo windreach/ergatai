@@ -573,6 +573,7 @@ export function subscribeAgentStream(
 export function subscribeRawAgentStream(
   agentId: string,
   promptId: string | undefined,
+  conversationId: string | undefined,
   onEvent: (event: AgentOutputEvent) => void,
   onError?: (error: Error) => void,
   onComplete?: () => void,
@@ -580,6 +581,7 @@ export function subscribeRawAgentStream(
   const { apiUrl } = getErgataiAuthConfig()
   const streamQuery = new URLSearchParams()
   if (promptId) streamQuery.set("prompt_id", promptId)
+  if (conversationId) streamQuery.set("conversation_id", conversationId)
   const streamSuffix = streamQuery.toString() ? `?${streamQuery.toString()}` : ""
   const url = `${apiUrl}/api/v1/agents/${encodeURIComponent(agentId)}/stream${streamSuffix}`
 

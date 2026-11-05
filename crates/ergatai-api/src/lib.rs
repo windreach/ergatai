@@ -458,6 +458,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::chats::list_chat_agents),
         )
         .route(
+            "/api/v1/chats/{chat_id}/agents/{agent_id}",
+            delete(api::chats::delete_chat_agent),
+        )
+        .route(
             "/api/v1/chats/{chat_id}/agent-graph",
             get(api::chats::get_agent_graph),
         )

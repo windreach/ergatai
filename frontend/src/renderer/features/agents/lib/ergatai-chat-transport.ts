@@ -13,6 +13,7 @@
 
 import type { ChatTransport, UIMessage, UIMessageChunk } from "ai"
 import { getOrCreateActiveAgent } from "./ergatai-agent-manager"
+import { getQueryClient } from "../../../contexts/TRPCProvider"
 import { trpcClient } from "../../../lib/trpc"
 import { useAgentConversationStore } from "../stores/conversation-store"
 import { getRuntimeSessionStore } from "../../conversation"
@@ -368,6 +369,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
             {
               agentId,
               promptId,
+              conversationId,
             },
             {
               onData: (event) => {
@@ -665,7 +667,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               // optimistic message, let the backend assign the canonical ID; do
               // not create frontend UUIDs for durable message metadata.
               const clientRequestId = persistedMessageId
-              await trpcClient.ergatai.promptAgent.mutate({
+              const promptResult = await trpcClient.ergatai.promptAgent.mutate({
                 agentId: effectiveAgentId,
                 message: prompt,
                 conversationId: effectiveConversationId,
@@ -684,6 +686,21 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                 clientRequestId,
                 interrupt,  // Phase 19: Pass interrupt flag to backend
               })
+              if (
+                promptResult?.new_agent_id &&
+                promptResult.new_agent_id !== effectiveAgentId
+              ) {
+                // The backend replaced a suspended runtime ID with a new live ID.
+                // Refresh durable bindings and status stores so UI controls target
+                // the current process on subsequent sends/stops.
+                const queryClient = getQueryClient()
+                queryClient?.invalidateQueries({
+                  queryKey: [["ergatai", "getAgentBindings"]],
+                })
+                queryClient?.invalidateQueries({
+                  queryKey: [["ergatai", "listAgents"]],
+                })
+              }
             }
           } catch (error) {
             console.error("[ErgataiTransport] Failed to start agent:", error)

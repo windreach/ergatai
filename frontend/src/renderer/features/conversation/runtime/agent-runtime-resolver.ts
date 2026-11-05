@@ -97,7 +97,8 @@ class AgentRuntimeResolverImpl implements AgentRuntimeResolver {
     // For agent mode, check agent status
     if (mode === "agent" && agentId) {
       const isAlive = await this.checkAgentAlive(agentId)
-      const canStart = isAlive || (await this.canStartAgent(agentId))
+      const isSuspended = await this.checkAgentSuspended(agentId)
+      const canStart = isAlive || isSuspended || (await this.canStartAgent(agentId))
 
       if (!isAlive && !canStart) {
         return {
@@ -198,6 +199,27 @@ class AgentRuntimeResolverImpl implements AgentRuntimeResolver {
 
     // Return the agent's alive status from the cache
     return agent.isAlive
+  }
+
+  /**
+   * A suspended agent can be started on demand by the backend's auto-resume
+   * path. This is distinct from a permanently stopped/terminated agent.
+   */
+  private async checkAgentSuspended(agentId: string): Promise<boolean> {
+    const statusState = getAgentRuntimeStatusState()
+    let agent = statusState.agents.find((a) => a.id === agentId)
+
+    if (!agent || !statusState.updatedAt) {
+      try {
+        await refreshAgentRuntimeStatus()
+        agent = getAgentRuntimeStatusState().agents.find((a) => a.id === agentId)
+      } catch (error) {
+        console.warn("[AgentRuntimeResolver] Failed to refresh suspended status:", error)
+        return false
+      }
+    }
+
+    return agent?.status === "suspended"
   }
 
   /**

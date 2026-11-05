@@ -226,6 +226,7 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       workspaceId?: string | null
       projectId?: string | null
       persistedMessages?: RawMessage[]
+      persistedMessagesLoading?: boolean
     }) {
     const {
       chat: _chat,
@@ -257,6 +258,7 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       workspaceId: _workspaceId,
       projectId: _projectId,
       persistedMessages: _persistedMessages,
+      persistedMessagesLoading: _persistedMessagesLoading,
     } = props
 
     const controller = useActiveChatController(props)
@@ -698,7 +700,7 @@ export function ChatView({
 }: {
   chatId: string
   isSidebarOpen: boolean
-  onToggleSidebar: () => void
+  onToggleSidebar?: () => void
   selectedTeamName?: string
   selectedTeamImageUrl?: string
   isMobileFullscreen?: boolean
@@ -946,6 +948,17 @@ export function ChatView({
 
   const agentChat = localAgentChat
   const _isLoading = isLocalLoading
+
+  // Get agent bindings to find the main backend agent ID
+  const agentBindingsQuery = trpc.ergatai.getAgentBindings.useQuery(
+    { chatId },
+    { enabled: !!isValidChatId },
+  )
+  const agentBindings = agentBindingsQuery.data ?? []
+  // Main agent is the first binding (oldest created)
+  const backendAgentId = agentBindings.length > 0
+    ? agentBindings.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0]?.agentId
+    : undefined
 
   // Compute if we're waiting for local chat data (used as loading gate)
   const isLocalChatLoading = isLocalLoading
@@ -1766,58 +1779,13 @@ export function ChatView({
                       </span>
                     </PreviewSetupHoverCard>
                   ))}
-                {/* Files button - opens the details sidebar on the Files
-                    page (desktop only, unified sidebar only) */}
-                {!isMobileFullscreen &&
-                  isUnifiedSidebarEnabled &&
-                  (worktreePath || sandboxId) && (
-                    <Tooltip delayDuration={500}>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleToggleDetailsSidebarTab("files")}
-                          className={cn(
-                            "h-6 w-6 p-0 hover:bg-foreground/10 transition-colors flex-shrink-0 rounded-md ml-2",
-                            isDetailsSidebarOpen && detailsSidebarTab === "files"
-                              ? "text-foreground"
-                              : "text-muted-foreground",
-                          )}
-                          aria-label="View files"
-                        >
-                          <Folder className="h-4 w-4" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom">View files</TooltipContent>
-                    </Tooltip>
-                  )}
+                {/* Files access moved to the right rail */}
                 {/* Overview/Terminal Button - shows when sidebar is closed and worktree/sandbox exists (desktop only) */}
                 {!isMobileFullscreen &&
                   (worktreePath || sandboxId) && (
                     isUnifiedSidebarEnabled ? (
-                      // Details button for unified sidebar
-                      !isDetailsSidebarOpen && (
-                        <Tooltip delayDuration={500}>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => {
-                                setDetailsSidebarTab("details")
-                                setIsDetailsSidebarOpen(true)
-                              }}
-                              className="h-6 w-6 p-0 hover:bg-foreground/10 transition-colors text-foreground flex-shrink-0 rounded-md ml-2"
-                              aria-label="View details"
-                            >
-                              <IconOpenSidebarRight className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent side="bottom">
-                            View details
-                            {toggleDetailsHotkey && <Kbd>{toggleDetailsHotkey}</Kbd>}
-                          </TooltipContent>
-                        </Tooltip>
-                      )
+                      // Details access moved to the right rail
+                      null
                     ) : (
                       // Terminal button for legacy sidebars
                       !isTerminalSidebarOpen && (
@@ -1926,6 +1894,7 @@ export function ChatView({
                             workspaceId={agentChat?.workspaceId ?? null}
                             projectId={null}
                             persistedMessages={(persistedMessagesByConversationId.get(paneId) ?? []) as unknown as RawMessage[]}
+                            persistedMessagesLoading={persistedMessagesQuery.isLoading}
                           />
                         </div>
                       )
@@ -1978,6 +1947,7 @@ export function ChatView({
                                 workspaceId={agentChat?.workspaceId ?? null}
                                 projectId={null}
                                 persistedMessages={(persistedMessagesByConversationId.get(conversationId) ?? []) as unknown as RawMessage[]}
+                                persistedMessagesLoading={persistedMessagesQuery.isLoading}
                               />
                             </div>
                           )
@@ -2043,6 +2013,7 @@ export function ChatView({
                       workspaceId={agentChat?.workspaceId ?? null}
                       projectId={null}
                       persistedMessages={(persistedMessagesByConversationId.get(conversationId) ?? []) as unknown as RawMessage[]}
+                      persistedMessagesLoading={persistedMessagesQuery.isLoading}
                     />
                   </div>
                 )
@@ -2139,6 +2110,7 @@ export function ChatView({
           worktreePath={worktreePath}
           sandboxId={sandboxId}
           repository={repository}
+          teamId={selectedTeamId || undefined}
           isDiffSidebarOpen={isDiffSidebarOpen}
           setIsDiffSidebarOpen={setIsDiffSidebarOpen}
           diffStats={diffStats}
@@ -2197,6 +2169,12 @@ export function ChatView({
           meta={meta}
           isTerminalSidebarOpen={isTerminalSidebarOpen}
           setIsTerminalSidebarOpen={setIsTerminalSidebarOpen}
+          isDetailsSidebarOpen={isDetailsSidebarOpen}
+          setIsDetailsSidebarOpen={setIsDetailsSidebarOpen}
+          isSideChatSidebarOpen={isSideChatSidebarOpen}
+          setIsSideChatSidebarOpen={setIsSideChatSidebarOpen}
+          detailsSidebarTab={detailsSidebarTab}
+          setDetailsSidebarTab={setDetailsSidebarTab}
           terminalDisplayMode={terminalDisplayMode}
           toggleTerminalHotkey={toggleTerminalHotkey}
           isCommittingCombined={isCommittingCombined}
@@ -2206,6 +2184,7 @@ export function ChatView({
           setFilteredDiffFiles={setFilteredDiffFiles}
           handleCommitChanges={handleCommitChanges}
           handleCommitAndPush={handleCommitAndPush}
+          backendAgentId={backendAgentId}
         />
       </div>
 

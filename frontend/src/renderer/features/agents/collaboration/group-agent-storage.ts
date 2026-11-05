@@ -1,5 +1,6 @@
 import {
   getCoreAgentOption,
+  resolveCoreAgentId,
   type CoreAgentId,
   type CoreAgentOption,
 } from "../lib/agent-contract-api"
@@ -18,7 +19,8 @@ export function getGroupAgentStorageKey(chatId: string | null | undefined) {
 
 function normalizeGroupAgent(value: unknown): CoreAgentOption | null {
   if (typeof value === "string") {
-    return getCoreAgentOption(value as CoreAgentId)
+    const supportedId = resolveCoreAgentId(value)
+    return supportedId ? getCoreAgentOption(supportedId) : null
   }
 
   if (!value || typeof value !== "object") return null
@@ -26,9 +28,12 @@ function normalizeGroupAgent(value: unknown): CoreAgentOption | null {
   const agent = value as Partial<CoreAgentOption>
   if (typeof agent.id !== "string" || !agent.id) return null
 
-  const fallback = getCoreAgentOption(agent.id as CoreAgentId)
+  const supportedId = resolveCoreAgentId(agent.id, agent.profileName)
+  if (!supportedId) return null
+
+  const fallback = getCoreAgentOption(supportedId)
   return {
-    id: agent.id as CoreAgentId,
+    id: supportedId,
     name: typeof agent.name === "string" && agent.name ? agent.name : fallback.name,
     description:
       typeof agent.description === "string" ? agent.description : fallback.description,
@@ -36,10 +41,7 @@ function normalizeGroupAgent(value: unknown): CoreAgentOption | null {
       typeof agent.defaultCommand === "string"
         ? agent.defaultCommand
         : fallback.defaultCommand,
-    profileName:
-      typeof agent.profileName === "string" && agent.profileName
-        ? agent.profileName
-        : fallback.profileName,
+    profileName: fallback.profileName,
   }
 }
 

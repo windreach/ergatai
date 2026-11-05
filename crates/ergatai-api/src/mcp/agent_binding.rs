@@ -210,6 +210,39 @@ impl AgentBindingStore {
         Ok(())
     }
 
+    /// Remove every MCP binding associated with a runtime agent.
+    ///
+    /// Permanent agent deletion must remove this secondary index as well;
+    /// otherwise a deleted runtime agent can be re-resolved after restart.
+    pub fn remove_bindings_by_runtime_agent_id(&self, agent_id: &str) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|_| ErgataiError::InternalError {
+            message: "Binding store lock poisoned".to_string(),
+            source: None,
+        })?;
+
+        let count = conn
+            .execute(
+                "DELETE FROM agent_bindings WHERE agent_id = ?1",
+                params![agent_id],
+            )
+            .map_err(|e| {
+                ErgataiError::DatabaseError(format!(
+                    "Failed to remove MCP bindings for runtime agent: {}",
+                    e
+                ))
+            })?;
+
+        if count > 0 {
+            debug!(
+                agent_id = %agent_id,
+                count,
+                "Removed MCP bindings for runtime agent"
+            );
+        }
+
+        Ok(count)
+    }
+
     /// List all bindings.
     pub fn list_bindings(&self) -> Result<Vec<AgentBinding>> {
         let conn = self.conn.lock().map_err(|_| ErgataiError::InternalError {

@@ -11,7 +11,6 @@ const AGENT_DISPLAY_NAMES: Record<string, string> = {
   "claude-code": "Claude Code",
   "codex": "Codex",
   "opencode": "OpenCode",
-  "cursor": "Cursor",
 }
 
 interface GroupAgentMentionToolProps {

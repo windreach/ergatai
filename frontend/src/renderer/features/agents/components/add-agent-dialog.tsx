@@ -47,7 +47,8 @@ export function AddAgentDialog({
 }: AddAgentDialogProps) {
   const [agentName, setAgentName] = useState("")
   const [avatarUrl, setAvatarUrl] = useState("")
-  const [startupCommand, setStartupCommand] = useState("")
+  const [startupCommand, setStartupCommand] = useState("") // 用于显示的简化命令
+  const [fullCommand, setFullCommand] = useState("") // 用于提交的完整命令
   const [startupError, setStartupError] = useState(false)
   const [autoFillCommand, setAutoFillCommand] = useState(true)
   const [selectedAgentId, setSelectedAgentId] =
@@ -82,10 +83,11 @@ export function AddAgentDialog({
   useEffect(() => {
     if (!open || !autoFillCommand) return
 
-    setStartupCommand(
-      agentOptions.find((agent) => agent.id === selectedAgentId)
-        ?.defaultCommand ?? "",
-    )
+    const command = agentOptions.find((agent) => agent.id === selectedAgentId)?.defaultCommand ?? ""
+    setFullCommand(command)
+    // 只显示命令的文件名部分，避免完整路径撑坏 UI
+    const displayCommand = command ? (command.includes("/") ? command.split("/").pop() || command : command) : ""
+    setStartupCommand(displayCommand)
   }, [autoFillCommand, open, selectedAgentId, agentOptions])
 
   const selectedAgent =
@@ -126,19 +128,20 @@ export function AddAgentDialog({
     async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault()
 
-      if (!startupCommand.trim()) {
+      // 使用 fullCommand 进行验证和提交
+      const commandToSubmit = fullCommand.trim() || startupCommand.trim()
+      if (!commandToSubmit) {
         setStartupError(true)
         return
       }
 
       const name = agentName.trim() || selectedAgent.name
-      const resolvedStartupCommand = startupCommand.trim()
 
       try {
         // The backend owns persistent profile IDs; the UI only keeps a local view.
         const registered = await agentContractApi.registerAgent(
           name,
-          resolvedStartupCommand,
+          commandToSubmit,
           "acp",
           undefined,
           avatarUrl || undefined,
@@ -148,7 +151,7 @@ export function AddAgentDialog({
           id: registered.id,
           name,
           runtimeId: selectedAgent.id,
-          startupCommand: resolvedStartupCommand,
+          startupCommand: commandToSubmit,
           avatarUrl: avatarUrl || undefined,
         }
 
@@ -161,7 +164,7 @@ export function AddAgentDialog({
         })
       }
     },
-    [onCreateAgent, onOpenChange, selectedAgent, startupCommand, agentName, avatarUrl],
+    [onCreateAgent, onOpenChange, selectedAgent, fullCommand, startupCommand, agentName, avatarUrl],
   )
 
   return (
@@ -248,7 +251,12 @@ export function AddAgentDialog({
               placeholder="Enter the executable command"
               value={startupCommand}
               onChange={(event) => {
-                setStartupCommand(event.target.value)
+                const value = event.target.value
+                setStartupCommand(value)
+                // 如果用户手动编辑，同时更新完整命令
+                if (!autoFillCommand) {
+                  setFullCommand(value)
+                }
                 setAutoFillCommand(false)
                 setStartupError(false)
               }}
@@ -295,6 +303,7 @@ export function AddAgentDialog({
               <PopoverContent align="start" className="w-80 p-1">
                 {agentOptions.map((agent) => {
                   const Icon = getCoreAgentIcon(agent.id)
+                  const defaultCommand = agent.defaultCommand ?? ""
                   const isSelected = agent.id === selectedAgentId
 
                   return (
@@ -315,8 +324,8 @@ export function AddAgentDialog({
                         <span className="block truncate text-sm font-medium">
                           {agent.name}
                         </span>
-                        <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
-                          {agent.defaultCommand}
+                        <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground" title={defaultCommand}>
+                          {defaultCommand.includes("/") ? defaultCommand.split("/").pop() : defaultCommand}
                         </span>
                       </span>
                       {isSelected && (

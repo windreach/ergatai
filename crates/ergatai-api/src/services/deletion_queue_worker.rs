@@ -92,7 +92,7 @@ pub fn spawn_worker(cancellation_token: CancellationToken) -> tokio::task::JoinH
 
 async fn process_job(job: &crate::user_data_db::chats::DeletionJob) -> anyhow::Result<()> {
     match job.action.as_str() {
-        "cleanup_workspace" | "cleanup_chat" => {
+        "cleanup_workspace" | "cleanup_chat" | "cleanup_agent" => {
             let ids: Vec<String> = job
                 .payload
                 .as_deref()

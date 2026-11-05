@@ -79,6 +79,7 @@ export function useMainChatInvocation({
   stopAgentId,
   isActive: _isActive = true,
   persistedMessages,
+  persistedMessagesLoading,
   runtimeMessages = [],
   existingChat,
   runtimeStatus,
@@ -91,6 +92,8 @@ export function useMainChatInvocation({
   isActive?: boolean
   /** Durable messages from the chat snapshot, separate from local streaming. */
   persistedMessages?: RawMessage[]
+  /** True while the durable chat snapshot has not finished loading. */
+  persistedMessagesLoading?: boolean
   /** Live output events for turns started by the backend scheduler. */
   runtimeMessages?: RawMessage[]
   /** Existing Chat instance to avoid creating duplicate */
@@ -125,9 +128,22 @@ export function useMainChatInvocation({
 
   // While the local transport streams the current turn, clear the backend
   // preview source. Local Chat is the freshest view of that same turn.
+  // On reload, a terminal runtime snapshot can arrive before the durable
+  // snapshot. Suppressing that terminal preview prevents a one-render flash
+  // of the previous turn; an active streaming turn is still shown immediately.
+  const shouldDeferTerminalRuntimePreview =
+    !isLocalStreaming &&
+    runtimeStatus !== "streaming" &&
+    persistedMessagesLoading === true &&
+    runtimeMessages.length > 0
   const backendRuntimeMessages = useMemo(
-    () => (isLocalStreaming ? [] : runtimeMessages.map((message) => getProjectionService().normalizeRawMessage(message, "runtime"))),
-    [isLocalStreaming, runtimeMessages],
+    () => {
+      if (isLocalStreaming || shouldDeferTerminalRuntimePreview) return []
+      return runtimeMessages.map((message) =>
+        getProjectionService().normalizeRawMessage(message, "runtime"),
+      )
+    },
+    [isLocalStreaming, shouldDeferTerminalRuntimePreview, runtimeMessages],
   )
 
   // The hook only ingests raw sources. RuntimeSessionStore owns merging and

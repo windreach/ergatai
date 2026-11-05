@@ -12,11 +12,139 @@ use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use ergatai_runtime::profile_registry::{AgentRegistration, ProfileRegistry, ProfileWithStatus};
+use serde::{Deserialize, Serialize};
 
 /// ProfileRegistry 全局单例。
 ///
 /// 使用 OnceLock 确保只初始化一次，避免每次 handler 调用都打开 SQLite 数据库。
 static PROFILE_REGISTRY: OnceLock<ProfileRegistry> = OnceLock::new();
+
+/// Lifecycle of the profile-level model catalog. This is intentionally
+/// separate from the runtime selection: `current` belongs to an agent session,
+/// while this cache only describes the models an agent type can expose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileModelStatus {
+    Available,
+    Unsupported,
+    NotDetected,
+}
+
+/// Where the model catalog came from. The legacy cache had no source field;
+/// it was produced by ACP config-option detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileModelSource {
+    AcpConfigOptions,
+    None,
+}
+
+/// Profile-level model catalog returned by the HTTP API.
+///
+/// `current` is deliberately not persisted here. A profile can have multiple
+/// running agents with different selected models; the runtime value must come
+/// from the active agent's ACP config options.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProfileModelCatalog {
+    pub status: ProfileModelStatus,
+    pub source: ProfileModelSource,
+    pub models: Vec<String>,
+    /// The last successfully observed list, preserved when a later refresh
+    /// proves that the current agent does not expose a model selector.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub last_known_models: Vec<String>,
+    /// ACP config option id, when the catalog came from a model selector.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub option_id: Option<String>,
+    pub verified_at: Option<i64>,
+    /// Backwards-compatible field. Runtime selected model is not cached here.
+    pub current: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredProfileModels {
+    #[serde(default)]
+    status: Option<ProfileModelStatus>,
+    #[serde(default)]
+    source: Option<ProfileModelSource>,
+    #[serde(default)]
+    models: Vec<String>,
+    #[serde(default)]
+    last_known_models: Vec<String>,
+    #[serde(default)]
+    option_id: Option<String>,
+}
+
+fn normalize_profile_models(
+    json_str: &str,
+    updated_at: Option<i64>,
+) -> Result<ProfileModelCatalog> {
+    let stored: StoredProfileModels = serde_json::from_str(json_str)
+        .map_err(|e| anyhow::anyhow!("Failed to parse models JSON: {}", e))?;
+
+    let (status, source) = match (stored.status, stored.source) {
+        (Some(status), Some(source)) => (status, source),
+        // Legacy JSON had models/current only and was written by ACP detection.
+        (None, _) if !stored.models.is_empty() => (
+            ProfileModelStatus::Available,
+            ProfileModelSource::AcpConfigOptions,
+        ),
+        _ => (ProfileModelStatus::NotDetected, ProfileModelSource::None),
+    };
+
+    // Guard against a stale/corrupt cache claiming success with no models.
+    let (status, models) = if status == ProfileModelStatus::Available && stored.models.is_empty() {
+        (ProfileModelStatus::NotDetected, Vec::new())
+    } else {
+        (status, stored.models)
+    };
+
+    Ok(ProfileModelCatalog {
+        status,
+        source,
+        models,
+        last_known_models: stored.last_known_models,
+        option_id: stored.option_id,
+        verified_at: updated_at,
+        current: None,
+    })
+}
+
+fn models_json(models: &[String], option_id: Option<&str>) -> String {
+    serde_json::json!({
+        "status": ProfileModelStatus::Available,
+        "source": ProfileModelSource::AcpConfigOptions,
+        "models": models,
+        "last_known_models": models,
+        "option_id": option_id,
+        "verified_at": chrono::Utc::now().timestamp_millis(),
+    })
+    .to_string()
+}
+
+fn unsupported_json(previous_json: Option<&str>) -> Result<String> {
+    let previous = previous_json
+        .map(serde_json::from_str::<StoredProfileModels>)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("Failed to parse models JSON: {}", e))?;
+    let last_known_models = match previous {
+        Some(previous) if previous.status != Some(ProfileModelStatus::Unsupported) => {
+            previous.models
+        }
+        Some(previous) => previous.last_known_models,
+        None => Vec::new(),
+    };
+
+    Ok(serde_json::json!({
+        "status": ProfileModelStatus::Unsupported,
+        "source": ProfileModelSource::AcpConfigOptions,
+        "models": [],
+        "last_known_models": last_known_models,
+        "option_id": Option::<String>::None,
+        "verified_at": chrono::Utc::now().timestamp_millis(),
+    })
+    .to_string())
+}
 
 /// Profile 注册表数据库路径（与原始 handler 保持一致）。
 ///
@@ -62,10 +190,23 @@ pub async fn register_profile(
     agent_type: String,
     package_name: Option<String>,
     avatar_url: Option<String>,
+    native_triggers: Option<Vec<serde_json::Value>>,
 ) -> Result<()> {
     let registry = get_profile_registry()?;
-    let registration =
+    let mut registration =
         AgentRegistration::with_avatar_url(name, command, agent_type, package_name, avatar_url);
+    let native_triggers = native_triggers
+        .map(|triggers| {
+            triggers
+                .into_iter()
+                .map(serde_json::from_value::<ergatai_runtime::profile_registry::AgentTriggerSpec>)
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("Invalid native trigger metadata: {}", e))?;
+    registration.native_triggers_json =
+        ergatai_runtime::profile_registry::agent_triggers_json(native_triggers)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
     registry
         .register(registration)
         .await
@@ -166,22 +307,20 @@ pub async fn uninstall_agent(id: &str) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("Failed to uninstall agent: {}", e))
 }
 
-/// 获取指定 profile 的缓存模型列表（按 profile name 查询，单次查询避免 TOCTOU）。
-///
-/// 返回 None 表示尚未探测过模型。
-pub async fn get_profile_models_by_name(name: &str) -> Result<Option<serde_json::Value>> {
+/// 获取指定 profile 的模型目录（按 profile name 查询）。
+pub async fn get_profile_models_by_name(name: &str) -> Result<ProfileModelCatalog> {
     let registry = get_profile_registry()?;
     match registry.get_models_by_name(name).await {
-        Ok(Some((json_str, updated_at))) => {
-            // Parse the JSON string and add updated_at
-            let mut models: serde_json::Value = serde_json::from_str(&json_str)
-                .map_err(|e| anyhow::anyhow!("Failed to parse models JSON: {}", e))?;
-            if let Some(obj) = models.as_object_mut() {
-                obj.insert("updated_at".to_string(), serde_json::json!(updated_at));
-            }
-            Ok(Some(models))
-        }
-        Ok(None) => Ok(None),
+        Ok(Some((json_str, updated_at))) => normalize_profile_models(&json_str, Some(updated_at)),
+        Ok(None) => Ok(ProfileModelCatalog {
+            status: ProfileModelStatus::NotDetected,
+            source: ProfileModelSource::None,
+            models: Vec::new(),
+            last_known_models: Vec::new(),
+            option_id: None,
+            verified_at: None,
+            current: None,
+        }),
         Err(e) => Err(anyhow::anyhow!("Failed to get profile models: {}", e)),
     }
 }
@@ -190,14 +329,10 @@ pub async fn get_profile_models_by_name(name: &str) -> Result<Option<serde_json:
 pub async fn save_profile_models_by_name(
     name: &str,
     models: &[String],
-    current: Option<&str>,
+    option_id: Option<&str>,
 ) -> Result<()> {
     let registry = get_profile_registry()?;
-    let json = serde_json::json!({
-        "models": models,
-        "current": current,
-    })
-    .to_string();
+    let json = models_json(models, option_id);
     let now_ms = chrono::Utc::now().timestamp_millis();
     registry
         .update_models_by_name(name, &json, now_ms)
@@ -205,37 +340,84 @@ pub async fn save_profile_models_by_name(
         .map_err(|e| anyhow::anyhow!("Failed to save profile models: {}", e))
 }
 
-/// 获取指定 profile 的缓存模型列表（按 profile ID 查询）。
-///
-/// 返回 None 表示尚未探测过模型。
-pub async fn get_profile_models(id: &str) -> Result<Option<serde_json::Value>> {
+/// 获取指定 profile 的模型目录（按 profile ID 查询）。
+pub async fn get_profile_models(id: &str) -> Result<ProfileModelCatalog> {
     let registry = get_profile_registry()?;
     match registry.get_models(id).await {
-        Ok(Some((json_str, updated_at))) => {
-            // Parse the JSON string and add updated_at
-            let mut models: serde_json::Value = serde_json::from_str(&json_str)
-                .map_err(|e| anyhow::anyhow!("Failed to parse models JSON: {}", e))?;
-            if let Some(obj) = models.as_object_mut() {
-                obj.insert("updated_at".to_string(), serde_json::json!(updated_at));
-            }
-            Ok(Some(models))
-        }
-        Ok(None) => Ok(None),
+        Ok(Some((json_str, updated_at))) => normalize_profile_models(&json_str, Some(updated_at)),
+        Ok(None) => Ok(ProfileModelCatalog {
+            status: ProfileModelStatus::NotDetected,
+            source: ProfileModelSource::None,
+            models: Vec::new(),
+            last_known_models: Vec::new(),
+            option_id: None,
+            verified_at: None,
+            current: None,
+        }),
         Err(e) => Err(anyhow::anyhow!("Failed to get profile models: {}", e)),
     }
 }
 
 /// 保存探测到的模型列表到 profile。
-pub async fn save_profile_models(id: &str, models: &[String], current: Option<&str>) -> Result<()> {
+pub async fn save_profile_models(
+    id: &str,
+    models: &[String],
+    option_id: Option<&str>,
+) -> Result<()> {
     let registry = get_profile_registry()?;
-    let json = serde_json::json!({
-        "models": models,
-        "current": current,
-    })
-    .to_string();
+    let json = models_json(models, option_id);
     let now_ms = chrono::Utc::now().timestamp_millis();
     registry
         .update_models(id, &json, now_ms)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to save profile models: {}", e))
+}
+
+/// Mark a model catalog as unsupported after a definitive ACP read.
+///
+/// This does not erase the old list: it is retained as `last_known_models`
+/// so diagnostics/UI can distinguish "stale" from "never detected".
+pub async fn mark_profile_models_unavailable_by_name(name: &str) -> Result<()> {
+    let registry = get_profile_registry()?;
+    let previous = registry
+        .get_models_by_name(name)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get profile models: {}", e))?
+        .map(|(json, _)| json);
+    let json = unsupported_json(previous.as_deref())?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    registry
+        .update_models_by_name(name, &json, now_ms)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to save profile models: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_legacy_available_models() {
+        let catalog =
+            normalize_profile_models(r#"{"models":["model-a"],"current":"model-a"}"#, Some(123))
+                .unwrap();
+        assert_eq!(catalog.status, ProfileModelStatus::Available);
+        assert_eq!(catalog.source, ProfileModelSource::AcpConfigOptions);
+        assert_eq!(catalog.models, vec!["model-a"]);
+        assert_eq!(catalog.verified_at, Some(123));
+        assert_eq!(catalog.current, None);
+    }
+
+    #[test]
+    fn unsupported_preserves_last_known_models_once() {
+        let json =
+            unsupported_json(Some(r#"{"status":"available","models":["model-a"]}"#)).unwrap();
+        let catalog = normalize_profile_models(&json, Some(456)).unwrap();
+        assert_eq!(catalog.status, ProfileModelStatus::Unsupported);
+        assert_eq!(catalog.last_known_models, vec!["model-a"]);
+
+        let json = unsupported_json(Some(&json)).unwrap();
+        let catalog = normalize_profile_models(&json, Some(457)).unwrap();
+        assert_eq!(catalog.last_known_models, vec!["model-a"]);
+    }
 }

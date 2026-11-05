@@ -95,6 +95,20 @@ export {
 
 export type { FileData, SkillData, AgentData, ToolData, ToolsSearchContext } from "./providers"
 
+// Agent-native trigger allowlists
+export {
+  agentTriggerChars,
+  matchAgentTriggers,
+  normalizeAgentTriggers,
+} from "./native-triggers"
+export type {
+  AgentNativeTrigger,
+  AgentTriggerExecution,
+  AgentTriggerKind,
+  AgentTriggerMatch,
+  AgentTriggerSource,
+} from "./native-triggers"
+
 // Search
 export {
   MentionCache,

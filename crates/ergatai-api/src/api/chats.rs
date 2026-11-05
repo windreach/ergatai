@@ -453,6 +453,56 @@ pub async fn list_chat_agents(
     .into_response()
 }
 
+/// Permanently delete a runtime agent and its chat-scoped durable data.
+///
+/// The endpoint first stops a live runtime agent, then removes its chat binding
+/// and bound conversation tree. Physical message tables are scheduled through
+/// the deletion queue instead of blocking the HTTP response.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/chats/{chat_id}/agents/{agent_id}",
+    tag = "Chats",
+    params(
+        ("chat_id" = String, Path, description = "Chat ID"),
+        ("agent_id" = String, Path, description = "Runtime agent ID"),
+    ),
+    responses(
+        (status = 204, description = "Agent binding and conversation deleted"),
+        (status = 400, description = "Invalid ID", body = crate::api::ApiError),
+        (status = 404, description = "Agent binding not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn delete_chat_agent(
+    State(_state): State<AppState>,
+    Path((chat_id, agent_id)): Path<(String, String)>,
+) -> Response {
+    let chat_id = match crate::http_error::parse_typed_id::<ChatId>(&chat_id, "Chat") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
+    };
+
+    match crate::services::agent_service::delete_chat_agent(chat_id, &agent_id).await {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(crate::services::agent_service::ChatAgentDeletionError::InvalidAgentId(id)) => {
+            crate::http_error::bad_request(format!("Invalid Agent ID format: '{id}'"))
+                .into_response()
+        }
+        Err(crate::services::agent_service::ChatAgentDeletionError::AgentNotBound { .. }) => {
+            crate::http_error::not_found("Chat agent binding", &agent_id).into_response()
+        }
+        Err(crate::services::agent_service::ChatAgentDeletionError::Runtime(error)) => {
+            crate::http_error::internal(error, "delete_chat_agent_runtime").into_response()
+        }
+        Err(crate::services::agent_service::ChatAgentDeletionError::Join(error)) => {
+            crate::http_error::internal(error, "delete_chat_agent_task").into_response()
+        }
+        Err(crate::services::agent_service::ChatAgentDeletionError::Database(error)) => {
+            crate::http_error::internal(error, "delete_chat_agent_database").into_response()
+        }
+    }
+}
+
 /// GET /api/v1/chats/{chat_id}/agent-graph — 获取 agent 拓扑图谱
 #[utoipa::path(
     get,

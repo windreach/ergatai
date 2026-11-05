@@ -11,7 +11,7 @@
  */
 
 export type AgentId = string
-export type AgentStatus = "idle" | "working" | "error" | "unknown"
+export type AgentStatus = "idle" | "working" | "suspended" | "error" | "unknown"
 
 // ── Backend API Response Types ─────────────────────────────────────────
 
@@ -44,6 +44,7 @@ export interface AgentInfoResponse {
   stop_reason: string | null
   continuation_count: number
   config_options: ConfigOptionInfo[] | null
+  current_model: string | null
   profile: string | null
   capabilities: string[]
   state_changed_at: string
@@ -72,6 +73,7 @@ export interface AgentProfile {
   command: string
   agent_type: string
   package_name: string | null
+  native_triggers?: Array<unknown> | null
   created_at: string
 }
 
@@ -83,6 +85,7 @@ export interface AgentProfileWithStatus {
   agent_type: string
   package_name: string | null
   avatar_url: string | null
+  native_triggers?: Array<unknown> | null
   installed: boolean
   created_at: string
 }
@@ -127,14 +130,6 @@ export type CoreAgentId =
   | "claude-code"
   | "codex"
   | "opencode"
-  | "cursor"
-  | "gemini"
-  | "goose"
-  | "cline"
-  | "kiro"
-  | "auggie"
-  | "hermes"
-  | "openclaw"
 
 export interface CoreAgentOption {
   /** Profile-level id (e.g. "claude-code"). NOT a runtime agent_id. */
@@ -143,6 +138,7 @@ export interface CoreAgentOption {
   description?: string
   defaultCommand?: string
   profileName?: string
+  nativeTriggers?: Array<unknown>
 }
 
 export const CORE_AGENT_OPTIONS: CoreAgentOption[] = [
@@ -167,14 +163,32 @@ export const CORE_AGENT_OPTIONS: CoreAgentOption[] = [
     defaultCommand: "opencode acp",
     profileName: "opencode",
   },
-  {
-    id: "cursor",
-    name: "Cursor",
-    description: "AI code editor and CLI bridge",
-    defaultCommand: "cursor-agent",
-    profileName: "cursor",
-  },
 ]
+
+/** Backend profile names exposed as officially supported agents in v0.1.0. */
+const SUPPORTED_CORE_AGENT_PROFILE_NAMES = new Set([
+  "claude",
+  "claude-code",
+  "codex",
+  "opencode",
+])
+
+/**
+ * Legacy databases may use either "claude" or "claude-code". Map only
+ * explicitly supported bundled profiles; custom profiles stay usable even if
+ * their names are not in this list.
+ */
+function mapSupportedProfileNameToCoreAgentId(name: string): CoreAgentId | null {
+  const key = name.trim().toLowerCase()
+  if (key === "claude" || key === "claude-code") return "claude-code"
+  if (key === "codex") return "codex"
+  if (key === "opencode") return "opencode"
+  return null
+}
+
+export function isSupportedCoreAgentProfile(name: string): boolean {
+  return SUPPORTED_CORE_AGENT_PROFILE_NAMES.has(name.trim().toLowerCase())
+}
 
 export function getCoreAgentOption(agentId: CoreAgentId): CoreAgentOption {
   return CORE_AGENT_OPTIONS.find((agent) => agent.id === agentId) ?? CORE_AGENT_OPTIONS[0]
@@ -269,6 +283,7 @@ export interface AgentContractApi {
 // ── Helper: Map backend state to frontend status ───────────────────────
 
 function mapLifecycleState(lifecycleState: string, isAlive: boolean): AgentStatus {
+  if (lifecycleState.toLowerCase() === "suspended") return "suspended"
   if (!isAlive) return "error"
   switch (lifecycleState.toLowerCase()) {
     case "running":
@@ -381,14 +396,19 @@ export const agentContractApi: AgentContractApi = {
       // Only expose installed agents as selectable options
       const optionsById = new Map<CoreAgentId, CoreAgentOption>()
 
-      for (const profile of profiles.filter((p) => p.installed)) {
-        const id = (profile.name === "claude" ? "claude-code" : profile.name) as CoreAgentId
+      for (const profile of profiles.filter(
+        (p) => p.installed && isSupportedCoreAgentProfile(p.name),
+      )) {
+        const id = mapSupportedProfileNameToCoreAgentId(profile.name)
+        if (!id) continue
+
         const option: CoreAgentOption = {
           id,
           name: profile.name === "claude" ? "Claude Code" : profile.name,
           description: `Installed (${profile.agent_type})`,
           defaultCommand: profile.command,
           profileName: profile.name,
+          nativeTriggers: profile.native_triggers ?? [],
         }
 
         // Older databases may contain both "claude" and a legacy

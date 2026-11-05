@@ -10,7 +10,7 @@ use utoipa::ToSchema;
 
 use ergatai_runtime::profile_registry::AgentRegistration;
 
-use super::agents::extract_models_from_config_options;
+use super::agents::{extract_models_from_config_options, parse_model_output, DetectedModels};
 use crate::services::profile_service;
 
 /// Request to register a new agent profile
@@ -40,6 +40,8 @@ pub struct RegisterProfileRequest {
     pub agent_type: ApiAgentType,
     pub package_name: Option<String>,
     pub avatar_url: Option<String>,
+    /// Optional native trigger allowlist. Unknown syntax remains raw text.
+    pub native_triggers: Option<Vec<serde_json::Value>>,
 }
 
 /// Response for a single agent profile
@@ -51,11 +53,24 @@ pub struct ProfileResponse {
     pub agent_type: String,
     pub package_name: Option<String>,
     pub avatar_url: Option<String>,
+    pub native_triggers: Option<serde_json::Value>,
     pub created_at: String,
 }
 
 impl From<AgentRegistration> for ProfileResponse {
     fn from(reg: AgentRegistration) -> Self {
+        let native_triggers = reg.native_triggers_json.and_then(|json| {
+            serde_json::from_str::<Vec<serde_json::Value>>(&json)
+                .inspect_err(|e| {
+                    tracing::warn!(
+                        "Failed to parse native_triggers_json for profile {}: {}",
+                        reg.name,
+                        e
+                    )
+                })
+                .ok()
+                .map(serde_json::Value::Array)
+        });
         Self {
             id: reg.id,
             name: reg.name,
@@ -63,6 +78,7 @@ impl From<AgentRegistration> for ProfileResponse {
             agent_type: reg.agent_type,
             package_name: reg.package_name,
             avatar_url: reg.avatar_url,
+            native_triggers,
             created_at: reg.created_at.to_rfc3339(),
         }
     }
@@ -102,6 +118,7 @@ pub async fn register_profile(
         request.agent_type.as_str().to_string(),
         request.package_name,
         request.avatar_url,
+        request.native_triggers,
     )
     .await
     {
@@ -287,12 +304,25 @@ pub struct ProfileWithStatusResponse {
     pub agent_type: String,
     pub package_name: Option<String>,
     pub avatar_url: Option<String>,
+    pub native_triggers: Option<serde_json::Value>,
     pub installed: bool,
     pub created_at: String,
 }
 
 impl From<ergatai_runtime::profile_registry::ProfileWithStatus> for ProfileWithStatusResponse {
     fn from(p: ergatai_runtime::profile_registry::ProfileWithStatus) -> Self {
+        let native_triggers = p.native_triggers_json.and_then(|json| {
+            serde_json::from_str::<Vec<serde_json::Value>>(&json)
+                .inspect_err(|e| {
+                    tracing::warn!(
+                        "Failed to parse native_triggers_json for profile {}: {}",
+                        p.name,
+                        e
+                    )
+                })
+                .ok()
+                .map(serde_json::Value::Array)
+        });
         Self {
             id: p.id,
             name: p.name,
@@ -300,6 +330,7 @@ impl From<ergatai_runtime::profile_registry::ProfileWithStatus> for ProfileWithS
             agent_type: p.agent_type,
             package_name: p.package_name,
             avatar_url: p.avatar_url,
+            native_triggers,
             installed: p.installed,
             created_at: p.created_at,
         }
@@ -471,7 +502,7 @@ pub async fn uninstall_agent(Path(id): Path<String>) -> axum::response::Response
     }
 }
 
-/// Get cached models for an agent profile
+/// Get the model catalog for an agent profile
 ///
 /// GET /api/v1/agent-profiles/:name/models
 #[utoipa::path(
@@ -487,17 +518,14 @@ pub async fn uninstall_agent(Path(id): Path<String>) -> axum::response::Response
 )]
 pub async fn get_profile_models(Path(name): Path<String>) -> axum::response::Response {
     match profile_service::get_profile_models_by_name(&name).await {
-        Ok(Some(models)) => (StatusCode::OK, Json(models)).into_response(),
-        Ok(None) => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "models": [], "current": null, "updated_at": null })),
-        )
-            .into_response(),
+        Ok(models) => (StatusCode::OK, Json(models)).into_response(),
         Err(e) => crate::http_error::internal(e, "get_profile_models").into_response(),
     }
 }
 
-/// Trigger model detection for an agent profile via ACP config_options
+/// Trigger model detection for an agent profile via ACP config_options.
+///
+/// A `/model` command is used only when the agent explicitly declared it.
 ///
 /// POST /api/v1/agent-profiles/:name/models/refresh
 ///
@@ -551,58 +579,191 @@ pub async fn refresh_profile_models(Path(name): Path<String>) -> axum::response:
     };
 
     // 2. Find a running agent for this profile
-    let running_agent_id = match find_running_agent_for_profile(&profile.name).await {
-        Ok(agent_id) => agent_id,
-        Err(_e) => {
-            return (
-                StatusCode::BAD_REQUEST,
+    let running_agent_id =
+        match find_running_agent_for_profile(&profile.name).await {
+            Ok(agent_id) => agent_id,
+            Err(_e) => return (
+                StatusCode::OK,
                 Json(serde_json::json!({
-                    "error": "No running agent",
-                    "message": format!("No running agent found for profile '{}'. Please start an agent first before refreshing models.", profile.name),
-                    "hint": "Use the spawn agent API or UI to start an agent with this profile."
+                    "status": "no_agent",
+                    "source": "none",
+                    "models": [],
+                    "last_known_models": [],
+                    "current": null,
+                    "message": format!("No running agent found for profile '{}'.", profile.name),
                 })),
-            ).into_response()
-        }
-    };
-
-    // 3. Call get_agent_config_options on the running agent
-    let models_result =
-        match crate::services::agent_service::get_agent_config_options(&running_agent_id).await {
-            Ok(Some(opts)) => extract_models_from_config_options(&opts),
-            Ok(None) => None,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "get_agent_config_options failed during model refresh"
-                );
-                None
-            }
+            )
+                .into_response(),
         };
 
-    // 4. Extract models and save to DB (using profile name)
-    if let Some((models, current)) = models_result {
-        if let Err(e) =
-            profile_service::save_profile_models_by_name(&name, &models, current.as_deref()).await
+    // 3. Prefer the structured ACP model selector.
+    let mut models_result = None;
+    let mut acp_read_succeeded = false;
+    match crate::services::agent_service::get_agent_config_options(&running_agent_id).await {
+        Ok(Some(opts)) => {
+            acp_read_succeeded = true;
+            models_result = extract_models_from_config_options(&opts);
+        }
+        Ok(None) => {
+            tracing::warn!(agent_id = %running_agent_id, "Agent disappeared during model refresh");
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                agent_id = %running_agent_id,
+                "get_agent_config_options failed during model refresh"
+            );
+        }
+    }
+
+    // 4. Only fall back to text if the agent advertised the command. `/model`
+    // is a private command, not an ACP contract, so never send it blindly.
+    if models_result.is_none() && acp_read_succeeded {
+        let supports_model_command =
+            match crate::services::agent_service::get_agent_available_commands(&running_agent_id)
+                .await
+            {
+                Ok(Some(commands)) => commands.iter().any(|command| {
+                    let command_name = command.name.trim();
+                    command_name == "/model" || command_name.eq_ignore_ascii_case("model")
+                }),
+                Ok(None) => false,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        agent_id = %running_agent_id,
+                        "Failed to read available commands during model refresh"
+                    );
+                    false
+                }
+            };
+
+        if supports_model_command {
+            match crate::services::agent_service::execute_agent_command(
+                &running_agent_id,
+                "/model",
+                3,
+            )
+            .await
+            {
+                Ok(output) => {
+                    models_result = parse_model_output(&output).map(|parsed| {
+                        let models = parsed
+                            .get("models")
+                            .and_then(serde_json::Value::as_array)
+                            .map(|values| {
+                                values
+                                    .iter()
+                                    .filter_map(serde_json::Value::as_str)
+                                    .map(ToString::to_string)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        DetectedModels {
+                            models,
+                            current: parsed
+                                .get("current")
+                                .and_then(serde_json::Value::as_str)
+                                .map(ToString::to_string),
+                            option_id: None,
+                        }
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        agent_id = %running_agent_id,
+                        "Declared /model command failed during model refresh"
+                    );
+                }
+            }
+        }
+    }
+
+    // 5. Persist only definitive results. A missing backend/read error leaves
+    // the previous cache untouched, but the response still explains why.
+    if let Some(detection) = models_result {
+        if detection.models.is_empty() {
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "unsupported",
+                    "source": "slash_command",
+                    "models": [],
+                    "last_known_models": [],
+                    "current": detection.current,
+                    "message": "Declared /model command returned no parseable model list",
+                })),
+            )
+                .into_response();
+        }
+
+        if let Err(e) = profile_service::save_profile_models_by_name(
+            &name,
+            &detection.models,
+            detection.option_id.as_deref(),
+        )
+        .await
         {
             return crate::http_error::internal(e, "refresh_profile_models_save").into_response();
         }
         (
             StatusCode::OK,
             Json(serde_json::json!({
-                "status": "success",
-                "models": models,
-                "current": current,
+                "status": "available",
+                "source": detection
+                    .option_id
+                    .as_deref()
+                    .map(|_| "acp_config_options")
+                    .unwrap_or("slash_command"),
+                "models": detection.models,
+                "current": detection.current,
+            })),
+        )
+            .into_response()
+    } else if acp_read_succeeded {
+        if let Err(e) = profile_service::mark_profile_models_unavailable_by_name(&name).await {
+            return crate::http_error::internal(e, "refresh_profile_models_unsupported")
+                .into_response();
+        }
+        let catalog = match profile_service::get_profile_models_by_name(&name).await {
+            Ok(catalog) => catalog,
+            Err(e) => {
+                return crate::http_error::internal(e, "refresh_profile_models_read")
+                    .into_response()
+            }
+        };
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": catalog.status,
+                "source": catalog.source,
+                "models": catalog.models,
+                "last_known_models": catalog.last_known_models,
+                "current": catalog.current,
+                "verified_at": catalog.verified_at,
+                "message": "Agent did not expose a model selector",
             })),
         )
             .into_response()
     } else {
+        let previous = match profile_service::get_profile_models_by_name(&name).await {
+            Ok(catalog) => catalog,
+            Err(e) => {
+                return crate::http_error::internal(e, "refresh_profile_models_read")
+                    .into_response()
+            }
+        };
         (
             StatusCode::OK,
             Json(serde_json::json!({
-                "status": "success",
-                "models": [],
+                "status": "detection_failed",
+                "source": "none",
+                "models": previous.models,
+                "last_known_models": previous.last_known_models,
                 "current": null,
-                "message": "No models detected from agent",
+                "verified_at": previous.verified_at,
+                "message": "Could not read agent config options; previous cache was not changed",
             })),
         )
             .into_response()
@@ -677,6 +838,7 @@ mod tests {
             agent_type: "acp".to_string(),
             package_name: Some("@anthropic/claude".to_string()),
             avatar_url: None,
+            native_triggers: None,
             created_at: "2026-01-01T00:00:00Z".to_string(),
         };
         let json = serde_json::to_value(&resp).unwrap();
@@ -697,6 +859,7 @@ mod tests {
                     agent_type: "acp".to_string(),
                     package_name: None,
                     avatar_url: None,
+                    native_triggers: None,
                     created_at: "2026-01-01T00:00:00Z".to_string(),
                 },
                 ProfileResponse {
@@ -706,6 +869,7 @@ mod tests {
                     agent_type: "mcp".to_string(),
                     package_name: None,
                     avatar_url: None,
+                    native_triggers: None,
                     created_at: "2026-01-01T00:00:00Z".to_string(),
                 },
             ],

@@ -45,7 +45,6 @@ function inferCoreAgentId(value?: string | null) {
   const normalized = value?.toLowerCase() ?? ""
 
   if (normalized.includes("codex")) return "codex" as const
-  if (normalized.includes("cursor")) return "cursor" as const
   if (normalized.includes("opencode")) return "opencode" as const
   if (normalized.includes("claude")) return "claude-code" as const
 

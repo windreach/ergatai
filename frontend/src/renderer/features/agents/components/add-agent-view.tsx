@@ -11,7 +11,7 @@ export function AddAgentViewPage() {
       {/* Header */}
       <div className="flex items-center gap-3 border-b px-6 py-3">
         <div>
-          <h1 className="text-lg font-semibold">Add Agent</h1>
+          <h1 className="text-lg font-semibold">Manage Agents</h1>
           <p className="mt-0.5 text-xs text-muted-foreground">
             Manage installed coding agents and connect a custom runtime.
           </p>

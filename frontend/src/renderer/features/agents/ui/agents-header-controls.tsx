@@ -12,7 +12,7 @@ import { useResolvedHotkeyDisplay } from "../../../lib/hotkeys"
 
 interface AgentsHeaderControlsProps {
   isSidebarOpen: boolean
-  onToggleSidebar: () => void
+  onToggleSidebar?: () => void
   hasUnseenChanges?: boolean
   isConversationsSidebarOpen?: boolean
 }
@@ -26,7 +26,7 @@ export function AgentsHeaderControls({
   const toggleSidebarHotkey = useResolvedHotkeyDisplay("toggle-sidebar")
 
   // Only show open button when both sidebars are closed
-  if (isSidebarOpen || isConversationsSidebarOpen) return null
+  if (!onToggleSidebar || isSidebarOpen || isConversationsSidebarOpen) return null
 
   return (
     <Tooltip delayDuration={500}>

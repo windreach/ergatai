@@ -42,8 +42,8 @@ async function navigateToAddAgent(page) {
   console.log('\n=== 导航到 Add Agent 页面 ===');
 
   // 点击左侧边栏的 "Add Agent" 按钮
-  await page.waitForSelector('button:has-text("Add Agent")', { timeout: 10000 });
-  await page.click('button:has-text("Add Agent")');
+  await page.waitForSelector('button:has-text("Manage Agents")', { timeout: 10000 });
+  await page.click('button:has-text("Manage Agents")');
 
   // 等待页面加载
   await page.waitForTimeout(2000);

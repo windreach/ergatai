@@ -93,7 +93,7 @@ export const ALL_SHORTCUT_ACTIONS: ShortcutAction[] = [
   },
   {
     id: "new-agent-split",
-    label: "New agent in split view",
+    label: "Add agent in split view",
     category: "agents",
     defaultKeys: ["cmd", "shift", "T"],
   },

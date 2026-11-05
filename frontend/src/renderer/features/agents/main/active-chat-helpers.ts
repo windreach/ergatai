@@ -1,11 +1,11 @@
 "use client"
 
 import * as React from "react"
+import { TerminalSquare as TerminalSquareIcon } from "lucide-react"
 import { clearConversationRuntimeCaches } from "../stores/conversation-runtime-cleanup"
 import type { MessagePart } from "../stores/message-store"
 import {
   ClaudeCodeIcon,
-  CursorIcon,
 } from "../../../components/ui/icons"
 import { CodexIcon } from "./active-chat-ui"
 
@@ -89,8 +89,8 @@ export const CHAT_LAYOUT = {
 // Agent providers
 export const agents = [
   { id: "claude-code", name: "Claude Code", hasModels: true },
-  { id: "cursor", name: "Cursor CLI", disabled: true },
-  { id: "codex", name: "OpenAI Codex", disabled: true },
+  { id: "codex", name: "Codex" },
+  { id: "opencode", name: "OpenCode" },
 ]
 
 // Helper function to get agent icon
@@ -98,10 +98,10 @@ export const getAgentIcon = (agentId: string, className?: string) => {
   switch (agentId) {
     case "claude-code":
       return React.createElement(ClaudeCodeIcon, { className })
-    case "cursor":
-      return React.createElement(CursorIcon, { className })
     case "codex":
       return React.createElement(CodexIcon, { className })
+    case "opencode":
+      return React.createElement(TerminalSquareIcon, { className })
     default:
       return null
   }

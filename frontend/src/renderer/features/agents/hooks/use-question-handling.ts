@@ -8,6 +8,7 @@ import {
 import { useSessionState } from "../../conversation"
 import { trpcClient } from "../../../lib/trpc"
 import { getRuntimeSessionStore } from "../../conversation"
+import { useMessageTokenData } from "./use-message-token-data"
 
 interface UseQuestionHandlingOptions {
   conversationId: string
@@ -86,73 +87,7 @@ export function useQuestionHandling({
   // Prefer the latest assistant metadata that actually includes token/context fields.
   // This keeps the indicator stable while a new assistant message is streaming.
   // Also includes real-time ACP context usage from session store (SSE-driven).
-  const messageTokenData = useMemo(() => {
-    const lastAssistantWithTokenData = messages.findLast((msg) => {
-      if (msg.role !== "assistant" || !msg.metadata) return false
-      const metadata = msg.metadata as {
-        inputTokens?: number
-        outputTokens?: number
-        totalTokens?: number
-        cacheReadInputTokens?: number
-        cacheCreationInputTokens?: number
-        modelContextWindow?: number
-      }
-
-      return (
-        metadata.inputTokens !== undefined ||
-        metadata.outputTokens !== undefined ||
-        metadata.totalTokens !== undefined ||
-        metadata.cacheReadInputTokens !== undefined ||
-        metadata.cacheCreationInputTokens !== undefined ||
-        metadata.modelContextWindow !== undefined
-      )
-    })
-
-    const metadata = lastAssistantWithTokenData?.metadata as
-      | {
-          inputTokens?: number
-          outputTokens?: number
-          totalTokens?: number
-          totalCostUsd?: number
-          cacheReadInputTokens?: number
-          cacheCreationInputTokens?: number
-          modelContextWindow?: number
-        }
-      | undefined
-
-    const cacheReadInputTokens = metadata?.cacheReadInputTokens ?? 0
-    const cacheCreationInputTokens = metadata?.cacheCreationInputTokens ?? 0
-    const codexInputTokensFromTotal =
-      metadata?.totalTokens !== undefined
-        ? Math.max(0, metadata.totalTokens - (metadata?.outputTokens ?? 0))
-        : undefined
-
-    const totalInputTokens =
-      provider === "codex"
-        ? (codexInputTokensFromTotal ?? metadata?.inputTokens ?? 0)
-        : (metadata?.inputTokens ?? 0) +
-          cacheReadInputTokens +
-          cacheCreationInputTokens
-    const totalOutputTokens = metadata?.outputTokens ?? 0
-    const totalCostUsd = metadata?.totalCostUsd ?? 0
-    const contextWindow = metadata?.modelContextWindow
-
-    // Keep this tied to rendered messages for memo comparator stability.
-    const messageCount = messages.length
-
-    // Read real-time ACP context usage from session state (SSE-driven)
-    const contextUsed = sessionState?.contextUsed
-    const sessionContextWindow = sessionState?.contextWindow
-
-    return {
-      totalInputTokens,
-      totalOutputTokens,
-      totalCostUsd,
-      messageCount,
-      contextWindow: sessionContextWindow || contextWindow,
-      contextUsed,
-    }
-  }, [messages, provider, sessionState])
+  const messageTokenData = useMessageTokenData(messages, provider, sessionState)
 
   // Track previous streaming state to detect stream stop
   const prevIsStreamingRef = useRef(isStreaming)

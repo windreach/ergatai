@@ -102,6 +102,17 @@ export const agentsRouter = router({
       return { success: true }
     }),
 
+  /** Permanently delete a chat runtime agent, its binding and conversation data */
+  deleteChatAgent: publicProcedure
+    .input(z.object({ chatId: chatIdSchema, agentId: agentIdSchema }))
+    .mutation(async ({ input }) => {
+      await ergataiFetch(
+        `/api/v1/chats/${encodeURIComponent(input.chatId)}/agents/${encodeURIComponent(input.agentId)}`,
+        { method: "DELETE" },
+      )
+      return { success: true }
+    }),
+
   /** Send a message to an agent */
   sendMessage: publicProcedure
     .input(
@@ -558,12 +569,24 @@ export const agentsRouter = router({
     .query(async ({ input }) => {
       try {
         return await ergataiFetch<{
+          status: "available" | "unsupported" | "not_detected"
+          source: "acp_config_options" | "none"
           models: string[]
+          last_known_models?: string[]
+          option_id?: string | null
+          verified_at?: number | null
           current: string | null
-          updated_at: number | null
         }>(`/api/v1/agent-profiles/${encodeURIComponent(input.profileName)}/models`)
       } catch {
-        return { models: [], current: null, updated_at: null }
+        return {
+          status: "not_detected",
+          source: "none",
+          models: [],
+          last_known_models: [],
+          option_id: null,
+          verified_at: null,
+          current: null,
+        }
       }
     }),
 
@@ -572,8 +595,13 @@ export const agentsRouter = router({
     .input(z.object({ profileName: z.string() }))
     .mutation(async ({ input }) => {
       return ergataiFetch<{
-        status: string
+        status:
+          | "available"
+          | "unsupported"
+          | "detection_failed"
+          | "no_agent"
         models: string[]
+        last_known_models?: string[]
         current: string | null
       }>(`/api/v1/agent-profiles/${encodeURIComponent(input.profileName)}/models/refresh`, {
         method: "POST",

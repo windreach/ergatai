@@ -228,7 +228,7 @@ async function spawnNewAgent(
  */
 export async function getOrCreateActiveAgent(
   chatId: string,
-  command: string = "claude-code",
+  command: string = "claude",
   conversationId?: string
 ): Promise<string> {
   // Use conversationId as the lock key to prevent duplicate agents per conversation

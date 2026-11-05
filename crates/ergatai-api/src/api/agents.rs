@@ -408,6 +408,8 @@ pub struct AgentInfoResponse {
     /// Configuration options reported by the agent (includes modes like auto-approval, plan mode).
     /// `None` if agent hasn't reported any config options yet.
     pub config_options: Option<Vec<ConfigOptionInfo>>,
+    /// The model currently selected by this agent session, if exposed via ACP.
+    pub current_model: Option<String>,
     /// Agent profile name (e.g., "general-purpose", "explore", "plan").
     pub profile: Option<String>,
     /// Agent capabilities (tools this agent provides).
@@ -417,6 +419,19 @@ pub struct AgentInfoResponse {
     /// State transition history (audit trail).
     #[schema(value_type = Vec<Object>)]
     pub state_history: Vec<ergatai_runtime::agent_record::StateTransition>,
+}
+
+/// A model selector successfully read from ACP session config options.
+///
+/// `current` is a runtime observation and is intentionally not written to the
+/// profile-level model cache.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DetectedModels {
+    pub models: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub option_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -454,10 +469,13 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
         .map(|a| {
             let snapshot = snapshots.get(&a.agent_id);
 
-            let config_options = snapshot
+            let (config_options, current_model) = snapshot
                 .and_then(|s| s.config_options.as_ref())
                 .map(|opts| {
-                    opts.iter()
+                    let runtime_current = extract_models_from_config_options(opts)
+                        .and_then(|detection| detection.current);
+                    let values = opts
+                        .iter()
                         .map(|o| {
                             let category = o.category.clone().map(|c| format!("{:?}", c));
                             let description = o.description.clone();
@@ -470,8 +488,10 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
                                 kind: kind_json,
                             }
                         })
-                        .collect()
-                });
+                        .collect();
+                    (Some(values), runtime_current)
+                })
+                .unwrap_or((None, None));
 
             AgentInfoResponse {
                 agent_id: a.agent_id,
@@ -490,6 +510,7 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
                 stop_reason: snapshot.and_then(|s| s.stop_reason.clone()),
                 continuation_count: snapshot.map_or(0, |s| s.continuation_count),
                 config_options,
+                current_model,
                 profile: a.profile,
                 capabilities: a.capabilities,
                 state_changed_at: a.state_changed_at,
@@ -2693,7 +2714,7 @@ pub async fn delete_agent_session(
 ///
 /// Currently supports `/model` — extracts model names and current model from
 /// the agent's text response.
-fn parse_command_output(command: &str, output: &str) -> Option<serde_json::Value> {
+pub(crate) fn parse_command_output(command: &str, output: &str) -> Option<serde_json::Value> {
     if command == "/model" {
         parse_model_output(output)
     } else {
@@ -2705,41 +2726,69 @@ fn parse_command_output(command: &str, output: &str) -> Option<serde_json::Value
 ///
 /// Parses "Current model: XXX" for the current model.
 /// Also parses "Available: A, B, C, ..." for the full list of available models.
-fn parse_model_output(output: &str) -> Option<serde_json::Value> {
+pub(crate) fn parse_model_output(output: &str) -> Option<serde_json::Value> {
     let mut models = Vec::new();
     let mut current_model = None;
+    let mut in_available_section = false;
 
     for line in output.lines() {
         let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
 
-        // Parse "Current model: XXX" or "Current model: `XXX`"
-        if trimmed.starts_with("Current model:") {
-            if let Some(model) = trimmed.strip_prefix("Current model:").map(|s| s.trim()) {
-                let clean_model = model.trim_matches('`');
-                if !clean_model.is_empty() {
+        // Parse "Current model: XXX", "Current: XXX", or "Model: XXX". The
+        // command is private to each agent, but these are the stable textual
+        // forms already observed from ACP agents.
+        let lower = trimmed.to_lowercase();
+        if let Some((label, value)) = trimmed.split_once(':') {
+            let normalized_label = label.trim().to_lowercase();
+            let is_current_label = normalized_label == "current model"
+                || normalized_label == "current"
+                || normalized_label == "model";
+            if is_current_label {
+                let clean_model = value.trim().trim_matches('`').trim();
+                if !clean_model.is_empty()
+                    && !clean_model.eq_ignore_ascii_case("default")
+                    && !clean_model.starts_with("available")
+                {
                     current_model = Some(clean_model.to_string());
                     if !models.contains(&clean_model.to_string()) {
                         models.push(clean_model.to_string());
                     }
+                    continue;
                 }
             }
         }
 
-        // Parse "Available: A, B, C, ..."
-        if trimmed.starts_with("Available:") {
-            if let Some(available) = trimmed.strip_prefix("Available:").map(|s| s.trim()) {
-                // Remove trailing period if present
-                let available = available.strip_suffix('.').unwrap_or(available);
+        // Parse "Available: A, B, C" and the equivalent bullet form:
+        // "Available models:" followed by "- A" / "* B" / "1. C".
+        if lower.starts_with("available") && lower.contains(':') {
+            in_available_section = true;
+            if let Some((_label, available)) = trimmed.split_once(':') {
+                let available = available.trim().trim_end_matches('.');
                 for part in available.split(',') {
-                    let name = part.trim();
-                    if !name.is_empty()
-                        && !name.starts_with("or ")
-                        && name != "default"
-                        && !models.contains(&name.to_string())
-                    {
-                        models.push(name.to_string());
+                    let name = clean_model_list_item(part);
+                    if !name.is_empty() && !models.contains(&name) {
+                        models.push(name);
                     }
                 }
+            }
+            continue;
+        }
+
+        if in_available_section {
+            if trimmed.starts_with('-')
+                || trimmed.starts_with('*')
+                || trimmed.chars().next().is_some_and(|c| c.is_ascii_digit())
+            {
+                let name = clean_model_list_item(trimmed);
+                if !name.is_empty() && !models.contains(&name) {
+                    models.push(name);
+                }
+            } else if !trimmed.starts_with(' ') && !trimmed.starts_with('\t') {
+                // A non-indented non-bullet line ends the list section.
+                in_available_section = false;
             }
         }
     }
@@ -2752,6 +2801,28 @@ fn parse_model_output(output: &str) -> Option<serde_json::Value> {
         "models": models,
         "current": current_model,
     }))
+}
+
+fn clean_model_list_item(value: &str) -> String {
+    let value = value.trim();
+    let value = value
+        .trim_start_matches(['-', '*', '•'])
+        .trim()
+        .trim_matches('`')
+        .trim();
+    let value = value
+        .split_once('.')
+        .filter(|(prefix, _)| {
+            !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) && prefix.len() <= 3
+        })
+        .map(|(_, remainder)| remainder.trim())
+        .unwrap_or(value);
+    value
+        .trim_end_matches('.')
+        .trim()
+        .trim_matches('`')
+        .trim()
+        .to_string()
 }
 
 /// Get configuration options reported by the agent.
@@ -2988,6 +3059,7 @@ pub async fn prompt_agent(
     let message = body.message;
 
     // Resolve the agent ID to a runtime ID (handles profile names, ergatai_agent_id, etc.)
+    let mut resumed_from_agent_id: Option<String> = None;
     let runtime_id = match crate::services::agent_service::resolve_to_runtime_id(&id).await {
         Some(rid) => rid,
         None => {
@@ -3012,6 +3084,7 @@ pub async fn prompt_agent(
                         new_agent_id = %resumed_id,
                         "Auto-resumed suspended agent"
                     );
+                    resumed_from_agent_id = Some(id.clone());
                     resumed_id
                 }
                 None => {
@@ -3477,11 +3550,13 @@ pub async fn prompt_agent(
             }
         }
 
-        (
-            StatusCode::ACCEPTED,
-            Json(serde_json::json!({ "status": "queued", "prompt_id": prompt_id })),
-        )
-            .into_response()
+        let mut response = serde_json::json!({ "status": "queued", "prompt_id": prompt_id });
+        if let Some(old_agent_id) = resumed_from_agent_id {
+            response["old_agent_id"] = serde_json::Value::String(old_agent_id);
+            response["new_agent_id"] = serde_json::Value::String(runtime_id.clone());
+        }
+
+        (StatusCode::ACCEPTED, Json(response)).into_response()
     } else {
         // No conversation_id — auto-create one for persistence
         let agent_info = crate::services::agent_service::get_agent_info(&runtime_id).await;
@@ -3939,6 +4014,10 @@ pub struct AgentOutputStreamQuery {
     /// per conversation so the live turn is never missed.
     #[serde(default)]
     pub prompt_id: Option<String>,
+    /// Conversation used to resolve a stale/suspended agent ID to the current
+    /// runtime agent before attaching the output stream.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
 }
 
 /// GET /api/v1/agents/{agent_id}/stream — SSE stream of raw agent output.
@@ -3954,6 +4033,7 @@ pub struct AgentOutputStreamQuery {
     params(
         ("id" = String, Path, description = "Agent ID"),
         ("prompt_id" = Option<String>, Query, description = "Prompt ID that started this turn"),
+        ("conversation_id" = Option<String>, Query, description = "Conversation used to resolve a resumed agent ID"),
     ),
     responses(
         (status = 200, description = "Raw AgentOutputEvent SSE stream"),
@@ -3963,8 +4043,8 @@ pub struct AgentOutputStreamQuery {
 )]
 pub async fn stream_agent_output(
     State(_state): State<AppState>,
-    Path(agent_id): Path<String>,
-    Query(_params): Query<AgentOutputStreamQuery>,
+    Path(requested_agent_id): Path<String>,
+    Query(params): Query<AgentOutputStreamQuery>,
 ) -> Response {
     use axum::response::sse::{Event, KeepAlive, Sse};
     use futures::stream::{self, Stream, StreamExt};
@@ -3972,11 +4052,35 @@ pub async fn stream_agent_output(
     use std::pin::Pin;
 
     let runtime = crate::context::get_app_context().agent_runtime.clone();
-    let Some(agent) = runtime.get_agent(&agent_id).await else {
+    let mut agent_id = requested_agent_id.clone();
+    let mut agent = runtime.get_agent(&agent_id).await;
+    if agent.is_none() {
+        // A resumed agent gets a new runtime ID. Older renderer instances and
+        // durable bindings may still address the suspended ID, so resolve it
+        // back to the live agent for the same conversation before failing.
+        if let Some(resolved_agent_id) =
+            crate::services::agent_service::try_auto_resume_suspended_agent(
+                &runtime,
+                &agent_id,
+                params.conversation_id.as_deref(),
+            )
+            .await
+        {
+            tracing::info!(
+                requested_agent_id = %requested_agent_id,
+                resolved_agent_id = %resolved_agent_id,
+                "Resolved stale or suspended agent ID for output stream"
+            );
+            agent_id = resolved_agent_id.clone();
+            agent = runtime.get_agent(&resolved_agent_id).await;
+        }
+    }
+
+    let Some(agent) = agent else {
         return (
             StatusCode::NOT_FOUND,
             Json(crate::api::ApiError {
-                error: format!("Agent {agent_id} not found"),
+                error: format!("Agent {requested_agent_id} not found"),
             }),
         )
             .into_response();
@@ -4269,11 +4373,11 @@ pub(crate) fn spawn_model_detection(agent_id: String, profile_name: String) {
         let mut current_opts = opts;
         loop {
             match extract_models_from_config_options(&current_opts) {
-                Some((models, current)) => {
+                Some(detection) => {
                     if let Err(e) = crate::services::profile_service::save_profile_models_by_name(
                         &profile_name,
-                        &models,
-                        current.as_deref(),
+                        &detection.models,
+                        detection.option_id.as_deref(),
                     )
                     .await
                     {
@@ -4285,7 +4389,7 @@ pub(crate) fn spawn_model_detection(agent_id: String, profile_name: String) {
                     } else {
                         tracing::info!(
                             profile = %profile_name,
-                            models_count = models.len(),
+                            models_count = detection.models.len(),
                             elapsed_ms = start.elapsed().as_millis(),
                             "Models detected and saved"
                         );
@@ -4299,6 +4403,21 @@ pub(crate) fn spawn_model_detection(agent_id: String, profile_name: String) {
                             elapsed_ms = start.elapsed().as_millis(),
                             "Model detection: no model category found after 30s backoff timeout"
                         );
+                        // Config options were successfully read, but never contained
+                        // a model selector. Treat that as definitive for this agent
+                        // so the UI does not keep displaying an old catalog as current.
+                        if let Err(e) =
+                            crate::services::profile_service::mark_profile_models_unavailable_by_name(
+                                &profile_name,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                profile = %profile_name,
+                                "Failed to mark models unsupported"
+                            );
+                        }
                         return;
                     }
                     tokio::time::sleep(backoff_delay).await;
@@ -4321,15 +4440,38 @@ pub(crate) fn spawn_model_detection(agent_id: String, profile_name: String) {
 /// - Grouped: `[{"group": "anthropic", "name": "Anthropic", "options": [{"value": "opus", ...}]}, ...]`
 pub(crate) fn extract_models_from_config_options(
     opts: &[agent_client_protocol::schema::v1::SessionConfigOption],
-) -> Option<(Vec<String>, Option<String>)> {
-    // Find the config option with category "Model"
-    let model_option = opts.iter().find(|o| {
-        o.category
-            .as_ref()
-            .map(|c| format!("{:?}", c).to_lowercase())
-            .map(|c| c == "model")
-            .unwrap_or(false)
-    })?;
+) -> Option<DetectedModels> {
+    use agent_client_protocol::schema::v1::SessionConfigOptionCategory;
+
+    fn selector_identity(value: &str) -> String {
+        value
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_lowercase()
+    }
+
+    // `category` is optional UX metadata in ACP. Prefer it, but a compliant
+    // agent can still identify the selector with `id = "model"` or `name`.
+    let model_option = opts
+        .iter()
+        .find(|o| matches!(o.category, Some(SessionConfigOptionCategory::Model)))
+        .or_else(|| {
+            opts.iter().find(|o| {
+                if matches!(
+                    o.category,
+                    Some(SessionConfigOptionCategory::Mode)
+                        | Some(SessionConfigOptionCategory::ModelConfig)
+                        | Some(SessionConfigOptionCategory::ThoughtLevel)
+                ) {
+                    return false;
+                }
+                let id = selector_identity(&o.id.to_string());
+                let name = selector_identity(&o.name);
+                matches!(id.as_str(), "model" | "modelselector")
+                    || matches!(name.as_str(), "model" | "modelselector")
+            })
+        })?;
 
     // The kind field contains the select options
     let kind_json = serde_json::to_value(&model_option.kind).ok()?;
@@ -4376,7 +4518,11 @@ pub(crate) fn extract_models_from_config_options(
     if models.is_empty() {
         None
     } else {
-        Some((models, current))
+        Some(DetectedModels {
+            models,
+            current,
+            option_id: Some(model_option.id.to_string()),
+        })
     }
 }
 
@@ -4500,6 +4646,7 @@ mod tests {
             stop_reason: Some("end_turn".to_string()),
             continuation_count: 2,
             config_options: None,
+            current_model: None,
             profile: Some("general-purpose".to_string()),
             capabilities: vec!["code_edit".to_string(), "search".to_string()],
             state_changed_at: "2026-01-01T00:00:00Z".to_string(),
@@ -4574,6 +4721,7 @@ mod tests {
             stop_reason: Some("end_turn".to_string()),
             continuation_count: 5,
             config_options: Some(vec![]),
+            current_model: None,
             profile: Some("profile-1".to_string()),
             capabilities: vec!["cap1".to_string(), "cap2".to_string()],
             state_changed_at: "2026-01-01T00:00:00Z".to_string(),
@@ -4606,6 +4754,7 @@ mod tests {
             stop_reason: None,
             continuation_count: 0,
             config_options: None,
+            current_model: None,
             profile: None,
             capabilities: vec![],
             state_changed_at: "2026-01-01T00:00:00Z".to_string(),
@@ -4667,9 +4816,10 @@ mod tests {
             ]
         });
         let opts = vec![make_model_config_option(kind)];
-        let (models, current) = extract_models_from_config_options(&opts).unwrap();
-        assert_eq!(models, vec!["opus", "sonnet", "haiku"]);
-        assert_eq!(current.as_deref(), Some("sonnet"));
+        let detection = extract_models_from_config_options(&opts).unwrap();
+        assert_eq!(detection.models, vec!["opus", "sonnet", "haiku"]);
+        assert_eq!(detection.current.as_deref(), Some("sonnet"));
+        assert_eq!(detection.option_id.as_deref(), Some("model-selector"));
     }
 
     #[test]
@@ -4696,12 +4846,12 @@ mod tests {
             ]
         });
         let opts = vec![make_model_config_option(kind)];
-        let (models, current) = extract_models_from_config_options(&opts).unwrap();
+        let detection = extract_models_from_config_options(&opts).unwrap();
         assert_eq!(
-            models,
+            detection.models,
             vec!["anthropic/opus", "anthropic/sonnet", "openai/gpt-5"]
         );
-        assert_eq!(current.as_deref(), Some("anthropic/sonnet"));
+        assert_eq!(detection.current.as_deref(), Some("anthropic/sonnet"));
     }
 
     #[test]
@@ -4767,9 +4917,9 @@ mod tests {
             ]
         });
         let opts = vec![make_model_config_option(kind)];
-        let (models, current) = extract_models_from_config_options(&opts).unwrap();
-        assert_eq!(models, vec!["model-1", "model-2"]);
-        assert_eq!(current.as_deref(), Some("model-1"));
+        let detection = extract_models_from_config_options(&opts).unwrap();
+        assert_eq!(detection.models, vec!["model-1", "model-2"]);
+        assert_eq!(detection.current.as_deref(), Some("model-1"));
     }
 
     #[test]
@@ -4783,6 +4933,40 @@ mod tests {
             "type": "select",
             "currentValue": "agent",
             "options": [{"value": "agent", "name": "Agent"}],
+        });
+        let opts: Vec<SessionConfigOption> = vec![serde_json::from_value(raw).unwrap()];
+        assert!(extract_models_from_config_options(&opts).is_none());
+    }
+
+    #[test]
+    fn test_extract_models_without_category() {
+        use agent_client_protocol::schema::v1::SessionConfigOption;
+        let raw = json!({
+            "id": "model",
+            "name": "Model",
+            "type": "select",
+            "currentValue": "model-1",
+            "options": [
+                {"value": "model-1", "name": "Model One"},
+                {"value": "model-2", "name": "Model Two"},
+            ],
+        });
+        let opts: Vec<SessionConfigOption> = vec![serde_json::from_value(raw).unwrap()];
+        let detection = extract_models_from_config_options(&opts).unwrap();
+        assert_eq!(detection.models, vec!["model-1", "model-2"]);
+        assert_eq!(detection.option_id.as_deref(), Some("model"));
+    }
+
+    #[test]
+    fn test_extract_models_does_not_mistake_model_config() {
+        use agent_client_protocol::schema::v1::SessionConfigOption;
+        let raw = json!({
+            "id": "thinking",
+            "name": "Thinking",
+            "category": "model_config",
+            "type": "select",
+            "currentValue": "high",
+            "options": [{"value": "high", "name": "High"}],
         });
         let opts: Vec<SessionConfigOption> = vec![serde_json::from_value(raw).unwrap()];
         assert!(extract_models_from_config_options(&opts).is_none());
@@ -4807,5 +4991,29 @@ mod tests {
         });
         let opts = vec![make_model_config_option(kind)];
         assert!(extract_models_from_config_options(&opts).is_none());
+    }
+
+    #[test]
+    fn test_parse_model_output_comma_list() {
+        let parsed =
+            parse_model_output("Current model: `model-a`\nAvailable: model-a, model-b, model-c.\n")
+                .unwrap();
+        assert_eq!(parsed["current"], "model-a");
+        assert_eq!(parsed["models"], json!(["model-a", "model-b", "model-c"]));
+    }
+
+    #[test]
+    fn test_parse_model_output_bulleted_available_models() {
+        let parsed = parse_model_output(
+            "Model: model-a\n\nAvailable models:\n- model-a\n* model-b\n1. model-c\n",
+        )
+        .unwrap();
+        assert_eq!(parsed["current"], "model-a");
+        assert_eq!(parsed["models"], json!(["model-a", "model-b", "model-c"]));
+    }
+
+    #[test]
+    fn test_parse_model_output_ignores_prose() {
+        assert!(parse_model_output("No model selector available.").is_none());
     }
 }

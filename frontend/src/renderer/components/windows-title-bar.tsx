@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Minus, Square, X } from "lucide-react"
+import { Minus, Square, X, ChevronLeft, ChevronRight, PanelLeft } from "lucide-react"
 import { Button } from "./ui/button"
 
 /**
@@ -10,16 +10,40 @@ import { Button } from "./ui/button"
  *
  * Only shown on Windows when using frameless window (useNativeFrame = false)
  */
-export function WindowsTitleBar() {
+interface WindowsTitleBarProps {
+  onToggleSidebar?: () => void
+  sidebarOpen?: boolean
+  onBack?: () => void
+  onForward?: () => void
+  canBack?: boolean
+  canForward?: boolean
+  pageTitle?: string
+}
+
+export function WindowsTitleBar({
+  onToggleSidebar,
+  sidebarOpen,
+  onBack,
+  onForward,
+  canBack = false,
+  canForward = false,
+  pageTitle,
+}: WindowsTitleBarProps = {}) {
   const [isMaximized, setIsMaximized] = useState(false)
   const [hasNativeFrame, setHasNativeFrame] = useState(false)
 
   const isWindows =
     typeof window !== "undefined" && window.desktopApi?.platform === "win32"
+  const isLinux =
+    typeof window !== "undefined" && window.desktopApi?.platform === "linux"
+  const isMac =
+    typeof window !== "undefined" && window.desktopApi?.platform === "darwin"
+  const isCustomTitleBar = isWindows || isLinux || isMac
+  const showWindowControls = isWindows || isLinux
 
   // Check actual window frame state
   useEffect(() => {
-    if (!isWindows || !window.desktopApi?.getWindowFrameState) return
+    if (!isCustomTitleBar || !window.desktopApi?.getWindowFrameState) return
 
     const checkFrameState = async () => {
       try {
@@ -31,11 +55,11 @@ export function WindowsTitleBar() {
     }
 
     checkFrameState()
-  }, [isWindows])
+  }, [isCustomTitleBar])
 
   // Check window maximized state
   useEffect(() => {
-    if (!isWindows || !window.desktopApi?.windowIsMaximized) return
+    if (!isCustomTitleBar || !window.desktopApi?.windowIsMaximized) return
 
     const checkMaximized = async () => {
       const maximized = await window.desktopApi.windowIsMaximized()
@@ -47,10 +71,10 @@ export function WindowsTitleBar() {
     const handleFocus = () => checkMaximized()
     window.addEventListener("focus", handleFocus)
     return () => window.removeEventListener("focus", handleFocus)
-  }, [isWindows])
+  }, [isCustomTitleBar])
 
   // Don't render on non-Windows or when using native frame
-  if (!isWindows || hasNativeFrame) return null
+  if (!isCustomTitleBar || hasNativeFrame) return null
 
   const handleMinimize = async () => {
     await window.desktopApi?.windowMinimize()
@@ -68,20 +92,66 @@ export function WindowsTitleBar() {
     await window.desktopApi?.windowClose()
   }
 
+  // macOS traffic light buttons width + padding
+  const MAC_TRAFFIC_LIGHTS_WIDTH = 70
+
   return (
     <div
-      className="h-8 flex-shrink-0 flex items-center justify-between bg-background border-b border-border/50"
+      className="h-8 flex-shrink-0 flex items-center justify-between bg-tl-background"
       style={{
         // @ts-expect-error - WebKit-specific property for Electron window dragging
         WebkitAppRegion: "drag",
       }}
     >
-      {/* Left side - App title (draggable) */}
-      <div className="flex items-center gap-2 px-3 h-full">
-        <span className="text-xs font-medium text-foreground/70">Ergatai</span>
+      {/* Left side - navigation + collapse (draggable) */}
+      <div
+        className="flex items-center gap-1 px-2 h-full"
+        style={{
+          // @ts-expect-error - WebKit-specific property for Electron window dragging
+          WebkitAppRegion: "no-drag",
+          paddingLeft: isMac ? MAC_TRAFFIC_LIGHTS_WIDTH : undefined,
+        }}
+      >
+        {onToggleSidebar && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onToggleSidebar}
+            className="h-6 w-6 rounded-md hover:bg-foreground/10"
+            aria-label="Toggle sidebar"
+          >
+            <PanelLeft className="h-4 w-4" />
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onBack}
+          disabled={!canBack}
+          className="h-6 w-6 rounded-md hover:bg-foreground/10 disabled:opacity-40"
+          aria-label="Back"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onForward}
+          disabled={!canForward}
+          className="h-6 w-6 rounded-md hover:bg-foreground/10 disabled:opacity-40"
+          aria-label="Forward"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </Button>
+        {pageTitle && (
+          <span className="ml-2 text-xs font-medium text-foreground/70 truncate max-w-[240px]">
+            {pageTitle}
+          </span>
+        )}
       </div>
 
       {/* Right side - Window controls (non-draggable) */}
+      {showWindowControls && (
       <div
         className="flex items-center h-full"
         style={{
@@ -117,6 +187,7 @@ export function WindowsTitleBar() {
           <X className="h-4 w-4" />
         </Button>
       </div>
+      )}
     </div>
   )
 }

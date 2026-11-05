@@ -18,12 +18,17 @@ import { ChatMessagesRenderer } from "../../agents"
 
 import { useAgentRuntimeAgents } from "../../agents/public"
 import { cn } from "@/lib/utils"
-import { trpcClient } from "@/lib/trpc"
+import { trpc, trpcClient } from "@/lib/trpc"
+import { api } from "@/lib/api-adapter"
 import { useStreamingStatusStore } from "../../agents"
 import { syncMessagesWithStatusAtom } from "../../agents"
 import { clearConversationRuntimeCaches } from "../../agents"
 import { useChatInstance } from "../../agents"
 import { useMainChatInvocation } from "@/features/agents"
+import { useChangedFilesTracking } from "../../agents/hooks/use-changed-files-tracking"
+import { useMessageTokenData } from "../../agents/hooks/use-message-token-data"
+import { PermissionApprovalPanel } from "@/components/dialogs/permission-approval-dialog"
+import { useActiveChatConversationMeta } from "../../agents/main/use-active-chat-conversation-meta"
 import { clearLoading, loadingConversationsAtom, setLoading } from "../../agents"
 
 interface SideChatProps {
@@ -31,6 +36,10 @@ interface SideChatProps {
   chatId: string
   agentId?: string | null
   isActive?: boolean
+  projectPath?: string | null
+  repository?: string
+  sandboxId?: string
+  teamId?: string
   /** True while the conversation snapshot is still loading. */
   isLoadingMessages?: boolean
   /** Live events from the backend runtime cache, used when attaching mid-turn. */
@@ -63,6 +72,10 @@ export function SideChat({
   externalMessages = [],
   runtimeStatus,
   runtimeConnectionStatus,
+  projectPath,
+  repository,
+  sandboxId,
+  teamId,
 }: SideChatProps) {
   const backendConversationId = conversation.backendConversationId
   const runtimeConversationId = backendConversationId ?? conversation.id
@@ -76,11 +89,15 @@ export function SideChat({
   // Rollback state
   const [isRollingBack, setIsRollingBack] = useState(false)
 
+  // Permission approval state (mirrors main chat dock)
+  const [hasPermissionApproval, setHasPermissionApproval] = useState(false)
+
   // File upload
   const {
     images,
     files,
     handleAddAttachments,
+    handleAddFolder,
     removeImage,
     removeFile,
     clearAll,
@@ -128,6 +145,7 @@ export function SideChat({
     stopAgentId: runtimeAgentId,
     isActive,
     persistedMessages: (conversation.messages ?? []) as any,
+    persistedMessagesLoading: isLoadingMessages,
     runtimeMessages: externalMessages as any,
     existingChat: chatInstance as any,
     runtimeStatus,
@@ -145,11 +163,22 @@ export function SideChat({
   const setMessages = chatInstance.setMessages
   const stop = stopInvocation
 
+  const utils = api.useUtils()
+  const { handleModeChange } = useActiveChatConversationMeta({
+    conversationId: runtimeConversationId,
+    parentChatId: chatId,
+    utils,
+  })
+
   const isLocalStreaming =
     chatInstance.status === "streaming" || chatInstance.status === "submitted"
   const isBackendStreaming =
     runtimeStatus === "streaming" || sessionState?.isStreaming === true
   const isStreaming = isLocalStreaming || isBackendStreaming
+
+  const { changedFiles: sideChangedFiles, recomputeChangedFiles } =
+    useChangedFilesTracking(messages as any, runtimeConversationId, isStreaming, chatId)
+
   const status = isLocalStreaming
     ? chatInstance.status
     : isStreaming
@@ -236,7 +265,7 @@ export function SideChat({
     messages,
     setMessages,
     conversationId: runtimeConversationId,
-    recomputeChangedFiles: () => {}, // No-op: Side chat has no diff view
+    recomputeChangedFiles, // Keep side-chat changed files in sync after rollback
     setImagesFromDraft: () => {}, // No-op: No draft restoration in side chat
     setTextContextsFromDraft: () => {}, // No-op: No draft restoration in side chat
     setDiffTextContextsFromDraft: () => {}, // No-op: No draft restoration in side chat
@@ -254,11 +283,11 @@ export function SideChat({
 
   // Surface a visible state when the bound agent is not running
   const agentRuntimeStatus = useAgentRuntimeAgents(Boolean(agentId) && isActive)
-  const isBoundAgentAlive = agentId
-    ? (agentRuntimeStatus.agents.some(
-        (agent) => agent.id === agentId && agent.isAlive,
-      ) ?? true)
-    : true
+  const boundAgent = agentId
+    ? agentRuntimeStatus.agents.find((agent) => agent.id === agentId)
+    : undefined
+  const isBoundAgentAlive = agentId ? (boundAgent?.isAlive ?? true) : true
+  const isBoundAgentSuspended = boundAgent?.status === "suspended"
 
   // Send handler
   const handleSend = useCallback(() => {
@@ -341,16 +370,15 @@ export function SideChat({
     sendUserMessage([{ type: "text", text: "/compact" }] as any)
   }, [isStreaming, sendUserMessage])
 
-  // Message token data (simplified)
-  const messageTokenData = useMemo<MessageTokenData>(() => {
-    return {
-      totalInputTokens: 0,
-      totalOutputTokens: 0,
-      totalCostUsd: 0,
-      contextWindow: 200000,
-      messageCount: displayMessages.length,
-    }
-  }, [displayMessages.length])
+  const provider =
+    conversation.agent.id === "codex"
+      ? "codex"
+      : conversation.agent.id === "claude-code"
+        ? "claude-code"
+        : "opencode"
+
+  // Message token data (shared with main chat)
+  const messageTokenData = useMessageTokenData(messages as any, provider, sessionState as any)
 
   const cacheFileContent = useCallback((mentionId: string, content: string) => {
     fileContentsRef.current.set(mentionId, content)
@@ -387,6 +415,7 @@ export function SideChat({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+        {/* Debug banners hidden - was used for streaming status verification
         {runtimeConnectionStatus === "reconnecting" && (
           <div className="px-3 pt-2">
             <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
@@ -401,6 +430,7 @@ export function SideChat({
             </div>
           </div>
         )}
+        */}
         <ChatMessagesRenderer
           // Type assertion needed because ChatMessagesRenderer expects a slightly different
           // message type during the progressive migration to the new conversation runtime.
@@ -423,22 +453,30 @@ export function SideChat({
           onFork={handleForkFromMessage}
         />
 
+        <div className="w-full flex-shrink-0 px-3 pt-2">
+          <PermissionApprovalPanel
+            chatId={chatId}
+            conversationId={runtimeConversationId}
+            onHasPendingChange={setHasPermissionApproval}
+          />
+        </div>
+
         <div className="w-full flex-shrink-0">
-          {isStreaming && (
+          {!hasPermissionApproval && isStreaming && (
             <div className="px-3 -mb-6 relative z-10 shadow-sm shadow-background">
               <div className="mx-auto w-full max-w-full min-w-0">
                 <ConversationStatusCard
                   chatId={chatId}
                   conversationId={runtimeConversationId}
                   isStreaming={isStreaming}
-                  changedFiles={[]}
+                  changedFiles={sideChangedFiles}
                   onStop={handleStop}
                 />
               </div>
             </div>
           )}
 
-          {!isBoundAgentAlive && !isStreaming && (
+          {!isBoundAgentAlive && !isStreaming && !isBoundAgentSuspended && (
             <div className="px-3 -mb-6 relative z-10 shadow-sm shadow-background">
               <div className="mx-auto w-full max-w-full min-w-0">
                 <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
@@ -461,9 +499,15 @@ export function SideChat({
             images={images}
             files={files}
             onAddAttachments={handleAddAttachments}
+            onAddFolder={handleAddFolder}
             onRemoveImage={removeImage}
             onRemoveFile={removeFile}
             isUploading={isUploading}
+            onModeChange={handleModeChange}
+            projectPath={projectPath ?? undefined}
+            repository={repository}
+            sandboxId={sandboxId}
+            teamId={teamId}
             textContexts={textContexts}
             onRemoveTextContext={removeTextContext}
             diffTextContexts={diffTextContexts}
@@ -475,15 +519,9 @@ export function SideChat({
             messageTokenData={messageTokenData}
             conversationId={runtimeConversationId}
             parentChatId={chatId}
-            provider={
-              conversation.agent.id === "codex"
-                ? "codex"
-                : conversation.agent.id === "claude-code"
-                  ? "claude-code"
-                  : "opencode"
-            }
+            provider={provider as "claude-code" | "codex" | "opencode"}
             agentId={agentId}
-            changedFiles={[]}
+            changedFiles={sideChangedFiles}
             isMobile={false}
             queueLength={invocationQueue.length}
             onSendFromQueue={handleSendFromQueue}

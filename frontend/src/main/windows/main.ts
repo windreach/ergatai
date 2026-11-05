@@ -73,17 +73,8 @@ function registerIpcHandlers(): void {
 
   // Windows: Get current window frame state
   ipcMain.handle("window:get-frame-state", () => {
-    if (process.platform !== "win32") return false
-    try {
-      const settingsPath = join(app.getPath("userData"), "window-settings.json")
-      if (existsSync(settingsPath)) {
-        const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))
-        return settings.useNativeFrame === true
-      }
-      return false // Default: frameless
-    } catch {
-      return false
-    }
+    // Frameless by default on all platforms now
+    return false
   })
 
   // Note: Update checking is now handled by auto-updater module (lib/auto-updater.ts)
@@ -456,9 +447,14 @@ export function createWindow(options?: { chatId?: string; conversationId?: strin
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     trafficLightPosition:
       process.platform === "darwin" ? { x: 15, y: 12 } : undefined,
-    // Windows: Use native frame or frameless based on user preference
+    // Windows: Always use frameless window with custom title bar
     ...(process.platform === "win32" && {
-      frame: useNativeFrame,
+      frame: false,
+      autoHideMenuBar: true,
+    }),
+    // Linux: Use frameless window with custom title bar
+    ...(process.platform === "linux" && {
+      frame: false,
       autoHideMenuBar: true,
     }),
     webPreferences: {

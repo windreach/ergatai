@@ -29,6 +29,7 @@ libc.workspace = true
 futures.workspace = true
 which = "6.0"
 dirs.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

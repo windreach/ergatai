@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
+use ergatai_error::{id::parse_to_i64, ChatId, ErgataiError};
 use ergatai_runtime::{ElicitationResponse, TrackedElicitation, TrackedPlan, TrackedToolCall};
 use tokio::sync::Notify;
 
@@ -910,7 +911,7 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
         })
     };
 
-    let items = runtime_agents
+    let mut items = runtime_agents
         .into_iter()
         .filter(|info| {
             // Skip excluded IDs (e.g., the calling MCP agent).
@@ -983,6 +984,69 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
         })
         .collect::<Vec<_>>();
 
+    // Suspended agents are not in the live runtime registry because their
+    // process has stopped. They are still persistent agent identities, so the
+    // API returns them as non-alive `suspended` entries (with the profile and
+    // conversation needed by callers to resume/route them).
+    let live_agent_ids: HashSet<String> = items.iter().map(|item| item.agent_id.clone()).collect();
+    let suspended_agents = match runtime.suspend_store().list_suspended() {
+        Ok(agents) => agents,
+        Err(e) => {
+            tracing::warn!("Failed to list suspended agents: {}", e);
+            Vec::new()
+        }
+    };
+    for record in suspended_agents {
+        if live_agent_ids.contains(&record.id) {
+            continue;
+        }
+        if let Some(ref expected_workspace_id) = workspace_id {
+            if &record.workspace_id != expected_workspace_id {
+                continue;
+            }
+        }
+        if let Some(expected_chat_id) = &chat_id {
+            let environment: serde_json::Value =
+                serde_json::from_str(&record.environment).unwrap_or(serde_json::Value::Null);
+            if environment
+                .get("ergatai_chat_id")
+                .and_then(|value| value.as_str())
+                != Some(expected_chat_id.as_str())
+            {
+                continue;
+            }
+        }
+        if let Some(ref participants) = dag_participants {
+            if !participants.contains(&record.id) {
+                continue;
+            }
+        }
+        if let Some(ref status) = status_filter {
+            if status != "suspended" {
+                continue;
+            }
+        }
+
+        items.push(AgentListItem {
+            agent_id: record.id,
+            workspace_id: record.workspace_id,
+            state: "suspended".to_string(),
+            task_id: None,
+            mcp_agent_id: None,
+            is_alive: false,
+            is_idle: false,
+            is_processing: false,
+            created_at: record.suspended_at.to_rfc3339(),
+            last_heartbeat: record.last_activity.to_rfc3339(),
+            work_dir: record.work_dir,
+            profile: Some(record.profile_name),
+            capabilities: Vec::new(),
+            state_changed_at: record.suspended_at.to_rfc3339(),
+            state_history: Vec::new(),
+            source: "suspend-store".to_string(),
+        });
+    }
+
     items
 }
 
@@ -1035,6 +1099,98 @@ pub async fn prompt_agent(
         .inject_message_with_images(&runtime_id, message, images)
         .await?;
     Ok(())
+}
+
+#[derive(Debug)]
+pub enum ChatAgentDeletionError {
+    InvalidAgentId(String),
+    AgentNotBound { chat_id: ChatId, agent_id: String },
+    Runtime(ErgataiError),
+    Join(anyhow::Error),
+    Database(rusqlite::Error),
+}
+
+#[derive(Debug)]
+pub struct DeletedChatAgent {
+    pub binding_deleted: bool,
+    pub conversation_ids: Vec<String>,
+    pub message_cleanup_queued: bool,
+    pub mcp_bindings_removed: usize,
+}
+
+/// Permanently delete one chat-bound runtime agent.
+///
+/// A closed runtime agent is removed from the agent registry and its durable
+/// chat binding/conversation are removed from the project database. Physical
+/// message tables are intentionally heavy, so their IDs are placed in the
+/// existing deletion queue for asynchronous cleanup.
+pub async fn delete_chat_agent(
+    chat_id: ChatId,
+    agent_id: &str,
+) -> Result<DeletedChatAgent, ChatAgentDeletionError> {
+    let agent_id_i64 = parse_to_i64(agent_id)
+        .ok_or_else(|| ChatAgentDeletionError::InvalidAgentId(agent_id.to_string()))?;
+
+    // Stopped bindings will not be in the runtime registry; only stop an agent
+    // that is still alive. A failed stop must abort deletion so the process
+    // cannot continue writing messages for a conversation we are about to delete.
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    if runtime.get_agent(agent_id).await.is_some() {
+        runtime
+            .stop_agent(agent_id)
+            .await
+            .map_err(ChatAgentDeletionError::Runtime)?;
+    }
+
+    let agent_id_for_binding = agent_id.to_string();
+    let agent_id_for_mcp = agent_id.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let deleted = crate::user_data_db::group_agent_bindings::delete_agent_and_conversation(
+            chat_id,
+            agent_id_i64,
+        )
+        .map_err(ChatAgentDeletionError::Database)?
+        .ok_or_else(|| ChatAgentDeletionError::AgentNotBound {
+            chat_id,
+            agent_id: agent_id_for_binding,
+        })?;
+
+        let conversation_id_strings = deleted
+            .conversation_ids
+            .iter()
+            .map(|conversation_id| conversation_id.to_string())
+            .collect::<Vec<_>>();
+
+        // MCP reconnect bindings are in a separate database and have no FK to
+        // the conversation. Cleanup is best-effort so the main deletion still
+        // succeeds if this secondary store fails.
+        let mcp_bindings_removed = match crate::mcp::get_binding_store() {
+            Some(store) => store
+                .remove_bindings_by_runtime_agent_id(&agent_id_for_mcp)
+                .unwrap_or_else(|error| {
+                    tracing::warn!(
+                        agent_id = %agent_id_for_mcp,
+                        error = %error,
+                        "Failed to remove MCP bindings for deleted agent"
+                    );
+                    0
+                }),
+            None => 0,
+        };
+
+        Ok(DeletedChatAgent {
+            binding_deleted: true,
+            conversation_ids: conversation_id_strings,
+            message_cleanup_queued: true,
+            mcp_bindings_removed,
+        })
+    })
+    .await
+    .map_err(|error| {
+        ChatAgentDeletionError::Join(anyhow::anyhow!("Agent deletion task failed: {}", error))
+    })??;
+
+    Ok(result)
 }
 
 #[cfg(test)]

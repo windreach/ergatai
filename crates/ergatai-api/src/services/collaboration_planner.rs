@@ -129,14 +129,6 @@ fn default_node_timeout_secs() -> u64 {
     600
 }
 
-fn extract_mentions(text: &str, participants: &[CollaborationSessionParticipant]) -> Vec<String> {
-    participants
-        .iter()
-        .filter(|participant| text.contains(&format!("@{}", participant.agent_id)))
-        .map(|participant| participant.agent_id.clone())
-        .collect()
-}
-
 fn selected_group_agents(
     participants: &[CollaborationSessionParticipant],
     mentioned: &[String],
@@ -285,11 +277,10 @@ pub fn generate_plan(
         )));
     }
 
-    let mentions = if input.mentioned_agent_ids.is_empty() {
-        extract_mentions(goal, &input.participants)
-    } else {
-        input.mentioned_agent_ids.clone()
-    };
+    // Mentions are host-owned structured data (for example mention chips or an
+    // API field). Never infer targets by scanning raw text: agent-native `@`
+    // syntax, code, paths, and prose must pass through unchanged.
+    let mentions = input.mentioned_agent_ids;
     let constraints = input
         .constraints
         .iter()
@@ -692,6 +683,26 @@ mod tests {
         assert!(output.warnings.contains(
             &"No workers selected; the supervisor will handle the goal directly".to_string()
         ));
+    }
+
+    #[test]
+    fn does_not_infer_mentions_from_raw_text() {
+        let mut raw = input(
+            CollaborationMode::Supervisor,
+            vec![
+                participant("supervisor", "supervisor"),
+                participant("worker-a", "worker"),
+                participant("worker-b", "worker"),
+            ],
+            Vec::new(),
+        );
+        raw.goal = "Do not treat @worker-a in prose as structured routing".to_string();
+
+        let output = generate_plan(raw).unwrap();
+        // Without structured mentioned_agent_ids, the planner does not narrow
+        // participants; ordinary @ syntax in prose remains passthrough text.
+        assert!(output.selected_agents.contains(&"worker-a".to_string()));
+        assert!(output.selected_agents.contains(&"worker-b".to_string()));
     }
 
     #[test]

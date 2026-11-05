@@ -1,3 +1,5 @@
+import { isErgataiSendMessagePart } from "@/features/agents/lib/ergatai-mcp-detection"
+
 export type PersistedSideCopyMessage = {
   id: string
   role: string
@@ -76,9 +78,7 @@ function extractSentMessageId(output: unknown): string | undefined {
 }
 
 function isSendMessageToolPart(part: unknown): boolean {
-  if (!part || typeof part !== "object") return false
-  const type = (part as { type?: unknown }).type
-  return typeof type === "string" && /send_message/i.test(type)
+  return isErgataiSendMessagePart(part)
 }
 
 function toSideMessageProjection(
