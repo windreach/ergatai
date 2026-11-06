@@ -345,4 +345,47 @@ export const conversationsRouter = router({
     }),
 
 
+  /** Get agent history import state for a conversation */
+  getConversationImportState: publicProcedure
+    .input(z.object({ conversationId: conversationKeySchema }))
+    .query(async ({ input }) => {
+      return ergataiFetch<{
+        imported_count: number
+        import_cursor: string | null
+        has_more: boolean
+        total_captured: number
+        acp_session_id: string | null
+        last_error: string | null
+        resume_supported: boolean
+      }>(`/api/v1/conversations/${encodeURIComponent(input.conversationId)}/import-state`)
+    }),
+
+  /** Enqueue agent history import for a conversation */
+  importConversationHistory: publicProcedure
+    .input(
+      z.object({
+        conversationId: conversationKeySchema,
+        agentId: z.string(),
+        acpSessionId: z.string(),
+        limit: z.number().int().positive().max(20).optional(),
+        cursor: z.string().optional(),
+        sync: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const body: Record<string, unknown> = {
+        agent_id: input.agentId,
+        acp_session_id: input.acpSessionId,
+      }
+      if (input.limit !== undefined) body.limit = input.limit
+      if (input.cursor !== undefined) body.cursor = input.cursor
+      if (input.sync !== undefined) body.sync = input.sync
+      return ergataiFetch<{ job_id: number } | { status: string }>(
+        `/api/v1/conversations/${encodeURIComponent(input.conversationId)}/import-history`,
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+      )
+    }),
 })

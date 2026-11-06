@@ -5,6 +5,7 @@ import type { RefObject } from "react"
 import type { UIMessage } from "@ai-sdk/react"
 import { cn } from "../../../lib/utils"
 import { ChatMessagesRenderer } from "./chat-messages-renderer"
+import { useConversationHistoryImport } from "../hooks/use-conversation-history-import"
 import { ImplicitCollaborationTaskCards } from "../collaboration/implicit-collaboration-task-cards"
 import { CollaborationSessionEventCards } from "../collaboration/collaboration-session-event-cards"
 import type { ImplicitCollaborationTask } from "../collaboration/implicit-collaboration"
@@ -17,6 +18,7 @@ interface ActiveChatMessagesProps {
   messages: UIMessage<unknown>[]
   status: string
   conversationId: string
+  agentId?: string | null
   chatId: string
   isActive: boolean
   isMobile?: boolean
@@ -37,6 +39,7 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
   messages,
   status,
   conversationId,
+  agentId,
   chatId,
   isActive,
   isMobile = false,
@@ -52,6 +55,13 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
   handleRollback,
   handleForkFromMessage,
 }: ActiveChatMessagesProps) {
+
+  const { importBanner } = useConversationHistoryImport({
+    conversationId,
+    agentId,
+    containerRef: chatContainerRef,
+  })
+
   return (
     <ChatMessagesRenderer
       messages={messages}
@@ -98,6 +108,7 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
       contentClassName={cn("px-2 mx-auto -mb-4 max-w-2xl pb-8")}
       header={
         <>
+          {importBanner}
           <ImplicitCollaborationTaskCards
             tasks={implicitCollaborationTasks}
           />

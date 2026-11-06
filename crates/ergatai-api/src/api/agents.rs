@@ -1816,6 +1816,8 @@ pub async fn send_message(
                         import_cursor: None,
                         has_more: false,
                         total_captured: 0,
+                        last_error: None,
+                        resume_supported: true,
                     })
                 })
                 .await
@@ -3559,6 +3561,8 @@ pub async fn prompt_agent(
                     import_cursor: None,
                     has_more: false,
                     total_captured: 0,
+                    last_error: None,
+                    resume_supported: true,
                 })
             })
             .await

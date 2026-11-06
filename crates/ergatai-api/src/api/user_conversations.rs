@@ -2172,6 +2172,10 @@ pub struct ImportConversationHistoryRequest {
     pub acp_session_id: String,
     #[serde(default)]
     pub limit: Option<usize>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub sync: Option<bool>,
 }
 
 #[utoipa::path(
@@ -2216,6 +2220,9 @@ pub async fn get_conversation_import_state(
                 "import_cursor": session.import_cursor,
                 "has_more": session.has_more,
                 "total_captured": session.total_captured,
+                "acp_session_id": session.acp_session_id,
+                "last_error": session.last_error,
+                "resume_supported": session.resume_supported,
             })),
         )
             .into_response(),
@@ -2226,6 +2233,9 @@ pub async fn get_conversation_import_state(
                 "import_cursor": null,
                 "has_more": false,
                 "total_captured": 0,
+                "acp_session_id": null,
+                "last_error": null,
+                "resume_supported": true,
             })),
         )
             .into_response(),
@@ -2273,24 +2283,54 @@ pub async fn import_conversation_history(
     };
 
     let limit = request.limit.unwrap_or(20).min(20);
-    let payload = serde_json::json!({
-        "conversation_id": id_i64.as_i64(),
-        "acp_session_id": request.acp_session_id,
-        "limit": limit,
-    });
+    let sync = request.sync.unwrap_or(false);
 
-    match crate::user_data_db::chats::enqueue_job(
-        "persistence",
-        "agent_session",
-        &request.agent_id,
-        "import_agent_session_history",
-        Some(&payload.to_string()),
-    ) {
-        Ok(job_id) => (
-            StatusCode::ACCEPTED,
-            Json(serde_json::json!({ "job_id": job_id })),
+    if sync {
+        let input = crate::services::agent_history_import::ImportAgentSessionHistoryInput {
+            conversation_id: Some(id_i64.as_i64()),
+            acp_session_id: request.acp_session_id.clone(),
+            capture_limit: Some(50),
+            persist_limit: Some(limit),
+            limit: Some(limit),
+            cursor: request.cursor.clone(),
+            ..Default::default()
+        };
+        match crate::services::agent_history_import::import_agent_session_history(
+            &request.agent_id,
+            input,
         )
-            .into_response(),
-        Err(error) => db_error("Failed to enqueue import job", error),
+        .await
+        {
+            Ok(()) => (
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "imported" })),
+            )
+                .into_response(),
+            Err(error) => crate::http_error::internal(error, "import_conversation_history").into_response(),
+        }
+    } else {
+        let mut payload = serde_json::json!({
+            "conversation_id": id_i64.as_i64(),
+            "acp_session_id": request.acp_session_id,
+            "limit": limit,
+        });
+        if let Some(cursor) = request.cursor {
+            payload["cursor"] = serde_json::json!(cursor);
+        }
+
+        match crate::user_data_db::chats::enqueue_job(
+            "persistence",
+            "agent_session",
+            &request.agent_id,
+            "import_agent_session_history",
+            Some(&payload.to_string()),
+        ) {
+            Ok(job_id) => (
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({ "job_id": job_id })),
+            )
+                .into_response(),
+            Err(error) => db_error("Failed to enqueue import job", error),
+        }
     }
 }

@@ -134,6 +134,41 @@ class SimpleAcpAgent:
         }
         self.send_response(id, result)
 
+    def handle_session_resume(self, id: Any, params: Dict):
+        """处理 session/resume 请求（ACP v2 历史导入）"""
+        self.session_id = params.get("sessionId", self.session_id or f"session-{int(time.time() * 1000)}-{random.randint(1000, 9999)}")
+        self.log(f"会话恢复 (session/resume): {self.session_id}")
+
+        # 发送重放的历史消息
+        self.send_notification("session/update", {
+            "sessionId": self.session_id,
+            "update": {
+                "sessionUpdate": "user_message_chunk",
+                "content": {
+                    "type": "text",
+                    "text": "历史用户消息"
+                }
+            }
+        })
+        time.sleep(0.1)
+        self.send_notification("session/update", {
+            "sessionId": self.session_id,
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {
+                    "type": "text",
+                    "text": "历史助手回复"
+                }
+            }
+        })
+        time.sleep(0.1)
+
+        result = {
+            "sessionId": self.session_id,
+            "status": "resumed"
+        }
+        self.send_response(id, result)
+
     def handle_session_prompt(self, id: Any, params: Dict):
         """处理 session/prompt 请求（接收消息）"""
         # ACP SDK sends prompt content as "prompt" field (not "message")
@@ -402,6 +437,8 @@ class SimpleAcpAgent:
             self.handle_session_start(id, params)
         elif method == "session/new":
             self.handle_session_new(id, params)
+        elif method == "session/resume":
+            self.handle_session_resume(id, params)
         elif method == "session/prompt":
             self.handle_session_prompt(id, params)
         elif method == "tools/list":

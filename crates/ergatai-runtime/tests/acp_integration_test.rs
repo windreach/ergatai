@@ -190,3 +190,26 @@ async fn test_acp_invalid_command() {
         .await;
     assert!(result.is_err(), "Should fail for nonexistent binary");
 }
+
+#[tokio::test]
+async fn test_acp_resume_session_capture() {
+    let backend = AcpBackend::new();
+    backend.initialize().await.unwrap();
+
+    let workspace = create_test_workspace(&backend, "ws-test-resume").await;
+
+    let command = mock_agent_command();
+    let handle = backend
+        .start_agent(&workspace, &command, None)
+        .await
+        .expect("start_agent should succeed");
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let captured = backend
+        .resume_session_capture(&handle.agent_id, "resume-test-session", 10)
+        .await
+        .expect("resume_session_capture should succeed");
+
+    assert!(!captured.is_empty(), "captured history should not be empty");
+}

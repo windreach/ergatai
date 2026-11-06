@@ -602,6 +602,7 @@ const ChatViewInner = memo(function ChatViewInner(props: {
         messages={messages}
         status={status}
         conversationId={conversationId}
+        agentId={backendAgentId}
         chatId={parentChatId}
         isActive={isVisiblePane}
         isMobile={isMobile}

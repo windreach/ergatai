@@ -338,6 +338,13 @@ class ConversationPipeline {
 
   getSnapshot = (): ConversationState => this.state
 
+  // Reload persisted history (used after importing older history).
+  reloadHistory = async (): Promise<void> => {
+    this.fetchEpoch++
+    const epoch = this.fetchEpoch
+    await this.loadHistory(epoch)
+  }
+
   private notify() {
     for (const listener of this.listeners) listener()
   }
@@ -603,6 +610,13 @@ function getPipeline(conversationId: string, agentId: string | null): Conversati
 export function __resetConversationPipelinesForTests(): void {
   for (const pipeline of [...pipelines.values()]) {
     pipeline.teardown()
+  }
+}
+
+export function reloadConversationHistory(conversationId: string): void {
+  const pipeline = pipelines.get(conversationId)
+  if (pipeline) {
+    void pipeline.reloadHistory()
   }
 }
 

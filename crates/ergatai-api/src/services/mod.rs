@@ -5,6 +5,7 @@
 
 pub mod agent_output_cleanup;
 pub mod agent_output_persistence;
+pub mod agent_history_import;
 pub mod agent_service;
 pub mod chat_service;
 pub mod collab_runtime;

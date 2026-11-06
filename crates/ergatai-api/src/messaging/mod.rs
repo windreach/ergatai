@@ -1175,6 +1175,8 @@ impl MessageSender {
                 import_cursor: None,
                 has_more: false,
                 total_captured: 0,
+                last_error: None,
+                resume_supported: true,
             })
             .map_err(|error| error.to_string())?;
 
@@ -1348,6 +1350,8 @@ impl MessageSender {
                     import_cursor: None,
                     has_more: false,
                     total_captured: 0,
+                    last_error: None,
+                    resume_supported: true,
                 },
             )
             .map(|_| ()) // Discard the returned ConversationId, we already have it

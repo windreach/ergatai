@@ -175,7 +175,7 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
       >
         <div className="flex items-center gap-2 text-xs min-w-0">
           {/* Shared agent history selector */}
-          <AgentHistorySelector agentId={agentId} />
+          <AgentHistorySelector agentId={agentId} conversationId={conversationId} />
 
           {/* Expand/Collapse chevron - only show when there are files to expand */}
           {hasExpandableContent && (

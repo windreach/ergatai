@@ -5,6 +5,7 @@ import { Popover, PopoverTrigger, PopoverContent } from "../../../components/ui/
 import { ClockIcon } from "../../../components/ui/icons"
 import { cn } from "../../../lib/utils"
 import { trpc } from "../../../lib/trpc"
+import { useConversationHistoryImport } from "../hooks/use-conversation-history-import"
 import { formatTimeAgo } from "../utils/format-time-ago"
 
 /**
@@ -15,6 +16,7 @@ import { formatTimeAgo } from "../utils/format-time-ago"
  */
 interface AgentHistorySelectorProps {
   agentId?: string | null
+  conversationId?: string | null
 }
 
 interface AgentSession {
@@ -24,10 +26,11 @@ interface AgentSession {
   updated_at: string | null
 }
 
-export function AgentHistorySelector({ agentId }: AgentHistorySelectorProps) {
+export function AgentHistorySelector({ agentId, conversationId }: AgentHistorySelectorProps) {
   const [open, setOpen] = useState(false)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
 
+  const utils = trpc.useUtils()
   const sessionsQuery = trpc.ergatai.listAgentSessions.useQuery(
     { agentId: agentId ?? "" },
     { enabled: !!agentId },
@@ -36,6 +39,11 @@ export function AgentHistorySelector({ agentId }: AgentHistorySelectorProps) {
     onSuccess: (_data, variables) => {
       void variables
     },
+  })
+  const { importSync } = useConversationHistoryImport({
+    conversationId: conversationId ?? "",
+    agentId,
+    containerRef: null,
   })
 
   const sessions: AgentSession[] = Array.isArray(sessionsQuery.data)
@@ -47,6 +55,13 @@ export function AgentHistorySelector({ agentId }: AgentHistorySelectorProps) {
   const handleSelect = (sessionId: string) => {
     if (agentId) {
       loadSession.mutate({ agentId, sessionId })
+      // If this session has not been imported into the current conversation yet,
+      // trigger a synchronous import so its history is available immediately.
+      if (conversationId) {
+        void importSync(sessionId, undefined)
+        void utils.ergatai.getConversationImportState.invalidate({ conversationId })
+        void utils.ergatai.listConversationMessages.invalidate({ conversationId })
+      }
     }
     setActiveSessionId(sessionId)
     setOpen(false)

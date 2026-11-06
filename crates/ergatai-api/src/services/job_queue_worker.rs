@@ -75,10 +75,15 @@ pub fn spawn_worker(cancellation_token: CancellationToken) -> tokio::task::JoinH
                         }
                     }
                     Err(e) => {
-                        warn!(error = %e, job_id = job.id, action = %job.action, "Job failed");
+                        let error_msg = e.to_string();
+                        warn!(error = %error_msg, job_id = job.id, action = %job.action, "Job failed");
                         let job_id = job.id;
                         let _ = tokio::task::spawn_blocking(move || {
-                            crate::user_data_db::chats::mark_job_failed(job_id, MAX_RETRIES)
+                            crate::user_data_db::chats::mark_job_failed(
+                                job_id,
+                                MAX_RETRIES,
+                                Some(&error_msg),
+                            )
                         })
                         .await;
                     }
@@ -130,107 +135,38 @@ async fn process_persistence_job(job: &crate::user_data_db::chats::Job) -> anyho
             Ok(())
         }
         "import_agent_session_history" => {
-            #[derive(serde::Deserialize)]
+            #[derive(serde::Deserialize, Default)]
             struct Payload {
-                chat_id: i64,
+                #[serde(default)]
+                chat_id: Option<i64>,
                 acp_session_id: String,
+                #[serde(default)]
                 title: Option<String>,
+                #[serde(default)]
                 conversation_id: Option<i64>,
+                #[serde(default)]
                 capture_limit: Option<usize>,
+                #[serde(default)]
                 persist_limit: Option<usize>,
+                #[serde(default)]
+                limit: Option<usize>,
+                #[serde(default)]
+                cursor: Option<String>,
             }
 
             let payload: Payload = serde_json::from_str(job.payload.as_deref().unwrap_or("{}"))?;
-            let chat_id = ergatai_error::ChatId::new(payload.chat_id);
-            let capture_limit = payload.capture_limit.unwrap_or(50).min(50);
-            let persist_limit = payload.persist_limit.unwrap_or(20).min(20);
             let agent_id = job.entity_id.clone();
-            let acp_session_id = payload.acp_session_id.clone();
-
-            // Ensure conversation exists.
-            let conversation_id = if let Some(id) = payload.conversation_id {
-                ergatai_error::ConversationId::new(id)
-            } else {
-                let title = payload.title.clone();
-                let acp = acp_session_id.clone();
-                tokio::task::spawn_blocking(move || {
-                    crate::user_data_db::conversations::create_for_agent_session(
-                        chat_id, &acp, title,
-                    )
-                })
-                .await
-                .map_err(|e| anyhow::anyhow!("join error: {}", e))??
+            let input = crate::services::agent_history_import::ImportAgentSessionHistoryInput {
+                chat_id: payload.chat_id,
+                acp_session_id: payload.acp_session_id,
+                title: payload.title,
+                conversation_id: payload.conversation_id,
+                capture_limit: payload.capture_limit,
+                persist_limit: payload.persist_limit,
+                limit: payload.limit,
+                cursor: payload.cursor,
             };
-
-            // Idempotency: skip if messages already imported.
-            let conv_id_for_check = conversation_id;
-            let has_messages = tokio::task::spawn_blocking(move || {
-                crate::user_data_db::messages::list(conv_id_for_check)
-                    .map(|m| !m.is_empty())
-                    .unwrap_or(false)
-            })
-            .await
-            .unwrap_or(false);
-            if has_messages {
-                return Ok(());
-            }
-
-            // Capture history from agent.
-            let captured = crate::services::agent_service::resume_session_capture(
-                &agent_id,
-                &payload.acp_session_id,
-                capture_limit,
-            )
-            .await?;
-
-            if captured.is_empty() {
-                return Ok(());
-            }
-
-            // Map captured updates to messages.
-            let captured_len = captured.len();
-            // Persist only the most recent `persist_limit` messages.
-            let start = captured_len.saturating_sub(persist_limit);
-            let mut messages = Vec::new();
-            for update in captured.into_iter().skip(start).take(persist_limit) {
-                let session_update = update
-                    .get("sessionUpdate")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let role = match session_update {
-                    "user_message_chunk" => "user",
-                    _ => "assistant",
-                };
-                let parts = update.clone();
-                let metadata = serde_json::json!({});
-                messages.push((role.to_string(), parts, metadata));
-            }
-
-            let imported = messages.len() as i64;
-            let has_more = captured_len >= persist_limit;
-
-            // Persist.
-            let conv_id = conversation_id;
-            tokio::task::spawn_blocking(move || {
-                crate::user_data_db::messages::append_batch(conv_id, messages)
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("join error: {}", e))??;
-
-            // Update import state.
-            let conv_id2 = conversation_id;
-            tokio::task::spawn_blocking(move || {
-                crate::user_data_db::agent_sessions::update_import_state(
-                    conv_id2.as_i64(),
-                    imported,
-                    None,
-                    has_more,
-                    captured_len as i64,
-                )
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("join error: {}", e))??;
-
+            crate::services::agent_history_import::import_agent_session_history(&agent_id, input).await?;
             Ok(())
         }
         other => {

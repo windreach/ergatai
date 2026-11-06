@@ -392,6 +392,7 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_job_queue_type ON job_queue(job_type, status, created_at);
         "#,
     )?;
+    let _ = conn.execute("ALTER TABLE job_queue ADD COLUMN last_error TEXT", []);
 
     // Backward-compatible migration for existing agent_sessions tables.
     let _ = conn.execute(
@@ -408,6 +409,14 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
     );
     let _ = conn.execute(
         "ALTER TABLE agent_sessions ADD COLUMN total_captured INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agent_sessions ADD COLUMN last_error TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agent_sessions ADD COLUMN resume_supported INTEGER NOT NULL DEFAULT 1",
         [],
     );
 
@@ -664,6 +673,8 @@ pub struct AgentSession {
     pub import_cursor: Option<String>,
     pub has_more: bool,
     pub total_captured: i64,
+    pub last_error: Option<String>,
+    pub resume_supported: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1328,6 +1339,7 @@ pub mod chats {
         pub action: String,
         pub payload: Option<String>,
         pub retry_count: i64,
+        pub last_error: Option<String>,
     }
 
     /// Backward-compatible alias.
@@ -1370,7 +1382,7 @@ pub mod chats {
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
             let mut stmt = conn.prepare(
-                "SELECT id, job_type, entity_type, entity_id, action, payload, retry_count \
+                "SELECT id, job_type, entity_type, entity_id, action, payload, retry_count, last_error \
                  FROM job_queue WHERE status = 'pending' \
                  ORDER BY created_at ASC, id ASC LIMIT ?1",
             )?;
@@ -1383,6 +1395,7 @@ pub mod chats {
                     action: row.get(4)?,
                     payload: row.get(5)?,
                     retry_count: row.get(6)?,
+                    last_error: row.get(7)?,
                 })
             })?;
             let mut jobs = Vec::new();
@@ -1447,7 +1460,7 @@ pub mod chats {
         mark_job_done(id)
     }
 
-    pub fn mark_job_failed(id: i64, max_retries: i64) -> Result<()> {
+    pub fn mark_job_failed(id: i64, max_retries: i64, error: Option<&str>) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let now = std::time::SystemTime::now()
@@ -1457,15 +1470,16 @@ pub mod chats {
         conn.execute(
             "UPDATE job_queue SET retry_count = retry_count + 1, \
              status = CASE WHEN retry_count + 1 >= ?2 THEN 'failed' ELSE 'pending' END, \
+             last_error = ?4, \
              updated_at = ?1 WHERE id = ?3",
-            params![now, max_retries, id],
+            params![now, max_retries, id, error],
         )?;
         Ok(())
     }
 
     /// Backward-compatible wrapper.
-    pub fn mark_deletion_failed(id: i64, max_retries: i64) -> Result<()> {
-        mark_job_failed(id, max_retries)
+    pub fn mark_deletion_failed(id: i64, max_retries: i64, error: Option<&str>) -> Result<()> {
+        mark_job_failed(id, max_retries, error)
     }
 
     pub fn find_by_worktree_path(path: &str) -> Result<Option<Chat>> {
@@ -1783,6 +1797,8 @@ pub mod conversations {
             import_cursor: None,
             has_more: false,
             total_captured: 0,
+            last_error: None,
+            resume_supported: true,
         })?;
 
         Ok(conversation.conversation_id)
@@ -2118,8 +2134,8 @@ pub mod agent_sessions {
         let conn = db.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO agent_sessions (agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO agent_sessions (agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured, last_error, resume_supported)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(conversation_id) DO UPDATE SET
                acp_session_id = excluded.acp_session_id,
                mode = excluded.mode,
@@ -2127,7 +2143,9 @@ pub mod agent_sessions {
                imported_count = excluded.imported_count,
                import_cursor = excluded.import_cursor,
                has_more = excluded.has_more,
-               total_captured = excluded.total_captured",
+               total_captured = excluded.total_captured,
+               last_error = excluded.last_error,
+               resume_supported = excluded.resume_supported",
             params![
                 session.agent_session_id,
                 session.conversation_id,
@@ -2139,6 +2157,8 @@ pub mod agent_sessions {
                 session.import_cursor,
                 session.has_more as i64,
                 session.total_captured,
+                session.last_error,
+                session.resume_supported as i64,
             ],
         )?;
 
@@ -2150,7 +2170,7 @@ pub mod agent_sessions {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured
+            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured, last_error, resume_supported
              FROM agent_sessions WHERE conversation_id = ?1",
         )?;
 
@@ -2166,6 +2186,8 @@ pub mod agent_sessions {
                 import_cursor: row.get(7)?,
                 has_more: row.get::<_, i64>(8)? != 0,
                 total_captured: row.get(9)?,
+                last_error: row.get(10)?,
+                resume_supported: row.get::<_, i64>(11)? != 0,
             })
         })?;
 
@@ -2181,7 +2203,7 @@ pub mod agent_sessions {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured
+            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured, last_error, resume_supported
              FROM agent_sessions WHERE agent_session_id = ?1",
         )?;
 
@@ -2197,6 +2219,8 @@ pub mod agent_sessions {
                 import_cursor: row.get(7)?,
                 has_more: row.get::<_, i64>(8)? != 0,
                 total_captured: row.get(9)?,
+                last_error: row.get(10)?,
+                resume_supported: row.get::<_, i64>(11)? != 0,
             })
         })?;
 
@@ -2212,7 +2236,7 @@ pub mod agent_sessions {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured
+            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured, last_error, resume_supported
              FROM agent_sessions WHERE acp_session_id = ?1",
         )?;
 
@@ -2228,6 +2252,8 @@ pub mod agent_sessions {
                 import_cursor: row.get(7)?,
                 has_more: row.get::<_, i64>(8)? != 0,
                 total_captured: row.get(9)?,
+                last_error: row.get(10)?,
+                resume_supported: row.get::<_, i64>(11)? != 0,
             })
         })?;
 
@@ -2268,6 +2294,24 @@ pub mod agent_sessions {
         conn.execute(
             "UPDATE agent_sessions SET imported_count = ?1, import_cursor = ?2, has_more = ?3, total_captured = ?4, updated_at = ?5 WHERE conversation_id = ?6",
             params![imported_count, import_cursor, has_more as i64, total_captured, now, conversation_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_resume_status(
+        conversation_id: i64,
+        last_error: Option<String>,
+        resume_supported: bool,
+    ) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        conn.execute(
+            "UPDATE agent_sessions SET last_error = ?1, resume_supported = ?2, updated_at = ?3 WHERE conversation_id = ?4",
+            params![last_error, resume_supported as i64, now, conversation_id],
         )?;
         Ok(())
     }
