@@ -7,9 +7,6 @@ import {
   CACHE_TTL,
   TIMEOUT
 } from '../config'
-import {
-  isOfflineSimulated
-} from '../trpc/routers/debug'
 
 export interface NetworkStatus {
   online: boolean
@@ -19,6 +16,16 @@ export interface NetworkStatus {
 let cachedStatus: NetworkStatus = {
   online: true,
   lastCheck: 0,
+}
+
+let simulateOfflineMode = false
+
+export function isOfflineSimulated(): boolean {
+  return simulateOfflineMode
+}
+
+export function setOfflineSimulated(enabled: boolean): void {
+  simulateOfflineMode = enabled
 }
 
 /**

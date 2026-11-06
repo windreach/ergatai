@@ -1,8 +1,8 @@
 import { router, publicProcedure } from "../index"
 import { app, shell } from "electron"
-import { getAuthManager } from "../../../index"
+import { getAuthManager } from "../../../auth-manager"
 import { z } from "zod"
-import { clearNetworkCache } from "../../ollama/network-detector"
+import { clearNetworkCache, isOfflineSimulated, setOfflineSimulated } from "../../ollama/network-detector"
 import {
   deleteChat,
   deleteProject,
@@ -16,16 +16,11 @@ const IS_DEV = !!process.env.ELECTRON_RENDERER_URL
 const PROTOCOL = IS_DEV ? "ergatai-dev" : "ergatai"
 
 // Global flag for simulating offline mode (for testing)
-let simulateOfflineMode = false
 
 /**
  * Check if offline mode is being simulated (for testing)
  * Used by network-detector.ts
  */
-export function isOfflineSimulated(): boolean {
-  return simulateOfflineMode
-}
-
 export const debugRouter = router({
   /**
    * Get system information for debug display
@@ -102,8 +97,7 @@ export const debugRouter = router({
    * Logout (clear auth only)
    */
   logout: publicProcedure.mutation(() => {
-    const authManager = getAuthManager()
-    authManager.logout()
+    getAuthManager()?.logout()
     console.log("[Debug] User logged out")
     return { success: true }
   }),
@@ -122,7 +116,7 @@ export const debugRouter = router({
    * Get offline simulation status
    */
   getOfflineSimulation: publicProcedure.query(() => {
-    return { enabled: simulateOfflineMode }
+    return { enabled: isOfflineSimulated() }
   }),
 
   /**
@@ -131,10 +125,10 @@ export const debugRouter = router({
   setOfflineSimulation: publicProcedure
     .input(z.object({ enabled: z.boolean() }))
     .mutation(({ input }) => {
-      simulateOfflineMode = input.enabled
+      setOfflineSimulated(input.enabled)
       // Clear network cache to force immediate re-check
       clearNetworkCache()
       console.log(`[Debug] Offline simulation ${input.enabled ? "enabled" : "disabled"}`)
-      return { success: true, enabled: simulateOfflineMode }
+      return { success: true, enabled: isOfflineSimulated() }
     }),
 })

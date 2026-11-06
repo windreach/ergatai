@@ -15,7 +15,7 @@ import {
 import { createPortal } from "react-dom"
 import { useAtomValue } from "jotai"
 import type { FileMentionOption } from "./agents-mentions-editor"
-import { MENTION_PREFIXES } from "./agents-mentions-editor"
+import { MENTION_PREFIXES } from "./mentions-utils"
 import { sessionInfoAtom } from "../../../lib/atoms"
 import type { CoreAgentOption } from "../lib/agent-contract-api"
 import { getDropdownDimensions } from "../ui/dropdown-sizes"

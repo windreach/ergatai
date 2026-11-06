@@ -8,7 +8,7 @@ import {
 } from "zod"
 import {
   getAuthManager
-} from "../../../index"
+} from "../../../auth-manager"
 import {
   getClaudeShellEnvironment
 } from "../../claude"
@@ -24,7 +24,7 @@ import {
 } from "../index"
 
 function _getDesktopUserId(): string {
-  const user = getAuthManager().getUser()
+  const user = getAuthManager()?.getUser()
   return user?.id ?? "desktop-default"
 }
 
@@ -33,7 +33,7 @@ function _getDesktopUserId(): string {
  */
 async function getDesktopToken(): Promise<string | null> {
   const authManager = getAuthManager()
-  return authManager.getValidToken()
+  return authManager ? authManager.getValidToken() : null
 }
 
 /**

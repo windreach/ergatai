@@ -373,16 +373,182 @@ impl AgentRegistration {
 
 /// Default Codex `$` declaration. This is intentionally passthrough-only.
 fn default_codex_native_triggers_json() -> ErgataiResult<Option<String>> {
-    agent_triggers_json(Some(vec![AgentTriggerSpec {
-        id: "codex-dollar-command".to_string(),
-        agent_id: Some("codex".to_string()),
-        char: "$".to_string(),
-        kind: AgentTriggerKind::Command,
-        pattern: r"(^|\s)\$([A-Za-z0-9_-]+)$".to_string(),
-        execution: AgentTriggerExecution::Passthrough,
-        source: AgentTriggerSource::Manual,
-        description: Some("Codex-native syntax, sent as-is".to_string()),
-    }]))
+    agent_triggers_json(Some(vec![
+        AgentTriggerSpec {
+            id: "codex-dollar-command".to_string(),
+            agent_id: Some("codex".to_string()),
+            char: "$".to_string(),
+            kind: AgentTriggerKind::Command,
+            pattern: r"(^|\s)\$([A-Za-z0-9_-]+)$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("Codex-native syntax, sent as-is".to_string()),
+        },
+        AgentTriggerSpec {
+            id: "codex-slash-command".to_string(),
+            agent_id: Some("codex".to_string()),
+            char: "/".to_string(),
+            kind: AgentTriggerKind::Command,
+            pattern: r"(^|\s)/([A-Za-z0-9_-]+)$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("Codex slash command, sent as-is".to_string()),
+        },
+        AgentTriggerSpec {
+            id: "codex-at-context".to_string(),
+            agent_id: Some("codex".to_string()),
+            char: "@".to_string(),
+            kind: AgentTriggerKind::Context,
+            pattern: r"(^|\s)@([^\s]+)$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("Codex file/context mention, sent as-is".to_string()),
+        },
+        AgentTriggerSpec {
+            id: "codex-bang-shell".to_string(),
+            agent_id: Some("codex".to_string()),
+            char: "!".to_string(),
+            kind: AgentTriggerKind::Command,
+            pattern: r"(^|\s)!([^ \n]+)$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("Codex shell shortcut, sent as-is".to_string()),
+        },
+        AgentTriggerSpec {
+            id: "codex-hash-context".to_string(),
+            agent_id: Some("codex".to_string()),
+            char: "#".to_string(),
+            kind: AgentTriggerKind::Context,
+            pattern: r"(^|\s)#([^\s]+)$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("Codex context shortcut, sent as-is".to_string()),
+        },
+        AgentTriggerSpec {
+            id: "codex-question-help".to_string(),
+            agent_id: Some("codex".to_string()),
+            char: "?".to_string(),
+            kind: AgentTriggerKind::Command,
+            pattern: r"(^|\s)\?$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("Codex help shortcut, sent as-is".to_string()),
+        },
+    ]))
+}
+
+/// Default OpenCode native trigger declarations. OpenCode is ACP-native, so its
+/// model/config are auto-detected; these entry points are passthrough-only.
+fn default_opencode_native_triggers_json() -> ErgataiResult<Option<String>> {
+    agent_triggers_json(Some(vec![
+        AgentTriggerSpec {
+            id: "opencode-slash-command".to_string(),
+            agent_id: Some("opencode".to_string()),
+            char: "/".to_string(),
+            kind: AgentTriggerKind::Command,
+            pattern: r"(^|\s)/([A-Za-z0-9_-]+)$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("OpenCode slash command, sent as-is".to_string()),
+        },
+        AgentTriggerSpec {
+            id: "opencode-at-context".to_string(),
+            agent_id: Some("opencode".to_string()),
+            char: "@".to_string(),
+            kind: AgentTriggerKind::Context,
+            pattern: r"(^|\s)@([^\s]+)$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("OpenCode file/context mention, sent as-is".to_string()),
+        },
+        AgentTriggerSpec {
+            id: "opencode-bang-shell".to_string(),
+            agent_id: Some("opencode".to_string()),
+            char: "!".to_string(),
+            kind: AgentTriggerKind::Command,
+            pattern: r"(^|\s)!([^ \n]+)$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("OpenCode shell shortcut, sent as-is".to_string()),
+        },
+        AgentTriggerSpec {
+            id: "opencode-hash-context".to_string(),
+            agent_id: Some("opencode".to_string()),
+            char: "#".to_string(),
+            kind: AgentTriggerKind::Context,
+            pattern: r"(^|\s)#([^\s]+)$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("OpenCode context shortcut, sent as-is".to_string()),
+        },
+        AgentTriggerSpec {
+            id: "opencode-question-help".to_string(),
+            agent_id: Some("opencode".to_string()),
+            char: "?".to_string(),
+            kind: AgentTriggerKind::Command,
+            pattern: r"(^|\s)\?$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("OpenCode help shortcut, sent as-is".to_string()),
+        },
+    ]))
+}
+
+/// Default Claude Code `/` and `@` declarations. These are passthrough-only:
+/// Ergatai exposes the entry points but never interprets or rewrites the text.
+fn default_claude_native_triggers_json() -> ErgataiResult<Option<String>> {
+    agent_triggers_json(Some(vec![
+        AgentTriggerSpec {
+            id: "claude-slash-command".to_string(),
+            agent_id: Some("claude".to_string()),
+            char: "/".to_string(),
+            kind: AgentTriggerKind::Command,
+            pattern: r"(^|\s)/([A-Za-z0-9_-]+)$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("Claude Code slash command, sent as-is".to_string()),
+        },
+        AgentTriggerSpec {
+            id: "claude-at-context".to_string(),
+            agent_id: Some("claude".to_string()),
+            char: "@".to_string(),
+            kind: AgentTriggerKind::Context,
+            pattern: r"(^|\s)@([^\s]+)$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("Claude Code file/context mention, sent as-is".to_string()),
+        },
+        AgentTriggerSpec {
+            id: "claude-bang-bash".to_string(),
+            agent_id: Some("claude".to_string()),
+            char: "!".to_string(),
+            kind: AgentTriggerKind::Command,
+            pattern: r"(^|\s)!([^ \n]+)$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("Claude Code bash mode, sent as-is".to_string()),
+        },
+        AgentTriggerSpec {
+            id: "claude-hash-memory".to_string(),
+            agent_id: Some("claude".to_string()),
+            char: "#".to_string(),
+            kind: AgentTriggerKind::Context,
+            pattern: r"(^|\s)#([^\s]+)$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("Claude Code memory shortcut, sent as-is".to_string()),
+        },
+        AgentTriggerSpec {
+            id: "claude-question-help".to_string(),
+            agent_id: Some("claude".to_string()),
+            char: "?".to_string(),
+            kind: AgentTriggerKind::Command,
+            pattern: r"(^|\s)\?$".to_string(),
+            execution: AgentTriggerExecution::Passthrough,
+            source: AgentTriggerSource::Manual,
+            description: Some("Claude Code help/shortcuts, sent as-is".to_string()),
+        },
+    ]))
 }
 
 /// Agent profile with installation status — used by the API to report
@@ -616,6 +782,36 @@ impl ProfileRegistry {
         .map_err(|e| {
             ErgataiError::internal(format!(
                 "Failed to set default Codex native triggers: {}",
+                e
+            ))
+        })?;
+
+        // Existing installations get the safe Claude Code declaration on startup,
+        // but only when the profile has no user-provided trigger metadata.
+        let claude_native_triggers = default_claude_native_triggers_json()?;
+        conn.execute(
+            "UPDATE agent_registrations SET native_triggers_json = ?1
+             WHERE (name = 'claude' OR name = 'claude-code') AND native_triggers_json IS NULL",
+            params![claude_native_triggers],
+        )
+        .map_err(|e| {
+            ErgataiError::internal(format!(
+                "Failed to set default Claude native triggers: {}",
+                e
+            ))
+        })?;
+
+        // Existing installations get the safe OpenCode declaration on startup,
+        // but only when the profile has no user-provided trigger metadata.
+        let opencode_native_triggers = default_opencode_native_triggers_json()?;
+        conn.execute(
+            "UPDATE agent_registrations SET native_triggers_json = ?1
+             WHERE name = 'opencode' AND native_triggers_json IS NULL",
+            params![opencode_native_triggers],
+        )
+        .map_err(|e| {
+            ErgataiError::internal(format!(
+                "Failed to set default OpenCode native triggers: {}",
                 e
             ))
         })?;
@@ -1135,14 +1331,18 @@ impl ProfileRegistry {
     fn register_non_managed_default_profiles(&self) -> ErgataiResult<()> {
         let defaults = vec![
             // OpenCode (已验证 - https://opencode.ai/docs/acp/)
-            AgentRegistration::with_id_and_transport(
-                "opencode".to_string(),
-                "opencode".to_string(),
-                "opencode acp".to_string(),
-                "acp".to_string(),
-                Some("opencode-ai".to_string()),
-                None, // OpenCode ACP uses stdio, not HTTP (see https://opencode.ai/docs/acp/)
-            ),
+            {
+                let mut registration = AgentRegistration::with_id_and_transport(
+                    "opencode".to_string(),
+                    "opencode".to_string(),
+                    "opencode acp".to_string(),
+                    "acp".to_string(),
+                    Some("opencode-ai".to_string()),
+                    None, // OpenCode ACP uses stdio, not HTTP (see https://opencode.ai/docs/acp/)
+                );
+                registration.native_triggers_json = default_opencode_native_triggers_json()?;
+                registration
+            },
         ];
 
         info!(
@@ -1174,22 +1374,31 @@ impl ProfileRegistry {
             // OpenAI Codex CLI adapter (managed)
             codex_registration,
             // Anthropic Claude Agent adapter (managed)
-            AgentRegistration::with_managed(
-                "claude-code".to_string(),
-                "claude-code".to_string(),
-                claude_cmd.to_string(),
-                "acp".to_string(),
-                Some("@zed-industries/claude-code-acp".to_string()),
-            ),
+            {
+                let mut claude_registration = AgentRegistration::with_managed(
+                    "claude-code".to_string(),
+                    "claude-code".to_string(),
+                    claude_cmd.to_string(),
+                    "acp".to_string(),
+                    Some("@zed-industries/claude-code-acp".to_string()),
+                );
+                claude_registration.native_triggers_json =
+                    default_claude_native_triggers_json()?;
+                claude_registration
+            },
             // OpenCode (已验证 - https://opencode.ai/docs/acp/)
-            AgentRegistration::with_id_and_transport(
-                "opencode".to_string(),
-                "opencode".to_string(),
-                "opencode acp".to_string(),
-                "acp".to_string(),
-                Some("opencode-ai".to_string()),
-                None, // OpenCode ACP uses stdio, not HTTP (see https://opencode.ai/docs/acp/)
-            ),
+            {
+                let mut registration = AgentRegistration::with_id_and_transport(
+                    "opencode".to_string(),
+                    "opencode".to_string(),
+                    "opencode acp".to_string(),
+                    "acp".to_string(),
+                    Some("opencode-ai".to_string()),
+                    None, // OpenCode ACP uses stdio, not HTTP (see https://opencode.ai/docs/acp/)
+                );
+                registration.native_triggers_json = default_opencode_native_triggers_json()?;
+                registration
+            },
         ];
 
         info!(count = defaults.len(), "Registering default agent profiles");

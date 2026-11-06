@@ -2763,15 +2763,33 @@ pub(crate) fn parse_model_output(output: &str) -> Option<serde_json::Value> {
 
         // Parse "Available: A, B, C" and the equivalent bullet form:
         // "Available models:" followed by "- A" / "* B" / "1. C".
-        if lower.starts_with("available") && lower.contains(':') {
+        //
+        // Some agents (e.g. Claude Code) embed the available list inside a
+        // usage line such as "Usage: /model <name>. Available: sonnet, opus, ...",
+        // so we also accept "available:" anywhere in the line, not only at the
+        // start.
+        // Find "available" and a colon that follows it (possibly with "models"
+        // in between, as in "Available models:"). This also covers agents that
+        // embed the list inline, e.g. Claude's "Usage: /model <name>. Available: ...".
+        let avail_pos = lower.find("available");
+        let colon_after_avail = avail_pos.and_then(|p| lower[p..].find(':').map(|q| p + q));
+        if let Some(colon) = colon_after_avail {
             in_available_section = true;
-            if let Some((_label, available)) = trimmed.split_once(':') {
+            let available = &trimmed[colon..];
+            if let Some((_label, available)) = available.split_once(':') {
                 let available = available.trim().trim_end_matches('.');
                 for part in available.split(',') {
                     let name = clean_model_list_item(part);
-                    if !name.is_empty() && !models.contains(&name) {
-                        models.push(name);
+                    // Drop prose fragments such as "or a full model ID." that
+                    // Claude appends to the available list.
+                    if name.is_empty()
+                        || models.contains(&name)
+                        || name.eq_ignore_ascii_case("default")
+                        || name.contains(char::is_whitespace)
+                    {
+                        continue;
                     }
+                    models.push(name);
                 }
             }
             continue;
@@ -4346,6 +4364,66 @@ pub(crate) fn spawn_model_detection(agent_id: String, profile_name: String) {
                             elapsed_ms = start.elapsed().as_millis(),
                             "Model detection: config_options not available after 5s startup timeout"
                         );
+                        // Claude Code does not expose models over ACP; fall back to
+                        // its CLI output so the catalog can still be populated.
+                        if profile_name.to_lowercase().contains("claude") {
+                            if let Ok(output) = tokio::process::Command::new(if std::path::Path::new("/root/.local/bin/claude").exists() {
+                                    "/root/.local/bin/claude"
+                                } else {
+                                    "claude"
+                                })
+                                .arg("/model")
+                                .output()
+                                .await
+                            {
+                                let text = String::from_utf8_lossy(&output.stdout);
+                                if let Some(parsed) = parse_model_output(&text) {
+                                    let models = parsed
+                                        .get("models")
+                                        .and_then(serde_json::Value::as_array)
+                                        .map(|values| {
+                                            values
+                                                .iter()
+                                                .filter_map(serde_json::Value::as_str)
+                                                .filter(|m| {
+                                                    let lower = m.to_lowercase();
+                                                    !lower.contains('[')
+                                                        && lower != "best"
+                                                        && lower != "opusplan"
+                                                        && lower != "default"
+                                                })
+                                                .map(ToString::to_string)
+                                                .collect::<Vec<_>>()
+                                        })
+                                        .unwrap_or_default();
+                                    if !models.is_empty() {
+                                        let detection = DetectedModels {
+                                            models,
+                                            current: parsed
+                                                .get("current")
+                                                .and_then(serde_json::Value::as_str)
+                                                .map(ToString::to_string),
+                                            option_id: None,
+                                        };
+                                        if let Err(e) =
+                                            crate::services::profile_service::save_profile_models_by_name(
+                                                &profile_name,
+                                                &detection.models,
+                                                detection.option_id.as_deref(),
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(error = %e, "Failed to save Claude models");
+                                        } else {
+                                            tracing::info!(
+                                                models_count = detection.models.len(),
+                                                "Claude models detected via CLI fallback"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         return;
                     }
                     startup_delay = (startup_delay * 2).min(std::time::Duration::from_secs(1));
@@ -4403,6 +4481,80 @@ pub(crate) fn spawn_model_detection(agent_id: String, profile_name: String) {
                             elapsed_ms = start.elapsed().as_millis(),
                             "Model detection: no model category found after 30s backoff timeout"
                         );
+                        // Claude Code does not expose models over ACP; try CLI fallback.
+                        if profile_name.to_lowercase().contains("claude") {
+                            if let Ok(output) = tokio::process::Command::new(if std::path::Path::new(
+                                "/root/.local/bin/claude",
+                            )
+                            .exists()
+                            {
+                                "/root/.local/bin/claude"
+                            } else {
+                                "claude"
+                            })
+                            .arg("/model")
+                            .output()
+                            .await
+                            {
+                                let text = String::from_utf8_lossy(&output.stdout);
+                                if let Some(parsed) = parse_model_output(&text) {
+                                    let current = parsed
+                                        .get("current")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(ToString::to_string);
+                                    let is_gateway = current
+                                        .as_ref()
+                                        .map(|c| {
+                                            let l = c.to_lowercase();
+                                            !(l.contains("sonnet")
+                                                || l.contains("opus")
+                                                || l.contains("haiku")
+                                                || l.contains("fable")
+                                                || l.contains("claude"))
+                                        })
+                                        .unwrap_or(false);
+                                    let models = parsed
+                                        .get("models")
+                                        .and_then(serde_json::Value::as_array)
+                                        .map(|values| {
+                                            values
+                                                .iter()
+                                                .filter_map(serde_json::Value::as_str)
+                                                .filter(|m| {
+                                                    if !is_gateway {
+                                                        return true;
+                                                    }
+                                                    let lower = m.to_lowercase();
+                                                    !lower.contains('[')
+                                                        && lower != "best"
+                                                        && lower != "opusplan"
+                                                        && lower != "default"
+                                                })
+                                                .map(ToString::to_string)
+                                                .collect::<Vec<_>>()
+                                        })
+                                        .unwrap_or_default();
+                                    if !models.is_empty() {
+                                        if let Err(e) =
+                                            crate::services::profile_service::save_profile_models_by_name(
+                                                &profile_name,
+                                                &models,
+                                                None,
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(error = %e, "Failed to save Claude models");
+                                        } else {
+                                            tracing::info!(
+                                                models_count = models.len(),
+                                                "Claude models detected via CLI fallback"
+                                            );
+                                        }
+                                        return;
+                                    }
+                                }
+                            }
+                        }
                         // Config options were successfully read, but never contained
                         // a model selector. Treat that as definitive for this agent
                         // so the UI does not keep displaying an old catalog as current.
@@ -5015,5 +5167,17 @@ mod tests {
     #[test]
     fn test_parse_model_output_ignores_prose() {
         assert!(parse_model_output("No model selector available.").is_none());
+    }
+
+    #[test]
+    fn test_parse_model_output_claude_inline_available() {
+        let out = "Current model: `qwen3.7-plus`\nUsage: /model <name>. Available: sonnet, opus, haiku, fable, best, sonnet[1m], opus[1m], fable[1m], opusplan, default, or a full model ID.\n";
+        let parsed = parse_model_output(out).unwrap();
+        assert_eq!(parsed["current"], "qwen3.7-plus");
+        let models = parsed["models"].as_array().unwrap();
+        assert!(models.iter().any(|m| m == "sonnet"));
+        assert!(models.iter().any(|m| m == "sonnet[1m]"));
+        assert!(!models.iter().any(|m| m.as_str().unwrap().contains(' ')));
+        assert!(!models.iter().any(|m| m == "default"));
     }
 }

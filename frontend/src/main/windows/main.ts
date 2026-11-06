@@ -14,7 +14,7 @@ import { join } from "path"
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "fs"
 import { createIPCHandler } from "trpc-electron/main"
 import { createAppRouter } from "../lib/trpc/routers"
-import { getAuthManager, getBaseUrl } from "../index"
+import { getAuthManager } from "../auth-manager"
 import { registerGitWatcherIPC } from "../lib/git/watcher"
 import { hasActiveClaudeSessions, abortAllClaudeSessions } from "../lib/trpc/routers/mcp"
 import { getErgataiAuthConfig } from "../lib/ergatai/api"
@@ -147,7 +147,7 @@ function registerIpcHandlers(): void {
   )
 
   // API base URL for fetch requests
-  ipcMain.handle("app:get-api-base-url", () => getBaseUrl())
+  ipcMain.handle("app:get-api-base-url", () => "http://127.0.0.1")
   ipcMain.handle("ergatai:get-auth", () => getErgataiAuthConfig())
 
   // Window controls - use event.sender to identify window
@@ -347,20 +347,20 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("auth:get-user", (event) => {
     if (!validateSender(event)) return null
-    return getAuthManager().getUser()
+    return getAuthManager()!.getUser()
   })
 
   ipcMain.handle("auth:is-authenticated", (event) => {
     if (!validateSender(event)) return false
-    return getAuthManager().isAuthenticated()
+    return getAuthManager()!.isAuthenticated()
   })
 
   ipcMain.handle("auth:logout", async (event) => {
     if (!validateSender(event)) return
-    getAuthManager().logout()
+    getAuthManager()!.logout()
     const ses = session.fromPartition("persist:main")
     try {
-      await ses.cookies.remove(getBaseUrl(), "x-desktop-token")
+      await ses.cookies.remove("http://127.0.0.1", "x-desktop-token")
       console.log("[Auth] Cookie cleared on logout")
     } catch (err) {
       console.error("[Auth] Failed to clear cookie:", err)
@@ -370,7 +370,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("auth:update-user", async (event, updates: { name?: string }) => {
     if (!validateSender(event)) return null
     try {
-      return await getAuthManager().updateUser(updates)
+      return await getAuthManager()!.updateUser(updates)
     } catch (error) {
       console.error("[Auth] Failed to update user:", error)
       throw error

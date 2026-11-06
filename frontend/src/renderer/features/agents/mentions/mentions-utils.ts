@@ -3,7 +3,18 @@
  * Separated from render-file-mentions.tsx to maintain Fast Refresh compatibility.
  */
 
-import { MENTION_PREFIXES } from "./agents-mentions-editor"
+export const MENTION_PREFIXES = {
+  FILE: "file:",
+  FOLDER: "folder:",
+  SKILL: "skill:",
+  AGENT: "agent:",
+  TOOL: "tool:",
+  QUOTE: "quote:",
+  DIFF: "diff:",
+  PASTED: "pasted:",
+  CHAT_HISTORY: "chatHistory:",
+} as const
+
 
 interface ParsedMention {
   id: string
