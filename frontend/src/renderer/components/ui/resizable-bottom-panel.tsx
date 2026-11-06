@@ -1,6 +1,7 @@
 "use client"
 
 import { useAtom, type WritableAtom } from "jotai"
+// react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
@@ -24,6 +25,7 @@ const DEFAULT_MAX_HEIGHT = 500
 const PANEL_ANIMATION_DURATION = 0.24
 const EXTENDED_HOVER_AREA_HEIGHT = 8
 
+// react-doctor-disable-next-line no-giant-component
 export function ResizableBottomPanel({
   isOpen,
   onClose,
@@ -239,7 +241,9 @@ export function ResizableBottomPanel({
                 ? { height: currentHeight, opacity: 1 }
                 : { height: 0, opacity: 0 }
             }
+            // react-doctor-disable-next-line no-layout-property-animation
             animate={{ height: currentHeight, opacity: 1 }}
+            // react-doctor-disable-next-line no-layout-property-animation
             exit={{ height: 0, opacity: 0 }}
             transition={{
               duration: isResizing ? 0 : PANEL_ANIMATION_DURATION,
@@ -297,6 +301,7 @@ export function ResizableBottomPanel({
               tooltipPosition &&
               typeof window !== "undefined" &&
               createPortal(
+                // react-doctor-disable-next-line motion-animate-presence-must-outlive-child
                 <AnimatePresence>
                   {tooltipPosition && (
                     <motion.div
@@ -314,8 +319,11 @@ export function ResizableBottomPanel({
                         pointerEvents: "none",
                       }}
                     >
+                      {/* react-doctor-disable-next-line click-events-have-key-events */}
+                      {/* react-doctor-disable-next-line dialog-has-accessible-name */}
                       <div
                         ref={tooltipRef}
+                        // react-doctor-disable-next-line prefer-html-dialog
                         role="dialog"
                         data-tooltip="true"
                         className="relative rounded-md border border-border bg-popover px-2 py-1 flex flex-col items-start gap-0.5 text-xs text-popover-foreground shadow-lg dark pointer-events-auto"

@@ -94,8 +94,11 @@ export function useSideChatController(chatId: string, isActive: boolean): SideCh
 
   useEffect(() => {
     allAgentsRef.current = []
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setChatAgentsLoaded(false)
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setSideChats([])
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setActiveSideChatId(null)
   }, [chatId])
 
@@ -168,9 +171,11 @@ export function useSideChatController(chatId: string, isActive: boolean): SideCh
       })
       setIsCreatingSideChat(false)
     }
+  // react-doctor-disable-next-line exhaustive-deps
   }, [agentBindingsQuery.data, sideChats, creatingAgentIds])
 
   const processAgentRequestRef = useRef(processAgentRequest)
+  // react-doctor-disable-next-line no-ref-current-in-render
   processAgentRequestRef.current = processAgentRequest
 
   const stableProcessRequest = useCallback((agent: CoreAgentOption, backendConversationId?: string) => {

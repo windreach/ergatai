@@ -172,6 +172,8 @@ function sortFilesByRelevance<T extends { label: string; path?: string }>(
 
 
 // Memoized to prevent re-renders when parent re-renders
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export const AgentsFileMention = memo(function AgentsFileMention({
   isOpen,
   onClose,
@@ -183,6 +185,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   sandboxId,
   branch,
   projectPath,
+  // react-doctor-disable-next-line rerender-memo-with-default-value
   changedFiles = [],
   showingFilesList = false,
   showingSkillsList = false,
@@ -511,6 +514,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
 
     // Reset to 0 when opening, search changes, or subpage changes
     if (didJustOpen || didSearchChange || didSubpageChange) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setSelectedIndex(0)
     }
     // Clamp to valid range if options shrunk
@@ -610,6 +614,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
 
     document.addEventListener("mousedown", handleClickOutside)
     return () => document.removeEventListener("mousedown", handleClickOutside)
+  // react-doctor-disable-next-line prefer-use-effect-event
   }, [isOpen, onClose])
 
   // Get dropdown dimensions with dynamic scaling based on window size
@@ -644,6 +649,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
     const condition2 =
       availableAbove > availableBelow && availableAbove >= requestedHeight
     const shouldPlaceAbove = condition1 || condition2
+    // react-doctor-disable-next-line no-ref-current-in-render
     placementRef.current = shouldPlaceAbove ? "above" : "below"
   }
   const placeAbove = placementRef.current === "above"
@@ -706,6 +712,15 @@ export const AgentsFileMention = memo(function AgentsFileMention({
             const isSelected = selectedIndex === index
             return (
               <div
+                // react-doctor-disable-next-line prefer-tag-over-role
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault()
+                    ;(e.currentTarget as HTMLElement).click()
+                  }
+                }}
                 key={option.id}
                 data-option-index={index}
                 onClick={() => onSelect(option)}

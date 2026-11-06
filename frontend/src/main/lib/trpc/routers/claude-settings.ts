@@ -247,6 +247,7 @@ export const claudeSettingsRouter = router({
 
       for (const serverName of input.serverNames) {
         const identifier = `${input.pluginSource}:${serverName}`
+        // react-doctor-disable-next-line js-set-map-lookups
         if (!approved.includes(identifier)) {
           approved.push(identifier)
         }

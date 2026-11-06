@@ -1214,6 +1214,7 @@ ${input.prompt}
         for (const match of inlineDepsMatches) {
           const deps = match[1].split(',').map(d => d.trim().replace(/['"]/g, ''))
           for (const dep of deps) {
+            // react-doctor-disable-next-line js-set-map-lookups
             if (!taskNames.includes(dep)) {
               errors.push(`Rule 8: Dependency '${dep}' does not exist in tasks`)
             }
@@ -1226,6 +1227,7 @@ ${input.prompt}
           const depItems = listBlock.matchAll(/^[ \t]+-[ \t]+([\w-]+)[ \t]*$/gm)
           for (const item of depItems) {
             const dep = item[1].trim()
+            // react-doctor-disable-next-line js-set-map-lookups
             if (dep && !taskNames.includes(dep)) {
               errors.push(`Rule 8: Dependency '${dep}' does not exist in tasks`)
             }

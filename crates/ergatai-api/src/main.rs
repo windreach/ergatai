@@ -712,8 +712,8 @@ async fn async_main(args: Args) -> Result<()> {
                 publisher_for_cleanup,
             );
 
-            // Spawn deletion queue worker (batched archive/unarchive cleanup).
-            let _deletion_queue_handle = ergatai_api::services::deletion_queue_worker::spawn_worker(
+            // Spawn generic job queue worker (batched cleanup, persistence, etc.).
+            let _job_queue_handle = ergatai_api::services::job_queue_worker::spawn_worker(
                 mcp_cancellation_token.clone(),
             );
 

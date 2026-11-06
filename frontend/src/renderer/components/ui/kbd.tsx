@@ -27,7 +27,8 @@ function renderShortcut(children: React.ReactNode): React.ReactNode {
     if (symbolMap[token]) {
       parts.push(symbolMap[token])
     } else if (token) {
-      parts.push(<span key={index}>{token}</span>)
+      // react-doctor-disable-next-line no-array-index-as-key
+      parts.push(<span key={`index-${index}`}>{token}</span>)
     }
   })
 

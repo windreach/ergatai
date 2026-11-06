@@ -13,6 +13,7 @@ interface GitStatusBarProps {
  * Compact git status bar: branch name, ahead/behind remote counts,
  * Push / Pull buttons. Rendered above the Git panel.
  */
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const GitStatusBar = memo(function GitStatusBar({
 	worktreePath,
 }: GitStatusBarProps) {

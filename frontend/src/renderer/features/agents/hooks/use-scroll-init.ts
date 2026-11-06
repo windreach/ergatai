@@ -48,6 +48,7 @@ export function useScrollInit({
 }: UseScrollInitProps) {
   // Keep isActive in ref for use in callbacks (avoid stale closures)
   const isVisiblePaneRef = useRef(isVisiblePane)
+  // react-doctor-disable-next-line no-ref-current-in-render
   isVisiblePaneRef.current = isVisiblePane
 
   // Helper function to perform auto-scroll to bottom with proper flag management
@@ -144,6 +145,7 @@ export function useScrollInit({
   }, [conversationId, isVisiblePane])
 
   // Attach scroll listener (separate effect)
+  // react-doctor-disable-next-line advanced-event-handler-refs
   useEffect(() => {
     const container = chatContainerRef.current
     if (!container) return

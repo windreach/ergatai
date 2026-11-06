@@ -1812,6 +1812,10 @@ pub async fn send_message(
                         mode: "agent".to_string(),
                         created_at: now,
                         updated_at: now,
+                        imported_count: 0,
+                        import_cursor: None,
+                        has_more: false,
+                        total_captured: 0,
                     })
                 })
                 .await
@@ -2604,6 +2608,49 @@ pub async fn list_agent_sessions(
     }
     match crate::services::agent_service::list_agent_sessions(&id).await {
         Ok(sessions) => {
+            // Best-effort: probe agent history and enqueue persistence jobs
+            // for sessions that are not yet bound to a project conversation.
+            let runtime = crate::context::get_app_context().agent_runtime.clone();
+            if let Some(info) = runtime.registry().get(&id).await {
+                if let Some(conv_id_str) = info.handle.metadata.get("conversation_id_i64") {
+                    if let Ok(conv_i64) = conv_id_str.parse::<i64>() {
+                        if let Ok(Some(conv)) =
+                            crate::user_data_db::conversations::get(ConversationId::new(conv_i64))
+                        {
+                            let chat_id_i64 = conv.chat_id.as_i64();
+                            let mut sorted_sessions = sessions.clone();
+                            sorted_sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                            for s in sorted_sessions.into_iter().take(50) {
+                                let already_bound =
+                                    crate::user_data_db::agent_sessions::get_by_acp_session_id(
+                                        &s.session_id,
+                                    )
+                                    .ok()
+                                    .flatten()
+                                    .is_some();
+                                if already_bound {
+                                    continue;
+                                }
+                                let payload = serde_json::json!({
+                                    "chat_id": chat_id_i64,
+                                    "acp_session_id": s.session_id,
+                                    "title": s.title,
+                                    "capture_limit": 50,
+                                    "persist_limit": 20,
+                                });
+                                let _ = crate::user_data_db::chats::enqueue_job(
+                                    "persistence",
+                                    "agent_session",
+                                    &id,
+                                    "import_agent_session_history",
+                                    Some(&payload.to_string()),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             let response = ListSessionsResponse {
                 sessions: sessions
                     .into_iter()
@@ -3508,6 +3555,10 @@ pub async fn prompt_agent(
                     mode: conversation_mode,
                     created_at: now,
                     updated_at: now,
+                    imported_count: 0,
+                    import_cursor: None,
+                    has_more: false,
+                    total_captured: 0,
                 })
             })
             .await
@@ -4367,14 +4418,16 @@ pub(crate) fn spawn_model_detection(agent_id: String, profile_name: String) {
                         // Claude Code does not expose models over ACP; fall back to
                         // its CLI output so the catalog can still be populated.
                         if profile_name.to_lowercase().contains("claude") {
-                            if let Ok(output) = tokio::process::Command::new(if std::path::Path::new("/root/.local/bin/claude").exists() {
+                            if let Ok(output) = tokio::process::Command::new(
+                                if std::path::Path::new("/root/.local/bin/claude").exists() {
                                     "/root/.local/bin/claude"
                                 } else {
                                     "claude"
-                                })
-                                .arg("/model")
-                                .output()
-                                .await
+                                },
+                            )
+                            .arg("/model")
+                            .output()
+                            .await
                             {
                                 let text = String::from_utf8_lossy(&output.stdout);
                                 if let Some(parsed) = parse_model_output(&text) {
@@ -4483,15 +4536,13 @@ pub(crate) fn spawn_model_detection(agent_id: String, profile_name: String) {
                         );
                         // Claude Code does not expose models over ACP; try CLI fallback.
                         if profile_name.to_lowercase().contains("claude") {
-                            if let Ok(output) = tokio::process::Command::new(if std::path::Path::new(
-                                "/root/.local/bin/claude",
+                            if let Ok(output) = tokio::process::Command::new(
+                                if std::path::Path::new("/root/.local/bin/claude").exists() {
+                                    "/root/.local/bin/claude"
+                                } else {
+                                    "claude"
+                                },
                             )
-                            .exists()
-                            {
-                                "/root/.local/bin/claude"
-                            } else {
-                                "claude"
-                            })
                             .arg("/model")
                             .output()
                             .await

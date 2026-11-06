@@ -825,6 +825,8 @@ const ChangeItem = memo(function ChangeItem({
 // Main Component
 // ============================================================================
 
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
   parts,
   chatStatus,
@@ -842,16 +844,16 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
     currentSnapshot: Map<string, TaskSnapshot>
   } | null>(null)
 
-  const { previousSnapshot, currentSnapshot } = useMemo(() => {
+  const { previousSnapshot, currentSnapshot, groupKey: memoGroupKey } = useMemo(() => {
     const emptySnapshot = new Map<string, TaskSnapshot>()
 
     if (!conversationId) {
-      return { previousSnapshot: emptySnapshot, currentSnapshot: emptySnapshot }
+      return { previousSnapshot: emptySnapshot, currentSnapshot: emptySnapshot, groupKey: '', conversationId }
     }
 
     const groupKey = parts[0]?.toolCallId ?? ''
     if (!groupKey) {
-      return { previousSnapshot: emptySnapshot, currentSnapshot: emptySnapshot }
+      return { previousSnapshot: emptySnapshot, currentSnapshot: emptySnapshot, groupKey: '', conversationId }
     }
 
     // Read from caches (pure operation - no mutations)
@@ -877,19 +879,17 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
     // Build current snapshot from previous + this group's parts
     const currentSnapshot = updateTaskSnapshotFromParts(parts, previousSnapshot)
 
-    // Store pending mutation for useEffect to apply (pure assignment)
-    pendingMutationRef.current = { conversationId, groupKey, currentSnapshot }
-
-    return { previousSnapshot, currentSnapshot }
+    return { previousSnapshot, currentSnapshot, groupKey, conversationId }
   }, [parts, conversationId])
 
   // Apply cache mutations in useEffect (not in useMemo)
   // This ensures useMemo is pure and mutations happen after render
   useEffect(() => {
-    const mutation = pendingMutationRef.current
-    if (!mutation) return
+    const convId = conversationId
+    const gk = memoGroupKey
+    const snapshot = currentSnapshot
 
-    const { conversationId: convId, groupKey, currentSnapshot: snapshot } = mutation
+    if (!gk) return
 
     // Get or create caches for this conversation
     let historyMap = snapshotHistoryCache.get(convId)
@@ -911,23 +911,23 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
       cachedGroupKeys.set(convId, groupKeys)
     }
 
-    if (!groupKeys.has(groupKey)) {
+    if (!groupKeys.has(gk)) {
       // New entry - add to tracking and caches
-      groupKeys.add(groupKey)
-      historyMap.set(groupKey, snapshot)
+      groupKeys.add(gk)
+      historyMap.set(gk, snapshot)
 
       // Add to order if not present
-      const groupIndex = groupOrder.indexOf(groupKey)
+      const groupIndex = groupOrder.indexOf(gk)
       if (groupIndex === -1) {
-        groupOrder.push(groupKey)
+        groupOrder.push(gk)
       }
 
     } else {
       // Already tracked — still update the snapshot in case parts changed
       // (e.g. new streaming data arrived for the same groupKey)
-      historyMap.set(groupKey, snapshot)
+      historyMap.set(gk, snapshot)
     }
-  }, [currentSnapshot, conversationId])
+  }, [currentSnapshot, conversationId, memoGroupKey])
 
   // Sync the FULL accumulated task snapshot to Jotai atom for details sidebar.
   // We read the last group's snapshot from the cache (which accumulates all previous groups)
@@ -1121,6 +1121,14 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
     >
       {/* Header */}
       <div
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            ;(e.currentTarget as HTMLElement).click()
+          }
+        }}
         className={cn(
           "border border-border bg-muted/30 px-2.5 py-1.5",
           isReadOnly && !isExpanded ? "rounded-lg" : "rounded-t-lg border-b-0",

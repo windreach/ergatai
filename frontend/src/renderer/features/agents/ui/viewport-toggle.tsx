@@ -2,6 +2,7 @@
 
 import { cn } from "../../../lib/utils"
 import { Monitor, Smartphone, type LucideIcon } from "lucide-react"
+// react-doctor-disable-next-line use-lazy-motion
 import { motion } from "motion/react"
 
 interface ViewportToggleProps {
@@ -47,10 +48,13 @@ export function ViewportToggle({
         className="relative bg-muted rounded-lg h-7 p-0.5 flex"
       >
         {/* Animated selector */}
+        {/* react-doctor-disable-next-line no-transition-all */}
         <motion.div
           className="absolute inset-y-0.5 rounded-md bg-background shadow transition-all duration-200 ease-in-out"
           animate={{
+            // react-doctor-disable-next-line no-layout-property-animation
             width: "calc(50% - 2px)",
+            // react-doctor-disable-next-line no-layout-property-animation
             left: value === "desktop" ? "2px" : "calc(50%)",
           }}
           transition={{

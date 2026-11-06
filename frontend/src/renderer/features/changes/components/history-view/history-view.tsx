@@ -73,6 +73,8 @@ export const HistoryView = memo(function HistoryView({
 	// Auto-select first commit when history loads (if none selected)
 	useEffect(() => {
 		if (commits && commits.length > 0 && !selectedCommitHash && onCommitSelect) {
+			// react-doctor-disable-next-line no-pass-live-state-to-parent
+			// react-doctor-disable-next-line no-prop-callback-in-effect
 			onCommitSelect(commits[0]);
 		}
 	}, [commits, selectedCommitHash, onCommitSelect]);
@@ -80,6 +82,8 @@ export const HistoryView = memo(function HistoryView({
 	// Auto-select first file when commit files load
 	useEffect(() => {
 		if (commitFiles && commitFiles.length > 0 && selectedCommitHash && !selectedFilePath && onFileSelect) {
+			// react-doctor-disable-next-line no-pass-live-state-to-parent
+			// react-doctor-disable-next-line no-prop-callback-in-effect
 			onFileSelect(commitFiles[0], selectedCommitHash);
 		}
 	}, [commitFiles, selectedCommitHash, selectedFilePath, onFileSelect]);
@@ -195,6 +199,14 @@ const HistoryCommitItem = memo(function HistoryCommitItem({
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
 				<div
+				  role="button"
+				  tabIndex={0}
+				  onKeyDown={(e) => {
+				    if (e.key === "Enter" || e.key === " ") {
+				      e.preventDefault()
+				      ;(e.currentTarget as HTMLElement).click()
+				    }
+				  }}
 					className={cn(
 						"flex items-center gap-2 px-2 py-2 cursor-pointer transition-colors",
 						"hover:bg-muted/50 border-b border-border/30 last:border-b-0",
@@ -260,6 +272,14 @@ const _CommitFileItem = memo(function _CommitFileItem({
 
 	return (
 		<div
+		  role="button"
+		  tabIndex={0}
+		  onKeyDown={(e) => {
+		    if (e.key === "Enter" || e.key === " ") {
+		      e.preventDefault()
+		      ;(e.currentTarget as HTMLElement).click()
+		    }
+		  }}
 			className={cn(
 				"flex items-center gap-2 px-2 py-1 cursor-pointer transition-colors",
 				"hover:bg-muted/80",

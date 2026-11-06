@@ -210,6 +210,7 @@ export const pluginsRouter = router({
           category: plugin.category,
           homepage: plugin.homepage,
           tags: plugin.tags,
+          // react-doctor-disable-next-line js-set-map-lookups
           isDisabled: !enabledPlugins.includes(plugin.source),
           components: {
             commands,

@@ -1,5 +1,6 @@
 "use client"
 
+// react-doctor-disable-next-line use-lazy-motion
 import { motion } from "motion/react"
 import { useState, useEffect } from "react"
 import {
@@ -39,6 +40,7 @@ export function DevicePresetsBar({
   const [isFocused, setIsFocused] = useState(false)
 
   // Sync input value when width prop changes, but only if input is not focused
+  // react-doctor-disable-next-line no-event-handler
   useEffect(() => {
     if (!isFocused) {
       setWidthInputValue(String(width))
@@ -69,8 +71,11 @@ export function DevicePresetsBar({
   return (
     <motion.div
       key="device-presets-above"
+      // react-doctor-disable-next-line no-layout-property-animation
       initial={{ opacity: 0, height: 0 }}
+      // react-doctor-disable-next-line no-layout-property-animation
       animate={{ opacity: 1, height: "auto" }}
+      // react-doctor-disable-next-line no-layout-property-animation
       exit={{ opacity: 0, height: 0 }}
       transition={{
         opacity: {

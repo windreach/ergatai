@@ -169,6 +169,8 @@ interface ConversationSelectorProps {
   chatId?: string
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export function ConversationSelector({
   onCreateNew,
   isMobile = false,
@@ -278,6 +280,7 @@ export function ConversationSelector({
       const chat = allConversationsById.get(id)
       if (!chat) return
 
+      // react-doctor-disable-next-line js-set-map-lookups
       if (pinnedConversationIds.includes(id)) {
         pinnedChats.push(chat)
       } else {
@@ -495,7 +498,7 @@ export function ConversationSelector({
     const activeTabElement = tabRefs.current.get(activeConversationId)
 
     if (activeTabElement) {
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         const containerRect = container.getBoundingClientRect()
         const tabRect = activeTabElement.getBoundingClientRect()
 
@@ -516,6 +519,7 @@ export function ConversationSelector({
           })
         }
       }, 0)
+      return () => clearTimeout(timer)
     }
   }, [activeConversationId, openConversations])
 
@@ -697,6 +701,7 @@ export function ConversationSelector({
                 const isLoading = loadingConversations.has(conversation?.id || "")
                 const hasUnseen = conversationsUnseenChanges.has(conversation?.id || "")
                 const hasTabsToRight = index < openConversations.length - 1
+                // react-doctor-disable-next-line js-set-map-lookups
                 const isPinned = pinnedConversationIds.includes(conversation?.id)
                 // Get mode from conversation itself (defaults to "agent")
                 const mode = conversation?.mode || "agent"
@@ -850,6 +855,8 @@ export function ConversationSelector({
                                     : "bg-[linear-gradient(to_left,color-mix(in_srgb,hsl(var(--muted))_80%,hsl(var(--background)))_0%,color-mix(in_srgb,hsl(var(--muted))_80%,hsl(var(--background)))_60%,transparent_100%)]",
                                 )}
                               />
+                              {/* react-doctor-disable-next-line html-no-nested-interactive */}
+                              {/* react-doctor-disable-next-line click-events-have-key-events */}
                               <span
                                 role="button"
                                 tabIndex={-1}

@@ -90,6 +90,7 @@ export function ToolSelector({ selectedTools, onChange, mode }: ToolSelectorProp
               </div>
               <div className="grid grid-cols-2 gap-2">
                 {categoryTools.map((tool) => {
+                  // react-doctor-disable-next-line js-set-map-lookups
                   const isSelected = selectedTools.includes(tool.id)
                   return (
                     <button

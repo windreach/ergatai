@@ -35,6 +35,7 @@ type WorkspaceListProps = {
   selectedWorkspaceId?: string | null
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 const WorkspaceItem = memo(({
   workspace,
   selectedWorkspaceId,

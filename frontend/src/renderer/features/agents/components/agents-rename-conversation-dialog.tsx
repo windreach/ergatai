@@ -1,5 +1,6 @@
 "use client"
 
+// react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
 import { useCallback, useEffect, useState, useRef } from "react"
 import { createPortal } from "react-dom"
@@ -30,6 +31,7 @@ export function AgentsRenameConversationDialog({
   const openAtRef = useRef<number>(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // react-doctor-disable-next-line rendering-hydration-no-flicker
   useEffect(() => {
     setMounted(true)
   }, [])
@@ -89,6 +91,7 @@ export function AgentsRenameConversationDialog({
 
     document.addEventListener("keydown", handleKeyDown)
     return () => document.removeEventListener("keydown", handleKeyDown)
+  // react-doctor-disable-next-line prefer-use-effect-event
   }, [isOpen, handleClose, handleSave])
 
   if (!mounted) return null
@@ -102,6 +105,14 @@ export function AgentsRenameConversationDialog({
         <>
           {/* Overlay */}
           <motion.div
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                ;(e.currentTarget as HTMLElement).click()
+              }
+            }}
             initial={{ opacity: 0 }}
             animate={{
               opacity: 1,

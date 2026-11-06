@@ -91,7 +91,8 @@ export function SearchCombobox<T>({
             <CommandGroup>
               {filteredItems.map((item, index) => (
                 <CommandItem
-                  key={index}
+                  // react-doctor-disable-next-line no-array-index-as-key
+                  key={`index-${index}`}
                   value={getItemValue(item)}
                   onSelect={() => onSelect(item)}
                 >

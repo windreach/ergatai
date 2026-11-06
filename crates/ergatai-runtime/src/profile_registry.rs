@@ -1382,8 +1382,7 @@ impl ProfileRegistry {
                     "acp".to_string(),
                     Some("@zed-industries/claude-code-acp".to_string()),
                 );
-                claude_registration.native_triggers_json =
-                    default_claude_native_triggers_json()?;
+                claude_registration.native_triggers_json = default_claude_native_triggers_json()?;
                 claude_registration
             },
             // OpenCode (已验证 - https://opencode.ai/docs/acp/)

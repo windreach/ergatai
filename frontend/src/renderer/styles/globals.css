@@ -352,3 +352,19 @@
 [data-animating="true"] + div {
   border-top-left-radius: 0 !important;
 }
+
+/* Accessibility: avoid showing focus ring on pointer (mouse/touch) interaction.
+   Text inputs match :focus-visible even on click in Chromium, so CSS :focus-visible alone cannot
+   distinguish pointer vs keyboard. We track the last interaction method on <html> and suppress
+   the blue focus ring/border when it was a pointer interaction. Keyboard (Tab) navigation keeps it. */
+html[data-focus-method="pointer"] *:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+html[data-focus-method="pointer"] input:focus:not(.border-destructive),
+html[data-focus-method="pointer"] textarea:focus:not(.border-destructive),
+html[data-focus-method="pointer"] select:focus:not(.border-destructive),
+html[data-focus-method="pointer"] [contenteditable]:focus {
+  border-color: hsl(var(--input)) !important;
+}

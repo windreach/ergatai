@@ -150,6 +150,7 @@ export function WorkspaceEditDialog({
                     <span className="truncate text-sm">{project.projectName}</span>
                   </div>
                   <button
+                    aria-label="X"
                     type="button"
                     onClick={() => handleRemoveFolder(project)}
                     className="flex-shrink-0 rounded p-0.5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"

@@ -28,6 +28,7 @@ import type { TerminalProps, TerminalStreamEvent } from "./types"
 import { resolveTerminalProvider } from "./providers"
 import "xterm/css/xterm.css"
 
+// react-doctor-disable-next-line no-giant-component
 export function Terminal({
   paneId,
   cwd,
@@ -46,6 +47,7 @@ export function Terminal({
   const commandBufferRef = useRef("")
 
   const [isSearchOpen, setIsSearchOpen] = useState(false)
+  // react-doctor-disable-next-line rerender-state-only-in-handlers
   const [terminalCwd, setTerminalCwd] = useState<string | null>(
     initialCwd || cwd,
   )
@@ -60,14 +62,17 @@ export function Terminal({
 
   // Ref for terminalCwd to avoid effect re-runs when cwd changes
   const terminalCwdRef = useRef(terminalCwd)
+  // react-doctor-disable-next-line no-ref-current-in-render
   terminalCwdRef.current = terminalCwd
 
   // Ref for paneId to use in callbacks
   const paneIdRef = useRef(paneId)
+  // react-doctor-disable-next-line no-ref-current-in-render
   paneIdRef.current = paneId
 
   const provider = useMemo(resolveTerminalProvider, [])
   const providerRef = useRef(provider)
+  // react-doctor-disable-next-line no-ref-current-in-render
   providerRef.current = provider
 
   // Parse terminal data for cwd (OSC 7 sequences)
@@ -88,6 +93,7 @@ export function Terminal({
   )
 
   const updateCwdRef = useRef(updateCwdFromData)
+  // react-doctor-disable-next-line no-ref-current-in-render
   updateCwdRef.current = updateCwdFromData
 
   // Handle stream data
@@ -171,6 +177,7 @@ export function Terminal({
     isExitedRef.current = false
 
     // Lazy load search addon
+    // react-doctor-disable-next-line no-promise-then-side-effect-in-effect-without-catch
     import("@xterm/addon-search").then(({ SearchAddon }) => {
       if (isUnmounted || !xtermRef.current) return
       const searchAddon = new SearchAddon()

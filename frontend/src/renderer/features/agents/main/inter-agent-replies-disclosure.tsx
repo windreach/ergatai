@@ -243,21 +243,17 @@ function AgentReplyDisclosure({
 
     // Host conversation: MCP-delivered replies with real content. Prefer these
     // over the external agent's own turn output.
+    // External agent responses now have role="respagent" (set by backend based on
+    // sender vs conversation owner comparison), so we filter by role directly
+    // instead of the fragile messageType check.
     const hostReplies = hostMessages
       .filter((message) => {
-        const metadata = message.metadata as
-          | { correlationId?: unknown; replyToMessageId?: unknown; messageType?: unknown }
-          | null
-        const isResponse =
-          message.messageType === "response" ||
-          metadata?.messageType === "response"
         const agentMatches =
           !agentName ||
           message.fromAgentName === agentName ||
           String(message.fromAgentId ?? "") === agentId
         return (
-          message.role === "assistant" &&
-          isResponse &&
+          message.role === "respagent" &&
           agentMatches &&
           matchesRequestFor(message) &&
           getMessageText(message).length > 0

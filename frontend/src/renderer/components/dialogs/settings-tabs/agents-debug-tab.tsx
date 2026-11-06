@@ -58,6 +58,7 @@ function unloadReactScan(): void {
   }
 }
 
+// react-doctor-disable-next-line no-giant-component
 export function AgentsDebugTab() {
   const [copiedPath, setCopiedPath] = useState(false)
   const [copiedInfo, setCopiedInfo] = useState(false)
@@ -184,6 +185,7 @@ export function AgentsDebugTab() {
     }
   }, [isDev])
 
+  // react-doctor-disable-next-line rendering-hydration-no-flicker
   useEffect(() => {
     setMockChatEnabledState(isMockChatEnabled())
   }, [])

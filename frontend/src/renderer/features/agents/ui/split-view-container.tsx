@@ -23,6 +23,7 @@ export function SplitViewContainer({
   const [localRatios, setLocalRatios] = useState<number[] | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const ratiosRef = useRef(splitRatios)
+  // react-doctor-disable-next-line no-ref-current-in-render
   ratiosRef.current = splitRatios
 
   // Use local ratios during drag, else persisted. Auto-fix if length mismatch.

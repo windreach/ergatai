@@ -26,6 +26,7 @@ export function usePastedTextFiles(conversationId: string): UsePastedTextFilesRe
   const pastedTextsRef = useRef<PastedTextFile[]>([])
 
   // Keep ref in sync with state
+  // react-doctor-disable-next-line no-ref-current-in-render
   pastedTextsRef.current = pastedTexts
 
   const writePastedTextMutation = trpc.files.writePastedText.useMutation()

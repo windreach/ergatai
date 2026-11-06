@@ -2,6 +2,7 @@
 
 import React, { useMemo, useState, useCallback, useRef, useEffect, memo } from "react"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
+// react-doctor-disable-next-line use-lazy-motion
 import { motion, AnimatePresence } from "motion/react"
 import { Button } from "../../components/ui/button"
 import { Input } from "../../components/ui/input"
@@ -97,6 +98,7 @@ interface WorkspaceChatsSidebarProps {
 }
 
 // Memoized chat item component with restored styles from old sidebar
+// react-doctor-disable-next-line no-high-complexity-react-function
 const ChatItem = memo(function ChatItem({
   chat,
   isActive,
@@ -149,6 +151,7 @@ const ChatItem = memo(function ChatItem({
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <div
+          role="button"
           data-testid={`chat-item-${chat.id}`}
           data-conversation-index={globalIndex}
           onClick={() => onChatClick(chat.id)}
@@ -273,6 +276,7 @@ const ChatItem = memo(function ChatItem({
  * WorkspaceChatsSidebar - Displays all chats in the workspace
  * This replaces the old agents-conversations-sidebar which incorrectly showed conversations (tabs)
  */
+// react-doctor-disable-next-line no-giant-component
 export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
   onClose,
   onBackToChats,
@@ -430,10 +434,12 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
 
   // Separate pinned and unpinned chats
   const pinnedChats = useMemo(
+    // react-doctor-disable-next-line js-set-map-lookups
     () => filteredChats.filter((chat) => pinnedChatIds.includes(chat.id)),
     [filteredChats, pinnedChatIds]
   )
   const unpinnedChats = useMemo(
+    // react-doctor-disable-next-line js-set-map-lookups
     () => filteredChats.filter((chat) => !pinnedChatIds.includes(chat.id)),
     [filteredChats, pinnedChatIds]
   )

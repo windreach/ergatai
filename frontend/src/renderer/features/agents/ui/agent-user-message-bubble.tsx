@@ -89,7 +89,7 @@ function HighlightedText({ text }: { text: string }) {
       if (part.isMatch) {
         return (
           <mark
-            key={idx}
+            key={`idx-${idx}`}
             className={cn(
               "search-highlight",
               part.isCurrent && "search-highlight-current"
@@ -102,7 +102,8 @@ function HighlightedText({ text }: { text: string }) {
       } else {
         // For non-matching text, use RenderFileMentions to preserve mention parsing
         return (
-          <span key={idx}>
+          // react-doctor-disable-next-line no-array-index-as-key
+          <span key={`idx-${idx}`}>
             <RenderFileMentions text={part.text} />
           </span>
         )
@@ -183,6 +184,7 @@ export const AgentUserMessageBubble = memo(function AgentUserMessageBubble({
 
                 return imageParts.map((img, idx) => (
                   <AgentImageItem
+                    // react-doctor-disable-next-line no-array-index-as-key
                     key={`${messageId}-img-${idx}`}
                     id={`${messageId}-img-${idx}`}
                     filename={img.data?.filename || "image"}
@@ -201,6 +203,14 @@ export const AgentUserMessageBubble = memo(function AgentUserMessageBubble({
           {/* Text bubble with overflow detection */}
           {cleanedText ? (
             <div
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault()
+                  ;(e.currentTarget as HTMLElement).click()
+                }
+              }}
               ref={contentRef}
               onClick={() => showGradient && !hasCurrentSearchHighlight && setIsExpanded(true)}
               className={cn(

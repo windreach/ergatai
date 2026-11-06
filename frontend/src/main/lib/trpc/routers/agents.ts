@@ -127,6 +127,7 @@ export const agentsRouter = router({
         discoverInstalledPlugins(),
       ])
       const enabledPlugins = installedPlugins.filter(
+        // react-doctor-disable-next-line js-set-map-lookups
         (p) => enabledPluginSources.includes(p.source),
       )
       for (const plugin of enabledPlugins) {

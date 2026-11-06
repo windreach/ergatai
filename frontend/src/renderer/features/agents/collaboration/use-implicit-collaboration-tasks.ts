@@ -14,6 +14,7 @@ export function useImplicitCollaborationTasks(chatId: string) {
 
   // Clear tasks when chatId changes to prevent showing stale tasks from other conversations
   useEffect(() => {
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setTasks([])
   }, [chatId])
 

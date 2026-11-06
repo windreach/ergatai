@@ -164,7 +164,9 @@ export function useHotkeyRecorder({
   // Reset state when recording starts (not when it stops, to avoid flicker)
   useEffect(() => {
     if (isRecording) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setModifiers(new Set())
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setMainKey(null)
       hasRecordedRef.current = false
     }

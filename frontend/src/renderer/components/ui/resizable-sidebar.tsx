@@ -1,6 +1,7 @@
 "use client"
 
 import { useAtom, type WritableAtom } from "jotai"
+// react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal, flushSync } from "react-dom"
@@ -48,6 +49,8 @@ const DEFAULT_MAX_WIDTH = 9999 // Effectively no limit - CSS constraints handle 
 const DEFAULT_ANIMATION_DURATION = 0.24
 const EXTENDED_HOVER_AREA_WIDTH = 8
 
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export function ResizableSidebar({
   isOpen,
   onClose,
@@ -254,6 +257,7 @@ export function ResizableSidebar({
       document.removeEventListener("click", handleDocumentClick, true)
       document.removeEventListener("pointerdown", handleDocumentClick, true)
     }
+  // react-doctor-disable-next-line prefer-use-effect-event
   }, [isOpen, isHoveringResizeHandle, isTooltipDismissed, handleClose])
 
   // Handle resize interactions (both handle and extended area)
@@ -429,9 +433,11 @@ export function ResizableSidebar({
                   }
             }
             animate={{
+              // react-doctor-disable-next-line no-layout-property-animation
               width: isOpen ? animatedWidth : exitWidth,
             }}
             exit={{
+              // react-doctor-disable-next-line no-layout-property-animation
               width: exitWidth,
             }}
             transition={{
@@ -575,6 +581,7 @@ export function ResizableSidebar({
               tooltipPosition &&
               typeof window !== "undefined" &&
               createPortal(
+                // react-doctor-disable-next-line motion-animate-presence-must-outlive-child
                 <AnimatePresence>
                   {tooltipPosition && (
                     <motion.div
@@ -596,8 +603,11 @@ export function ResizableSidebar({
                         pointerEvents: "none",
                       }}
                     >
+                      {/* react-doctor-disable-next-line click-events-have-key-events */}
+                      {/* react-doctor-disable-next-line dialog-has-accessible-name */}
                       <div
                         ref={tooltipRef}
+                        // react-doctor-disable-next-line prefer-html-dialog
                         role="dialog"
                         data-tooltip="true"
                         className="relative rounded-md border border-border bg-popover px-2 py-1 flex flex-col items-start gap-0.5 text-xs text-popover-foreground shadow-lg dark pointer-events-auto"

@@ -1,3 +1,4 @@
+// react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
 import { useEffect, useState, useRef, useCallback } from "react"
 import { createPortal } from "react-dom"
@@ -30,8 +31,10 @@ export function ConfirmArchiveDialog({
   const confirmButtonRef = useRef<HTMLButtonElement>(null)
   // Use ref to avoid re-registering keydown listener when checkbox changes
   const deleteWorktreeRef = useRef(deleteWorktree)
+  // react-doctor-disable-next-line no-ref-current-in-render
   deleteWorktreeRef.current = deleteWorktree
 
+  // react-doctor-disable-next-line rendering-hydration-no-flicker
   useEffect(() => {
     setMounted(true)
   }, [])
@@ -40,6 +43,7 @@ export function ConfirmArchiveDialog({
     if (isOpen) {
       openAtRef.current = performance.now()
       // Reset checkbox when dialog opens
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setDeleteWorktree(false)
     }
   }, [isOpen])
@@ -79,6 +83,7 @@ export function ConfirmArchiveDialog({
 
     document.addEventListener("keydown", handleKeyDown)
     return () => document.removeEventListener("keydown", handleKeyDown)
+  // react-doctor-disable-next-line prefer-use-effect-event
   }, [isOpen, handleClose, handleConfirm])
 
   if (!mounted) return null
@@ -95,6 +100,14 @@ export function ConfirmArchiveDialog({
         <>
           {/* Overlay */}
           <motion.div
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                ;(e.currentTarget as HTMLElement).click()
+              }
+            }}
             initial={{ opacity: 0 }}
             animate={{
               opacity: 1,

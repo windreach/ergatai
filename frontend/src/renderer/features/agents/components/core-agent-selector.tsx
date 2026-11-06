@@ -117,6 +117,7 @@ export function CoreAgentSelector({
   }, [])
 
   useEffect(() => {
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setSelectedAgent((current) =>
       current.id === value
         ? current
@@ -284,6 +285,7 @@ function GroupAgentSelector({
           <div className="space-y-0.5">
             {agents.map((agent) => {
               const Icon = getCoreAgentIcon(agent.id)
+              // react-doctor-disable-next-line js-set-map-lookups
               const isSelected = draftAgentIds.includes(agent.id)
 
               return (

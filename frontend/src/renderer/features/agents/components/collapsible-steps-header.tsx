@@ -13,6 +13,14 @@ export function CollapsibleStepsHeader({
 }) {
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          ;(e.currentTarget as HTMLElement).click()
+        }
+      }}
       className="flex items-center justify-between rounded-md py-0.5 px-2 cursor-pointer hover:bg-muted/50 transition-colors"
       onClick={onToggle}
     >
@@ -22,7 +30,9 @@ export function CollapsibleStepsHeader({
           {stepsCount} {stepsCount === 1 ? "step" : "steps"}
         </span>
       </div>
+      {/* react-doctor-disable-next-line html-no-nested-interactive */}
       <button
+        aria-label="ExpandIcon"
         className="p-1 rounded-md hover:bg-accent transition-[background-color,transform] duration-150 ease-out active:scale-95"
         onClick={(e) => {
           e.stopPropagation()

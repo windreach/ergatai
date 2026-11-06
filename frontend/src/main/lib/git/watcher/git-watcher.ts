@@ -104,6 +104,7 @@ export class GitWatcher extends EventEmitter {
 	private async initWatcher(config: GitWatcherConfig): Promise<void> {
 		// Dynamic import for ESM-only chokidar
 		const chokidar = await import("chokidar");
+		// react-doctor-disable-next-line server-sequential-independent-await
 		const path = await import("path");
 
 		// Strategy: Watch ONLY .git/index and .git/HEAD

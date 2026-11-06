@@ -81,6 +81,7 @@ function CircularProgress({
         className="text-muted-foreground/20"
       />
       {/* Progress circle */}
+      {/* react-doctor-disable-next-line no-transition-all */}
       <circle
         cx={size / 2}
         cy={size / 2}
@@ -118,6 +119,15 @@ export const AgentContextIndicator = memo(function AgentContextIndicator({
     <Tooltip delayDuration={300}>
       <TooltipTrigger asChild>
         <div
+          // react-doctor-disable-next-line prefer-tag-over-role
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault()
+              ;(e.currentTarget as HTMLElement).click()
+            }
+          }}
           onClick={isClickable ? onCompact : undefined}
           className={cn(
             "h-4 w-4 flex items-center justify-center",

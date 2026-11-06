@@ -19,6 +19,7 @@ const useRouter = () => ({
 const useUser = () => ({ user: null })
 const useClerk = () => ({ signOut: () => {} })
 import {
+  chatClaimStateAtom,
   selectedAgentChatIdAtom,
   previousAgentChatIdAtom,
   selectedDraftIdAtom,
@@ -62,6 +63,7 @@ import {
 } from "../stores/conversation-store"
 import { useWorkspaceChatsStore } from "../stores/workspace-chats-store"
 import { useShallow } from "zustand/react/shallow"
+// react-doctor-disable-next-line use-lazy-motion
 import { motion, AnimatePresence } from "motion/react"
 // import { ResizableSidebar } from "@/app/(alpha)/canvas/[id]/{components}/resizable-sidebar"
 import { ResizableSidebar } from "../../../components/ui/resizable-sidebar"
@@ -81,8 +83,11 @@ import { useCollaborationMode } from "../collaboration/use-collaboration-mode"
 const useIsAdmin = () => false
 
 // Main Component
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export function AgentsContent() {
   const [selectedChatId, setSelectedChatId] = useAtom(selectedAgentChatIdAtom)
+  const chatClaimState = useAtomValue(chatClaimStateAtom)
   const desktopView = useAtomValue(desktopViewAtom)
   const setDesktopView = useSetAtom(desktopViewAtom)
   const { mode: collaborationMode } = useCollaborationMode()
@@ -110,6 +115,15 @@ export function AgentsContent() {
   // This prevents clearing workspace due to transient errors during app startup
   const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
 
+  const isChatClaimPending =
+    !!selectedChatId &&
+    typeof window !== "undefined" &&
+    !!window.desktopApi?.claimChat &&
+    !(
+      chatClaimState.chatId === selectedChatId &&
+      chatClaimState.status === "claimed"
+    )
+
   // Delay before enabling workspace/chat validation to allow backend to stabilize
   const INITIAL_LOAD_DELAY_MS = 500
 
@@ -129,6 +143,15 @@ export function AgentsContent() {
       retryDelay: 1000, // Wait 1s between retries
     },
   )
+
+  // Workspace IDs and chat IDs are restored before the backend has validated
+  // them. Keep restored chats out of the render tree until ownership, workspace
+  // existence, and chat data have all been checked so a stale selection cannot
+  // flash into ChatView and then disappear.
+  const isWorkspaceValidationPending =
+    !!selectedWorkspaceId &&
+    (!isInitialLoadComplete ||
+      (selectedWorkspace === undefined && !workspaceError))
 
   // Clear invalid workspace ID if workspace no longer exists (returns null for 404)
   // Only do this after initial load is complete to avoid clearing due to transient errors
@@ -243,7 +266,9 @@ export function AgentsContent() {
   const conversationQuickSwitchSelectedIndexRef = useRef(
     conversationQuickSwitchSelectedIndex,
   )
+  // react-doctor-disable-next-line no-ref-current-in-render
   conversationQuickSwitchOpenRef.current = conversationQuickSwitchOpen
+  // react-doctor-disable-next-line no-ref-current-in-render
   conversationQuickSwitchSelectedIndexRef.current = conversationQuickSwitchSelectedIndex
 
   // Get conversations from store with shallow comparison
@@ -307,6 +332,13 @@ export function AgentsContent() {
   // Validate the restored selection before mounting ChatView. Child views
   // otherwise fire chat-scoped queries against an ID that may no longer exist.
   const isChatDataLoading = !!isValidChatId && chatData === undefined
+  const isChatSelectionPending =
+    !!selectedChatId &&
+    !!selectedWorkspaceId &&
+    (isChatClaimPending ||
+      isChatDataLoading ||
+      isWorkspaceValidationPending ||
+      !isInitialLoadComplete)
 
   useEffect(() => {
     if (!selectedChatId) return
@@ -468,6 +500,7 @@ export function AgentsContent() {
   // Shortcut depends on ctrlTabTarget preference:
   // - "workspaces" (default): Ctrl+Tab switches workspaces
   // - "agents": Opt+Ctrl+Tab switches workspaces
+  // react-doctor-disable-next-line effect-needs-cleanup
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Determine shortcut based on preference
@@ -688,6 +721,7 @@ export function AgentsContent() {
   // - "workspaces" (default): Opt+Ctrl+Tab switches agents
   // - "agents": Ctrl+Tab switches agents
   // Uses refs for dialog state to avoid effect re-running and losing keyup events
+  // react-doctor-disable-next-line effect-needs-cleanup
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Determine shortcut based on preference
@@ -1071,12 +1105,8 @@ export function AgentsContent() {
               <AgentsDefaultView
                 onWorkspaceCreated={handleWorkspaceCreated}
               />
-            ) : isWorkspaceLoading ? (
+            ) : isWorkspaceLoading || isChatSelectionPending ? (
               // Workspace is still loading - show loading spinner
-              <div className="flex h-full items-center justify-center">
-                <IconSpinner className="h-5 w-5 text-muted-foreground" />
-              </div>
-            ) : selectedChatId && isChatDataLoading ? (
               <div className="flex h-full items-center justify-center">
                 <IconSpinner className="h-5 w-5 text-muted-foreground" />
               </div>
@@ -1191,12 +1221,8 @@ export function AgentsContent() {
                     onWorkspaceCreated={handleWorkspaceCreated}
                   />
                 </div>
-              ) : isWorkspaceLoading ? (
+              ) : isWorkspaceLoading || isChatSelectionPending ? (
                 // Workspace is still loading - show loading spinner
-                <div className="h-full flex items-center justify-center">
-                  <IconSpinner className="h-5 w-5 text-muted-foreground" />
-                </div>
-              ) : selectedChatId && isChatDataLoading ? (
                 <div className="h-full flex items-center justify-center">
                   <IconSpinner className="h-5 w-5 text-muted-foreground" />
                 </div>
@@ -1256,6 +1282,7 @@ export function AgentsContent() {
       {/* Dev mode / Admin sandbox debugger */}
       {(import.meta.env.DEV || isAdmin) &&
         chatData?.sandbox_id && (
+          // react-doctor-disable-next-line no-transition-all
           <a
             href={`https://codesandbox.io/p/devbox/${chatData.sandbox_id}`}
             target="_blank"

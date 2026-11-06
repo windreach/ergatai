@@ -27,6 +27,7 @@ export const projectsRouter = router({
       const allProjects: Project[] = []
       for (const ws of workspaces) {
         try {
+          // react-doctor-disable-next-line async-await-in-loop
           const projects = await ergataiFetch<BackendWorkspaceProject[]>(
             `/api/v1/workspaces/managed/${encodeURIComponent(ws.workspace_id)}/projects`,
           )

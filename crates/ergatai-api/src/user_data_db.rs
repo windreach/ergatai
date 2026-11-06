@@ -239,9 +239,12 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
             mode TEXT NOT NULL DEFAULT 'agent',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
+            imported_count INTEGER NOT NULL DEFAULT 0,
+            import_cursor TEXT,
+            has_more INTEGER NOT NULL DEFAULT 0,
+            total_captured INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
-
 
         CREATE TABLE IF NOT EXISTS terminal_sessions (
             session_id INTEGER PRIMARY KEY,
@@ -370,11 +373,12 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
         "#,
     )?;
 
-    // Deletion queue for batched/async physical cleanup (archive/delete peak shaving)
+    // Generic job queue for batched/async background work (cleanup, persistence, etc.)
     conn.execute_batch(
         r#"
-        CREATE TABLE IF NOT EXISTS deletion_queue (
+        CREATE TABLE IF NOT EXISTS job_queue (
             id INTEGER PRIMARY KEY,
+            job_type TEXT NOT NULL DEFAULT 'deletion',
             entity_type TEXT NOT NULL,
             entity_id TEXT NOT NULL,
             action TEXT NOT NULL,
@@ -384,9 +388,47 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_deletion_queue_status ON deletion_queue(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_job_queue_status ON job_queue(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_job_queue_type ON job_queue(job_type, status, created_at);
         "#,
     )?;
+
+    // Backward-compatible migration for existing agent_sessions tables.
+    let _ = conn.execute(
+        "ALTER TABLE agent_sessions ADD COLUMN imported_count INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agent_sessions ADD COLUMN import_cursor TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agent_sessions ADD COLUMN has_more INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agent_sessions ADD COLUMN total_captured INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+
+    // Migrate legacy deletion_queue rows into the generic job_queue (idempotent).
+    let legacy_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='deletion_queue'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if legacy_exists > 0 {
+        conn.execute(
+            "INSERT OR IGNORE INTO job_queue (id, job_type, entity_type, entity_id, action, payload, status, retry_count, created_at, updated_at) \
+             SELECT id, 'deletion', entity_type, entity_id, action, payload, status, retry_count, created_at, updated_at \
+             FROM deletion_queue",
+            [],
+        )?;
+        // Drop the legacy table after successful migration.
+        conn.execute_batch("DROP TABLE IF EXISTS deletion_queue;")?;
+    }
 
     Ok(())
 }
@@ -618,6 +660,10 @@ pub struct AgentSession {
     pub mode: String,
     pub created_at: i64,
     pub updated_at: i64,
+    pub imported_count: i64,
+    pub import_cursor: Option<String>,
+    pub has_more: bool,
+    pub total_captured: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1271,11 +1317,12 @@ pub mod chats {
         Ok(())
     }
 
-    // ==================== Deletion Queue ====================
+    // ==================== Generic Job Queue ====================
 
     #[derive(Debug, Clone)]
-    pub struct DeletionJob {
+    pub struct Job {
         pub id: i64,
+        pub job_type: String,
         pub entity_type: String,
         pub entity_id: String,
         pub action: String,
@@ -1283,7 +1330,11 @@ pub mod chats {
         pub retry_count: i64,
     }
 
-    pub fn enqueue_deletion(
+    /// Backward-compatible alias.
+    pub type DeletionJob = Job;
+
+    pub fn enqueue_job(
+        job_type: &str,
         entity_type: &str,
         entity_id: &str,
         action: &str,
@@ -1296,48 +1347,55 @@ pub mod chats {
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
             .as_secs() as i64;
         conn.execute(
-            "INSERT INTO deletion_queue (entity_type, entity_id, action, payload, status, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?5)",
-            params![entity_type, entity_id, action, payload, now],
+            "INSERT INTO job_queue (job_type, entity_type, entity_id, action, payload, status, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?6)",
+            params![job_type, entity_type, entity_id, action, payload, now],
         )?;
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn dequeue_deletions(limit: usize) -> Result<Vec<DeletionJob>> {
+    /// Backward-compatible wrapper for deletion jobs.
+    pub fn enqueue_deletion(
+        entity_type: &str,
+        entity_id: &str,
+        action: &str,
+        payload: Option<&str>,
+    ) -> Result<i64> {
+        enqueue_job("deletion", entity_type, entity_id, action, payload)
+    }
+
+    pub fn dequeue_jobs(limit: usize) -> Result<Vec<Job>> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
-        // Use BEGIN IMMEDIATE to acquire a reserved lock upfront, preventing
-        // other writers from starting. This makes the SELECT + UPDATE atomic,
-        // avoiding race conditions where two workers dequeue the same jobs.
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
             let mut stmt = conn.prepare(
-                "SELECT id, entity_type, entity_id, action, payload, retry_count \
-                 FROM deletion_queue WHERE status = 'pending' \
+                "SELECT id, job_type, entity_type, entity_id, action, payload, retry_count \
+                 FROM job_queue WHERE status = 'pending' \
                  ORDER BY created_at ASC, id ASC LIMIT ?1",
             )?;
             let rows = stmt.query_map(params![limit as i64], |row| {
-                Ok(DeletionJob {
+                Ok(Job {
                     id: row.get(0)?,
-                    entity_type: row.get(1)?,
-                    entity_id: row.get(2)?,
-                    action: row.get(3)?,
-                    payload: row.get(4)?,
-                    retry_count: row.get(5)?,
+                    job_type: row.get(1)?,
+                    entity_type: row.get(2)?,
+                    entity_id: row.get(3)?,
+                    action: row.get(4)?,
+                    payload: row.get(5)?,
+                    retry_count: row.get(6)?,
                 })
             })?;
             let mut jobs = Vec::new();
             for job in rows {
                 jobs.push(job?);
             }
-            // Mark as processing
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
                 .as_secs() as i64;
             for job in &jobs {
                 conn.execute(
-                    "UPDATE deletion_queue SET status = 'processing', updated_at = ?1 WHERE id = ?2",
+                    "UPDATE job_queue SET status = 'processing', updated_at = ?1 WHERE id = ?2",
                     params![now, job.id],
                 )?;
             }
@@ -1345,9 +1403,6 @@ pub mod chats {
         })();
         match result {
             Ok(jobs) => {
-                // If COMMIT fails, the transaction is still open and the connection
-                // is in an inconsistent state. Roll back to release the lock cleanly
-                // rather than leaving the mutex guard to drop inside an open txn.
                 if let Err(commit_err) = conn.execute_batch("COMMIT") {
                     let _ = conn.execute_batch("ROLLBACK");
                     return Err(commit_err);
@@ -1361,8 +1416,11 @@ pub mod chats {
         }
     }
 
-    /// Reset any jobs stuck in 'processing' state back to 'pending'.
-    /// Called on worker startup to recover from crashes.
+    /// Backward-compatible wrapper.
+    pub fn dequeue_deletions(limit: usize) -> Result<Vec<Job>> {
+        dequeue_jobs(limit)
+    }
+
     pub fn reset_stale_processing_jobs() -> Result<usize> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
@@ -1371,34 +1429,43 @@ pub mod chats {
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
             .as_secs() as i64;
         let affected = conn.execute(
-            "UPDATE deletion_queue SET status = 'pending', updated_at = ?1 WHERE status = 'processing'",
+            "UPDATE job_queue SET status = 'pending', updated_at = ?1 WHERE status = 'processing'",
             params![now],
         )?;
         Ok(affected)
     }
 
-    pub fn mark_deletion_done(id: i64) -> Result<()> {
+    pub fn mark_job_done(id: i64) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
-        conn.execute("DELETE FROM deletion_queue WHERE id = ?1", params![id])?;
+        conn.execute("DELETE FROM job_queue WHERE id = ?1", params![id])?;
         Ok(())
     }
 
-    pub fn mark_deletion_failed(id: i64, max_retries: i64) -> Result<()> {
+    /// Backward-compatible wrapper.
+    pub fn mark_deletion_done(id: i64) -> Result<()> {
+        mark_job_done(id)
+    }
+
+    pub fn mark_job_failed(id: i64, max_retries: i64) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
             .as_secs() as i64;
-        // Increment retry; if exceeded, mark failed (dead letter)
         conn.execute(
-            "UPDATE deletion_queue SET retry_count = retry_count + 1, \
+            "UPDATE job_queue SET retry_count = retry_count + 1, \
              status = CASE WHEN retry_count + 1 >= ?2 THEN 'failed' ELSE 'pending' END, \
              updated_at = ?1 WHERE id = ?3",
             params![now, max_retries, id],
         )?;
         Ok(())
+    }
+
+    /// Backward-compatible wrapper.
+    pub fn mark_deletion_failed(id: i64, max_retries: i64) -> Result<()> {
+        mark_job_failed(id, max_retries)
     }
 
     pub fn find_by_worktree_path(path: &str) -> Result<Option<Chat>> {
@@ -1645,6 +1712,80 @@ pub mod conversations {
         create_message_table(conversation.conversation_id)?;
 
         Ok(conversation)
+    }
+
+    // Helper used by background persistence jobs:
+    // Ensure a conversation + message table + agent_session binding exist for an ACP session.
+    pub fn create_for_agent_session(
+        chat_id: ChatId,
+        acp_session_id: &str,
+        title: Option<String>,
+    ) -> Result<ConversationId> {
+        // Idempotent: if binding already exists, return existing conversation.
+        if let Some(existing) = super::agent_sessions::get_by_acp_session_id(acp_session_id)? {
+            return Ok(existing.conversation_id.into());
+        }
+
+        let chat =
+            super::chats::get(chat_id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+
+        // Get or create collaboration session for this chat.
+        let sessions = super::collaboration_sessions::list(Some(chat.chat_id))?;
+        let session = if let Some(s) = sessions.into_iter().next() {
+            s
+        } else {
+            let mode = chat
+                .collaboration_mode
+                .clone()
+                .unwrap_or_else(|| "supervisor".to_string());
+            let now = chrono::Utc::now().timestamp();
+            let session_id = CollaborationSessionId::generate();
+            super::collaboration_sessions::create(super::CollaborationSession {
+                collaboration_session_id: session_id,
+                chat_id: chat.chat_id,
+                workspace_id: chat.workspace_id,
+                mode,
+                state: "idle".to_string(),
+                goal: None,
+                active_plan_revision: None,
+                created_at: now,
+                updated_at: now,
+            })?
+        };
+
+        let now = chrono::Utc::now().timestamp();
+        let conversation_id = ConversationId::generate();
+        let conversation = create(Conversation {
+            conversation_id,
+            collaboration_session_id: session.collaboration_session_id,
+            chat_id: chat.chat_id,
+            parent_id: None,
+            name: title,
+            mode: "agent".to_string(),
+            participant_role: "peer".to_string(),
+            status: "ready".to_string(),
+            created_at: now,
+            updated_at: now,
+            context_used: 0,
+            context_window: 0,
+            context_updated_at: 0,
+        })?;
+
+        let agent_session_id = ergatai_error::id::generate();
+        super::agent_sessions::upsert(super::AgentSession {
+            agent_session_id,
+            conversation_id: conversation.conversation_id.as_i64(),
+            acp_session_id: Some(acp_session_id.to_string()),
+            mode: "agent".to_string(),
+            created_at: now,
+            updated_at: now,
+            imported_count: 0,
+            import_cursor: None,
+            has_more: false,
+            total_captured: 0,
+        })?;
+
+        Ok(conversation.conversation_id)
     }
 
     pub fn list_by_collaboration_session(
@@ -1977,12 +2118,16 @@ pub mod agent_sessions {
         let conn = db.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO agent_sessions (agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO agent_sessions (agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(conversation_id) DO UPDATE SET
                acp_session_id = excluded.acp_session_id,
                mode = excluded.mode,
-               updated_at = excluded.updated_at",
+               updated_at = excluded.updated_at,
+               imported_count = excluded.imported_count,
+               import_cursor = excluded.import_cursor,
+               has_more = excluded.has_more,
+               total_captured = excluded.total_captured",
             params![
                 session.agent_session_id,
                 session.conversation_id,
@@ -1990,6 +2135,10 @@ pub mod agent_sessions {
                 session.mode,
                 session.created_at,
                 session.updated_at,
+                session.imported_count,
+                session.import_cursor,
+                session.has_more as i64,
+                session.total_captured,
             ],
         )?;
 
@@ -2001,7 +2150,7 @@ pub mod agent_sessions {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at
+            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured
              FROM agent_sessions WHERE conversation_id = ?1",
         )?;
 
@@ -2013,6 +2162,10 @@ pub mod agent_sessions {
                 mode: row.get(3)?,
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
+                imported_count: row.get(6)?,
+                import_cursor: row.get(7)?,
+                has_more: row.get::<_, i64>(8)? != 0,
+                total_captured: row.get(9)?,
             })
         })?;
 
@@ -2028,7 +2181,7 @@ pub mod agent_sessions {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at
+            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured
              FROM agent_sessions WHERE agent_session_id = ?1",
         )?;
 
@@ -2040,6 +2193,41 @@ pub mod agent_sessions {
                 mode: row.get(3)?,
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
+                imported_count: row.get(6)?,
+                import_cursor: row.get(7)?,
+                has_more: row.get::<_, i64>(8)? != 0,
+                total_captured: row.get(9)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(Ok(session)) => Ok(Some(session)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_by_acp_session_id(acp_session_id: &str) -> Result<Option<AgentSession>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured
+             FROM agent_sessions WHERE acp_session_id = ?1",
+        )?;
+
+        let mut rows = stmt.query_map(params![acp_session_id], |row| {
+            Ok(AgentSession {
+                agent_session_id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                acp_session_id: row.get(2)?,
+                mode: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                imported_count: row.get(6)?,
+                import_cursor: row.get(7)?,
+                has_more: row.get::<_, i64>(8)? != 0,
+                total_captured: row.get(9)?,
             })
         })?;
 
@@ -2062,6 +2250,26 @@ pub mod agent_sessions {
             params![conversation_id],
         )?;
         Ok(count > 0)
+    }
+
+    pub fn update_import_state(
+        conversation_id: i64,
+        imported_count: i64,
+        import_cursor: Option<String>,
+        has_more: bool,
+        total_captured: i64,
+    ) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        conn.execute(
+            "UPDATE agent_sessions SET imported_count = ?1, import_cursor = ?2, has_more = ?3, total_captured = ?4, updated_at = ?5 WHERE conversation_id = ?6",
+            params![imported_count, import_cursor, has_more as i64, total_captured, now, conversation_id],
+        )?;
+        Ok(())
     }
 }
 

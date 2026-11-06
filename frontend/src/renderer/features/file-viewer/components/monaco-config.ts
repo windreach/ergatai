@@ -1,4 +1,6 @@
+// react-doctor-disable-next-line prefer-dynamic-import
 import { loader } from "@monaco-editor/react"
+// react-doctor-disable-next-line prefer-dynamic-import
 import * as monaco from "monaco-editor"
 import type { editor } from "monaco-editor"
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker"

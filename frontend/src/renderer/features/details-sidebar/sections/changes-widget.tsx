@@ -70,6 +70,8 @@ function getFileStatus(file: ParsedDiffFile): "added" | "modified" | "deleted" |
  * Shows file list exactly like the Changes tab in diff sidebar
  * Memoized to prevent unnecessary re-renders when parent updates
  */
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export const ChangesWidget = memo(function ChangesWidget({
   chatId,
   worktreePath,
@@ -159,6 +161,7 @@ export const ChangesWidget = memo(function ChangesWidget({
 
     if (!hasInitializedSelection && displayFiles.length > 0) {
       setSelectedForCommit(allPaths)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setHasInitializedSelection(true)
       prevAllPathsRef.current = allPaths
       return
@@ -186,9 +189,12 @@ export const ChangesWidget = memo(function ChangesWidget({
   }, [displayFiles, hasInitializedSelection, getDisplayPath])
 
   // Reset selection when files change significantly
+  // react-doctor-disable-next-line no-reset-all-state-on-prop-change
   useEffect(() => {
     if (displayFiles.length === 0) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setHasInitializedSelection(false)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setSelectedForCommit(new Set())
       prevAllPathsRef.current = new Set()
     }

@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import {
   type SelectedTextContext,
   type DiffTextContext,
@@ -37,7 +37,9 @@ export function useTextContextSelection(): UseTextContextSelectionReturn {
   const diffTextContextsRef = useRef<DiffTextContext[]>([])
 
   // Keep refs in sync with state
+  // react-doctor-disable-next-line no-ref-current-in-render
   textContextsRef.current = textContexts
+  // react-doctor-disable-next-line no-ref-current-in-render
   diffTextContextsRef.current = diffTextContexts
 
   const addTextContext = useCallback(
@@ -45,27 +47,25 @@ export function useTextContextSelection(): UseTextContextSelectionReturn {
       const trimmedText = text.trim()
       if (!trimmedText) return
 
-      // Perform duplicate check AND state update inside the updater function
-      // so we always see the latest pending state, even across synchronous calls.
-      setTextContexts((prev) => {
-        const isDuplicate = prev.some(
-          (ctx) =>
-            ctx.text === trimmedText && ctx.sourceMessageId === sourceMessageId
-        )
-        if (isDuplicate) return prev
+      // Perform duplicate check against the latest ref value so we always see
+      // pending state, even across synchronous calls, without impure updater side effects.
+      const current = textContextsRef.current
+      const isDuplicate = current.some(
+        (ctx) => ctx.text === trimmedText && ctx.sourceMessageId === sourceMessageId,
+      )
+      if (isDuplicate) return
 
-        const newContext: SelectedTextContext = {
-          id: generateUniqueId("tc"),
-          text: trimmedText,
-          sourceMessageId,
-          preview: createTextPreview(trimmedText),
-          createdAt: new Date(),
-        }
+      const newContext: SelectedTextContext = {
+        id: generateUniqueId("tc"),
+        text: trimmedText,
+        sourceMessageId,
+        preview: createTextPreview(trimmedText),
+        createdAt: new Date(),
+      }
 
-        // Keep ref in sync so subsequent calls in the same batch see the addition
-        textContextsRef.current = [...prev, newContext]
-        return textContextsRef.current
-      })
+      const next = [...current, newContext]
+      textContextsRef.current = next
+      setTextContexts(next)
     },
     []
   )
@@ -78,30 +78,29 @@ export function useTextContextSelection(): UseTextContextSelectionReturn {
       // Perform duplicate check AND state update inside the updater function.
       // Include lineNumber and lineType in uniqueness check so the same text
       // from different locations in the same file can be selected independently.
-      setDiffTextContexts((prev) => {
-        const isDuplicate = prev.some(
-          (ctx) =>
-            ctx.text === trimmedText &&
-            ctx.filePath === filePath &&
-            ctx.lineNumber === lineNumber &&
-            ctx.lineType === lineType
-        )
-        if (isDuplicate) return prev
+      const currentDiff = diffTextContextsRef.current
+      const isDuplicate = currentDiff.some(
+        (ctx) =>
+          ctx.text === trimmedText &&
+          ctx.filePath === filePath &&
+          ctx.lineNumber === lineNumber &&
+          ctx.lineType === lineType,
+      )
+      if (isDuplicate) return
 
-        const newContext: DiffTextContext = {
-          id: generateUniqueId("dtc"),
-          text: trimmedText,
-          filePath,
-          lineNumber,
-          lineType,
-          preview: createTextPreview(trimmedText),
-          createdAt: new Date(),
-        }
+      const newContext: DiffTextContext = {
+        id: generateUniqueId("dtc"),
+        text: trimmedText,
+        filePath,
+        lineNumber,
+        lineType,
+        preview: createTextPreview(trimmedText),
+        createdAt: new Date(),
+      }
 
-        // Keep ref in sync so subsequent calls in the same batch see the addition
-        diffTextContextsRef.current = [...prev, newContext]
-        return diffTextContextsRef.current
-      })
+      const next = [...currentDiff, newContext]
+      diffTextContextsRef.current = next
+      setDiffTextContexts(next)
     },
     []
   )

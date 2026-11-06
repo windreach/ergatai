@@ -63,6 +63,7 @@ export function useAutoTrigger({
     hasTriggeredAutoGenerateRef.current = true
 
     // Clear messages to avoid duplicates
+    // react-doctor-disable-next-line no-pass-live-state-to-parent
     setMessages([])
 
   }, [messages, isStreaming, conversationId, isGroupMode, setMessages, hasTriggeredAutoGenerateRef])

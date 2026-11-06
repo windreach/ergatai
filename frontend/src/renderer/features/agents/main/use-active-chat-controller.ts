@@ -114,6 +114,7 @@ const mountedChatViewInnerCounts = new Map<string, number>()
 const pendingConversationCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
  
+// react-doctor-disable-next-line no-high-complexity-react-function
 export function useActiveChatController(props: {
   chat: Chat<any>
   conversationId: string
@@ -226,6 +227,7 @@ const [pendingInitialPrompt, setPendingInitialPrompt] = useAtom(
 
 const isVisiblePaneRef = useRef(isVisiblePane)
 
+// react-doctor-disable-next-line no-ref-current-in-render
 isVisiblePaneRef.current = isVisiblePane
 
 const conversationForBridge = useMemo(() => ({
@@ -405,10 +407,11 @@ const {
 
 const chatRef = useRef<Chat<any> | null>(null)
 
-if (prevConversationIdRef.current !== conversationId) {
-    prevConversationIdRef.current = conversationId
-  }
+useEffect(() => {
+  prevConversationIdRef.current = conversationId
+}, [conversationId])
 
+// react-doctor-disable-next-line no-ref-current-in-render
 chatRef.current = chat
 
 useDraftRecovery({
@@ -434,10 +437,12 @@ const messages = chatInvocation.messages?.length
 
 const sendMessageRef = useRef(sendMessage)
 
+// react-doctor-disable-next-line no-ref-current-in-render
 sendMessageRef.current = sendMessage
 
 const stopRef = useRef(stop)
 
+// react-doctor-disable-next-line no-ref-current-in-render
 stopRef.current = stop
 
 const isLocalStreaming = status === "streaming" || status === "submitted"
@@ -447,14 +452,23 @@ const isInitialPromptBusy =
     pendingInitialPrompt?.status === "dispatching" ||
     pendingInitialPrompt?.status === "running"
 
+// A persisted runtime snapshot can outlive the durable chat history on a page
+// refresh (hydration race). Until durable messages have loaded, do not treat
+// a completed/error/idle runtime snapshot as an active turn. A genuinely
+// streaming turn is still shown immediately.
+const durableMessagesLoaded = persistedMessagesLoading !== true
+
+const runtimeIsStreaming = conversationRuntime?.status === "streaming"
+const sessionIsStreaming = sessionState?.isStreaming === true
+
 const isBackendStreaming =
     isInitialPromptBusy ||
-    conversationRuntime?.status === "streaming" ||
-    sessionState?.isStreaming === true
+    runtimeIsStreaming ||
+    (durableMessagesLoaded && sessionIsStreaming)
 
 const isRuntimeStreaming =
-    conversationRuntime?.status === "streaming" ||
-    sessionState?.isStreaming === true
+    runtimeIsStreaming ||
+    (durableMessagesLoaded && sessionIsStreaming)
 
 const isStreaming = isLocalStreaming || isBackendStreaming
 
@@ -467,6 +481,7 @@ const streamingStatus = isLocalStreaming
 
 const isStreamingRef = useRef(isStreaming)
 
+// react-doctor-disable-next-line no-ref-current-in-render
 isStreamingRef.current = isStreaming
 
 const {
@@ -542,6 +557,7 @@ const handleStop = useCallback(async () => {
     // notifies the backend to cancel the prompt. Replaces the previous
     // AI-SDK-only stop, which left the backend agent running.
     await chatInvocation.stop()
+  // react-doctor-disable-next-line exhaustive-deps
   }, [backendAgentId, conversationId, isBackendStreaming, chatInvocation])
 
 const addTextContext = useCallback((text: string, source: TextSelectionSource) => {

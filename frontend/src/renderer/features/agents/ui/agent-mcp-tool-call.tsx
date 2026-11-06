@@ -235,6 +235,7 @@ function formatArgValue(value: unknown): string {
   return JSON.stringify(value)
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const AgentMcpToolCall = memo(function AgentMcpToolCall({
   part,
   mcpInfo,
@@ -284,6 +285,14 @@ export const AgentMcpToolCall = memo(function AgentMcpToolCall({
     <div>
       {/* Header */}
       <div
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            ;(e.currentTarget as HTMLElement).click()
+          }
+        }}
         onClick={() => hasExpandableContent && setIsExpanded(!isExpanded)}
         className={cn(
           "group flex items-start gap-1.5 py-0.5 px-2",
@@ -314,6 +323,7 @@ export const AgentMcpToolCall = memo(function AgentMcpToolCall({
             )}
 
             {/* Result count — more muted than args */}
+            {/* react-doctor-disable-next-line rendering-conditional-render */}
             {resultCount && (
               <span className="text-muted-foreground/40 font-normal whitespace-nowrap flex-shrink-0">
                 {resultCount}

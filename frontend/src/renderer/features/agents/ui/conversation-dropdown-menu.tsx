@@ -72,6 +72,7 @@ interface ConversationDropdownMenuProps {
   splitPaneCount?: number
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export function ConversationDropdownMenu({
   conversation,
   isPinned,

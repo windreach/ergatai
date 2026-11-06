@@ -65,6 +65,7 @@ export function TrafficLightSpacer({
       prevFullscreenRef.current !== null &&
       prevFullscreenRef.current !== isFullscreen
     ) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setShouldAnimate(true)
     }
     prevFullscreenRef.current = isFullscreen

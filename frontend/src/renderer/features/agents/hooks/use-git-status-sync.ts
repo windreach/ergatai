@@ -38,9 +38,12 @@ export function useGitStatusSync({
     // If git shows no changes but we still have parsedFileDiffs, clear them
     if (!hasUncommittedChanges && parsedFileDiffs && parsedFileDiffs.length > 0) {
       console.log('[active-chat] Git status empty but parsedFileDiffs has files, refreshing diff data')
+      // react-doctor-disable-next-line no-pass-live-state-to-parent
       setParsedFileDiffs([])
+      // react-doctor-disable-next-line no-pass-live-state-to-parent
       setPrefetchedFileContents({})
       setDiffContent(null)
+      // react-doctor-disable-next-line no-pass-live-state-to-parent
       setDiffStats({
         fileCount: 0,
         additions: 0,

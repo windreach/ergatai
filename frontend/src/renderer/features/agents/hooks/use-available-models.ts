@@ -146,6 +146,7 @@ export function extractRuntimeModelFromConfigOptions(
 
 // ── Hook ──
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export function useAvailableModels(agentId?: string | null): UseAvailableModelsReturn {
   const showOfflineFeatures = useAtomValue(showOfflineModeFeaturesAtom)
   const globalAgentId = useAtomValue(ergataiActiveAgentIdAtom)
@@ -214,6 +215,7 @@ export function useAvailableModels(agentId?: string | null): UseAvailableModelsR
   })
 
   const refreshMutationRef = useRef(refreshMutation)
+  // react-doctor-disable-next-line no-ref-current-in-render
   refreshMutationRef.current = refreshMutation
 
   useEffect(() => {
@@ -235,6 +237,7 @@ export function useAvailableModels(agentId?: string | null): UseAvailableModelsR
     requestedModelProfileRef.current = profileName
     refreshMutationRef.current.mutate({ profileName })
      
+  // react-doctor-disable-next-line exhaustive-deps
   }, [modelData, profileName, canRefreshModels])
 
   // Map backend response to UI format

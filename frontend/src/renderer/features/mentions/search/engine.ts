@@ -203,6 +203,7 @@ export class MentionSearchEngine {
     for (const provider of providers) {
       if (context.signal.aborted) break
 
+      // react-doctor-disable-next-line async-await-in-loop
       const result = await this.searchProvider(provider, context, options)
       results.set(provider.id, result)
     }

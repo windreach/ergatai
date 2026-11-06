@@ -2161,3 +2161,136 @@ pub async fn get_conversation_context_usage(
 
     (StatusCode::OK, Json(response)).into_response()
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Conversation history import (agent session capture)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, serde::Deserialize, ToSchema)]
+pub struct ImportConversationHistoryRequest {
+    pub agent_id: String,
+    pub acp_session_id: String,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/conversations/{id}/import-state",
+    tag = "Conversations",
+    params(("id" = String, Path, description = "Conversation ID")),
+    responses(
+        (status = 200, description = "Import state", body = serde_json::Value),
+        (status = 400, description = "Bad request"),
+        (status = 500, description = "Internal server error"),
+    )
+)]
+pub async fn get_conversation_import_state(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let id_i64 = match crate::http_error::parse_typed_id::<ConversationId>(&id, "Conversation") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
+    };
+
+    match tokio::task::spawn_blocking(move || {
+        crate::user_data_db::agent_sessions::get_by_conversation_id(id_i64.as_i64())
+    })
+    .await
+    {
+        Ok(Ok(Some(session))) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "imported_count": session.imported_count,
+                "import_cursor": session.import_cursor,
+                "has_more": session.has_more,
+                "total_captured": session.total_captured,
+            })),
+        )
+            .into_response(),
+        Ok(Ok(None)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "imported_count": 0,
+                "import_cursor": null,
+                "has_more": false,
+                "total_captured": 0,
+            })),
+        )
+            .into_response(),
+        Ok(Err(error)) => db_error("Failed to get import state", error),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/conversations/{id}/import-history",
+    tag = "Conversations",
+    params(("id" = String, Path, description = "Conversation ID")),
+    request_body = ImportConversationHistoryRequest,
+    responses(
+        (status = 202, description = "Import job enqueued"),
+        (status = 400, description = "Bad request"),
+        (status = 500, description = "Internal server error"),
+    )
+)]
+pub async fn import_conversation_history(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<ImportConversationHistoryRequest>,
+) -> impl IntoResponse {
+    if id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Conversation ID cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let id_i64 = match crate::http_error::parse_typed_id::<ConversationId>(&id, "Conversation") {
+        Ok(id) => id,
+        Err((status, json)) => return (status, json).into_response(),
+    };
+
+    let limit = request.limit.unwrap_or(20).min(20);
+    let payload = serde_json::json!({
+        "conversation_id": id_i64.as_i64(),
+        "acp_session_id": request.acp_session_id,
+        "limit": limit,
+    });
+
+    match crate::user_data_db::chats::enqueue_job(
+        "persistence",
+        "agent_session",
+        &request.agent_id,
+        "import_agent_session_history",
+        Some(&payload.to_string()),
+    ) {
+        Ok(job_id) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "job_id": job_id })),
+        )
+            .into_response(),
+        Err(error) => db_error("Failed to enqueue import job", error),
+    }
+}

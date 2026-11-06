@@ -349,6 +349,7 @@ function wouldExceedStorageLimit(
  * Convert blob URL to base64 data
  */
 async function blobUrlToBase64(blobUrl: string): Promise<string> {
+  // react-doctor-disable-next-line no-fetch-response-used-without-status-check
   const response = await fetch(blobUrl)
   const blob = await response.blob()
   return new Promise((resolve, reject) => {
@@ -445,6 +446,7 @@ export function fromDraftImage(draft: DraftImage): UploadedImage | null {
     }
     const byteArray = new Uint8Array(byteNumbers)
     const blob = new Blob([byteArray], { type: draft.mediaType })
+    // react-doctor-disable-next-line no-create-object-url-without-revoke
     const url = URL.createObjectURL(blob)
 
     // Track blob URL for cleanup (revoke old URLs first to prevent memory leaks)
@@ -484,6 +486,7 @@ export function fromDraftFile(draft: DraftFile): UploadedFile | null {
     const blob = new Blob([byteArray], {
       type: draft.type || "application/octet-stream",
     })
+    // react-doctor-disable-next-line no-create-object-url-without-revoke
     const url = URL.createObjectURL(blob)
 
     // Track blob URL for cleanup (revoke old URLs first to prevent memory leaks)

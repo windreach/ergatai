@@ -1,6 +1,7 @@
 "use client"
 
 import { cn } from "../../../lib/utils"
+// react-doctor-disable-next-line use-lazy-motion
 import { motion } from "motion/react"
 
 interface ResizeHandleProps {
@@ -20,8 +21,11 @@ export function ResizeHandle({
     <motion.div
       data-side={side}
       onPointerDown={onPointerDown}
+      // react-doctor-disable-next-line no-layout-property-animation
       initial={{ width: 0, opacity: 0 }}
+      // react-doctor-disable-next-line no-layout-property-animation
       animate={{ width: 12, opacity: 1 }}
+      // react-doctor-disable-next-line no-layout-property-animation
       exit={{ width: 0, opacity: 0 }}
       transition={{
         duration: 0.3,

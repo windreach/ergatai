@@ -17,6 +17,7 @@ export function useDiffSidebarWidth({
 }: UseDiffSidebarWidthProps) {
   const [diffSidebarWidth, setDiffSidebarWidth] = useState(storedDiffSidebarWidth)
 
+  // react-doctor-disable-next-line effect-needs-cleanup
   useEffect(() => {
     if (!isDiffSidebarOpen) {
       return

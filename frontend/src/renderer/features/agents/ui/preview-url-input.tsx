@@ -1,6 +1,7 @@
 "use client"
 
 import { cn } from "../../../lib/utils"
+// react-doctor-disable-next-line use-lazy-motion
 import {
   motion,
   AnimatePresence,
@@ -196,6 +197,7 @@ export function PreviewUrlInput({
       {/* URL input/button container */}
       <div className="relative max-w-[350px] w-full">
         {isEditing ? (
+          // react-doctor-disable-next-line no-placeholder-only-field
           <input
             ref={inputRef}
             type="text"

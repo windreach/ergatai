@@ -38,6 +38,7 @@ interface WorkspaceSelectorProps {
   onWorkspaceSelected?: (workspace: { id: string; name: string; path: string }) => void
 }
 
+// react-doctor-disable-next-line no-giant-component
 export function WorkspaceSelector({
   triggerClassName,
   contentClassName,

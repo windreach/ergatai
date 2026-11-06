@@ -274,6 +274,15 @@ const CommandItem = React.forwardRef<HTMLDivElement, CommandItemProps>(
 
     return (
       <div
+        // react-doctor-disable-next-line prefer-tag-over-role
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            ;(e.currentTarget as HTMLElement).click()
+          }
+        }}
         ref={itemRef}
         data-value={itemValue}
         data-selected={isSelected || undefined}

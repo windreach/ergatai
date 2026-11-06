@@ -174,6 +174,9 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange, 
   ])
 
   useEffect(() => {
+    // react-doctor-disable-next-line no-pass-live-state-to-parent
+    // react-doctor-disable-next-line no-pass-data-to-parent
+    // react-doctor-disable-next-line no-prop-callback-in-effect
     onActiveSideChatChange?.(
       activeSideChat
         ? {

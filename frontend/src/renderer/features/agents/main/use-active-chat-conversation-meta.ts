@@ -32,9 +32,11 @@ export function useActiveChatConversationMeta({
   })
 
   const renameConversationMutationRef = useRef(renameConversationMutation)
+  // react-doctor-disable-next-line no-ref-current-in-render
   renameConversationMutationRef.current = renameConversationMutation
 
   const conversationNameRef = useRef(conversationName)
+  // react-doctor-disable-next-line no-ref-current-in-render
   conversationNameRef.current = conversationName
 
   const handleRenameConversation = useCallback(

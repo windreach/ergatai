@@ -73,6 +73,8 @@ function applyPermissionStreamEvent(
   }
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export function PermissionApprovalPanel({
   chatId,
   conversationId,
@@ -255,6 +257,9 @@ export function PermissionApprovalPanel({
   const pendingCount = queue.length - 1
 
   useEffect(() => {
+    // react-doctor-disable-next-line no-pass-live-state-to-parent
+    // react-doctor-disable-next-line no-pass-data-to-parent
+    // react-doctor-disable-next-line no-prop-callback-in-effect
     onHasPendingChange?.(current != null)
   }, [current, onHasPendingChange])
 

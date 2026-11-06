@@ -95,6 +95,7 @@ export function useTabsToRender({
     }
 
     for (const id of validSplitPaneIds) {
+      // react-doctor-disable-next-line js-set-map-lookups
       if (!result.includes(id)) {
         result.push(id)
       }
@@ -104,6 +105,7 @@ export function useTabsToRender({
     // This mirrors the fallback above for activeConversationId and splitPaneIds,
     // ensuring a pinned conversation that isn't in the "open" list is still rendered.
     for (const id of validPinnedIds) {
+      // react-doctor-disable-next-line js-set-map-lookups
       if (!result.includes(id)) {
         result.push(id)
       }

@@ -2,6 +2,7 @@ import { useEffect, useCallback, useMemo, useRef, useState } from "react"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { useTheme } from "next-themes"
 import { fullThemeDataAtom } from "@/lib/atoms"
+// react-doctor-disable-next-line use-lazy-motion
 import { motion } from "motion/react"
 import { ResizableSidebar } from "@/components/ui/resizable-sidebar"
 import { Button } from "@/components/ui/button"
@@ -115,6 +116,8 @@ function TerminalModeSwitcher({
   )
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export function TerminalSidebar({
   chatId,
   scopeKey,
@@ -212,10 +215,13 @@ export function TerminalSidebar({
 
   // Refs to avoid callback recreation
   const scopeKeyRef = useRef(scopeKey)
+  // react-doctor-disable-next-line no-ref-current-in-render
   scopeKeyRef.current = scopeKey
   const terminalsRef = useRef(terminals)
+  // react-doctor-disable-next-line no-ref-current-in-render
   terminalsRef.current = terminals
   const activeTerminalIdRef = useRef(activeTerminalId)
+  // react-doctor-disable-next-line no-ref-current-in-render
   activeTerminalIdRef.current = activeTerminalId
 
   // Create a new terminal - stable callback
@@ -706,10 +712,13 @@ export function TerminalBottomPanelContent({
   )
 
   const scopeKeyRef = useRef(scopeKey)
+  // react-doctor-disable-next-line no-ref-current-in-render
   scopeKeyRef.current = scopeKey
   const terminalsRef = useRef(terminals)
+  // react-doctor-disable-next-line no-ref-current-in-render
   terminalsRef.current = terminals
   const activeTerminalIdRef = useRef(activeTerminalId)
+  // react-doctor-disable-next-line no-ref-current-in-render
   activeTerminalIdRef.current = activeTerminalId
 
   const createTerminal = useCallback(() => {

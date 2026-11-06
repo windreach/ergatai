@@ -104,6 +104,7 @@ export async function gitCheckoutFiles(
 	// Process in batches to avoid command line length limits
 	for (let i = 0; i < filePaths.length; i += BATCH_SIZE) {
 		const batch = filePaths.slice(i, i + BATCH_SIZE);
+		// react-doctor-disable-next-line async-await-in-loop
 		await withLockRetry(worktreePath, () => git.checkout(["--", ...batch]));
 	}
 }
@@ -159,6 +160,7 @@ export async function gitStageFiles(
 	// Process in batches to avoid command line length limits
 	for (let i = 0; i < filePaths.length; i += BATCH_SIZE) {
 		const batch = filePaths.slice(i, i + BATCH_SIZE);
+		// react-doctor-disable-next-line async-await-in-loop
 		await withLockRetry(worktreePath, () => git.add(["--", ...batch]));
 	}
 }
@@ -215,6 +217,7 @@ export async function gitUnstageFiles(
 	// Process in batches
 	for (let i = 0; i < filePaths.length; i += BATCH_SIZE) {
 		const batch = filePaths.slice(i, i + BATCH_SIZE);
+		// react-doctor-disable-next-line async-await-in-loop
 		await withLockRetry(worktreePath, () => git.reset(["HEAD", "--", ...batch]));
 	}
 }

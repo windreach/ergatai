@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react"
+import { useEffect, useCallback, useRef } from "react"
 import { toast } from "sonner"
 import { executeRollback } from "./rollback-utils"
 import type { RollbackMessageLike } from "./rollback-utils"
@@ -47,8 +47,11 @@ export function useRollback({
   const messagesRef = useRef(messages)
 
   // Keep refs in sync with current values
+  // react-doctor-disable-next-line no-ref-current-in-render
   isRollingBackRef.current = isRollingBack
+  // react-doctor-disable-next-line no-ref-current-in-render
   isStreamingRef.current = isStreaming
+  // react-doctor-disable-next-line no-ref-current-in-render
   messagesRef.current = messages
 
   // Rollback handler - triggered from user message bubble

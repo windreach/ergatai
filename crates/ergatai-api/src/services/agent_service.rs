@@ -746,6 +746,16 @@ pub async fn list_agent_sessions(
     Ok(backend().list_sessions(agent_id).await?)
 }
 
+pub async fn resume_session_capture(
+    agent_id: &str,
+    session_id: &str,
+    max_messages: usize,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    Ok(backend()
+        .resume_session_capture(agent_id, session_id, max_messages)
+        .await?)
+}
+
 /// Create a new ACP session for an agent.
 pub async fn create_agent_session(agent_id: &str) -> anyhow::Result<ergatai_runtime::SessionInfo> {
     Ok(backend().create_session(agent_id).await?)

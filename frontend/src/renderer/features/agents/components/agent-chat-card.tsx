@@ -172,6 +172,14 @@ export function AgentChatCard({
 
     return (
       <div
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            ;(e.currentTarget as HTMLElement).click()
+          }
+        }}
         onClick={onClick}
         onMouseEnter={onMouseEnter}
         className={cn(
@@ -220,6 +228,14 @@ export function AgentChatCard({
   // Sidebar variant (default)
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          ;(e.currentTarget as HTMLElement).click()
+        }
+      }}
       onClick={onClick}
       className={cn(
         "w-full text-left pl-2 pr-2 py-1.5 rounded-md transition-colors duration-150 cursor-pointer group relative",

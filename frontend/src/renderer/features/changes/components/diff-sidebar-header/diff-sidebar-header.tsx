@@ -119,6 +119,8 @@ function formatTimeSince(date: Date): string {
 	return `${days}d ago`;
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 	worktreePath,
 	currentBranch,
@@ -260,6 +262,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 
 	const handleOpenPR = () => {
 		if (pr?.url) {
+			// react-doctor-disable-next-line window-open-without-noopener
 			window.open(pr.url, "_blank");
 		}
 	};

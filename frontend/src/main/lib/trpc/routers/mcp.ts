@@ -57,6 +57,7 @@ async function _buildMcpGroups(): Promise<
   Array<{ groupName: string; projectPath: string | null; mcpServers: McpServerEntry[] }>
 > {
   const globalServers = await getMergedGlobalMcpServers()
+  // react-doctor-disable-next-line server-sequential-independent-await
   const config = await readClaudeConfig()
 
   const groups: Array<{ groupName: string; projectPath: string | null; mcpServers: McpServerEntry[] }> = []

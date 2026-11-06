@@ -30,6 +30,7 @@ export const worktreeConfigRouter = router({
       }
 
       const detected = await detectWorktreeConfig(project.path)
+      // react-doctor-disable-next-line server-sequential-independent-await
       const available = await getAvailableConfigPaths(project.path)
 
       return {

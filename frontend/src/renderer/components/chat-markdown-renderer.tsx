@@ -99,7 +99,6 @@ function CodeBlock({
     <div className="relative mt-2 mb-4 rounded-[10px] bg-muted/50 overflow-hidden">
       <button
         onClick={handleCopy}
-        tabIndex={-1}
         className="absolute top-[6px] right-[6px] p-1 z-2"
         title={copied ? "Copied!" : "Copy code"}
       >
@@ -355,6 +354,7 @@ export const ChatMarkdownRenderer = memo(function ChatMarkdownRenderer({
         </li>
       ),
       a: ({ href, children, ...props }: MarkdownComponentProps<"a">) => (
+        // react-doctor-disable-next-line no-prevent-default
         <a
           href={href}
           onClick={(e) => {
@@ -616,6 +616,7 @@ const MemoizedMarkdownBlock = memo(
           </li>
         ),
         a: ({ href, children, ...props }: MarkdownComponentProps<"a">) => (
+          // react-doctor-disable-next-line no-prevent-default
           <a
             href={href}
             onClick={(e) => {

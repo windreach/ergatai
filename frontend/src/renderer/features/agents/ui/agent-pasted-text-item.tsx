@@ -75,6 +75,7 @@ export function AgentPastedTextItem({
       {/* Remove button */}
       {onRemove && (
         <button
+          aria-label="Action"
           onClick={(e) => {
             e.stopPropagation()
             onRemove()

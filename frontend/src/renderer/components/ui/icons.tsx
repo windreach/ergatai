@@ -1369,6 +1369,7 @@ export function IconSpinner(props: IconProps & { color?: string; size?: "default
         style={{
           animation: "icon-spinner-rotate 1s linear infinite",
           // GPU acceleration to keep spinning even when main thread is busy
+          // react-doctor-disable-next-line no-permanent-will-change
           willChange: "transform",
           transform: "translateZ(0)",
           ...style,

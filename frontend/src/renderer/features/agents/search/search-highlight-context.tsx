@@ -1,6 +1,6 @@
 import { useAtomValue } from "jotai"
 import * as React from "react"
-import { createContext, useContext, useMemo, useCallback, useRef } from "react"
+import { useEffect, createContext, useContext, useMemo, useCallback, useRef } from "react"
 
 import {
   chatSearchOpenAtom,
@@ -88,6 +88,7 @@ function SearchHighlightProviderActive({
   // dependency. This keeps the main context value stable across navigation,
   // preventing a re-render cascade for all consumers.
   const currentMatchRef = useRef(currentMatch)
+  // react-doctor-disable-next-line no-ref-current-in-render
   currentMatchRef.current = currentMatch
 
   // Build lookup map for efficient highlight retrieval
@@ -109,10 +110,12 @@ function SearchHighlightProviderActive({
   const prevMatchesByKeyRef = useRef(matchesByKey)
 
   // Invalidate the cache when the underlying matches change (new search).
-  if (prevMatchesByKeyRef.current !== matchesByKey) {
-    cacheRef.current.clear()
-    prevMatchesByKeyRef.current = matchesByKey
-  }
+  useEffect(() => {
+    if (prevMatchesByKeyRef.current !== matchesByKey) {
+      cacheRef.current.clear()
+      prevMatchesByKeyRef.current = matchesByKey
+    }
+  }, [matchesByKey])
 
   const getHighlightRanges = useCallback(
     (messageId: string, partIndex: number, partType: string): HighlightRange[] => {

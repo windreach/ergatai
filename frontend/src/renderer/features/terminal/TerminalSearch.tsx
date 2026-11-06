@@ -42,6 +42,7 @@ export function TerminalSearch({
   // Search on query change
   useEffect(() => {
     if (!searchAddon || !query) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setMatchCount(null)
       return
     }
@@ -78,6 +79,7 @@ export function TerminalSearch({
 
   return (
     <div className="absolute top-2 right-2 z-10 flex items-center gap-1 rounded-md border border-border bg-background p-1.5 shadow-lg">
+      {/* react-doctor-disable-next-line no-placeholder-only-field */}
       <input
         ref={inputRef}
         type="text"

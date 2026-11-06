@@ -1,5 +1,5 @@
  
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useEffect, useCallback, useMemo, useRef, useState } from "react"
 import type { MessagePart } from "../stores/message-store"
 import type { AgentQueueItem } from "../lib/queue-utils"
 
@@ -80,10 +80,12 @@ export function useActiveChatQueue({
       }
     })
 
-    queueCacheRef.current = { items: invocationQueue, result }
-
     return result
   }, [invocationQueue])
+
+  useEffect(() => {
+    queueCacheRef.current = { items: invocationQueue, result: queue }
+  }, [invocationQueue, queue])
 
   const addToQueue = useCallback((conversationId: string, item: AgentQueueItem) => {
     chatInvocation.service?.enqueue(item)

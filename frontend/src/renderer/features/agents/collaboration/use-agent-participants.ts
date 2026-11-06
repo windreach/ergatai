@@ -112,6 +112,7 @@ export function useAgentParticipants({
         ensuredGroupMembersRef.current.add(key)
 
         try {
+          // react-doctor-disable-next-line async-await-in-loop
           await addGroupMember.mutateAsync({
             chatId,
             agentCommand: getCoreAgentProfileName(agent),

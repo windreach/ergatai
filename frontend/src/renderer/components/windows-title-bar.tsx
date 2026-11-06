@@ -42,6 +42,7 @@ export function WindowsTitleBar({
   const showWindowControls = isWindows || isLinux
 
   // Check actual window frame state
+  // react-doctor-disable-next-line no-set-state-after-await-in-effect
   useEffect(() => {
     if (!isCustomTitleBar || !window.desktopApi?.getWindowFrameState) return
 
@@ -58,6 +59,7 @@ export function WindowsTitleBar({
   }, [isCustomTitleBar])
 
   // Check window maximized state
+  // react-doctor-disable-next-line no-set-state-after-await-in-effect
   useEffect(() => {
     if (!isCustomTitleBar || !window.desktopApi?.windowIsMaximized) return
 

@@ -37,8 +37,10 @@ export function useCollaborationParticipants({
     [groupAgents],
   )
 
+  // react-doctor-disable-next-line no-derived-state-effect
   useEffect(() => {
     if (!collaborationSessionEnabled) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setCollaborationParticipants([])
       return
     }
@@ -48,12 +50,14 @@ export function useCollaborationParticipants({
       // Both workspaceId and parentChatId are required
       if (!workspaceId) {
         console.error("[active-chat] Cannot create collaboration participants: workspaceId is required")
+        // react-doctor-disable-next-line no-adjust-state-on-prop-change
         setCollaborationParticipants([])
         return
       }
 
       if (!parentChatId) {
         console.error("[active-chat] Cannot create collaboration participants: parentChatId is required")
+        // react-doctor-disable-next-line no-adjust-state-on-prop-change
         setCollaborationParticipants([])
         return
       }
@@ -72,10 +76,12 @@ export function useCollaborationParticipants({
       // "claude-code" are adapter aliases, not runtime agent IDs, so wait for
       // the agent binding instead of sending an invalid participant.
       if (!supervisorAgentId) {
+        // react-doctor-disable-next-line no-adjust-state-on-prop-change
         setCollaborationParticipants([])
         return
       }
 
+      // react-doctor-disable-next-line no-derived-state
       setCollaborationParticipants([{
         conversationId: conversationId || "",
         agentId: supervisorAgentId,

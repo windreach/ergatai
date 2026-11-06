@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useCallback, useMemo, useRef } from "react"
+import { useEffect, memo, useCallback, useMemo, useRef } from "react"
 import { useAtom, useAtomValue } from "jotai"
 import { useTheme } from "next-themes"
 import { fullThemeDataAtom } from "@/lib/atoms"
@@ -92,8 +92,10 @@ export const TerminalWidget = memo(function TerminalWidget({
   )
 
   const scopeKeyRef = useRef(scopeKey)
+  // react-doctor-disable-next-line no-ref-current-in-render
   scopeKeyRef.current = scopeKey
   const terminalsRef = useRef(terminals)
+  // react-doctor-disable-next-line no-ref-current-in-render
   terminalsRef.current = terminals
 
   const createTerminal = useCallback(() => {

@@ -10,6 +10,7 @@ export function useAgentsFileUpload() {
     // Mock upload
     setUploadedFiles(prev => [...prev, file])
     setIsUploading(false)
+    // react-doctor-disable-next-line no-create-object-url-without-revoke
     return { url: URL.createObjectURL(file), filename: file.name }
   }
 

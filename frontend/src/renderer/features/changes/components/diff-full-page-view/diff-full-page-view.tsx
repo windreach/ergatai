@@ -1,5 +1,6 @@
 "use client"
 
+// react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
 import { useEffect, useCallback } from "react"
 

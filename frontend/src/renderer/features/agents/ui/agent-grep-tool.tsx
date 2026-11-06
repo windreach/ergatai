@@ -42,6 +42,7 @@ function extractMatchDetails(output: unknown): string {
   }
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const AgentGrepTool = memo(function AgentGrepTool({
   part,
   messageId,
@@ -95,6 +96,14 @@ export const AgentGrepTool = memo(function AgentGrepTool({
     >
       {/* Header - flat muted row: "grep: <result>", click to expand */}
       <div
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            ;(e.currentTarget as HTMLElement).click()
+          }
+        }}
         onClick={() => setIsExpanded(!isExpanded)}
         className="group flex items-start gap-1.5 py-0.5 px-2 cursor-pointer"
       >

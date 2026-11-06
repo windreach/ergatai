@@ -32,6 +32,7 @@ interface McpServersIndicatorProps {
  * - Expandable servers showing their tools
  * - Link to configure in ~/.claude.json
  */
+// react-doctor-disable-next-line no-giant-component
 export const McpServersIndicator = memo(function McpServersIndicator({
   projectPath,
 }: McpServersIndicatorProps) {
@@ -245,6 +246,7 @@ export const McpServersIndicator = memo(function McpServersIndicator({
 
         <div
           className="max-h-64 overflow-y-auto py-1"
+          // react-doctor-disable-next-line prefer-tag-over-role
           role="list"
           aria-labelledby="mcp-servers-title"
         >
@@ -254,6 +256,7 @@ export const McpServersIndicator = memo(function McpServersIndicator({
             const hasTools = tools.length > 0
 
             return (
+              // react-doctor-disable-next-line prefer-tag-over-role
               <div key={server.name} role="listitem">
                 {/* Server row */}
                 <button
@@ -325,6 +328,7 @@ export const McpServersIndicator = memo(function McpServersIndicator({
                   <div
                     id={`tools-${server.name}`}
                     className="pl-8 pr-3 py-1 space-y-0.5"
+                    // react-doctor-disable-next-line prefer-tag-over-role
                     role="list"
                     aria-label={`Tools for ${server.name}`}
                   >
@@ -333,6 +337,7 @@ export const McpServersIndicator = memo(function McpServersIndicator({
                         key={tool}
                         className="text-xs text-muted-foreground py-0.5 truncate"
                         title={tool}
+                        // react-doctor-disable-next-line prefer-tag-over-role
                         role="listitem"
                       >
                         {tool}
@@ -353,11 +358,13 @@ export const McpServersIndicator = memo(function McpServersIndicator({
                 Plugins
               </h4>
             </div>
+            {/* react-doctor-disable-next-line prefer-tag-over-role */}
             <div className="pb-1" role="list" aria-labelledby="plugins-title">
               {sessionInfo.plugins.map((plugin) => (
                 <div
                   key={plugin.path}
                   className="px-3 py-1.5 text-sm flex items-center gap-2"
+                  // react-doctor-disable-next-line prefer-tag-over-role
                   role="listitem"
                 >
                   <span

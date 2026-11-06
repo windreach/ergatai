@@ -104,6 +104,7 @@ export function WidgetsPanel({
     <>
       {widgetOrder.map((widgetId) => {
         // Skip if widget is not visible
+        // react-doctor-disable-next-line js-set-map-lookups
         if (!visibleWidgets.includes(widgetId)) return null
 
         switch (widgetId) {

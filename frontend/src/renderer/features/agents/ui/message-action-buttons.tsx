@@ -43,8 +43,8 @@ export const CopyButton = memo(function CopyButton({
 
   return (
     <button
+      aria-label="Copy"
       onClick={handleCopy}
-      tabIndex={-1}
       className="p-1.5 rounded-md transition-[background-color,transform] duration-150 ease-out hover:bg-accent active:scale-[0.97]"
     >
       <div className="relative w-3.5 h-3.5">

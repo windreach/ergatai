@@ -2,6 +2,7 @@
 
 import { useAtom, useSetAtom } from "jotai"
 import { ChevronDown } from "lucide-react"
+// react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
 import { memo, useEffect, useMemo, useState } from "react"
 import { Button } from "../../../components/ui/button"
@@ -17,6 +18,7 @@ import {
   type ConversationFileChange,
 } from "../atoms"
 import { getFileIconByExtension } from "../mentions/file-icon-utils"
+import { AgentHistorySelector } from "./agent-history-selector"
 
 // Animated dots component that cycles through ., .., ...
 function AnimatedDots() {
@@ -33,6 +35,7 @@ function AnimatedDots() {
 }
 
 interface ConversationStatusCardProps {
+  agentId?: string | null
   chatId: string // Parent chat ID for per-chat diff sidebar state
   conversationId: string // Conversation ID for filtering (used when Review is clicked)
   isStreaming: boolean
@@ -46,7 +49,9 @@ interface ConversationStatusCardProps {
   hasAgentRailAbove?: boolean
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const ConversationStatusCard = memo(function ConversationStatusCard({
+  agentId,
   chatId,
   conversationId,
   isStreaming,
@@ -128,10 +133,8 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
   // Check if there's expandable content (only files now)
   const hasExpandableContent = uncommittedFiles.length > 0
 
-  // Don't show if no changed files - only show when there are files to review
-  if (!isBusy && uncommittedFiles.length === 0) {
-    return null
-  }
+  // Keep the container mounted so the agent history selector stays persistent.
+  // Status details remain conditional below.
 
   const handleReview = () => {
     // Set filter to only show files from this conversation
@@ -170,17 +173,33 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
           hasExpandableContent ? "cursor-pointer hover:bg-muted/50" : "cursor-default"
         )}
       >
-        <div className="flex items-center gap-2 text-xs flex-1 min-w-0">
+        <div className="flex items-center gap-2 text-xs min-w-0">
+          {/* Shared agent history selector */}
+          <AgentHistorySelector agentId={agentId} />
+
           {/* Expand/Collapse chevron - only show when there are files to expand */}
           {hasExpandableContent && (
-            <ChevronDown
-              className={cn(
-                "w-4 h-4 text-muted-foreground transition-transform duration-200",
-                !isExpanded && "-rotate-90",
-              )}
-            />
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setIsExpanded(!isExpanded)
+              }}
+              className="flex items-center justify-center w-5 h-5 rounded hover:bg-muted/60"
+              aria-label={`${isExpanded ? "Collapse" : "Expand"} status details`}
+            >
+              <ChevronDown
+                className={cn(
+                  "w-4 h-4 text-muted-foreground transition-transform duration-200",
+                  !isExpanded && "-rotate-90",
+                )}
+              />
+            </button>
           )}
+        </div>
 
+        {/* Right side: status moved right + buttons */}
+        <div className="flex items-center gap-2 flex-shrink-0">
           {/* Streaming indicator */}
           {isBusy && (
             <span className="text-xs text-muted-foreground">
@@ -188,8 +207,8 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
             </span>
           )}
 
-          {/* File count and stats - only show when not streaming */}
-          {!isBusy && (
+          {/* File count and stats - only show when not streaming and there are changed files */}
+          {!isBusy && totals.fileCount > 0 && (
             <span className="text-xs text-muted-foreground">
               {totals.fileCount} {totals.fileCount === 1 ? "file" : "files"}
               {(totals.additions > 0 || totals.deletions > 0) && (
@@ -205,10 +224,7 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
               )}
             </span>
           )}
-        </div>
 
-        {/* Right side: buttons */}
-        <div className="flex items-center gap-2 flex-shrink-0">
           {/* Stop button */}
           {isBusy && onStop && (
             <Button
@@ -221,7 +237,6 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
               className="h-6 px-2 text-xs font-normal rounded-md transition-transform duration-150 active:scale-[0.97]"
             >
               Stop
-              <span className="text-muted-foreground/60 ml-1">⌃C</span>
             </Button>
           )}
 
@@ -246,8 +261,11 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
       <AnimatePresence initial={false}>
         {isExpanded && hasExpandableContent && (
           <motion.div
+            // react-doctor-disable-next-line no-layout-property-animation
             initial={{ height: 0, opacity: 0 }}
+            // react-doctor-disable-next-line no-layout-property-animation
             animate={{ height: "auto", opacity: 1 }}
+            // react-doctor-disable-next-line no-layout-property-animation
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
             className="overflow-hidden"
@@ -276,6 +294,7 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
                 return (
                   <div
                     key={file.filePath}
+                    // react-doctor-disable-next-line prefer-tag-over-role
                     role="button"
                     tabIndex={0}
                     onClick={handleFileClick}

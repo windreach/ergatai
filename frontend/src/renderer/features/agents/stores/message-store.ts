@@ -7,11 +7,18 @@ import { PROJECTION_KINDS } from "@/lib/projection-kinds"
 import { BoundedCache } from "../../../lib/bounded-cache"
 
 // Types
-export type MessageRole = "user" | "assistant" | "system" | "agent"
+export type MessageRole = "user" | "assistant" | "system" | "agent" | "respagent"
 
 /**
  * Message role policies - centralized logic for how different roles behave.
  * This avoids scattered role checks throughout the codebase.
+ *
+ * Role semantics:
+ * - "user": human input, starts new group
+ * - "agent": agent-initiated request to other agents, starts new group
+ * - "assistant": host agent's own response, appends to current group
+ * - "respagent": external agent's response, appends to current group (rendered by InterAgentRepliesDisclosure)
+ * - "system": system events, appends to current group
  */
 export const MessageRolePolicy = {
   /**
@@ -25,11 +32,12 @@ export const MessageRolePolicy = {
 
   /**
    * Roles that append to the current conversation group.
-   * assistant: agent responses and outputs
+   * assistant: host agent responses
+   * respagent: external agent responses (rendered separately by InterAgentRepliesDisclosure)
    * system: system events and notifications
    */
   appendsToGroup(role: MessageRole): boolean {
-    return role === "assistant" || role === "system"
+    return role === "assistant" || role === "respagent" || role === "system"
   },
 
   /**

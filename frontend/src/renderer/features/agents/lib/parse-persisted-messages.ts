@@ -14,6 +14,9 @@ export type PersistedConversationLike = {
  *
  * The backend may store messages either as a JSON array or as a JSON string.
  * This normalizes both shapes into a Map<conversationId, messages[]>.
+ *
+ * Note: External agent response filtering is now handled by role-based
+ * rendering (role="respagent"), not by filtering messageType here.
  */
 export function parsePersistedMessagesByConversation(
   conversations: readonly PersistedConversationLike[],
@@ -34,16 +37,6 @@ export function parsePersistedMessagesByConversation(
         parsedMessages = []
       }
     }
-
-    // Agent-to-agent response messages are rendered by
-    // InterAgentRepliesDisclosure, not inline in the main chat.
-    parsedMessages = parsedMessages.filter((message) => {
-      const candidate = message as { messageType?: unknown; metadata?: unknown } | null
-      const metadata = candidate?.metadata as { messageType?: unknown } | null
-      const messageType =
-        candidate?.messageType ?? metadata?.messageType
-      return messageType !== "response"
-    })
 
     messagesById.set(conversation.id, parsedMessages)
   }

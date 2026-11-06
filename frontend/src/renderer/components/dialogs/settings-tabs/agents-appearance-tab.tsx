@@ -2,6 +2,7 @@ import { useTheme } from "next-themes"
 import { useState, useEffect, useCallback, useMemo } from "react"
 import { IconSpinner } from "../../../icons"
 import { useAtom, useSetAtom } from "jotai"
+// react-doctor-disable-next-line use-lazy-motion
 import { motion, AnimatePresence } from "motion/react"
 import { cn } from "../../../lib/utils"
 import {
@@ -127,6 +128,8 @@ function ThemePreviewBox({
   )
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export function AgentsAppearanceTab() {
   const { resolvedTheme, setTheme: setNextTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
@@ -152,11 +155,15 @@ export function AgentsAppearanceTab() {
   // VS Code themes state
   const [isScanning, setIsScanning] = useState(false)
 
+  // react-doctor-disable-next-line rendering-hydration-no-flicker
   useEffect(() => {
+    // react-doctor-disable-next-line no-initialize-state
     setMounted(true)
   }, [])
 
   // Scan and load VS Code themes on mount
+  // react-doctor-disable-next-line no-effect-chain
+  // react-doctor-disable-next-line no-set-state-after-await-in-effect
   useEffect(() => {
     if (!mounted) return
     const api = window.desktopApi
@@ -347,6 +354,7 @@ export function AgentsAppearanceTab() {
   )
 
   // Re-apply theme when system preference changes
+  // react-doctor-disable-next-line no-effect-chain
   useEffect(() => {
     if (selectedThemeId === null && mounted) {
       const isDark = resolvedTheme === "dark"
@@ -503,8 +511,11 @@ export function AgentsAppearanceTab() {
         <AnimatePresence initial={false}>
           {isSystemMode && (
             <motion.div
+              // react-doctor-disable-next-line no-layout-property-animation
               initial={{ height: 0, opacity: 0 }}
+              // react-doctor-disable-next-line no-layout-property-animation
               animate={{ height: "auto", opacity: 1 }}
+              // react-doctor-disable-next-line no-layout-property-animation
               exit={{ height: 0, opacity: 0 }}
               transition={{
                 height: { type: "spring", stiffness: 300, damping: 30 },

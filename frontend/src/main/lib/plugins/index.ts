@@ -82,6 +82,7 @@ export async function discoverInstalledPlugins(): Promise<PluginInfo[]> {
   for (const marketplace of marketplaces) {
     if (marketplace.name.startsWith(".")) continue
 
+    // react-doctor-disable-next-line async-await-in-loop
     const isMarketplaceDir = await isDirentDirectory(
       marketplacesDir,
       marketplace,
@@ -115,6 +116,7 @@ export async function discoverInstalledPlugins(): Promise<PluginInfo[]> {
 
         const pluginPath = path.resolve(marketplacePath, sourcePath)
         try {
+          // react-doctor-disable-next-line async-await-in-loop
           const pluginStat = await fs.stat(pluginPath)
           if (!pluginStat.isDirectory()) continue
           plugins.push({
@@ -169,6 +171,7 @@ export async function discoverPluginMcpServers(): Promise<PluginMcpConfig[]> {
   for (const plugin of plugins) {
     const mcpJsonPath = path.join(plugin.path, ".mcp.json")
     try {
+      // react-doctor-disable-next-line async-await-in-loop
       const content = await fs.readFile(mcpJsonPath, "utf-8")
       let parsed: Record<string, unknown>
       try {

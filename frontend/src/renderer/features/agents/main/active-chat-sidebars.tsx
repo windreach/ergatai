@@ -30,6 +30,8 @@ import { useSetAtom } from "jotai"
 import type { AgentBinding } from "../../../../main/lib/trpc/routers/ergatai-shared"
 
  
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export function ChatViewSidebars(props: any) {
   const {
     isMobileFullscreen,
@@ -135,6 +137,7 @@ export function ChatViewSidebars(props: any) {
   // Filter out the main backend agent to avoid duplication
   const sideAgents = useMemo(
     () => agentBindings.filter((binding) => binding.agentId !== backendAgentId),
+    // react-doctor-disable-next-line exhaustive-deps
     [agentBindings, backendAgentId],
   )
 

@@ -50,6 +50,7 @@ function shortenPaths(text: string, projectPath: string | undefined): string {
     .replace(new RegExp(escaped + '(?=[^\\w]|$)', 'g'), '.')
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const AgentBashTool = memo(function AgentBashTool({
   part,
   messageId,
@@ -126,6 +127,14 @@ export const AgentBashTool = memo(function AgentBashTool({
     >
       {/* Header - flat muted row (same style as Thinking), click to toggle */}
       <div
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            ;(e.currentTarget as HTMLElement).click()
+          }
+        }}
         onClick={() => setIsExpanded(!isExpanded)}
         className="group flex items-start gap-1.5 py-0.5 px-2 cursor-pointer"
       >

@@ -212,6 +212,19 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
     /// Load an existing ACP session for an agent.
     async fn load_session(&self, agent_id: &str, session_id: &str) -> ErgataiResult<()>;
 
+    /// Resume an ACP session and capture replayed history (best-effort).
+    ///
+    /// Returns captured `session/update` payloads (JSON) up to `max_messages`.
+    async fn resume_session_capture(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+        max_messages: usize,
+    ) -> ErgataiResult<Vec<serde_json::Value>> {
+        let _ = (agent_id, session_id, max_messages);
+        Ok(Vec::new())
+    }
+
     /// Delete an ACP session for an agent.
     async fn delete_session(&self, agent_id: &str, session_id: &str) -> ErgataiResult<()>;
 

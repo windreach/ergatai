@@ -55,6 +55,7 @@ export const chatSearchCurrentMatchAtom = atom((get) => {
 export const chatSearchCountInfoAtom = atom((get) => {
   const matches = get(chatSearchMatchesAtom)
   const index = get(chatSearchCurrentIndexAtom)
+  // react-doctor-disable-next-line jotai-derived-atom-returns-fresh-object
   return {
     current: matches.length > 0 ? index + 1 : 0,
     total: matches.length,

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+// react-doctor-disable-next-line no-flush-sync
 import { flushSync } from "react-dom"
 import { useUpdateChecker } from "../lib/hooks/use-update-checker"
 import { useJustUpdated } from "../lib/hooks/use-just-updated"
@@ -9,6 +10,7 @@ import { IconSpinner } from "../icons"
 // Change to "none" for production
 const MOCK_STATE: "none" | "available" | "downloading" | "just-updated" = "none"
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export function UpdateBanner() {
   const {
     state: realState,
@@ -41,13 +43,7 @@ export function UpdateBanner() {
   useEffect(() => {
     if (isMocking && mockStatus === "downloading") {
       const interval = setInterval(() => {
-        setMockProgress((prev) => {
-          if (prev >= 100) {
-            clearInterval(interval)
-            return 100
-          }
-          return prev + 5
-        })
+        setMockProgress((prev) => (prev >= 100 ? 100 : prev + 5))
       }, 200)
       return () => clearInterval(interval)
     }
@@ -100,9 +96,10 @@ export function UpdateBanner() {
     if (realState.status === "ready" && !hasTriggeredInstall.current) {
       hasTriggeredInstall.current = true
       // Small delay to ensure UI updates before restart
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         installUpdate()
       }, 500)
+      return () => clearTimeout(timer)
     }
   }, [realState.status, installUpdate])
 

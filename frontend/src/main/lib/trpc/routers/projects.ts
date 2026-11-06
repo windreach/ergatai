@@ -77,6 +77,7 @@ export const projectsRouter = router({
     const gitInfo = await getGitRemoteInfo(folderPath)
 
     // Check if project already exists by listing all projects
+    // react-doctor-disable-next-line server-sequential-independent-await
     const allProjects = await trpcClient.listProjects()
     const existing = allProjects.find((p: any) => p.path === folderPath)
 

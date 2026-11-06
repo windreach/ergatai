@@ -327,6 +327,7 @@ export const workspacesRouter = router({
       const status = await ergataiFetch<BackendWorkspaceStatus>(
         `/api/v1/workspaces/managed/${encodeURIComponent(input.id)}/status`,
       )
+      // react-doctor-disable-next-line server-sequential-independent-await
       const chats = await ergataiFetch<BackendChat[]>(
         `/api/v1/chats?workspace_id=${encodeURIComponent(input.id)}`,
       )

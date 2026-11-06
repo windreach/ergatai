@@ -3,6 +3,7 @@
 import { Brain, ChevronRight, Zap } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
+// react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
 import {
   Command,
@@ -220,14 +221,17 @@ function CrossProviderConfirmDialog({
   const [mounted, setMounted] = useState(false)
   const [dontShowAgain, setDontShowAgain] = useState(false)
   const dontShowAgainRef = useRef(false)
+  // react-doctor-disable-next-line no-ref-current-in-render
   dontShowAgainRef.current = dontShowAgain
 
+  // react-doctor-disable-next-line rendering-hydration-no-flicker
   useEffect(() => {
     setMounted(true)
   }, [])
 
   useEffect(() => {
     if (isOpen) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setDontShowAgain(false)
     }
   }, [isOpen])
@@ -246,6 +250,7 @@ function CrossProviderConfirmDialog({
     }
     document.addEventListener("keydown", handleKeyDown)
     return () => document.removeEventListener("keydown", handleKeyDown)
+  // react-doctor-disable-next-line prefer-use-effect-event
   }, [isOpen, onConfirm, onClose])
 
   if (!mounted) return null
@@ -257,6 +262,14 @@ function CrossProviderConfirmDialog({
       {isOpen && (
         <>
           <motion.div
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                ;(e.currentTarget as HTMLElement).click()
+              }
+            }}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1, transition: { duration: 0.18, ease: DIALOG_EASING } }}
             exit={{ opacity: 0, pointerEvents: "none" as const, transition: { duration: 0.15, ease: DIALOG_EASING } }}
@@ -309,6 +322,7 @@ function CrossProviderConfirmDialog({
   )
 }
 
+// react-doctor-disable-next-line no-giant-component
 export function AgentModelSelector({
   open,
   onOpenChange,

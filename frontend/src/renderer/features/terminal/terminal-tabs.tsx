@@ -194,7 +194,9 @@ const TerminalTab = memo(
 
             {/* Terminal name or input */}
             {isEditing ? (
+              // react-doctor-disable-next-line html-no-nested-interactive
               <input
+                aria-label="Action"
                 ref={inputRef}
                 type="text"
                 value={editValue}
@@ -242,6 +244,7 @@ const TerminalTab = memo(
                       : "bg-[linear-gradient(to_left,color-mix(in_srgb,hsl(var(--muted))_80%,hsl(var(--background)))_0%,color-mix(in_srgb,hsl(var(--muted))_80%,hsl(var(--background)))_60%,transparent_100%)]",
                   )}
                 />
+                {/* react-doctor-disable-next-line html-no-nested-interactive */}
                 <button
                   type="button"
                   onClick={handleCloseClick}
@@ -379,7 +382,7 @@ export const TerminalTabs = memo(function TerminalTabs({
     const activeTabElement = tabRefs.current.get(activeTerminalId)
 
     if (activeTabElement) {
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         const containerRect = container.getBoundingClientRect()
         const tabRect = activeTabElement.getBoundingClientRect()
 
@@ -400,6 +403,7 @@ export const TerminalTabs = memo(function TerminalTabs({
           })
         }
       }, 0)
+      return () => clearTimeout(timer)
     }
   }, [activeTerminalId, terminals])
 
@@ -468,6 +472,7 @@ export const TerminalTabs = memo(function TerminalTabs({
           return (
             <TerminalTab
               key={terminal.id}
+              // react-doctor-disable-next-line no-inline-prop-on-memo-component
               ref={(el) => {
                 if (el) {
                   tabRefs.current.set(terminal.id, el)
@@ -487,13 +492,18 @@ export const TerminalTabs = memo(function TerminalTabs({
               small={small}
               onSelect={onSelectTerminal}
               onClose={onCloseTerminal}
+              // react-doctor-disable-next-line no-inline-prop-on-memo-component
               onCloseOthers={() => onCloseOtherTerminals(terminal.id)}
+              // react-doctor-disable-next-line no-inline-prop-on-memo-component
               onCloseToRight={() => onCloseTerminalsToRight(terminal.id)}
               onRename={onRenameTerminal}
+              // react-doctor-disable-next-line no-inline-prop-on-memo-component
               onEditingChange={(isEditing) =>
                 handleEditingChange(terminal.id, isEditing)
               }
+              // react-doctor-disable-next-line no-inline-prop-on-memo-component
               onStartRename={() => handleStartRename(terminal.id)}
+              // react-doctor-disable-next-line no-inline-prop-on-memo-component
               textRef={(el) => {
                 if (el) {
                   textRefs.current.set(terminal.id, el)

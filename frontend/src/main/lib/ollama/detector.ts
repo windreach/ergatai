@@ -50,6 +50,7 @@ export async function checkOllamaStatus(): Promise<OllamaStatus> {
       'codestral:22b',
     ]
 
+    // react-doctor-disable-next-line js-set-map-lookups
     let recommendedModel = codingModels.find(m => models.includes(m))
 
     // If no exact match, try to find unknown qwen-coder, deepseek-coder, or codestral variant

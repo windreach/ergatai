@@ -83,6 +83,7 @@ export function CommitInput({
 	return (
 		<div className="flex flex-col gap-2 p-2 border-t border-border/50 bg-background">
 			{/* Summary input - single line */}
+			{/* react-doctor-disable-next-line no-placeholder-only-field */}
 			<input
 				type="text"
 				placeholder="Commit message"
@@ -92,7 +93,7 @@ export function CommitInput({
 					"w-full px-2 py-1.5 text-xs rounded-md",
 					"bg-background border border-input",
 					"placeholder:text-muted-foreground",
-					"focus:outline-none focus:ring-1 focus:ring-ring"
+					"focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
 				)}
 				onKeyDown={(e) => {
 					if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && canCommit) {
@@ -103,6 +104,7 @@ export function CommitInput({
 			/>
 
 			{/* Description textarea - multiline */}
+			{/* react-doctor-disable-next-line no-placeholder-only-field */}
 			<textarea
 				placeholder="Description"
 				value={description}
@@ -111,7 +113,7 @@ export function CommitInput({
 					"w-full px-2 py-1.5 text-xs rounded-md resize-none",
 					"bg-background border border-input",
 					"placeholder:text-muted-foreground",
-					"focus:outline-none focus:ring-1 focus:ring-ring",
+					"focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
 					"min-h-[60px]"
 				)}
 				onKeyDown={(e) => {

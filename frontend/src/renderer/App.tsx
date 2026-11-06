@@ -1,5 +1,5 @@
 import { Component, type ReactNode } from "react"
-import { Provider as JotaiProvider, useSetAtom } from "jotai"
+import { Provider as JotaiProvider, useAtom } from "jotai"
 import { ThemeProvider, useTheme } from "next-themes"
 import { useEffect } from "react"
 import { Toaster } from "sonner"
@@ -7,7 +7,7 @@ import { AlertCircle, RefreshCw } from "lucide-react"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { TRPCProvider } from "./contexts/TRPCProvider"
 import { WindowProvider, getInitialWindowParams } from "./contexts/WindowContext"
-import { selectedAgentChatIdAtom } from "./features/agents"
+import { chatClaimStateAtom, selectedAgentChatIdAtom } from "./features/agents"
 import { useAgentConversationStore } from "./features/agents"
 import { AgentsLayout } from "./features/layout"
 import { identify, initAnalytics, shutdown } from "./lib/analytics"
@@ -97,7 +97,8 @@ function ThemedToaster() {
 }
 
 function AppContent() {
-  const setSelectedChatId = useSetAtom(selectedAgentChatIdAtom)
+  const [selectedChatId, setSelectedChatId] = useAtom(selectedAgentChatIdAtom)
+  const [, setChatClaimState] = useAtom(chatClaimStateAtom)
   const { setActiveConversation, addToOpenConversations, setChatId } = useAgentConversationStore()
 
   useEffect(() => {
@@ -114,15 +115,46 @@ function AppContent() {
   }, [setSelectedChatId, setChatId, addToOpenConversations, setActiveConversation])
 
   useEffect(() => {
-    if (!window.desktopApi?.claimChat) return
-    const currentChatId = appStore.get(selectedAgentChatIdAtom)
-    if (!currentChatId) return
-    window.desktopApi.claimChat(currentChatId).then((result) => {
+    if (!selectedChatId) {
+      setChatClaimState({ chatId: null, status: "idle" })
+      return
+    }
+
+    if (!window.desktopApi?.claimChat) {
+      setChatClaimState({ chatId: selectedChatId, status: "not-required" })
+      return
+    }
+
+    let isCurrentEffect = true
+    setChatClaimState({ chatId: selectedChatId, status: "pending" })
+
+    window.desktopApi.claimChat(selectedChatId).then((result) => {
+      if (!isCurrentEffect || appStore.get(selectedAgentChatIdAtom) !== selectedChatId) {
+        return
+      }
+
+      setChatClaimState({
+        chatId: selectedChatId,
+        status: result.ok ? "claimed" : "failed",
+      })
+
       if (!result.ok) {
         setSelectedChatId(null)
       }
+    }).catch((error) => {
+      console.error("[App] Failed to claim chat:", selectedChatId, error)
+      if (!isCurrentEffect || appStore.get(selectedAgentChatIdAtom) !== selectedChatId) {
+        return
+      }
+
+      setChatClaimState({ chatId: selectedChatId, status: "failed" })
+      setSelectedChatId(null)
     })
-  }, [setSelectedChatId])
+
+    return () => {
+      isCurrentEffect = false
+    }
+  }, [selectedChatId, setSelectedChatId, setChatClaimState])
 
   // 移除了自动创建默认项目的逻辑
   // 原因：这段代码会导致竞态条件和数据不一致

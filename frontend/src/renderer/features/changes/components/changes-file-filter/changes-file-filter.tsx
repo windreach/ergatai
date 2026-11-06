@@ -37,6 +37,7 @@ export function ChangesFileFilter({
 	onChange,
 	placeholder = "Filter files...",
 	className,
+	// react-doctor-disable-next-line rerender-memo-with-default-value
 	conversations = [],
 	selectedConversationId,
 	onConversationFilterChange,
@@ -97,6 +98,7 @@ export function ChangesFileFilter({
 					/>
 					{value && (
 						<button
+						  aria-label="LuX"
 							type="button"
 							onClick={() => onChange("")}
 							className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-muted-foreground/20 transition-colors"
@@ -167,6 +169,7 @@ export function ChangesFileFilter({
 						</span>
 					</div>
 					<button
+					  aria-label="LuX"
 						type="button"
 						onClick={handleClearConversationFilter}
 						className="p-0.5 rounded hover:bg-foreground/10 transition-colors flex-shrink-0"

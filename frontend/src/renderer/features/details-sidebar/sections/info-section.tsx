@@ -120,6 +120,7 @@ function PropertyRow({
  * Shows workspace info: branch, PR, path
  * Memoized to prevent re-renders when parent updates
  */
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const InfoSection = memo(function InfoSection({
   chatId,
   worktreePath,
@@ -186,6 +187,7 @@ export const InfoSection = memo(function InfoSection({
     const handler = () => handleOpenInEditor()
     window.addEventListener("open-in-editor", handler)
     return () => window.removeEventListener("open-in-editor", handler)
+  // react-doctor-disable-next-line prefer-use-effect-event
   }, [isWorktree, handleOpenInEditor])
 
   const handleOpenPr = () => {

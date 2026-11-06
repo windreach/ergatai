@@ -1745,6 +1745,13 @@ enum AcpCommand {
         session_id: String,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
     },
+
+    /// Resume an ACP session and capture replayed history.
+    ResumeSessionCapture {
+        session_id: String,
+        max_messages: usize,
+        response_tx: oneshot::Sender<ErgataiResult<Vec<serde_json::Value>>>,
+    },
     /// Delete an ACP session (sends `session/delete` request).
     DeleteSession {
         session_id: String,
@@ -2827,6 +2834,51 @@ impl AcpBackend {
             .map_err(|_| ErgataiError::internal("ACP response channel closed"))?
     }
 
+    /// Resume an ACP session and capture replayed history (best-effort).
+    pub async fn resume_session_capture(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+        max_messages: usize,
+    ) -> ErgataiResult<Vec<serde_json::Value>> {
+        self.reap_dead();
+
+        let command_tx = {
+            let agents = self.agents.read();
+            match agents.get(agent_id) {
+                Some(entry) => {
+                    if !entry.alive.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(ErgataiError::internal(format!(
+                            "Agent {} is not alive",
+                            agent_id
+                        )));
+                    }
+                    entry.command_tx.clone()
+                }
+                None => {
+                    return Err(ErgataiError::NotFound(format!(
+                        "Agent not found: {}",
+                        agent_id
+                    )));
+                }
+            }
+        };
+
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(AcpCommand::ResumeSessionCapture {
+                session_id: session_id.to_string(),
+                max_messages,
+                response_tx,
+            })
+            .await
+            .map_err(|_| ErgataiError::internal("ACP command channel closed"))?;
+
+        response_rx
+            .await
+            .map_err(|_| ErgataiError::internal("ACP response channel closed"))?
+    }
+
     pub async fn delete_session(&self, agent_id: &str, session_id: &str) -> ErgataiResult<()> {
         self.reap_dead();
 
@@ -3194,6 +3246,11 @@ impl AcpBackendInterface for AcpBackend {
         // Channel for sending commands (prompts, stop) to the connection task.
         let (command_tx, mut command_rx) = mpsc::channel::<AcpCommand>(32);
 
+        // Capture mode for session/resume history import.
+        let capture_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let capture_tx: Arc<tokio::sync::Mutex<Option<mpsc::Sender<serde_json::Value>>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+
         // Oneshot for the connection task to report the session_id back.
         let (session_tx, session_rx) =
             oneshot::channel::<agent_client_protocol::schema::v1::SessionId>();
@@ -3204,6 +3261,8 @@ impl AcpBackendInterface for AcpBackend {
 
         // Clone shared state for the connection task.
         let task_command_tx = command_tx.clone();
+        let task_capture_mode = capture_mode.clone();
+        let task_capture_tx = capture_tx.clone();
         let task_output = output.clone();
         let task_thoughts = thoughts.clone();
         let task_recent_thinking = recent_thinking.clone();
@@ -3416,6 +3475,22 @@ impl AcpBackendInterface for AcpBackend {
                         let notify_in_tool_call = task_in_tool_call.clone();
                         let notify_turn_token = task_current_turn_token.clone();
                         async move |notification: ExtendedSessionNotification, _cx| {
+                            // Capture mode: collect replayed history without normal side effects.
+                            if task_capture_mode.load(std::sync::atomic::Ordering::SeqCst) {
+                                let payload = match &notification {
+                                    ExtendedSessionNotification::Standard(n) => {
+                                        serde_json::to_value(&n.update).ok()
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(v) = payload {
+                                    if let Some(tx) = task_capture_tx.lock().await.as_ref() {
+                                        let _ = tx.try_send(v);
+                                    }
+                                }
+                                return Ok(());
+                            }
+
                             // Handle extended session notifications (including subagent events)
                             match notification {
                                 ExtendedSessionNotification::Standard(std_notif) => {
@@ -4308,6 +4383,60 @@ impl AcpBackendInterface for AcpBackend {
                                     }
                                 }
                             }
+                            Some(AcpCommand::ResumeSessionCapture {
+                                session_id: target_session_id,
+                                max_messages,
+                                response_tx,
+                            }) => {
+                                capture_mode.store(true, std::sync::atomic::Ordering::SeqCst);
+                                let (cap_tx, mut cap_rx) = mpsc::channel::<serde_json::Value>(64);
+                                *capture_tx.lock().await = Some(cap_tx);
+
+                                let cwd = task_cwd_for_save.clone();
+                                let mut request = agent_client_protocol::schema::v2::ResumeSessionRequest::new(
+                                    target_session_id.clone(),
+                                    &cwd,
+                                );
+                                request.replay_from = Some(
+                                    agent_client_protocol::schema::v2::ReplayFrom::Start(
+                                        agent_client_protocol::schema::v2::ReplayFromStart::new(),
+                                    ),
+                                );
+
+                                let result = connection
+                                    .send_request(request)
+                                    .block_task()
+                                    .await;
+
+                                capture_mode.store(false, std::sync::atomic::Ordering::SeqCst);
+                                *capture_tx.lock().await = None;
+
+                                let mut collected = Vec::new();
+                                if result.is_ok() {
+                                    // Collect replayed updates with a short timeout.
+                                    for _ in 0..max_messages {
+                                        match tokio::time::timeout(
+                                            std::time::Duration::from_millis(250),
+                                            cap_rx.recv(),
+                                        )
+                                        .await
+                                        {
+                                            Ok(Some(v)) => collected.push(v),
+                                            Ok(None) => break,
+                                            Err(_) => break,
+                                        }
+                                        if collected.len() >= max_messages {
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                let _ = response_tx.send(match result {
+                                    Ok(_) => Ok(collected),
+                                    Err(e) => Err(ErgataiError::internal(format!("resume failed: {e}"))),
+                                });
+                            }
+
                             Some(AcpCommand::DeleteSession {
                                 session_id: target_session_id,
                                 response_tx,
@@ -4932,6 +5061,16 @@ impl AcpBackendInterface for AcpBackend {
 
     async fn load_session(&self, agent_id: &str, session_id: &str) -> ErgataiResult<()> {
         self.load_session(agent_id, session_id).await
+    }
+
+    async fn resume_session_capture(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+        max_messages: usize,
+    ) -> ErgataiResult<Vec<serde_json::Value>> {
+        self.resume_session_capture(agent_id, session_id, max_messages)
+            .await
     }
 
     async fn delete_session(&self, agent_id: &str, session_id: &str) -> ErgataiResult<()> {

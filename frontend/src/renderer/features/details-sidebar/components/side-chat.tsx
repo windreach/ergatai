@@ -63,6 +63,8 @@ interface SideChatProps {
  * - Keeps useChatInstance for message rendering and streaming
  * - Progressive migration: can fall back to old behavior
  */
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export function SideChat({
   conversation,
   chatId,
@@ -462,10 +464,11 @@ export function SideChat({
         </div>
 
         <div className="w-full flex-shrink-0">
-          {!hasPermissionApproval && isStreaming && (
+          {!hasPermissionApproval && (
             <div className="px-3 -mb-6 relative z-10 shadow-sm shadow-background">
               <div className="mx-auto w-full max-w-full min-w-0">
                 <ConversationStatusCard
+                  agentId={agentId}
                   chatId={chatId}
                   conversationId={runtimeConversationId}
                   isStreaming={isStreaming}

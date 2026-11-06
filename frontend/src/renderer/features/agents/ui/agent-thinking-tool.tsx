@@ -35,6 +35,7 @@ function formatElapsedTime(ms: number): string {
   return `${minutes}m ${remainingSeconds}s`
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const AgentThinkingTool = memo(function AgentThinkingTool({
   part,
   chatStatus,
@@ -53,6 +54,7 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
   // Auto-collapse when streaming ends (transition from true -> false)
   useEffect(() => {
     if (wasStreamingRef.current && !isStreaming) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setIsExpanded(false)
     }
     wasStreamingRef.current = isStreaming
@@ -61,9 +63,11 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
   // Elapsed time — ticks every second while streaming
   const startedAtRef = useRef(part.startedAt || Date.now())
   // Keep startedAtRef in sync if the server provides a real startedAt later
-  if (part.startedAt && part.startedAt !== startedAtRef.current) {
-    startedAtRef.current = part.startedAt
-  }
+  useEffect(() => {
+    if (part.startedAt && part.startedAt !== startedAtRef.current) {
+      startedAtRef.current = part.startedAt
+    }
+  }, [part.startedAt])
   const [elapsedMs, setElapsedMs] = useState(0)
 
   useEffect(() => {
@@ -108,6 +112,14 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
     <div>
       {/* Header - always visible, clickable to toggle */}
       <div
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            ;(e.currentTarget as HTMLElement).click()
+          }
+        }}
         onClick={() => setIsExpanded(!isExpanded)}
         className="group flex items-start gap-1.5 py-0.5 px-2 cursor-pointer"
       >

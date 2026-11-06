@@ -398,6 +398,7 @@ export function useCollaborationSession({
     }
   }, [chatId, enabled, loadExistingSession])
 
+  // react-doctor-disable-next-line effect-needs-cleanup
   useEffect(() => {
     if (!pollingEnabled || !enabled || !session?.id) return
 

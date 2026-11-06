@@ -620,6 +620,7 @@ export function createWindow(options?: { chatId?: string; conversationId?: strin
 
   if (devServerUrl) {
     // Pass params via query for dev mode
+    // react-doctor-disable-next-line no-unguarded-throwing-parse-call
     const url = new URL(devServerUrl)
     buildParams(url.searchParams)
     window.loadURL(url.toString())

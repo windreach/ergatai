@@ -223,6 +223,7 @@ const TreeNode = memo(function TreeNode({
           <div
             ref={rowRef}
             role="treeitem"
+            tabIndex={0}
             aria-expanded={isFolder ? isExpanded : undefined}
             onMouseDown={handleMouseDown}
             onClick={handleClick}
@@ -317,6 +318,7 @@ const TreeNode = memo(function TreeNode({
 // FilesTab
 // ============================================================================
 
+// react-doctor-disable-next-line no-giant-component
 export const FilesTab = memo(forwardRef<FilesTabHandle, FilesTabProps>(function FilesTab({
   worktreePath,
   onSelectFile,
@@ -351,6 +353,7 @@ export const FilesTab = memo(forwardRef<FilesTabHandle, FilesTabProps>(function 
 
   // Ref for reading current value in setExpandedPaths (Jotai doesn't support functional updaters)
   const expandedPathsRef = useRef(expandedPaths)
+  // react-doctor-disable-next-line no-ref-current-in-render
   expandedPathsRef.current = expandedPaths
 
   const setExpandedPaths = useCallback((update: Set<string> | ((prev: Set<string>) => Set<string>)) => {
@@ -474,6 +477,9 @@ export const FilesTab = memo(forwardRef<FilesTabHandle, FilesTabProps>(function 
 
   // Notify parent of expanded state changes
   useEffect(() => {
+    // react-doctor-disable-next-line no-pass-live-state-to-parent
+    // react-doctor-disable-next-line no-pass-data-to-parent
+    // react-doctor-disable-next-line no-prop-callback-in-effect
     onExpandedStateChange?.(isAllExpanded)
   }, [isAllExpanded, onExpandedStateChange])
 

@@ -162,6 +162,7 @@ export function useMentionSearch(
   const resultRef = useRef<AggregatedSearchResult | null>(null)
 
   // Keep resultRef in sync with result state
+  // react-doctor-disable-next-line no-ref-current-in-render
   resultRef.current = result
 
   // Track mounted state

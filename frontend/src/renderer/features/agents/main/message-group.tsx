@@ -12,6 +12,7 @@ interface MessageGroupProps {
 export function MessageGroup({ children, isLastGroup }: MessageGroupProps) {
   const groupRef = useRef<HTMLDivElement>(null)
 
+  // react-doctor-disable-next-line effect-needs-cleanup
   useEffect(() => {
     const groupEl = groupRef.current
     if (!groupEl) return

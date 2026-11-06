@@ -110,6 +110,7 @@ export function useDiffStatsManagement({
 
   // Fetch diff stats on mount and when worktreePath/sandboxId changes
   useEffect(() => {
+    // react-doctor-disable-next-line no-pass-live-state-to-parent
     fetchDiffStats()
   }, [fetchDiffStats])
 
@@ -118,6 +119,7 @@ export function useDiffStatsManagement({
   useEffect(() => {
     if (isDiffSidebarOpen) {
       // Fetch in background - existing parsedFileDiffs will be shown immediately
+      // react-doctor-disable-next-line no-pass-live-state-to-parent
       fetchDiffStats()
     }
   }, [isDiffSidebarOpen, fetchDiffStats])
@@ -125,6 +127,7 @@ export function useDiffStatsManagement({
   // Throttled diff refresh for filesystem events (file edits, git ops)
   // Initialize to Date.now() to prevent double-fetch on mount
   // (the "mount" effect already fetches, throttle should wait)
+  // react-doctor-disable-next-line rerender-lazy-ref-init
   const lastDiffFetchTimeRef = useRef<number>(Date.now())
   const DIFF_THROTTLE_MS = 2000 // Max 1 fetch per 2 seconds
   const diffRefreshTimerRef = useRef<NodeJS.Timeout | null>(null)

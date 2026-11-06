@@ -29,6 +29,7 @@ export function useConversationShortcuts({
 
   // Ref to hold selectedConversationIds to prevent frequent listener re-attachment
   const selectedConversationIdsRef = useRef(selectedConversationIds)
+  // react-doctor-disable-next-line no-ref-current-in-render
   selectedConversationIdsRef.current = selectedConversationIds
 
   // Helper to add conversation to undo stack
@@ -122,6 +123,7 @@ export function useConversationShortcuts({
         if (isConversationMultiSelectMode && currentSelectedIds.size > 0) {
           const idsToClose = Array.from(currentSelectedIds)
           const remainingOpenIds = store.openConversationIds.filter(
+            // react-doctor-disable-next-line js-set-map-lookups
             (id) => !idsToClose.includes(id),
           )
 

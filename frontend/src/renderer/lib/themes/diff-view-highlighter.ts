@@ -195,6 +195,7 @@ export async function createCustomDiffHighlighter(): Promise<DiffHighlighter> {
   for (const theme of SHIKI_THEMES) {
     if (!loadedThemes.includes(theme)) {
       try {
+        // react-doctor-disable-next-line async-await-in-loop
         await highlighter.loadTheme(theme)
       } catch {
         // Theme might already be loaded or not available

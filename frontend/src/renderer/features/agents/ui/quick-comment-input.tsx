@@ -34,6 +34,7 @@ export function QuickCommentInput({
   }, [])
 
   // Handle click outside
+  // react-doctor-disable-next-line effect-needs-cleanup
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
@@ -137,6 +138,7 @@ export function QuickCommentInput({
         {/* Input area */}
         <div className="p-1.5">
           <div className="flex items-center gap-1.5">
+            {/* react-doctor-disable-next-line no-placeholder-only-field */}
             <input
               ref={inputRef}
               type="text"

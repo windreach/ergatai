@@ -55,6 +55,7 @@ export const debugRouter = router({
    */
   getDbStats: publicProcedure.query(async () => {
     const projects = await listProjects()
+    // react-doctor-disable-next-line server-sequential-independent-await
     const chats = await listChats()
     const conversationLists = await Promise.all(chats.map((chat) => listConversations(chat.id)))
     const conversationCount = conversationLists.reduce((total, conversations) => total + conversations.length, 0)
@@ -82,11 +83,13 @@ export const debugRouter = router({
   clearAllData: publicProcedure.mutation(async () => {
     const chats = await listChats()
     for (const chat of chats) {
+      // react-doctor-disable-next-line async-await-in-loop
       await deleteChat(chat.id)
     }
 
     const projects = await listProjects()
     for (const project of projects) {
+      // react-doctor-disable-next-line async-await-in-loop
       await deleteProject(project.id)
     }
     console.log("[Debug] Cleared all database data")

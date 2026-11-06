@@ -164,6 +164,15 @@ function MentionChip({ mention }: { mention: ParsedMention }) {
 
   return (
     <span
+      // react-doctor-disable-next-line prefer-tag-over-role
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          ;(e.currentTarget as HTMLElement).click()
+        }
+      }}
       className={`inline-flex items-center gap-1 px-[6px] rounded-[6px] text-sm align-middle bg-black/[0.04] dark:bg-white/[0.08] text-foreground/80 select-none${isClickable ? " cursor-pointer hover:bg-black/[0.08] dark:hover:bg-white/[0.12] transition-colors" : ""}`}
       title={title}
       onClick={isClickable ? () => onOpenFile(mention.path) : undefined}
@@ -184,7 +193,7 @@ function renderTextWithUltrathink(text: string): React.ReactNode {
   return parts.map((part, index) => {
     if (part.toLowerCase() === "ultrathink") {
       return (
-        <span key={index} className="chroma-text chroma-text-animate">
+        <span key={`index-${index}`} className="chroma-text chroma-text-animate">
           {part}
         </span>
       )
@@ -282,6 +291,14 @@ export function TextMentionBlock({ mention }: { mention: ParsedMention }) {
 
     return (
       <div
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            ;(e.currentTarget as HTMLElement).click()
+          }
+        }}
         className={
           isClickable
             ? "flex items-center gap-2 pl-1 pr-2 py-1 rounded-lg bg-muted/50 min-w-[120px] max-w-[200px] cursor-pointer hover:bg-muted transition-colors"
@@ -385,7 +402,8 @@ export function TextMentionBlocks({ mentions }: { mentions: ParsedMention[] }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {textMentions.map((mention, idx) => (
-        <TextMentionBlock key={idx} mention={mention} />
+        // react-doctor-disable-next-line no-array-index-as-key
+        <TextMentionBlock key={`idx-${idx}`} mention={mention} />
       ))}
     </div>
   )

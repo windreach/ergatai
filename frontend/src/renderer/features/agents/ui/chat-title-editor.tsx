@@ -107,6 +107,7 @@ export const ChatTitleEditor = memo(function ChatTitleEditor({
   }, [name])
 
   // Handle clicks outside to save
+  // react-doctor-disable-next-line effect-needs-cleanup
   useEffect(() => {
     if (!isEditing) return
 
@@ -128,6 +129,7 @@ export const ChatTitleEditor = memo(function ChatTitleEditor({
       clearTimeout(timeoutId)
       document.removeEventListener("mousedown", handleClickOutside)
     }
+  // react-doctor-disable-next-line prefer-use-effect-event
   }, [isEditing, handleSave])
 
   const handleKeyDown = useCallback(
@@ -180,6 +182,15 @@ export const ChatTitleEditor = memo(function ChatTitleEditor({
         />
       ) : (
         <div
+          // react-doctor-disable-next-line prefer-tag-over-role
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault()
+              ;(e.currentTarget as HTMLElement).click()
+            }
+          }}
           onClick={handleClick}
           className={cn(
             "text-left w-full h-full flex items-center",

@@ -846,6 +846,7 @@ function areSimpleGroupPropsEqual(
   )
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const SimpleIsolatedGroup = memo(function SimpleIsolatedGroup({
   userMsgId,
   conversationId,

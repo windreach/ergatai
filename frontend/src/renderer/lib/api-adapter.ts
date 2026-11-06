@@ -275,6 +275,7 @@ export const api = {
         })
         return {
           mutate: async (args?: { id: string }) => {
+            // react-doctor-disable-next-line async-defer-await
             const context = await opts?.onMutate?.(args)
             if (!args?.id) throw new Error("id is required")
             await mutation.mutateAsync({ id: args.id })
@@ -299,6 +300,7 @@ export const api = {
         })
         return {
           mutate: async (args?: { id: string }) => {
+            // react-doctor-disable-next-line async-defer-await
             const context = await opts?.onMutate?.(args)
             if (!args?.id) throw new Error("id is required")
             await mutation.mutateAsync({ id: args.id })

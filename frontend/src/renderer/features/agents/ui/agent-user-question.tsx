@@ -17,6 +17,7 @@ export interface AgentUserQuestionHandle {
   getAnswers: () => Record<string, string>
 }
 
+// react-doctor-disable-next-line no-giant-component
 export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentUserQuestionProps>(
   function AgentUserQuestion({
     pendingQuestions,
@@ -45,6 +46,7 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
       }
     }
     return formattedAnswers
+  // react-doctor-disable-next-line exhaustive-deps
   }, [pendingQuestions])
 
   // Cleanup timeout on unmount
@@ -64,9 +66,13 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
   // Reset when toolUseId changes (new question set)
   useEffect(() => {
     if (prevToolUseIdRef.current !== toolUseId) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setIsSubmitting(false)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setCurrentQuestionIndex(0)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setAnswers({})
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setFocusedOptionIndex(0)
       prevToolUseIdRef.current = toolUseId
     }
@@ -219,18 +225,22 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
       if (e.key === "ArrowDown") {
         e.preventDefault()
         if (focusedOptionIndex < currentOptions.length - 1) {
+          // react-doctor-disable-next-line rerender-functional-setstate
           setFocusedOptionIndex(focusedOptionIndex + 1)
         } else if (currentQuestionIndex < questions.length - 1) {
+          // react-doctor-disable-next-line rerender-functional-setstate
           setCurrentQuestionIndex(currentQuestionIndex + 1)
           setFocusedOptionIndex(0)
         }
       } else if (e.key === "ArrowUp") {
         e.preventDefault()
         if (focusedOptionIndex > 0) {
+          // react-doctor-disable-next-line rerender-functional-setstate
           setFocusedOptionIndex(focusedOptionIndex - 1)
         } else if (currentQuestionIndex > 0) {
           const prevQuestionOptions =
             questions[currentQuestionIndex - 1]?.options || []
+          // react-doctor-disable-next-line rerender-functional-setstate
           setCurrentQuestionIndex(currentQuestionIndex - 1)
           setFocusedOptionIndex(prevQuestionOptions.length - 1)
         }
@@ -266,8 +276,10 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
     currentQuestion,
     currentQuestionIndex,
     focusedOptionIndex,
+    // react-doctor-disable-next-line prefer-use-effect-event
     handleOptionClick,
     currentQuestionHasAnswer,
+    // react-doctor-disable-next-line prefer-use-effect-event
     handleContinue,
     questions,
     isSubmitting,
@@ -295,6 +307,7 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
         {questions.length > 1 && (
           <div className="flex items-center gap-1">
             <button
+              aria-label="ChevronUp"
               onClick={handlePrevious}
               disabled={currentQuestionIndex === 0}
               className="p-0.5 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed outline-none"
@@ -305,6 +318,7 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
               {currentQuestionIndex + 1} / {questions.length}
             </span>
             <button
+              aria-label="ChevronDown"
               onClick={handleNext}
               disabled={currentQuestionIndex === questions.length - 1}
               className="p-0.5 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed outline-none"

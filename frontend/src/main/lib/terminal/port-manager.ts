@@ -97,6 +97,7 @@ class PortManager extends EventEmitter {
 
 				try {
 					const pid = session.pty.pid
+					// react-doctor-disable-next-line async-await-in-loop
 					const pids = await getProcessTree(pid)
 					if (pids.length > 0) {
 						panePortMap.set(paneId, { workspaceId, pids })
@@ -107,6 +108,7 @@ class PortManager extends EventEmitter {
 			}
 
 			for (const [paneId, { workspaceId, pids }] of panePortMap) {
+				// react-doctor-disable-next-line async-await-in-loop
 				const portInfos = await getListeningPortsForPids(pids)
 				this.updatePortsForPane(paneId, workspaceId, portInfos)
 			}

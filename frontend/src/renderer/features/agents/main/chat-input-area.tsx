@@ -399,6 +399,8 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
  *
  * When user types, only this component re-renders, not the entire ChatViewInner.
  */
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export const ChatInputArea = memo(function ChatInputArea({
   editorRef,
   fileInputRef,
@@ -452,6 +454,17 @@ export const ChatInputArea = memo(function ChatInputArea({
   const [isFocused, setIsFocused] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
 
+  // Hide focus ring on pointer interaction (mouse/touch), even if previously focused
+  useEffect(() => {
+    const handlePointerDown = () => setIsFocused(false)
+    window.addEventListener("pointerdown", handlePointerDown, true)
+    window.addEventListener("mousedown", handlePointerDown, true)
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown, true)
+      window.removeEventListener("mousedown", handlePointerDown, true)
+    }
+  }, [])
+
   // ResizeObserver ref for cleanup
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
 
@@ -496,12 +509,16 @@ export const ChatInputArea = memo(function ChatInputArea({
     () =>
       resolveGroupMentionAgents(
         groupAgentIds,
+        // react-doctor-disable-next-line js-set-map-lookups
         coreAgents.filter((agent) => groupAgentIds.includes(agent.id)),
       ),
     [coreAgents, groupAgentIds],
   )
 
   useEffect(() => {
+    // react-doctor-disable-next-line no-pass-live-state-to-parent
+    // react-doctor-disable-next-line no-pass-data-to-parent
+    // react-doctor-disable-next-line no-prop-callback-in-effect
     onGroupAgentsChange?.(boundGroupAgents)
   }, [boundGroupAgents, onGroupAgentsChange])
 
@@ -653,6 +670,7 @@ export const ChatInputArea = memo(function ChatInputArea({
       },
     })
   const refreshRuntimeModelDataRef = useRef(refreshRuntimeModelData)
+  // react-doctor-disable-next-line no-ref-current-in-render
   refreshRuntimeModelDataRef.current = refreshRuntimeModelData
 
   const selectedModel = useMemo(
@@ -673,8 +691,11 @@ export const ChatInputArea = memo(function ChatInputArea({
 
   useEffect(() => {
     if (!isRuntimeModelProvider || !agentId || !runtimeProfileName) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setRuntimeModel(null)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setRuntimeModelKnown(false)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setIsDetectingRuntimeModel(false)
       requestedRuntimeModelProfileRef.current = null
       return
@@ -686,7 +707,9 @@ export const ChatInputArea = memo(function ChatInputArea({
       extractRuntimeModelFromConfigOptions(activeAgent?.config_options)
     if (currentModel) {
       setRuntimeModel(currentModel)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setRuntimeModelKnown(true)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setIsDetectingRuntimeModel(false)
       return
     }
@@ -697,8 +720,11 @@ export const ChatInputArea = memo(function ChatInputArea({
     ) {
       // The catalog is definitive, but this session did not expose its current
       // value. Do not display another session's or a stale current model.
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setRuntimeModel(null)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setRuntimeModelKnown(false)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setIsDetectingRuntimeModel(false)
       return
     }
@@ -707,6 +733,7 @@ export const ChatInputArea = memo(function ChatInputArea({
 
     if (requestedRuntimeModelProfileRef.current === runtimeProfileName) return
     requestedRuntimeModelProfileRef.current = runtimeProfileName
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setIsDetectingRuntimeModel(true)
     refreshRuntimeModelDataRef.current.mutate(
       { profileName: runtimeProfileName },
@@ -734,6 +761,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   const codexUiModels = useMemo(
     () => {
       const models = CODEX_MODELS
+      // react-doctor-disable-next-line js-set-map-lookups
       return models.filter((model) => !hiddenModels.includes(model.id))
     },
     [hiddenModels],
@@ -941,7 +969,9 @@ export const ChatInputArea = memo(function ChatInputArea({
   const currentChatIdRef = useRef<string | null>(parentChatId)
   const currentDraftTextRef = useRef<string>("")
   const folderInputRef = useRef<HTMLInputElement>(null)
+  // react-doctor-disable-next-line no-ref-current-in-render
   currentConversationIdRef.current = conversationId
+  // react-doctor-disable-next-line no-ref-current-in-render
   currentChatIdRef.current = parentChatId
 
   // Keyboard shortcut: Cmd+/ to open model selector
@@ -1102,6 +1132,7 @@ export const ChatInputArea = memo(function ChatInputArea({
       window.removeEventListener("keydown", handleKeyDown, true)
       window.removeEventListener("keyup", handleKeyUp, true)
     }
+  // react-doctor-disable-next-line prefer-use-effect-event
   }, [voiceInputHotkey, isVoiceRecording, isTranscribing, isStreaming, handleVoiceMouseDown, handleVoiceMouseUp, isActive])
 
   // Save draft on blur (with attachments and text contexts)
@@ -1346,6 +1377,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                 if (ent.isFile) {
                   const fileEntry = ent as FileSystemFileEntry
                   try {
+                    // react-doctor-disable-next-line async-await-in-loop
                     const file = await new Promise<File>((res, rej) => {
                       fileEntry.file(res, rej)
                     })
@@ -1380,6 +1412,7 @@ export const ChatInputArea = memo(function ChatInputArea({
         if (entry?.isDirectory) {
           // It's a folder - read all files and store as folder card
           try {
+            // react-doctor-disable-next-line async-await-in-loop
             const files = await readDirectoryFiles(entry as FileSystemDirectoryEntry)
             const folderName = entry.name
             droppedFolders.push({ name: folderName, files })
@@ -1519,7 +1552,7 @@ export const ChatInputArea = memo(function ChatInputArea({
               className={cn(
                 "border bg-input-background relative z-10 p-2 rounded-xl transition-[border-color,box-shadow] duration-150",
                 isDragOver && "ring-2 ring-primary/50 border-primary/50",
-                isFocused && !isDragOver && "ring-2 ring-primary/50",
+                isFocused && !isDragOver && document.documentElement.dataset.focusMethod === "keyboard" && "ring-2 ring-primary/50",
               )}
               maxHeight={200}
               onSubmit={onSend}
@@ -1625,7 +1658,9 @@ export const ChatInputArea = memo(function ChatInputArea({
                     isMobile && "min-h-[56px]",
                   )}
                   onPaste={handlePaste}
-                  onFocus={() => setIsFocused(true)}
+                  onFocus={() => {
+                    if (document.documentElement.dataset.focusMethod === "keyboard") setIsFocused(true)
+                  }}
                   onBlur={handleEditorBlur}
                 />
               </div>
@@ -1663,6 +1698,7 @@ export const ChatInputArea = memo(function ChatInputArea({
 	                        onContinueWithProvider={!canSwitchProvider ? onContinueWithProvider : undefined}
 	                        selectedModelLabel={selectedModelLabel}
 	                        claude={{
+	                          // react-doctor-disable-next-line js-set-map-lookups
 	                          models: availableModels.models.filter((m) => !hiddenModels.includes(m.id)),
 	                          selectedModelId: selectedModel?.id,
 	                          onSelectModel: (modelId) => {

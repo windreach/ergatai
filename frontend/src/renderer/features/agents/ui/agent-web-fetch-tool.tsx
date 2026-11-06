@@ -36,6 +36,7 @@ interface AgentWebFetchToolProps {
   chatStatus?: string
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const AgentWebFetchTool = memo(function AgentWebFetchTool({
   part,
   chatStatus,
@@ -70,6 +71,14 @@ export const AgentWebFetchTool = memo(function AgentWebFetchTool({
     <div className="rounded-lg border border-border bg-muted/30 overflow-hidden mx-2">
       {/* Header - clickable to toggle expand */}
       <div
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            ;(e.currentTarget as HTMLElement).click()
+          }
+        }}
         onClick={() => hasContent && !isPending && setIsExpanded(!isExpanded)}
         className={cn(
           "flex items-center justify-between px-2.5 h-7",

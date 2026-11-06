@@ -50,6 +50,7 @@ type KanbanChatRow = {
   updatedAt: Date | null
 }
 
+// react-doctor-disable-next-line no-giant-component
 export function KanbanView() {
   const setSelectedChatId = useSetAtom(selectedAgentChatIdAtom)
   const setSelectedDraftId = useSetAtom(selectedDraftIdAtom)
@@ -83,6 +84,7 @@ export function KanbanView() {
 
   // Archive confirmation dialog state
   const [confirmArchiveDialogOpen, setConfirmArchiveDialogOpen] = useState(false)
+  // react-doctor-disable-next-line rerender-state-only-in-handlers
   const [archivingChatId, setArchivingChatId] = useState<string | null>(null)
   const [activeProcessCount, setActiveProcessCount] = useState(0)
   const [hasWorktree, setHasWorktree] = useState(false)
@@ -226,9 +228,12 @@ export function KanbanView() {
       return prev
     }
 
-    prevOpenConversationIdsRef.current = allIds
     return allIds
   }, [chats, openConversationsVersion])
+
+  useEffect(() => {
+    prevOpenConversationIdsRef.current = allOpenConversationIds
+  }, [allOpenConversationIds])
 
   // Pending plan approvals from DB
   const { data: pendingPlanApprovalsData } = trpc.chats.getPendingPlanApprovals.useQuery(

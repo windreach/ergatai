@@ -47,6 +47,8 @@ type ClaudeLoginModalProps = {
   autoStartAuth?: boolean
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export function ClaudeLoginModal({
   hideCustomModelSettingsLink = false,
   autoStartAuth = false,

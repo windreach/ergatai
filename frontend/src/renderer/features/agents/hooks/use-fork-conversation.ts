@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react"
+import { useEffect, useCallback, useRef } from "react"
 import { toast } from "sonner"
 
 
@@ -21,6 +21,7 @@ export function useForkConversation({
   const isForkingRef = useRef(false)
   // Use ref to access latest messages without recreating callback
   const messagesForForkRef = useRef(messages)
+  // react-doctor-disable-next-line no-ref-current-in-render
   messagesForForkRef.current = messages
 
   const handleForkFromMessage = useCallback(

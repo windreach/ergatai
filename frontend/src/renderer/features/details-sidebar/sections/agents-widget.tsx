@@ -347,6 +347,7 @@ export const AgentsWidget = memo(function AgentsWidget({ chatId, activeConversat
                         "bg-muted-foreground/30",
                     )}
                   />
+	                  {/* react-doctor-disable-next-line html-no-nested-interactive */}
 	                  <button
 	                    type="button"
 	                    aria-label="Permanently delete agent"

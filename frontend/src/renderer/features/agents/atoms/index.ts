@@ -102,6 +102,7 @@ const storedChatAgentLogosAtom = atomWithStorage<StoredChatAgentLogosMap>(
 export const chatAgentLogosAtom = atom(
   (get) => {
     const storedValue = get(storedChatAgentLogosAtom)
+    // react-doctor-disable-next-line jotai-derived-atom-returns-fresh-object
     return Object.fromEntries(
       Object.entries(storedValue).map(([chatId, logos]) => [
         chatId,
@@ -136,6 +137,26 @@ export const workspaceCollaborationModesAtom = atomWithWindowStorage<
 export const selectedAgentChatIdAtom = atomWithWindowStorage<
   string | null
 >("agents:selectedChatId", null, { getOnInit: true })
+
+// Track whether the renderer has finished claiming the selected chat. This is
+// runtime-only state: it must not survive a reload because ownership is decided
+// by the main process on every app/page startup.
+export type ChatClaimStatus =
+  | "idle"
+  | "pending"
+  | "claimed"
+  | "failed"
+  | "not-required"
+
+export type ChatClaimState = {
+  chatId: string | null
+  status: ChatClaimStatus
+}
+
+export const chatClaimStateAtom = atom<ChatClaimState>({
+  chatId: null,
+  status: "idle",
+})
 
 // Selected workspace IDs are isolated by collaboration mode so switching modes
 // never leaks one mode's active workspace into the other.

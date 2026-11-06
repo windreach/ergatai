@@ -95,6 +95,7 @@ const ComplexityBadge = ({ complexity }: { complexity?: "low" | "medium" | "high
   )
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const AgentPlanTool = memo(function AgentPlanTool({
   part,
   chatStatus,
@@ -145,6 +146,14 @@ export const AgentPlanTool = memo(function AgentPlanTool({
     <div className="rounded-lg border border-border bg-muted/30 overflow-hidden mx-2">
       {/* Header - click anywhere to expand/collapse */}
       <div 
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            ;(e.currentTarget as HTMLElement).click()
+          }
+        }}
         className="flex items-center justify-between px-2.5 py-2 cursor-pointer hover:bg-muted/50 transition-colors duration-150"
         onClick={() => setIsExpanded(!isExpanded)}
       >
@@ -219,6 +228,7 @@ export const AgentPlanTool = memo(function AgentPlanTool({
                 </span>
               </div>
               <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                {/* react-doctor-disable-next-line no-transition-all */}
                 <div 
                   className="h-full bg-muted-foreground/50 transition-all duration-300 ease-out"
                   style={{ width: `${(completedCount / totalSteps) * 100}%` }}

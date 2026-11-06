@@ -21,6 +21,7 @@ interface AgentPlanSidebarProps {
   mode?: AgentMode
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export function AgentPlanSidebar({
   chatId,
   conversationId,

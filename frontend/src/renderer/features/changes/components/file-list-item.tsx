@@ -62,6 +62,7 @@ export interface FileListItemProps {
  * Shared file list item component used in both changes-view and changes-widget
  * Memoized to prevent re-renders
  */
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const FileListItem = memo(function FileListItem({
   filePath: _filePath,
   fileName,
@@ -86,6 +87,14 @@ export const FileListItem = memo(function FileListItem({
 }: FileListItemProps) {
   const content = (
     <div
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          ;(e.currentTarget as HTMLElement).click()
+        }
+      }}
       data-file-item
       className={cn(
         "flex items-center gap-2 px-2 py-1 cursor-pointer",

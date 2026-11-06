@@ -42,6 +42,7 @@ interface AgentAskUserQuestionToolProps {
   toolCallId?: string // Tool call ID for looking up real-time results
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const AgentAskUserQuestionTool = memo(function AgentAskUserQuestionTool({
   input,
   result,

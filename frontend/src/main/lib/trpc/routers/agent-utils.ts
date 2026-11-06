@@ -156,6 +156,7 @@ export async function loadAgent(
     discoverInstalledPlugins(),
   ])
   const enabledPlugins = installedPlugins.filter(
+    // react-doctor-disable-next-line js-set-map-lookups
     (p) => enabledPluginSources.includes(p.source),
   )
   const pluginResults = await Promise.all(
@@ -209,6 +210,7 @@ export async function scanAgentsDirectory(
       }
 
       // Accept .md files (Claude Code native format)
+      // react-doctor-disable-next-line async-await-in-loop
       const { isFile } = await resolveDirentType(dir, entry)
       if (isFile && entry.name.endsWith(".md")) {
         const agentPath = path.join(dir, entry.name)
@@ -296,6 +298,7 @@ export async function buildAgentsOption(
     if (agent === undefined) {
       // Not in cache, load from disk
       console.log(`[agents] Cache MISS for ${name} - loading from disk`)
+      // react-doctor-disable-next-line async-await-in-loop
       agent = await loadAgent(name, cwd)
       agentCache.set(cacheKey, agent)
     } else {

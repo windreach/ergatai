@@ -30,6 +30,7 @@ const isValidHttpUrl = (url: string): boolean => {
 }
 
 export const AgentWebSearchCollapsible = memo(
+  // react-doctor-disable-next-line no-high-complexity-react-function
   function AgentWebSearchCollapsible({
     part,
     chatStatus,

@@ -34,6 +34,7 @@ interface PlanWidgetProps {
  * Keeps original header buttons (View plan, Approve) and adds expand/collapse icon
  * Memoized to prevent re-renders when parent updates
  */
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const PlanWidget = memo(function PlanWidget({
   chatId,
   activeConversationId,

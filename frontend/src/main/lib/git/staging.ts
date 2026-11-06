@@ -121,6 +121,7 @@ export const createStagingRouter = () => {
 			)
 			.mutation(async ({ input }): Promise<{ success: boolean }> => {
 				for (const filePath of input.filePaths) {
+					// react-doctor-disable-next-line async-await-in-loop
 					await secureFs.delete(input.worktreePath, filePath);
 				}
 				return { success: true };

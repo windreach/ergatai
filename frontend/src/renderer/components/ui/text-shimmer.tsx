@@ -1,4 +1,5 @@
 import React, { useMemo, useState, useEffect, type JSX } from "react"
+// react-doctor-disable-next-line use-lazy-motion
 import { motion } from "motion/react"
 import { cn } from "../../lib/utils"
 

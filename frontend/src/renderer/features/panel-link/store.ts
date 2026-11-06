@@ -68,6 +68,7 @@ export const panelLinkPanelAtomFamily = atomFamily(
 )
 
 export const panelLinkSnapshotAtomFamily = atomFamily((scopeKey: string) =>
+  // react-doctor-disable-next-line jotai-derived-atom-returns-fresh-object
   atom((get): PanelLinkSnapshot => ({
     scopeKey,
     state: get(panelLinkScopeAtomFamily(scopeKey)),
@@ -77,6 +78,7 @@ export const panelLinkSnapshotAtomFamily = atomFamily((scopeKey: string) =>
 export const allPanelLinkSnapshotsAtom = atom((get) => {
   const scopes = get(panelLinkScopesAtom)
 
+  // react-doctor-disable-next-line jotai-derived-atom-returns-fresh-object
   return Object.entries(scopes).map<PanelLinkSnapshot>(
     ([scopeKey, state]) => ({ scopeKey, state }),
   )

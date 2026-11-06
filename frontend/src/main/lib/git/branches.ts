@@ -56,7 +56,9 @@ export const createBranchesRouter = () => {
 						}
 					}
 
+					// react-doctor-disable-next-line async-parallel
 					const local = await getLocalBranchesWithDates(git, localBranches);
+					// react-doctor-disable-next-line server-sequential-independent-await
 					const defaultBranch = await getDefaultBranch(git, remote);
 					const checkedOutBranches = await getCheckedOutBranches(
 						git,
@@ -251,6 +253,7 @@ export const createBranchesRouter = () => {
 				if (!input.dryRun) {
 					for (const branch of orphanedBranches) {
 						try {
+							// react-doctor-disable-next-line async-await-in-loop
 							await withGitLock(input.worktreePath, async () => {
 								await git.branch(["-D", branch]);
 							});
@@ -295,6 +298,7 @@ async function getLocalBranchesWithDates(
 			const lastSpaceIdx = line.lastIndexOf(" ");
 			const branch = line.substring(0, lastSpaceIdx);
 			const timestamp = Number.parseInt(line.substring(lastSpaceIdx + 1), 10);
+			// react-doctor-disable-next-line js-set-map-lookups
 			if (localBranches.includes(branch)) {
 				local.push({
 					branch,

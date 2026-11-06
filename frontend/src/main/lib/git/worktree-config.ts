@@ -233,6 +233,7 @@ export async function executeWorktreeSetup(
     try {
       result.output.push(`$ ${cmd}`)
 
+      // react-doctor-disable-next-line async-await-in-loop
       const { stdout, stderr } = await execAsync(cmd, {
         cwd: worktreePath,
         env: {

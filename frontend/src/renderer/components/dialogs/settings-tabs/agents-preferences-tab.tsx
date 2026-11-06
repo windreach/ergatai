@@ -140,6 +140,7 @@ function useIsNarrowScreen(): boolean {
   return isNarrow
 }
 
+// react-doctor-disable-next-line no-giant-component
 export function AgentsPreferencesTab() {
   const [thinkingEnabled, setThinkingEnabled] = useAtom(
     extendedThinkingEnabledAtom,

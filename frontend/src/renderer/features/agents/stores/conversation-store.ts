@@ -183,6 +183,7 @@ export const useAgentConversationStore = create<AgentConversationStore>((set, ge
 
     // Validate splitPaneIds against openConversationIds and pane cap
     splitPaneIds = splitPaneIds
+      // react-doctor-disable-next-line js-set-map-lookups
       .filter(id => openConversationIds.includes(id))
       .slice(0, MAX_SPLIT_PANES)
     if (splitPaneIds.length < 2) splitPaneIds = []
@@ -391,6 +392,7 @@ export const useAgentConversationStore = create<AgentConversationStore>((set, ge
     // Add all pane IDs to open tabs
     const newOpenIds = [...openConversationIds]
     for (const id of normalizedPaneIds) {
+      // react-doctor-disable-next-line js-set-map-lookups
       if (!newOpenIds.includes(id)) newOpenIds.push(id)
     }
     const ratios = getDefaultRatios(normalizedPaneIds.length)

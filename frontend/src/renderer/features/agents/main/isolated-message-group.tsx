@@ -246,6 +246,7 @@ function areGroupPropsEqual(
   )
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
   userMsgId,
   conversationId,
@@ -424,6 +425,7 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
             />
           ))}
           {textMentions.map((mention, idx) => (
+            // react-doctor-disable-next-line no-array-index-as-key
             <TextMentionBlock key={`mention-${idx}`} mention={mention} />
           ))}
         </div>
@@ -460,6 +462,7 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
+                    aria-label="IconTextUndo"
                     onClick={() => onRollback(userMsg as UIMessage)}
                     disabled={isRollingBack}
                     tabIndex={-1}

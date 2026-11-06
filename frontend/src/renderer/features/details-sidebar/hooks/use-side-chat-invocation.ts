@@ -74,6 +74,7 @@ export function useSideChatInvocation({
   // Keep a stable ref to the latest chat instance so the adapter registration
   // effect does not re-run (and tear down the in-flight stream) on every render.
   const chatInstanceRef = useRef(chatInstance)
+  // react-doctor-disable-next-line no-ref-current-in-render
   chatInstanceRef.current = chatInstance
 
   // Use new invocation service for queue management

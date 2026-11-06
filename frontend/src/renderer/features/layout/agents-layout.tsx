@@ -49,6 +49,7 @@ const SIDEBAR_CLOSE_HOTKEY = "⌘\\"
 // Component
 // ============================================================================
 
+// react-doctor-disable-next-line no-giant-component
 export function AgentsLayout() {
   // No useHydrateAtoms - desktop doesn't need SSR, atomWithStorage handles persistence
   const isMobile = useIsMobile()

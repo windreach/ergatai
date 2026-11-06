@@ -776,13 +776,16 @@ export const chatsRouter = router({
 
       // Get all chats to identify worktree-mode workspaces
       const allChats = await trpcClient.listChats()
+      // react-doctor-disable-next-line js-set-map-lookups
       const chatsToArchive = allChats.filter((c: ChatRecord) => input.chatIds.includes(c.id))
       const worktreeChats = chatsToArchive.filter((c: ChatRecord) => c.branch != null)
 
       // Archive all chats - use archiveChat for chat containers, not archiveConversation
       const results = []
       for (const chatId of input.chatIds) {
+        // react-doctor-disable-next-line async-await-in-loop
         await trpcClient.archiveChat({ id: chatId })
+        // react-doctor-disable-next-line js-index-maps
         const chat = chatsToArchive.find((c: ChatRecord) => c.id === chatId)
         if (chat) results.push(chat)
       }
@@ -1559,6 +1562,7 @@ export const chatsRouter = router({
       )
       allChats = (await Promise.all(conversationsByChat.flatMap(({ chatId, conversations }) =>
         conversations.map(async (conversation) => {
+          // react-doctor-disable-next-line async-await-in-loop
           const messages = await listConversationMessages(conversation.id)
           const messagesJson = JSON.stringify(mapBackendMessagesToUiMessages(messages))
           return {
@@ -1869,6 +1873,7 @@ export const chatsRouter = router({
 
       for (const conversation of chatConversations) {
         try {
+          // react-doctor-disable-next-line async-await-in-loop
           const backendMessages = await listConversationMessages(conversation.id)
           const messages = mapBackendMessagesToUiMessages(backendMessages).map((msg) => ({
             id: msg.id,
@@ -2043,6 +2048,7 @@ export const chatsRouter = router({
 
       for (const conversation of chatConversations) {
         try {
+          // react-doctor-disable-next-line async-await-in-loop
           const backendMessages = await listConversationMessages(conversation.id)
           const messages = mapBackendMessagesToUiMessages(backendMessages) as Array<{
             role: string

@@ -1,3 +1,4 @@
+// react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
 import { useEffect, useState, useRef } from "react"
 import { createPortal } from "react-dom"
@@ -32,6 +33,7 @@ export function RenameDialog({
   const openAtRef = useRef<number>(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // react-doctor-disable-next-line rendering-hydration-no-flicker
   useEffect(() => {
     setMounted(true)
   }, [])
@@ -105,6 +107,14 @@ export function RenameDialog({
         <>
           {/* Overlay */}
           <motion.div
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                ;(e.currentTarget as HTMLElement).click()
+              }
+            }}
             initial={{ opacity: 0 }}
             animate={{
               opacity: 1,

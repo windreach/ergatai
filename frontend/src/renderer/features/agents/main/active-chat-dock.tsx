@@ -7,6 +7,7 @@ import { ConversationStatusCard } from "../ui/conversation-status-card"
 import { ChatInputArea } from "./chat-input-area"
 import { ScrollToBottomButton } from "./active-chat-ui"
 
+
  
 export function ActiveChatDock(props: any) {
   const {
@@ -103,8 +104,7 @@ export function ActiveChatDock(props: any) {
 
       {/* Combined status container - queue + status card */}
       {/* Hidden while a permission approval is pending - the approval panel covers the dock */}
-      {!hasPermissionApproval &&
-        shouldShowStackedCards && (
+      {!hasPermissionApproval && !displayQuestions && (
         <div className="px-2 -mb-6 relative shadow-sm shadow-background">
           <div className="w-full max-w-2xl mx-auto px-2">
             {/* Queue indicator card */}
@@ -113,23 +113,22 @@ export function ActiveChatDock(props: any) {
                 queue={queue}
                 onRemoveItem={handleRemoveFromQueue}
                 onSendNow={handleSendFromQueue}
-                hasStatusCardBelow={shouldShowStatusCard}
+                hasStatusCardBelow={true}
               />
             )}
-            {/* Status card - bottom card */}
-            {shouldShowStatusCard && (
-              <ConversationStatusCard
-                chatId={parentChatId}
-                conversationId={conversationId}
-                isStreaming={isStreaming}
-                isCompacting={isCompacting}
-                changedFiles={changedFilesForConversation}
-                worktreePath={projectPath}
-                onStop={handleStop}
-                hasQueueCardAbove={queue.length > 0}
-                hasAgentRailAbove={false}
-              />
-            )}
+            {/* Status/history card - always mounted for persistent agent history */}
+            <ConversationStatusCard
+              agentId={backendAgentId}
+              chatId={parentChatId}
+              conversationId={conversationId}
+              isStreaming={isStreaming}
+              isCompacting={isCompacting}
+              changedFiles={changedFilesForConversation}
+              worktreePath={projectPath}
+              onStop={handleStop}
+              hasQueueCardAbove={queue.length > 0}
+              hasAgentRailAbove={false}
+            />
           </div>
         </div>
       )}

@@ -148,6 +148,7 @@ async function scanExtensionsDir(extensionsDir: string, source: EditorSource): P
       const packageJsonPath = path.join(extensionsDir, extDir, "package.json")
 
       try {
+        // react-doctor-disable-next-line async-await-in-loop
         const packageJsonContent = await fs.readFile(packageJsonPath, "utf-8")
         const manifest = JSON.parse(packageJsonContent)
 
@@ -160,6 +161,7 @@ async function scanExtensionsDir(extensionsDir: string, source: EditorSource): P
           // Verify theme file exists and read the actual theme name from the file
           let actualThemeName: string | undefined
           try {
+            // react-doctor-disable-next-line async-await-in-loop
             const themeContent = await fs.readFile(themePath, "utf-8")
             // Use proper JSONC parser (handles comments and trailing commas)
             const themeData = parseJsonc(themeContent)

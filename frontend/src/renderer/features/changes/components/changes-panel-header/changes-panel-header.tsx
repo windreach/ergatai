@@ -34,6 +34,7 @@ function formatTimeSince(date: Date): string {
 	return `${days}d ago`;
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export function ChangesPanelHeader({
 	worktreePath,
 	currentBranch,

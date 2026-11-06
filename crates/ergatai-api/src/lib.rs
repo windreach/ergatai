@@ -563,6 +563,14 @@ pub fn build_rest_app(state: AppState) -> Router {
                 .post(api::user_conversations::create_conversation_messages),
         )
         .route(
+            "/api/v1/conversations/{conversation_id}/import-state",
+            get(api::user_conversations::get_conversation_import_state),
+        )
+        .route(
+            "/api/v1/conversations/{conversation_id}/import-history",
+            post(api::user_conversations::import_conversation_history),
+        )
+        .route(
             "/api/v1/conversations/{conversation_id}/initial-prompt",
             get(api::user_conversations::get_initial_prompt)
                 .post(api::user_conversations::create_initial_prompt),

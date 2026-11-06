@@ -641,12 +641,8 @@ pub async fn refresh_profile_models(Path(name): Path<String>) -> axum::response:
                     })
                     .unwrap_or_default();
                 if !models.is_empty() {
-                    if let Err(e) = profile_service::save_profile_models_by_name(
-                        &name,
-                        &models,
-                        None,
-                    )
-                    .await
+                    if let Err(e) =
+                        profile_service::save_profile_models_by_name(&name, &models, None).await
                     {
                         return crate::http_error::internal(e, "refresh_profile_models_save")
                             .into_response();
@@ -845,17 +841,16 @@ pub async fn refresh_profile_models(Path(name): Path<String>) -> axum::response:
         {
             return crate::http_error::internal(e, "refresh_profile_models_save").into_response();
         }
-        let source = if profile.name.to_lowercase().contains("claude")
-            && detection.option_id.is_none()
-        {
-            "cli_subprocess"
-        } else {
-            detection
-                .option_id
-                .as_deref()
-                .map(|_| "acp_config_options")
-                .unwrap_or("slash_command")
-        };
+        let source =
+            if profile.name.to_lowercase().contains("claude") && detection.option_id.is_none() {
+                "cli_subprocess"
+            } else {
+                detection
+                    .option_id
+                    .as_deref()
+                    .map(|_| "acp_config_options")
+                    .unwrap_or("slash_command")
+            };
         (
             StatusCode::OK,
             Json(serde_json::json!({

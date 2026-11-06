@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react"
+// react-doctor-disable-next-line prefer-dynamic-import
 import Editor from "@monaco-editor/react"
 import { useTheme } from "next-themes"
 import { useAtom } from "jotai"
@@ -50,6 +51,7 @@ interface MarkdownViewerProps {
   onClose: () => void
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export function MarkdownViewer({
   filePath,
   projectPath,

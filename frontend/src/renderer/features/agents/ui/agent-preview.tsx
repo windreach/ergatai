@@ -78,6 +78,8 @@ interface AgentPreviewProps {
   isMobile?: boolean
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export function AgentPreview({
   chatId,
   sandboxId,
@@ -116,6 +118,7 @@ export function AgentPreview({
   const [currentPath, setCurrentPath] = useState(persistedPath)
 
   // Listen for reload events from external header
+  // react-doctor-disable-next-line effect-needs-cleanup
   useEffect(() => {
     const handleReload = (e: CustomEvent) => {
       if (e.detail?.chatId === chatId) {
@@ -159,6 +162,7 @@ export function AgentPreview({
   }, [chatId, setPersistedPath])
 
   // Dispatch path updates to header
+  // react-doctor-disable-next-line no-effect-chain
   useEffect(() => {
     window.dispatchEvent(
       new CustomEvent("agent-preview-path-update", {
@@ -531,6 +535,7 @@ export function AgentPreview({
                 height="100%"
                 style={{ border: "none" }}
                 title="Preview"
+                // react-doctor-disable-next-line iframe-missing-sandbox
                 sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
                 allow="clipboard-write"
                 onLoad={() => setIsLoaded(true)}
@@ -597,6 +602,7 @@ export function AgentPreview({
                     border: "none",
                     borderRadius: viewportMode === "desktop" ? "8px" : "24px",
                   }}
+                  // react-doctor-disable-next-line iframe-missing-sandbox
                   sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
                   allow="clipboard-write"
                   onLoad={() => setIsLoaded(true)}

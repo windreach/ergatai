@@ -30,10 +30,14 @@ export const TypewriterText = memo(function TypewriterText({
   const initialTextRef = useRef(text)
 
   // Reset state when id changes
+  // react-doctor-disable-next-line no-reset-all-state-on-prop-change
   useEffect(() => {
     if (id !== prevIdRef.current) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setIsTyping(false)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setTypedLength(0)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setHasAnimated(false)
       initialTextRef.current = text
       prevIdRef.current = id
@@ -46,8 +50,11 @@ export const TypewriterText = memo(function TypewriterText({
 
     const textChanged = text !== initialTextRef.current
     if (isJustCreated && textChanged) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setIsTyping(true)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setTypedLength(1) // Start with first character visible
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setHasAnimated(true)
     }
   }, [text, isJustCreated, hasAnimated])

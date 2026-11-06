@@ -23,6 +23,7 @@ interface ConversationsQuickSwitchDialogProps {
 }
 
 // Conversation card for quick switch
+// react-doctor-disable-next-line no-high-complexity-react-function
 function ConversationCard({
   conversation,
   isSelected,

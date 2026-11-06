@@ -821,6 +821,7 @@ export function SwiftIcon({ className }: FrameworkIconProps) {
 }
 
 // Ruby - Red gem logo
+// react-doctor-disable-next-line no-giant-component
 export function RubyIcon({ className }: FrameworkIconProps) {
   return (
     <svg

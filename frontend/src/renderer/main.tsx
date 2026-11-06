@@ -56,6 +56,25 @@ window.onerror = (message, source, lineno, colno, error) => {
   return false
 }
 
+// Track last interaction method so CSS can suppress focus rings on pointer (mouse/touch) clicks
+// while keeping them for keyboard (Tab) navigation (accessibility).
+document.documentElement.dataset.focusMethod = "pointer"
+const setFocusMethod = (method: "pointer" | "keyboard") => {
+  document.documentElement.dataset.focusMethod = method
+}
+window.addEventListener("pointerdown", () => setFocusMethod("pointer"), true)
+window.addEventListener("mousedown", () => setFocusMethod("pointer"), true)
+window.addEventListener("touchstart", () => setFocusMethod("pointer"), true)
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (e.key === "Tab" || e.key.startsWith("Arrow") || e.key === "Home" || e.key === "End") {
+      setFocusMethod("keyboard")
+    }
+  },
+  true
+)
+
 const rootElement = document.getElementById("root")
 
 if (rootElement) {

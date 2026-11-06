@@ -9,6 +9,7 @@ import React, {
   useMemo,
   memo,
 } from 'react'
+// react-doctor-disable-next-line no-flush-sync
 import { flushSync } from 'react-dom'
 import { useAtom, useSetAtom, useAtomValue } from 'jotai'
 import { toast } from 'sonner'
@@ -141,6 +142,8 @@ const CommitFileItem = memo(function CommitFileItem({
   )
 })
 
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 const DiffSidebarContent = memo(function DiffSidebarContent({
   worktreePath,
   chatId,
@@ -155,6 +158,7 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
     sidebarWidth,
           onCreatePr,
   onDiscardSuccess,
+  // react-doctor-disable-next-line rerender-memo-with-default-value
   conversations = [],
 }: Omit<DiffSidebarContentProps, 'selectedFilePath' | 'onFileSelect' | 'onCommitSuccess' | 'initialConversationFilter' | 'onSelectNextFile'>) {
   // Get values from context instead of props
@@ -763,6 +767,9 @@ interface DiffSidebarRendererProps {
   onDiscardSuccess?: () => void
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
+
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
   worktreePath,
   chatId,

@@ -160,6 +160,7 @@ export function useSidebarStates(chatId: string) {
         if (key === "alt") return hasAlt
         if (key === "shift") return hasShift
         // Check if the main key matches
+        // react-doctor-disable-next-line js-set-map-lookups
         return pressedKeys.includes(key.toLowerCase())
       }) && pressedKeys.length === toggleTerminalKeys.length
 

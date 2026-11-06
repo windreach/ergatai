@@ -1,5 +1,5 @@
  
-import { useCallback, useRef } from "react"
+import { useEffect, useCallback, useRef } from "react"
 import { toast } from "sonner"
 import { appStore } from "../../../lib/jotai-store"
 import { selectedAgentChatIdAtom, soundNotificationsEnabledAtom } from "../../../lib/atoms"
@@ -89,9 +89,13 @@ export function useChatInstanceFactory({
   const utilsRef = useRef(utils)
 
   // Sync refs on every render (not in useEffect) so callbacks always have latest values
+  // react-doctor-disable-next-line no-ref-current-in-render
   chatRef.current = chat
+  // react-doctor-disable-next-line no-ref-current-in-render
   providerRef.current = provider
+  // react-doctor-disable-next-line no-ref-current-in-render
   stateRef.current = state
+  // react-doctor-disable-next-line no-ref-current-in-render
   utilsRef.current = utils
 
   // Sync finished messages to cache and backend

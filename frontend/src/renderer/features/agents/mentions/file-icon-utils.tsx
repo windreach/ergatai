@@ -3,6 +3,7 @@
  * Separated from agents-file-mention.tsx to maintain Fast Refresh compatibility.
  */
 import { createElement, type ComponentType } from "react"
+// react-doctor-disable-next-line no-flush-sync
 import { flushSync } from "react-dom"
 import { createRoot } from "react-dom/client"
 import {

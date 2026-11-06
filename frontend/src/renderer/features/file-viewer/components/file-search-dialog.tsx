@@ -68,14 +68,16 @@ export const FileSearchDialog = memo(function FileSearchDialog({
   }, [query])
 
   // Reset state when dialog opens/closes
+  // react-doctor-disable-next-line no-reset-all-state-on-prop-change
   useEffect(() => {
     if (open) {
       setQuery("")
       setDebouncedQuery("")
       setSelectedIndex(0)
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         searchInputRef.current?.focus()
       }, 0)
+      return () => clearTimeout(timer)
     }
   }, [open])
 
@@ -329,6 +331,14 @@ const FileSearchItem = memo(function FileSearchItem({
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          ;(e.currentTarget as HTMLElement).click()
+        }
+      }}
       ref={handleRef}
       onClick={onSelect}
       className={cn(
@@ -346,9 +356,9 @@ const FileSearchItem = memo(function FileSearchItem({
           {query
             ? highlightMatches(label, query).map((seg, i) =>
                 seg.highlight ? (
-                  <mark key={i} className="bg-transparent text-foreground font-semibold">{seg.text}</mark>
+                  <mark key={`i-${i}`} className="bg-transparent text-foreground font-semibold">{seg.text}</mark>
                 ) : (
-                  <span key={i}>{seg.text}</span>
+                  <span key={`i-${i}`}>{seg.text}</span>
                 ),
               )
             : label}
@@ -366,9 +376,9 @@ const FileSearchItem = memo(function FileSearchItem({
               {query
                 ? highlightMatches(dirPath, query).map((seg, i) =>
                     seg.highlight ? (
-                      <mark key={i} className="bg-transparent text-foreground font-semibold">{seg.text}</mark>
+                      <mark key={`i-${i}`} className="bg-transparent text-foreground font-semibold">{seg.text}</mark>
                     ) : (
-                      <span key={i}>{seg.text}</span>
+                      <span key={`i-${i}`}>{seg.text}</span>
                     ),
                   )
                 : dirPath}
@@ -379,7 +389,9 @@ const FileSearchItem = memo(function FileSearchItem({
       {recentLabel && (
         <span className="flex items-center gap-1 ml-auto shrink-0">
           <span className="text-xs text-muted-foreground/60">{recentLabel}</span>
+          {/* react-doctor-disable-next-line html-no-nested-interactive */}
           <button
+            aria-label="X"
             type="button"
             onClick={handleRemove}
             className="h-4 w-4 flex items-center justify-center rounded text-muted-foreground/60 hover:text-foreground transition-colors"

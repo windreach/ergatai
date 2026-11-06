@@ -1,4 +1,5 @@
 import { memo } from "react"
+// react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
 import { formatTimeAgo } from "../../../lib/utils/format-time-ago"
 import { cn } from "../../../lib/utils"
@@ -50,6 +51,7 @@ interface KanbanCardProps {
   onCopyChat: (params: { chatId: string; format: "markdown" | "json" | "text" }) => void
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const KanbanCard = memo(function KanbanCard({
   card,
   isMultiSelectMode,
@@ -108,6 +110,7 @@ export const KanbanCard = memo(function KanbanCard({
               {/* Indicator - absolute, скрывается при hover */}
               {showStatusIndicator && (
                 <div className="absolute inset-0 flex items-center justify-center transition-opacity duration-150 group-hover:opacity-0">
+                  {/* react-doctor-disable-next-line motion-animate-presence-must-outlive-child */}
                   <AnimatePresence mode="wait">
                     {hasPendingQuestion ? (
                       <motion.div
@@ -207,6 +210,7 @@ export const KanbanCard = memo(function KanbanCard({
   if (card.isDraft) {
     return (
       <div
+        // react-doctor-disable-next-line prefer-tag-over-role
         role="button"
         tabIndex={0}
         onClick={onClick}
@@ -234,6 +238,7 @@ export const KanbanCard = memo(function KanbanCard({
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <div
+          // react-doctor-disable-next-line prefer-tag-over-role
           role="button"
           tabIndex={0}
           onClick={onClick}

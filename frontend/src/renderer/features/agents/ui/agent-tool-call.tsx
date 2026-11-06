@@ -44,6 +44,15 @@ export const AgentToolCall = memo(
           <Tooltip>
             <TooltipTrigger asChild>
               <span
+                // react-doctor-disable-next-line prefer-tag-over-role
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault()
+                    ;(e.currentTarget as HTMLElement).click()
+                  }
+                }}
                 className={`text-muted-foreground/60 font-normal truncate min-w-0${clickableClass}`}
                 onClick={onClick}
               >
@@ -63,6 +72,15 @@ export const AgentToolCall = memo(
       }
       return (
         <span
+          // react-doctor-disable-next-line prefer-tag-over-role
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault()
+              ;(e.currentTarget as HTMLElement).click()
+            }
+          }}
           className={`text-muted-foreground/60 font-normal truncate min-w-0${clickableClass}`}
           onClick={onClick}
         >

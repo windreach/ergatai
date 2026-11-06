@@ -53,6 +53,7 @@ export function InlineEdit({
   }, [isEditing])
 
   // Handle clicks outside to save and exit editing mode
+  // react-doctor-disable-next-line effect-needs-cleanup
   useEffect(() => {
     if (!isEditing) return
 

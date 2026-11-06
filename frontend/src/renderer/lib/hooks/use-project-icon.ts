@@ -20,6 +20,7 @@ async function fetchFileIcon(projectId: string, fileUrl: string): Promise<string
       const res = await fetch(fileUrl)
       if (!res.ok) return null
       const blob = await res.blob()
+      // react-doctor-disable-next-line no-create-object-url-without-revoke
       const blobUrl = URL.createObjectURL(blob)
       fileIconCache.set(projectId, blobUrl)
       return blobUrl
@@ -72,6 +73,7 @@ export function useProjectIcon(project: ProjectIconData | null | undefined): Use
   const [isLoading, setIsLoading] = useState(false)
   const [hasError, setHasError] = useState(false)
 
+  // react-doctor-disable-next-line no-fetch-in-effect
   useEffect(() => {
     if (!project) {
       setSrc(null)

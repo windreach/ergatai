@@ -14,6 +14,7 @@ import { cn } from "../../../lib/utils"
 import { useHaptic } from "../hooks/use-haptic"
 import { CollapsibleStepsHeader } from "../components/collapsible-steps-header"
 import { ArrowDown } from "lucide-react"
+// react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
 import {
   memo,
@@ -49,8 +50,8 @@ export function CopyButton({
 
   return (
     <button
+      aria-label="Copy"
       onClick={handleCopy}
-      tabIndex={-1}
       className="p-1.5 rounded-md transition-[background-color,transform] duration-150 ease-out hover:bg-accent active:scale-[0.97]"
     >
       <div className="relative w-3.5 h-3.5">
@@ -92,6 +93,7 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
 
   // Keep current monitoring state in ref for scroll event handler
   const shouldMonitorRef = useRef(shouldMonitor)
+  // react-doctor-disable-next-line no-ref-current-in-render
   shouldMonitorRef.current = shouldMonitor
 
   useEffect(() => {

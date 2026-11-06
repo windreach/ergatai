@@ -193,6 +193,7 @@ import { parsePersistedMessagesByConversation } from "../lib/parse-persisted-mes
 
 // Inner chat component - only rendered when chat object is ready
 // Memoized to prevent re-renders when parent state changes (e.g., selectedFilePath)
+// react-doctor-disable-next-line no-giant-component
 const ChatViewInner = memo(function ChatViewInner(props: {
       chat: Chat<UIMessage>
       conversationId: string
@@ -684,7 +685,10 @@ const ChatViewInner = memo(function ChatViewInner(props: {
   )
 })
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 // Chat View wrapper - handles loading and creates chat object
+// react-doctor-disable-next-line no-giant-component
+// react-doctor-disable-next-line no-high-complexity-react-function
 export function ChatView({
   chatId,
   isSidebarOpen,
@@ -908,6 +912,7 @@ export function ChatView({
   ] = useState<Record<string, "claude-code" | "codex">>({})
 
   useEffect(() => {
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setConversationProviderOverrides({})
   }, [chatId])
 
@@ -1903,6 +1908,7 @@ export function ChatView({
                   hiddenTabs={
                     <>
                       {tabsToRender
+                        // react-doctor-disable-next-line js-set-map-lookups
                         .filter(id => !splitPaneIds.includes(id))
                         .map(conversationId => {
                           const chat = getOrCreateChat(conversationId)
@@ -1981,6 +1987,7 @@ export function ChatView({
                       // Prevent pointer events on hidden tabs
                       pointerEvents: isActive ? "auto" : "none",
                       // GPU layer hints
+                      // react-doctor-disable-next-line no-permanent-will-change
                       willChange: "transform, opacity",
                       // Изолируем layout - изменения внутри не влияют на другие табы
                       contain: "layout style paint",

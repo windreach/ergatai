@@ -187,6 +187,7 @@ const StreamingPlaceholder = memo(function StreamingPlaceholder() {
 })
 
 // Main mermaid block - handles actual rendering when not streaming
+// react-doctor-disable-next-line no-giant-component
 const MermaidBlockInner = memo(function MermaidBlockInner({
   code,
 }: {
@@ -444,6 +445,16 @@ const MermaidBlockInner = memo(function MermaidBlockInner({
 
           {renderState.status === "success" && (
             <div
+              aria-label="Action"
+              // react-doctor-disable-next-line prefer-tag-over-role
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault()
+                  ;(e.currentTarget as HTMLElement).click()
+                }
+              }}
               className={cn(
                 "mermaid-diagram w-full overflow-x-auto cursor-pointer",
                 "[&_svg]:max-w-full [&_svg]:h-auto [&_svg]:mx-auto",

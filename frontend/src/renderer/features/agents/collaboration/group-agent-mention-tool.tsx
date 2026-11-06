@@ -30,6 +30,7 @@ interface GroupAgentMentionToolProps {
   senderAgentName?: string
 }
 
+// react-doctor-disable-next-line no-high-complexity-react-function
 export const GroupAgentMentionTool = memo(function GroupAgentMentionTool({
   part,
   senderAgentId,

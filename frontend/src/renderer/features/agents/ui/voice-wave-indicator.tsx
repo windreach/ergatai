@@ -68,7 +68,7 @@ export const VoiceWaveIndicator = memo(function VoiceWaveIndicator({
     >
       {[0, 1, 2, 3, 4].map((i) => (
         <div
-          key={i}
+          key={`i-${i}`}
           ref={(el) => {
             if (el) {
               barsRef.current[i] = el

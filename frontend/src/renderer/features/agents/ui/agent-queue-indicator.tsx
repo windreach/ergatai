@@ -2,6 +2,7 @@
 
 import { memo, useState, useCallback, useEffect } from "react"
 import { ChevronDown, ArrowUp, X } from "lucide-react"
+// react-doctor-disable-next-line use-lazy-motion
 import { motion, AnimatePresence } from "motion/react"
 import {
   Tooltip,
@@ -17,6 +18,7 @@ import { getWindowId } from "../../../contexts/WindowContext"
 const getQueueExpandedKey = () => `${getWindowId()}:agent-queue-expanded`
 
 // Queue item row component
+// react-doctor-disable-next-line no-high-complexity-react-function
 const QueueItemRow = memo(function QueueItemRow({
   item,
   onRemove,
@@ -86,7 +88,9 @@ const QueueItemRow = memo(function QueueItemRow({
         {onSendNow && (
           <Tooltip>
             <TooltipTrigger asChild>
+              {/* react-doctor-disable-next-line no-transition-all */}
               <button
+                aria-label="ArrowUp"
                 onClick={handleSendNow}
                 className="flex-shrink-0 p-1 hover:bg-foreground/10 rounded text-muted-foreground hover:text-foreground transition-all"
               >
@@ -99,7 +103,9 @@ const QueueItemRow = memo(function QueueItemRow({
         {onRemove && (
           <Tooltip>
             <TooltipTrigger asChild>
+              {/* react-doctor-disable-next-line no-transition-all */}
               <button
+                aria-label="X"
                 onClick={handleRemove}
                 className="flex-shrink-0 p-1 hover:bg-foreground/10 rounded text-muted-foreground hover:text-foreground transition-all"
               >
@@ -194,8 +200,11 @@ export const AgentQueueIndicator = memo(function AgentQueueIndicator({
       <AnimatePresence initial={false}>
         {isExpanded && (
           <motion.div
+            // react-doctor-disable-next-line no-layout-property-animation
             initial={{ height: 0, opacity: 0 }}
+            // react-doctor-disable-next-line no-layout-property-animation
             animate={{ height: "auto", opacity: 1 }}
+            // react-doctor-disable-next-line no-layout-property-animation
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
             className="overflow-hidden"

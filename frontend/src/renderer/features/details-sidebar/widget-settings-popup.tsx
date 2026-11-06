@@ -176,6 +176,7 @@ export function WidgetSettingsPopup({ workspaceId, isRemoteChat = false }: Widge
             Widgets
           </div>
           {orderedWidgets.map((widget) => {
+            // react-doctor-disable-next-line js-set-map-lookups
             const isVisible = visibleWidgets.includes(widget.id)
             const Icon = getWidgetIcon(widget.id)
             const isDragging = draggedWidget === widget.id
@@ -183,6 +184,15 @@ export function WidgetSettingsPopup({ workspaceId, isRemoteChat = false }: Widge
 
             return (
               <div
+                // react-doctor-disable-next-line prefer-tag-over-role
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault()
+                    ;(e.currentTarget as HTMLElement).click()
+                  }
+                }}
                 key={widget.id}
                 draggable={draggableWidget === widget.id}
                 onDragStart={(e) => handleDragStart(e, widget.id)}

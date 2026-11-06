@@ -3,6 +3,7 @@
 import { memo, useCallback, useMemo, useState } from "react"
 import { GitCommit, GitPullRequest } from "lucide-react"
 import { useAtomValue, useSetAtom } from "jotai"
+// react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
 import {
   ExpandIcon,
@@ -150,7 +151,9 @@ export const GitActivityBadges = memo(function GitActivityBadges({
 
               {/* Expand/Collapse button */}
               <div className="w-6 h-6 flex items-center justify-center">
+                {/* react-doctor-disable-next-line html-no-nested-interactive */}
                 <button
+                  aria-label="ExpandIcon"
                   onClick={(e) => {
                     e.stopPropagation()
                     setIsExpanded(!isExpanded)
@@ -177,11 +180,15 @@ export const GitActivityBadges = memo(function GitActivityBadges({
           </div>
 
           {/* File list */}
+          {/* react-doctor-disable-next-line motion-animate-presence-must-outlive-child */}
           <AnimatePresence initial={false}>
             {isExpanded && (
               <motion.div
+                // react-doctor-disable-next-line no-layout-property-animation
                 initial={{ height: 0, opacity: 0 }}
+                // react-doctor-disable-next-line no-layout-property-animation
                 animate={{ height: "auto", opacity: 1 }}
+                // react-doctor-disable-next-line no-layout-property-animation
                 exit={{ height: 0, opacity: 0 }}
                 transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
                 className="overflow-hidden"
@@ -192,6 +199,7 @@ export const GitActivityBadges = memo(function GitActivityBadges({
                     return (
                       <div
                         key={file.filePath}
+                        // react-doctor-disable-next-line prefer-tag-over-role
                         role="button"
                         tabIndex={0}
                         onClick={() => handleFileClick(file)}

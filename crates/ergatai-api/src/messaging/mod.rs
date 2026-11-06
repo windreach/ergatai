@@ -637,8 +637,10 @@ impl MessageSender {
                     let early_sender_name = sender_name.clone();
                     let early_message_type = req.message_type.clone();
                     let early_content = actual_message.clone();
+                    let early_target_id = resolved_target_id.clone();
                     let append_result = tokio::task::spawn_blocking(move || {
-                        let role = agent_message_role(&early_message_type);
+                        let role =
+                            agent_message_role(&early_message_type, &early_from, &early_target_id);
                         let agent_fields = user_data_db::messages::AgentMessageFields {
                             from_agent_id: parse_to_i64(&early_from),
                             from_agent_name: Some(early_sender_name),
@@ -780,9 +782,10 @@ impl MessageSender {
                         .unwrap_or_else(|| direct_message_id.clone());
                     let correlation_id_for_meta = correlation_id.clone();
                     let conversation_id_for_persist = conversation_id;
+                    let target_agent_id = conversation_receiver.clone();
                     // Wrap synchronous DB call in spawn_blocking
                     let append_result = tokio::task::spawn_blocking(move || {
-                        let role = agent_message_role(&message_type);
+                        let role = agent_message_role(&message_type, &from, &target_agent_id);
                         let metadata = serde_json::json!({
                             "externalMessageId": direct_external_message_id_for_meta,
                             "senderAgentId": from,
@@ -1168,6 +1171,10 @@ impl MessageSender {
                 mode: "agent".to_string(),
                 created_at: timestamp,
                 updated_at: timestamp,
+                imported_count: 0,
+                import_cursor: None,
+                has_more: false,
+                total_captured: 0,
             })
             .map_err(|error| error.to_string())?;
 
@@ -1337,6 +1344,10 @@ impl MessageSender {
                     mode: "agent".to_string(),
                     created_at: timestamp,
                     updated_at: timestamp,
+                    imported_count: 0,
+                    import_cursor: None,
+                    has_more: false,
+                    total_captured: 0,
                 },
             )
             .map(|_| ()) // Discard the returned ConversationId, we already have it
@@ -1880,11 +1891,29 @@ impl MessageSender {
 ///
 /// Origin metadata (`metadata.source`, `senderAgentId`) is preserved separately
 /// for detailed tracking and display purposes.
-fn agent_message_role(message_type: &str) -> &'static str {
-    match message_type {
-        "request" => "agent", // Agent-initiated, opens new conversation group
-        "response" | "broadcast" => "assistant", // Append to current group
-        _ => "agent", // Unknown types default to agent (future message types that expect agent action)
+/// Determine the message role based on message type and sender relationship.
+///
+/// Rules:
+/// - If sender is the conversation owner → "assistant" (host agent's own message)
+/// - If sender is external:
+///   - "request" → "agent" (external agent's request, opens new conversation group)
+///   - "response" → "respagent" (external agent's response, filtered from main chat)
+///   - "broadcast" → "broadcast" (broadcast message)
+///   - unknown → "agent"
+fn agent_message_role(
+    message_type: &str,
+    sender_agent_id: &str,
+    conversation_owner_agent_id: &str,
+) -> &'static str {
+    if sender_agent_id == conversation_owner_agent_id {
+        "assistant"
+    } else {
+        match message_type {
+            "request" => "agent",
+            "response" => "respagent",
+            "broadcast" => "broadcast",
+            _ => "agent",
+        }
     }
 }
 
@@ -2138,13 +2167,46 @@ mod tests {
 
     #[test]
     fn agent_message_role_maps_message_type_to_render_group() {
-        // request opens a new conversation group with "agent" role
-        assert_eq!(agent_message_role("request"), "agent");
-        // response / broadcast append to current group as "assistant"
-        assert_eq!(agent_message_role("response"), "assistant");
-        assert_eq!(agent_message_role("broadcast"), "assistant");
-        // unknown future types default to "agent" (open new group)
-        assert_eq!(agent_message_role("some-future-type"), "agent");
+        let host_agent = "agent-host";
+        let external_agent = "agent-external";
+
+        // Host agent's own message → "assistant"
+        assert_eq!(
+            agent_message_role("request", host_agent, host_agent),
+            "assistant"
+        );
+        assert_eq!(
+            agent_message_role("response", host_agent, host_agent),
+            "assistant"
+        );
+        assert_eq!(
+            agent_message_role("broadcast", host_agent, host_agent),
+            "assistant"
+        );
+
+        // External agent's request → "agent" (opens new conversation group)
+        assert_eq!(
+            agent_message_role("request", external_agent, host_agent),
+            "agent"
+        );
+
+        // External agent's response → "respagent" (filtered from main chat)
+        assert_eq!(
+            agent_message_role("response", external_agent, host_agent),
+            "respagent"
+        );
+
+        // External agent's broadcast → "broadcast"
+        assert_eq!(
+            agent_message_role("broadcast", external_agent, host_agent),
+            "broadcast"
+        );
+
+        // Unknown future types default to "agent" (open new group)
+        assert_eq!(
+            agent_message_role("some-future-type", external_agent, host_agent),
+            "agent"
+        );
     }
 }
 

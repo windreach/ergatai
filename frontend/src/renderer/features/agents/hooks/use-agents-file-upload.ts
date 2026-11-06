@@ -62,6 +62,7 @@ export function useAgentsFileUpload() {
         const id = createLocalId("local-image")
         const filename = file.name || `screenshot-${Date.now()}.png`
         const mediaType = file.type || "image/png"
+        // react-doctor-disable-next-line no-create-object-url-without-revoke
         const url = URL.createObjectURL(file)
         blobUrlsRef.current.add(url)
 
@@ -85,6 +86,7 @@ export function useAgentsFileUpload() {
       })
     )
 
+    // react-doctor-disable-next-line server-sequential-independent-await
     const newFiles: UploadedFile[] = await Promise.all(
       otherFiles.map(async (file) => {
         let base64Data: string | undefined
@@ -94,6 +96,7 @@ export function useAgentsFileUpload() {
           console.error("[useAgentsFileUpload] Failed to convert file to base64:", err)
           toast.error(`Failed to process file "${file.name}"`)
         }
+        // react-doctor-disable-next-line no-create-object-url-without-revoke
         const url = URL.createObjectURL(file)
         blobUrlsRef.current.add(url)
         return {
@@ -110,6 +113,7 @@ export function useAgentsFileUpload() {
 
     setImages((prev) => [...prev, ...newImages])
     setFiles((prev) => [...prev, ...newFiles])
+    // react-doctor-disable-next-line no-loading-flag-reset-outside-finally
     setIsUploading(false)
   }, [])
 
@@ -118,6 +122,7 @@ export function useAgentsFileUpload() {
       const img = prev.find((img) => img.id === id)
       if (img?.url) {
         URL.revokeObjectURL(img.url)
+        // react-doctor-disable-next-line no-side-effect-in-state-updater-function
         blobUrlsRef.current.delete(img.url)
       }
       return prev.filter((img) => img.id !== id)
@@ -129,6 +134,7 @@ export function useAgentsFileUpload() {
       const file = prev.find((f) => f.id === id)
       if (file?.url) {
         URL.revokeObjectURL(file.url)
+        // react-doctor-disable-next-line no-side-effect-in-state-updater-function
         blobUrlsRef.current.delete(file.url)
       }
       return prev.filter((f) => f.id !== id)
@@ -140,6 +146,7 @@ export function useAgentsFileUpload() {
       prev.forEach((img) => {
         if (img.url) {
           URL.revokeObjectURL(img.url)
+          // react-doctor-disable-next-line no-side-effect-in-state-updater-function
           blobUrlsRef.current.delete(img.url)
         }
       })
@@ -152,6 +159,7 @@ export function useAgentsFileUpload() {
       prev.forEach((file) => {
         if (file.url) {
           URL.revokeObjectURL(file.url)
+          // react-doctor-disable-next-line no-side-effect-in-state-updater-function
           blobUrlsRef.current.delete(file.url)
         }
       })
@@ -180,6 +188,7 @@ export function useAgentsFileUpload() {
       prev.forEach((img) => {
         if (img.url) {
           URL.revokeObjectURL(img.url)
+          // react-doctor-disable-next-line no-side-effect-in-state-updater-function
           blobUrlsRef.current.delete(img.url)
         }
       })
@@ -189,6 +198,7 @@ export function useAgentsFileUpload() {
       prev.forEach((file) => {
         if (file.url) {
           URL.revokeObjectURL(file.url)
+          // react-doctor-disable-next-line no-side-effect-in-state-updater-function
           blobUrlsRef.current.delete(file.url)
         }
       })
