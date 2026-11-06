@@ -27,6 +27,8 @@ import {
   betaKanbanEnabledAtom,
 } from "../../lib/atoms"
 import type { SettingsTab } from "../../lib/atoms"
+import { MigrationProgressWidget } from "../../components/migration-progress-widget"
+import { HelpGuideWidget } from "../../components/help-guide-widget"
 import { usePrefetchLocalChat } from "../../lib/hooks/use-prefetch-local-chat"
 import { ArchivePopover } from "../agents"
 import { ChevronDown, Columns3 } from "lucide-react"
@@ -2440,6 +2442,8 @@ export function AgentsSidebar({
                   <TooltipContent>Settings{settingsHotkey && <> <Kbd>{settingsHotkey}</Kbd></>}</TooltipContent>
                 </Tooltip>
 
+                <HelpGuideWidget />
+                <MigrationProgressWidget inline />
               </div>
 
               <div className="flex-1" />

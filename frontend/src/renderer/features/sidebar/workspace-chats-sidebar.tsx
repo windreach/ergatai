@@ -32,6 +32,9 @@ import {
   AgentIcon,
   QuestionIcon,
 } from "../../components/ui/icons"
+import { getCoreAgentIcon } from "../agents/components/core-agent-selector"
+import { chatAgentLogosAtom, type ChatAgentLogo } from "../agents/atoms"
+import type { CoreAgentId } from "../agents/lib/agent-contract-api"
 import { AlignJustify } from "lucide-react"
 import {
   Tooltip,
@@ -116,6 +119,7 @@ const ChatItem = memo(function ChatItem({
   chatNameRefs,
   globalIndex,
   totalCount,
+  agentLogos,
 }: {
   chat: WorkspaceChat
   isActive: boolean
@@ -133,6 +137,7 @@ const ChatItem = memo(function ChatItem({
   chatNameRefs: React.MutableRefObject<Map<string, HTMLSpanElement>>
   globalIndex: number
   totalCount: number
+  agentLogos?: ChatAgentLogo[]
 }) {
   // Calculate file stats
   const stats = useMemo<FileStats | null>(() => {
@@ -174,12 +179,19 @@ const ChatItem = memo(function ChatItem({
           <div className="flex items-start gap-2.5">
             {/* Icon container with status badge */}
             <div className="pt-0.5 flex-shrink-0 w-4 h-4 flex items-center justify-center relative">
-              {/* Mode icon or Question icon */}
+              {/* Mode icon or Question icon or Agent logo */}
               <div className="transition-[opacity,transform] duration-150 ease-out">
                 {hasPendingQuestion ? (
                   <QuestionIcon className="w-4 h-4 text-blue-500" />
                 ) : mode === "plan" ? (
                   <PlanIcon className="w-4 h-4 text-muted-foreground" />
+                ) : agentLogos && agentLogos.length > 0 ? (
+                  (() => {
+                    // Use the first agent's logo
+                    const logo = agentLogos[0]
+                    const Icon = getCoreAgentIcon(logo.agentId as CoreAgentId)
+                    return <Icon className="w-4 h-4 text-muted-foreground" />
+                  })()
                 ) : (
                   <AgentIcon className="w-4 h-4 text-muted-foreground" />
                 )}
@@ -315,6 +327,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
   const [selectedChatId, setSelectedChatId] = useAtom(selectedAgentChatIdAtom)
   const previousChatId = useAtomValue(previousAgentChatIdAtom)
   const utils = trpc.useUtils()
+  const chatAgentLogos = useAtomValue(chatAgentLogosAtom)
 
   // Chat name tooltip - using refs instead of state to avoid re-renders on hover
   const chatNameRefs = useRef<Map<string, HTMLSpanElement>>(new Map())
@@ -536,6 +549,9 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
       // Get file changes for this chat
       const fileChanges = conversationFiles.get(chat.id) || []
 
+      // Get agent logos for this chat
+      const agentLogos = chatAgentLogos[chat.id]
+
       return (
         <ChatItem
           key={chat.id}
@@ -555,10 +571,11 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
           chatNameRefs={chatNameRefs}
           globalIndex={index}
           totalCount={filteredChats.length}
+          agentLogos={agentLogos}
         />
       )
     },
-    [activeChatId, pinnedChatIds, justCreatedIds, pendingQuestionsMap, unseenChanges, defaultAgentMode, draftsCache, workspaceId, conversationFiles, handleChatClick, handlePinChat, handleArchiveChat, filteredChats.length]
+    [activeChatId, pinnedChatIds, justCreatedIds, pendingQuestionsMap, unseenChanges, defaultAgentMode, draftsCache, workspaceId, conversationFiles, handleChatClick, handlePinChat, handleArchiveChat, filteredChats.length, chatAgentLogos]
   )
 
   return (

@@ -21,6 +21,8 @@ interface AgentHistorySelectorProps {
 
 interface AgentSession {
   session_id: string
+  cwd?: string | null
+  additional_directories?: string[]
   title: string | null
   created_at: string | null
   updated_at: string | null

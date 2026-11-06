@@ -75,7 +75,8 @@ pub fn spawn_worker(cancellation_token: CancellationToken) -> tokio::task::JoinH
                         }
                     }
                     Err(e) => {
-                        let error_msg = e.to_string();
+                        // Use alternate format to show the full error chain
+                        let error_msg = format!("{:#}", e);
                         warn!(error = %error_msg, job_id = job.id, action = %job.action, "Job failed");
                         let job_id = job.id;
                         let _ = tokio::task::spawn_blocking(move || {
@@ -141,6 +142,8 @@ async fn process_persistence_job(job: &crate::user_data_db::chats::Job) -> anyho
                 chat_id: Option<i64>,
                 acp_session_id: String,
                 #[serde(default)]
+                cwd: Option<String>,
+                #[serde(default)]
                 title: Option<String>,
                 #[serde(default)]
                 conversation_id: Option<i64>,
@@ -159,6 +162,7 @@ async fn process_persistence_job(job: &crate::user_data_db::chats::Job) -> anyho
             let input = crate::services::agent_history_import::ImportAgentSessionHistoryInput {
                 chat_id: payload.chat_id,
                 acp_session_id: payload.acp_session_id,
+                cwd: payload.cwd,
                 title: payload.title,
                 conversation_id: payload.conversation_id,
                 capture_limit: payload.capture_limit,
@@ -166,7 +170,33 @@ async fn process_persistence_job(job: &crate::user_data_db::chats::Job) -> anyho
                 limit: payload.limit,
                 cursor: payload.cursor,
             };
-            crate::services::agent_history_import::import_agent_session_history(&agent_id, input).await?;
+            crate::services::agent_history_import::import_agent_session_history(&agent_id, input)
+                .await?;
+            Ok(())
+        }
+        "import_agent_sessions_batch" => {
+            #[derive(serde::Deserialize, Default)]
+            struct Payload {
+                #[serde(default)]
+                chat_id: i64,
+                #[serde(default)]
+                cwd: Option<String>,
+                #[serde(default)]
+                cursor: Option<String>,
+                #[serde(default)]
+                limit: Option<usize>,
+            }
+
+            let payload: Payload = serde_json::from_str(job.payload.as_deref().unwrap_or("{}"))?;
+            let agent_id = job.entity_id.clone();
+            crate::services::agent_history_import::import_agent_sessions_batch(
+                &agent_id,
+                payload.chat_id,
+                payload.cwd,
+                payload.cursor,
+                payload.limit.unwrap_or(50),
+            )
+            .await?;
             Ok(())
         }
         other => {

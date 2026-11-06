@@ -26,9 +26,7 @@
 //! ```
 
 use std::path::Path;
-use std::sync::Arc;
 use tokio::process::Command;
-use tokio::sync::Mutex;
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -164,10 +162,7 @@ pub fn agent_triggers_json(
         .map_err(|e| ErgataiError::internal(format!("Failed to serialize triggers: {e}")))
 }
 
-/// Global lock to prevent concurrent adapter downloads.
-/// Multiple concurrent downloads cause TOCTOU races on the staging directory.
-static ADAPTER_DOWNLOAD_LOCK: std::sync::LazyLock<Arc<Mutex<()>>> =
-    std::sync::LazyLock::new(|| Arc::new(Mutex::new(())));
+const LEGACY_CLAUDE_ADAPTER_PACKAGE: &str = "@zed-industries/claude-code-acp";
 
 /// User-registered agent template.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -801,6 +796,34 @@ impl ProfileRegistry {
             ))
         })?;
 
+        // The Claude adapter package was renamed. Keep profile metadata in sync
+        // immediately; command migration is handled by the managed release
+        // updater once a release containing the renamed package is active.
+        let migrated = conn
+            .execute(
+                "UPDATE agent_registrations SET package_name = ?1
+             WHERE (name = 'claude' OR name = 'claude-code')
+               AND (package_name IS NULL OR package_name = ?2)",
+                params![
+                    crate::adapter_manager::MANAGED_ADAPTERS
+                        .iter()
+                        .find(|adapter| adapter.profile_id == "claude-code")
+                        .map(|adapter| adapter.npm_package)
+                        .unwrap_or_default(),
+                    LEGACY_CLAUDE_ADAPTER_PACKAGE
+                ],
+            )
+            .map_err(|e| {
+                ErgataiError::internal(format!("Failed to migrate Claude adapter package: {}", e))
+            })?;
+        if migrated > 0 {
+            info!(
+                count = migrated,
+                package = "claude-code",
+                "Migrated Claude adapter package metadata"
+            );
+        }
+
         // Existing installations get the safe OpenCode declaration on startup,
         // but only when the profile has no user-provided trigger metadata.
         let opencode_native_triggers = default_opencode_native_triggers_json()?;
@@ -883,6 +906,13 @@ impl ProfileRegistry {
         Ok(())
     }
 
+    /// Resolve a managed Claude command, preferring the npm-generated `.bin`
+    /// launcher so the profile uses the exact adapter installed in
+    /// `~/.local/share/ergatai/adapters/managed/releases/<id>`.
+    fn managed_claude_command(release_dir: &std::path::Path) -> Option<String> {
+        crate::adapter_manager::managed_adapter_command_for_profile(release_dir, "claude-code")
+    }
+
     /// Register built-in default agent profiles.
     ///
     /// Commands verified from official documentation:
@@ -896,23 +926,25 @@ impl ProfileRegistry {
         // current managed release. Otherwise, skip managed adapters (they will be
         // registered by adapter_manager after first install completes).
         let adapters_base = Self::resolve_adapters_base();
-        let managed_base = adapters_base.join("managed");
-        let current_release_dir = Self::find_current_managed_release(&managed_base);
+        let managed_base = crate::adapter_manager::resolve_managed_base(&adapters_base);
+        // A release created before the Claude package rename contains only the
+        // legacy package. Treat it as "not ready" so the download path installs
+        // the renamed adapter instead of registering a command for a missing file.
+        let current_release_dir = Self::find_current_managed_release(&managed_base).filter(|dir| {
+            crate::adapter_manager::managed_adapter_command_for_profile(dir, "claude-code")
+                .is_some()
+        });
 
         if let Some(release_dir) = &current_release_dir {
             // Point to managed release
-            let claude_cmd = format!(
-                "node {}",
-                release_dir
-                    .join("node_modules/@zed-industries/claude-code-acp/dist/index.js")
-                    .display()
-            );
-            let codex_cmd = format!(
-                "node {}",
-                release_dir
-                    .join("node_modules/@agentclientprotocol/codex-acp/dist/index.js")
-                    .display()
-            );
+            let claude_cmd = Self::managed_claude_command(release_dir).ok_or_else(|| {
+                ErgataiError::internal("Current managed release is missing the Claude adapter")
+            })?;
+            let codex_cmd =
+                crate::adapter_manager::managed_adapter_command_for_profile(release_dir, "codex")
+                    .ok_or_else(|| {
+                    ErgataiError::internal("Current managed release is missing the Codex adapter")
+                })?;
             info!(
                 release = %release_dir.display(),
                 "Registering managed adapter profiles"
@@ -931,18 +963,25 @@ impl ProfileRegistry {
                     .await
                 {
                     Ok(release_dir) => {
-                        let claude_cmd = format!(
-                            "node {}",
-                            release_dir
-                                .join("node_modules/@zed-industries/claude-code-acp/dist/index.js")
-                                .display()
-                        );
-                        let codex_cmd = format!(
-                            "node {}",
-                            release_dir
-                                .join("node_modules/@agentclientprotocol/codex-acp/dist/index.js")
-                                .display()
-                        );
+                        let (claude_cmd, codex_cmd) = match (
+                            crate::adapter_manager::managed_adapter_command_for_profile(
+                                &release_dir,
+                                "claude-code",
+                            ),
+                            crate::adapter_manager::managed_adapter_command_for_profile(
+                                &release_dir,
+                                "codex",
+                            ),
+                        ) {
+                            (Some(claude_cmd), Some(codex_cmd)) => (claude_cmd, codex_cmd),
+                            _ => {
+                                warn!(
+                                    release = %release_dir.display(),
+                                    "Managed release is missing a required adapter command"
+                                );
+                                return;
+                            }
+                        };
                         if let Err(e) =
                             registry.register_all_default_profiles(&claude_cmd, &codex_cmd)
                         {
@@ -1306,12 +1345,11 @@ impl ProfileRegistry {
         Ok(())
     }
 
-    /// Resolve the base directory for adapters.
+    /// Resolve the user-level base directory for managed adapters.
     ///
-    /// Priority:
-    ///   1. `ERGATAI_ADAPTERS_DIR` env var (explicit override)
-    ///   2. `<current_exe>/../adapters` (production layout: target/<profile>/ergatai-api → adapters/)
-    ///   3. `./adapters` (fallback for source/dev)
+    /// This is intentionally centralized: Linux/macOS/Windows each use their
+    /// platform user-data directory (`~/.local/share/ergatai/adapters` on
+    /// Linux), with `ERGATAI_USER_DATA_DIR` as the explicit override.
     ///
     /// This helper is shared by `register_default_profiles` and
     /// `check_and_update_adapters_background` so they always point at the same
@@ -1361,12 +1399,18 @@ impl ProfileRegistry {
         claude_cmd: &str,
         codex_cmd: &str,
     ) -> ErgataiResult<()> {
+        let claude_package = crate::adapter_manager::managed_adapter("claude-code")
+            .map(|adapter| adapter.npm_package.to_string())
+            .ok_or_else(|| ErgataiError::internal("Claude managed adapter is not registered"))?;
+        let codex_package = crate::adapter_manager::managed_adapter("codex")
+            .map(|adapter| adapter.npm_package.to_string())
+            .ok_or_else(|| ErgataiError::internal("Codex managed adapter is not registered"))?;
         let mut codex_registration = AgentRegistration::with_managed(
             "codex".to_string(),
             "codex".to_string(),
             codex_cmd.to_string(),
             "acp".to_string(),
-            Some("@agentclientprotocol/codex-acp".to_string()),
+            Some(codex_package),
         );
         codex_registration.native_triggers_json = default_codex_native_triggers_json()?;
 
@@ -1380,7 +1424,7 @@ impl ProfileRegistry {
                     "claude-code".to_string(),
                     claude_cmd.to_string(),
                     "acp".to_string(),
-                    Some("@zed-industries/claude-code-acp".to_string()),
+                    Some(claude_package),
                 );
                 claude_registration.native_triggers_json = default_claude_native_triggers_json()?;
                 claude_registration
@@ -1413,142 +1457,21 @@ impl ProfileRegistry {
         Ok(())
     }
 
-    /// Asynchronously download and install adapters.
-    /// Returns the release directory on success.
+    /// Asynchronously ensure a verified managed release exists.
+    ///
+    /// All installation, activation, pointer writing, and profile updates are
+    /// delegated to `adapter_manager` so callers cannot create an unverified
+    /// release or bypass the A/B update policy.
     async fn download_and_install_adapters_async(
         &self,
         managed_base: std::path::PathBuf,
     ) -> ErgataiResult<std::path::PathBuf> {
-        use tokio::process::Command;
-
-        // Acquire global lock to prevent concurrent downloads.
-        // Multiple concurrent downloads cause TOCTOU races on the staging directory.
-        let _guard = ADAPTER_DOWNLOAD_LOCK.lock().await;
-
-        info!("Starting async adapter download...");
-
-        // Create staging directory
-        let staging = managed_base.join("staging");
-        // Ignore "not found" error - staging may not exist.
-        let _ = tokio::fs::remove_dir_all(&staging).await;
-        tokio::fs::create_dir_all(&staging)
-            .await
-            .map_err(|e| ErgataiError::internal(format!("Failed to create staging dir: {}", e)))?;
-
-        // Initialize package.json so npm install works correctly.
-        // Without this, npm may report "up to date" without actually installing.
-        let init_output = Command::new("npm")
-            .args(["init", "-y"])
-            .current_dir(&staging)
-            .output()
-            .await
-            .map_err(|e| ErgataiError::internal(format!("Failed to run npm init: {}", e)))?;
-        if !init_output.status.success() {
-            let stderr = String::from_utf8_lossy(&init_output.stderr);
-            return Err(ErgataiError::internal(format!(
-                "npm init failed: {}",
-                stderr
-            )));
-        }
-
-        // Install adapters
-        let adapters = vec![
-            "@zed-industries/claude-code-acp",
-            "@agentclientprotocol/codex-acp",
-        ];
-
-        for package in &adapters {
-            info!(package = %package, "Installing adapter package...");
-            let output = Command::new("npm")
-                .args([
-                    "install",
-                    "--no-audit",
-                    "--no-fund",
-                    "--loglevel=error",
-                    package,
-                ])
-                .current_dir(&staging)
-                .output()
-                .await
-                .map_err(|e| ErgataiError::internal(format!("Failed to run npm install: {}", e)))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                return Err(ErgataiError::internal(format!(
-                    "npm install {} failed (exit {:?}): stderr={}, stdout={}",
-                    package,
-                    output.status.code(),
-                    stderr.trim(),
-                    stdout.trim()
-                )));
-            }
-            debug!(
-                package = %package,
-                stdout = %String::from_utf8_lossy(&output.stdout).trim(),
-                "npm install succeeded"
-            );
-        }
-
-        // Verify installation
-        let claude_dist =
-            staging.join("node_modules/@zed-industries/claude-code-acp/dist/index.js");
-        let codex_dist = staging.join("node_modules/@agentclientprotocol/codex-acp/dist/index.js");
-
-        if !claude_dist.exists() {
-            return Err(ErgataiError::internal(format!(
-                "Claude adapter dist not found: {}",
-                claude_dist.display()
-            )));
-        }
-        if !codex_dist.exists() {
-            return Err(ErgataiError::internal(format!(
-                "Codex adapter dist not found: {}",
-                codex_dist.display()
-            )));
-        }
-
-        // Create release directory
-        let release_id = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
-        let releases_dir = managed_base.join("releases");
-        tokio::fs::create_dir_all(&releases_dir)
-            .await
-            .map_err(|e| ErgataiError::internal(format!("Failed to create releases dir: {}", e)))?;
-        let release_dir = releases_dir.join(&release_id);
-        tokio::fs::rename(&staging, &release_dir)
-            .await
-            .map_err(|e| {
-                ErgataiError::internal(format!("Failed to promote staging to release: {}", e))
-            })?;
-
-        // Update current pointer
-        let current_pointer = managed_base.join("current");
-        tokio::fs::write(&current_pointer, &release_id)
-            .await
-            .map_err(|e| {
-                ErgataiError::internal(format!("Failed to write current pointer: {}", e))
-            })?;
-
-        info!(
-            release = %release_id,
-            "Adapters downloaded and installed successfully"
-        );
-
-        Ok(release_dir)
+        crate::adapter_manager::ensure_latest_release(Path::new(&self.db_path), &managed_base).await
     }
 
     /// Find the current managed adapter release directory.
     fn find_current_managed_release(managed_base: &std::path::Path) -> Option<std::path::PathBuf> {
-        let current_pointer = managed_base.join("current");
-        let release_id = std::fs::read_to_string(&current_pointer)
-            .ok()?
-            .trim()
-            .to_string();
-        if release_id.is_empty() {
-            return None;
-        }
-        let release_dir = managed_base.join("releases").join(&release_id);
-        release_dir.is_dir().then_some(release_dir)
+        crate::adapter_manager::current_release_dir(managed_base)
     }
 
     /// Check if an adapter needs updating and perform the update.

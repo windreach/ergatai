@@ -41,7 +41,7 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{
     AcpAgent, Agent, ByteStreams, Client, ConnectionTo, JsonRpcMessage, JsonRpcNotification,
-    UntypedMessage,
+    JsonRpcRequest, UntypedMessage,
 };
 
 use super::acp_startup::{RetryExecutor, StartupPhase, StartupPhaseExecutor};
@@ -1701,6 +1701,18 @@ impl UsageTracker {
 }
 
 /// Command sent to the ACP connection task via channel.
+/// ACP request used to switch the model of a running session.
+///
+/// Codex exposes this as the `session/set_model` extension method.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonRpcRequest)]
+#[request(method = "session/set_model", response = serde_json::Value)]
+struct SetSessionModelRequest {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "modelId")]
+    model_id: String,
+}
+
 enum AcpCommand {
     /// Queue a prompt and wait for completion (so prompt failures can be observed).
     QueuePrompt {
@@ -1749,12 +1761,18 @@ enum AcpCommand {
     /// Resume an ACP session and capture replayed history.
     ResumeSessionCapture {
         session_id: String,
+        cwd: String,
         max_messages: usize,
         response_tx: oneshot::Sender<ErgataiResult<Vec<serde_json::Value>>>,
     },
     /// Delete an ACP session (sends `session/delete` request).
     DeleteSession {
         session_id: String,
+        response_tx: oneshot::Sender<ErgataiResult<()>>,
+    },
+    /// Switch the model of the current ACP session (best-effort).
+    SetSessionModel {
+        model: String,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
     },
 }
@@ -2717,6 +2735,54 @@ impl AcpBackend {
         }
     }
 
+    /// Switch the model of the running agent's current ACP session.
+    ///
+    /// Sends a `session/set_model` request (Codex-compatible). Agents that do
+    /// not support this request will return an error and callers should fall
+    /// back to another mechanism (e.g. `/model`).
+    pub async fn set_session_model_inner(&self, agent_id: &str, model: &str) -> ErgataiResult<()> {
+        self.reap_dead();
+
+        let command_tx = {
+            let agents = self.agents.read();
+            match agents.get(agent_id) {
+                Some(entry) => {
+                    if !entry.alive.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(ErgataiError::internal(format!(
+                            "Agent {} is not alive",
+                            agent_id
+                        )));
+                    }
+                    entry.command_tx.clone()
+                }
+                None => {
+                    return Err(ErgataiError::NotFound(format!(
+                        "Agent not found: {}",
+                        agent_id
+                    )));
+                }
+            }
+        };
+
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(AcpCommand::SetSessionModel {
+                model: model.to_string(),
+                response_tx,
+            })
+            .await
+            .map_err(|_| ErgataiError::internal("ACP command channel closed"))?;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(30), response_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(ErgataiError::internal("ACP response channel closed")),
+            Err(_) => Err(ErgataiError::AgentTimeout {
+                message: "Set session model timed out".to_string(),
+                source: None,
+            }),
+        }
+    }
+
     /// List available ACP sessions for an agent.
     ///
     /// Sends a `session/list` request to the agent and returns the list of sessions.
@@ -2839,6 +2905,7 @@ impl AcpBackend {
         &self,
         agent_id: &str,
         session_id: &str,
+        cwd: &str,
         max_messages: usize,
     ) -> ErgataiResult<Vec<serde_json::Value>> {
         self.reap_dead();
@@ -2868,6 +2935,7 @@ impl AcpBackend {
         command_tx
             .send(AcpCommand::ResumeSessionCapture {
                 session_id: session_id.to_string(),
+                cwd: cwd.to_string(),
                 max_messages,
                 response_tx,
             })
@@ -4248,6 +4316,24 @@ impl AcpBackendInterface for AcpBackend {
                                 info!("ACP connection task received stop command");
                                 break;
                             }
+                            Some(AcpCommand::SetSessionModel { model, response_tx }) => {
+                                let request = connection.send_request(SetSessionModelRequest {
+                                    session_id: session_id.to_string(),
+                                    model_id: model.clone(),
+                                });
+                                match request.block_task().await {
+                                    Ok(_) => {
+                                        info!(agent_id = %connection_agent_id, model = %model, "Set session model succeeded");
+                                        let _ = response_tx.send(Ok(()));
+                                    }
+                                    Err(e) => {
+                                        warn!(agent_id = %connection_agent_id, model = %model, error = %e, "Set session model failed");
+                                        let _ = response_tx.send(Err(ErgataiError::internal(
+                                            format!("Set session model failed: {e}"),
+                                        )));
+                                    }
+                                }
+                            }
                             Some(AcpCommand::Cancel { response_tx }) => {
                                 debug!("ACP connection task received cancel command");
                                 let result = connection
@@ -4285,6 +4371,12 @@ impl AcpBackendInterface for AcpBackend {
                                             .into_iter()
                                             .map(|s| SessionInfo {
                                                 session_id: s.session_id.to_string(),
+                                                cwd: Some(s.cwd.to_string_lossy().to_string()),
+                                                additional_directories: s
+                                                    .additional_directories
+                                                    .into_iter()
+                                                    .map(|p| p.to_string_lossy().to_string())
+                                                    .collect(),
                                                 title: s.title,
                                                 created_at: None, // ACP doesn't provide created_at
                                                 updated_at: s.updated_at,
@@ -4322,6 +4414,12 @@ impl AcpBackendInterface for AcpBackend {
                                         }
                                         let session_info = SessionInfo {
                                             session_id: session_id.clone(),
+                                            cwd: Some(
+                                                task_cwd_for_save
+                                                    .to_string_lossy()
+                                                    .to_string(),
+                                            ),
+                                            additional_directories: Vec::new(),
                                             title: None,
                                             created_at: Some(
                                                 chrono::Utc::now().to_rfc3339(),
@@ -4385,6 +4483,7 @@ impl AcpBackendInterface for AcpBackend {
                             }
                             Some(AcpCommand::ResumeSessionCapture {
                                 session_id: target_session_id,
+                                cwd: session_cwd,
                                 max_messages,
                                 response_tx,
                             }) => {
@@ -4392,7 +4491,7 @@ impl AcpBackendInterface for AcpBackend {
                                 let (cap_tx, mut cap_rx) = mpsc::channel::<serde_json::Value>(64);
                                 *capture_tx.lock().await = Some(cap_tx);
 
-                                let cwd = task_cwd_for_save.clone();
+                                let cwd = std::path::PathBuf::from(&session_cwd);
                                 let mut request = agent_client_protocol::schema::v2::ResumeSessionRequest::new(
                                     target_session_id.clone(),
                                     &cwd,
@@ -5043,6 +5142,10 @@ impl AcpBackendInterface for AcpBackend {
         Ok(self.get_agent_config_options(agent_id))
     }
 
+    async fn set_session_model(&self, agent_id: &str, model: &str) -> ErgataiResult<()> {
+        self.set_session_model_inner(agent_id, model).await
+    }
+
     async fn usage(&self, agent_id: &str) -> ErgataiResult<Option<(usize, usize)>> {
         Ok(self.get_agent_usage(agent_id))
     }
@@ -5067,9 +5170,10 @@ impl AcpBackendInterface for AcpBackend {
         &self,
         agent_id: &str,
         session_id: &str,
+        cwd: &str,
         max_messages: usize,
     ) -> ErgataiResult<Vec<serde_json::Value>> {
-        self.resume_session_capture(agent_id, session_id, max_messages)
+        self.resume_session_capture(agent_id, session_id, cwd, max_messages)
             .await
     }
 

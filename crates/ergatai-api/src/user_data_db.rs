@@ -89,6 +89,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
     // Run incremental migrations (add new columns, etc.)
     migrate_message_columns(conn)?;
     migrate_conversation_context_columns(conn)?;
+    migrate_add_agent_name_to_history_migrations(conn)?;
 
     Ok(())
 }
@@ -245,6 +246,21 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
             total_captured INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS agent_history_migrations (
+            migration_id INTEGER PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            agent_name TEXT,
+            chat_id INTEGER NOT NULL,
+            cwd TEXT,
+            total_sessions INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            last_error TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_history_migrations_agent
+            ON agent_history_migrations(agent_id, updated_at);
 
         CREATE TABLE IF NOT EXISTS terminal_sessions (
             session_id INTEGER PRIMARY KEY,
@@ -411,10 +427,7 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
         "ALTER TABLE agent_sessions ADD COLUMN total_captured INTEGER NOT NULL DEFAULT 0",
         [],
     );
-    let _ = conn.execute(
-        "ALTER TABLE agent_sessions ADD COLUMN last_error TEXT",
-        [],
-    );
+    let _ = conn.execute("ALTER TABLE agent_sessions ADD COLUMN last_error TEXT", []);
     let _ = conn.execute(
         "ALTER TABLE agent_sessions ADD COLUMN resume_supported INTEGER NOT NULL DEFAULT 1",
         [],
@@ -571,6 +584,29 @@ fn migrate_conversation_context_columns(conn: &Connection) -> Result<()> {
                 [],
             )?;
         }
+    }
+
+    Ok(())
+}
+
+/// Add agent_name column to agent_history_migrations table if it doesn't exist.
+fn migrate_add_agent_name_to_history_migrations(conn: &Connection) -> Result<()> {
+    let existing_columns: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(agent_history_migrations)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut columns = std::collections::HashSet::new();
+        for column in rows {
+            let column = column?;
+            columns.insert(column);
+        }
+        columns
+    };
+
+    if !existing_columns.contains("agent_name") {
+        conn.execute(
+            "ALTER TABLE agent_history_migrations ADD COLUMN agent_name TEXT",
+            [],
+        )?;
     }
 
     Ok(())
@@ -2314,6 +2350,101 @@ pub mod agent_sessions {
             params![last_error, resume_supported as i64, now, conversation_id],
         )?;
         Ok(())
+    }
+
+    pub fn count_by_chat_id(chat_id: i64) -> Result<i64> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM agent_sessions a JOIN conversations c ON a.conversation_id = c.conversation_id WHERE c.chat_id = ?1",
+            params![chat_id],
+            |row| row.get(0),
+        )
+    }
+}
+
+pub mod agent_history_migrations {
+    use super::*;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct AgentHistoryMigration {
+        pub migration_id: i64,
+        pub agent_id: String,
+        pub agent_name: Option<String>,
+        pub chat_id: i64,
+        pub cwd: Option<String>,
+        pub total_sessions: i64,
+        pub status: String,
+        pub last_error: Option<String>,
+        pub created_at: i64,
+        pub updated_at: i64,
+    }
+
+    pub fn upsert(migration: AgentHistoryMigration) -> Result<AgentHistoryMigration> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        // Try update existing by (agent_id, chat_id, cwd)
+        let existing_id: Option<i64> = conn
+            .query_row(
+                "SELECT migration_id FROM agent_history_migrations WHERE agent_id = ?1 AND chat_id = ?2 AND COALESCE(cwd,'') = COALESCE(?3,'')",
+                params![migration.agent_id, migration.chat_id, migration.cwd],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let migration_id = if let Some(id) = existing_id {
+            conn.execute(
+                "UPDATE agent_history_migrations SET agent_name = ?1, total_sessions = ?2, status = ?3, last_error = ?4, updated_at = ?5 WHERE migration_id = ?6",
+                params![migration.agent_name, migration.total_sessions, migration.status, migration.last_error, now, id],
+            )?;
+            id
+        } else {
+            conn.execute(
+                "INSERT INTO agent_history_migrations (agent_id, agent_name, chat_id, cwd, total_sessions, status, last_error, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![migration.agent_id, migration.agent_name, migration.chat_id, migration.cwd, migration.total_sessions, migration.status, migration.last_error, now, now],
+            )?;
+            conn.last_insert_rowid()
+        };
+        Ok(AgentHistoryMigration {
+            migration_id,
+            agent_id: migration.agent_id,
+            agent_name: migration.agent_name,
+            chat_id: migration.chat_id,
+            cwd: migration.cwd,
+            total_sessions: migration.total_sessions,
+            status: migration.status,
+            last_error: migration.last_error,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    pub fn list_by_agent(agent_id: &str) -> Result<Vec<AgentHistoryMigration>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT migration_id, agent_id, agent_name, chat_id, cwd, total_sessions, status, last_error, created_at, updated_at
+             FROM agent_history_migrations WHERE agent_id = ?1 ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map(params![agent_id], |row| {
+            Ok(AgentHistoryMigration {
+                migration_id: row.get(0)?,
+                agent_id: row.get(1)?,
+                agent_name: row.get(2)?,
+                chat_id: row.get(3)?,
+                cwd: row.get(4)?,
+                total_sessions: row.get(5)?,
+                status: row.get(6)?,
+                last_error: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?;
+        rows.collect()
     }
 }
 

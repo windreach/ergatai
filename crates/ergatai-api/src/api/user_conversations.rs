@@ -2306,7 +2306,9 @@ pub async fn import_conversation_history(
                 Json(serde_json::json!({ "status": "imported" })),
             )
                 .into_response(),
-            Err(error) => crate::http_error::internal(error, "import_conversation_history").into_response(),
+            Err(error) => {
+                crate::http_error::internal(error, "import_conversation_history").into_response()
+            }
         }
     } else {
         let mut payload = serde_json::json!({

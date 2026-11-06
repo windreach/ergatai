@@ -33,7 +33,7 @@
 ### 2.1 游标与分批导入（滚动补充）—— 后端已完成
 - ✅ `import_cursor` 生成/解析已实现（结束索引字符串）。
 - ✅ `has_more` 基于剩余更早区间计算。
-- ⏳ 前端“滚动到顶部”触发补充导入仍未接入（见 2.3）。
+- ✅ 前端“滚动到顶部”触发补充导入已接入（见 2.3：`ActiveChatMessages` + `useConversationHistoryImport`）。
 
 ### 2.2 消息渲染映射 —— 后端已完成（前端渲染待验证）
 - `parts` 对文本消息转为 `[{ type: "text", text }]`，非文本更新保留原始 ACP JSON。
@@ -46,9 +46,9 @@
 - ✅ 导入后通过 `reloadConversationHistory` 刷新消息并尽量保持滚动位置。
 - ⏳ `AgentHistorySelector` 仍主要显示 ACP sessions；更完整的导入进度 UI 待完善。
 
-### 2.4 会话范围与限制
-- 50 个 session 的固定范围未做分页/游标。
-- 50 条/会话的总上限未在多批间累积控制。
+### 2.4 会话范围与限制 —— 已实现分页/游标与累积控制
+- ✅ Session 范围：`list_agent_sessions` 不再固定 `take(50)`，改为入队 `import_agent_sessions_batch` 作业，按 `"<updated_at>|<session_id>"` 游标分批（默认 50）处理全部未绑定 session，并在有剩余时自动入队下一批。
+- ✅ 每会话 50 条上限：`import_agent_session_history` 累积 `imported_count`/`total_captured`，`has_more` 基于累计进度计算，游标按批次推进，完成后不再重复导入。
 
 ---
 
@@ -73,7 +73,7 @@
 
 ### Phase 4：可观测性与健壮性
 1. ✅ Job 失败原因记录：`job_queue.last_error` 字段 + `mark_job_failed(..., error)`；worker 记录错误信息。
-2. ⏳ Agent 不支持 resume 的降级提示（错误已记录，前端提示待接入）。
+2. ✅ Agent 不支持 resume 的降级提示：后端记录 `last_error`/`resume_supported`，前端 `importBanner` 展示“该 Agent 不支持历史导入：…”。
 3. ✅ 集成测试：`crates/ergatai-runtime/tests/acp_integration_test.rs::test_acp_resume_session_capture`（mock agent 已支持 `session/resume`）。
 
 ---
@@ -99,4 +99,4 @@
 
 ## 6. 下一步建议
 
-优先实现 **Phase 1（游标与分批）**，使滚动补充导入具备后端基础，再进入前端集成。
+Phase 1-4（含会话范围分页/游标与累积控制）已完成；后续优先完善 **AgentHistorySelector 导入进度 UI**（见 2.3），以及前端对非文本 ACP 更新的渲染验证。

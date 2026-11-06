@@ -184,99 +184,31 @@ async fn check_adapter_version_async(profile_name: &str, npm_package: &str) -> R
         "Adapter update available, triggering background update"
     );
 
-    // Spawn adapter manager to download and activate new version
-    spawn_adapter_update_async(npm_package).await;
+    // Spawn adapter manager to download and activate a new verified release.
+    spawn_adapter_update_async().await;
 
     Ok(())
 }
 
 /// Spawn background task to download and activate adapter update.
-async fn spawn_adapter_update_async(npm_package: &str) {
-    let npm_package_owned = npm_package.to_string();
+async fn spawn_adapter_update_async() {
     tokio::spawn(async move {
-        if let Err(e) = download_and_activate_adapter_async(&npm_package_owned).await {
+        let adapters_base =
+            ergatai_runtime::profile_registry::ProfileRegistry::resolve_adapters_base_public();
+        let managed = ergatai_runtime::adapter_manager::resolve_managed_base(&adapters_base);
+        let db_path = crate::services::profile_service::profile_registry_db_path();
+        if let Err(e) = ergatai_runtime::adapter_manager::ensure_latest_release(
+            std::path::Path::new(&db_path),
+            &managed,
+        )
+        .await
+        {
             tracing::warn!(
-                package = %npm_package_owned,
                 error = %e,
-                "Failed to download and activate adapter update"
+                "Failed to install and activate adapter update"
             );
         }
     });
-}
-
-/// Download and activate adapter update (async).
-async fn download_and_activate_adapter_async(npm_package: &str) -> Result<(), String> {
-    use tokio::fs;
-    use tokio::process::Command;
-
-    let adapters_base =
-        ergatai_runtime::profile_registry::ProfileRegistry::resolve_adapters_base_public();
-    let managed_base = adapters_base.join("managed");
-
-    // Create staging directory
-    let staging = managed_base.join("staging");
-    if staging.exists() {
-        fs::remove_dir_all(&staging)
-            .await
-            .map_err(|e| format!("Failed to remove stale staging: {}", e))?;
-    }
-    fs::create_dir_all(&staging)
-        .await
-        .map_err(|e| format!("Failed to create staging dir: {}", e))?;
-
-    // Install adapter package
-    tracing::info!(package = %npm_package, "Downloading adapter update...");
-    let output = Command::new("npm")
-        .args([
-            "install",
-            "--no-audit",
-            "--no-fund",
-            "--loglevel=error",
-            npm_package,
-        ])
-        .current_dir(&staging)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run npm install: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("npm install failed: {}", stderr));
-    }
-
-    // Create release directory
-    let release_id = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
-    let releases_dir = managed_base.join("releases");
-    fs::create_dir_all(&releases_dir)
-        .await
-        .map_err(|e| format!("Failed to create releases dir: {}", e))?;
-    let release_dir = releases_dir.join(&release_id);
-    fs::rename(&staging, &release_dir)
-        .await
-        .map_err(|e| format!("Failed to promote staging to release: {}", e))?;
-
-    // Update current pointer
-    let current_pointer = managed_base.join("current");
-    fs::write(&current_pointer, &release_id)
-        .await
-        .map_err(|e| format!("Failed to write current pointer: {}", e))?;
-
-    // Update profile database
-    let db_path = crate::services::profile_service::profile_registry_db_path();
-    if let Err(e) = ergatai_runtime::adapter_manager::refresh_profile_rows(
-        &std::path::PathBuf::from(&db_path),
-        &release_dir,
-    ) {
-        tracing::warn!(error = %e, "Failed to update profile rows");
-    }
-
-    tracing::info!(
-        package = %npm_package,
-        release = %release_id,
-        "Adapter update downloaded and activated"
-    );
-
-    Ok(())
 }
 
 /// Get local adapter version from package.json.
@@ -285,17 +217,9 @@ async fn get_local_adapter_version(npm_package: &str) -> Result<String, String> 
 
     let adapters_base =
         ergatai_runtime::profile_registry::ProfileRegistry::resolve_adapters_base_public();
-    let managed_base = adapters_base.join("managed");
-
-    // Read current pointer
-    let current_pointer = managed_base.join("current");
-    let release_id = fs::read_to_string(&current_pointer)
-        .await
-        .map_err(|e| format!("Failed to read current pointer: {}", e))?
-        .trim()
-        .to_string();
-
-    let release_dir = managed_base.join("releases").join(&release_id);
+    let managed = ergatai_runtime::adapter_manager::resolve_managed_base(&adapters_base);
+    let release_dir = ergatai_runtime::adapter_manager::current_release_dir(&managed)
+        .ok_or_else(|| "No active managed adapter release".to_string())?;
     let package_json = release_dir
         .join("node_modules")
         .join(npm_package)
@@ -1199,6 +1123,41 @@ pub async fn cancel_prompt(
             Json(ErrorResponse {
                 // SECURITY (P1 #18): Redact ACP internals.
                 error: crate::sanitize_error(&e, "cancel_prompt"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+pub struct SetAgentModelRequest {
+    pub model: String,
+}
+
+pub async fn set_agent_model(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SetAgentModelRequest>,
+) -> impl IntoResponse {
+    if req.model.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "model cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    match crate::services::agent_service::set_agent_model(&id, &req.model).await {
+        Ok(output) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "ok", "output": output })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: crate::sanitize_error(&e, "set_agent_model"),
             }),
         )
             .into_response(),
@@ -2414,6 +2373,12 @@ pub struct ListSessionsResponse {
 pub struct SessionInfoResponse {
     /// Unique session identifier.
     pub session_id: String,
+    /// Working directory for this session (ACP cwd), if provided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Additional workspace roots reported for this session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_directories: Vec<String>,
     /// Human-readable title.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -2620,33 +2585,72 @@ pub async fn list_agent_sessions(
                             crate::user_data_db::conversations::get(ConversationId::new(conv_i64))
                         {
                             let chat_id_i64 = conv.chat_id.as_i64();
-                            let mut sorted_sessions = sessions.clone();
-                            sorted_sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-                            for s in sorted_sessions.into_iter().take(50) {
-                                let already_bound =
-                                    crate::user_data_db::agent_sessions::get_by_acp_session_id(
-                                        &s.session_id,
-                                    )
-                                    .ok()
-                                    .flatten()
-                                    .is_some();
-                                if already_bound {
-                                    continue;
+                            if !sessions.is_empty() {
+                                // Group sessions by their ACP-reported cwd so that
+                                // sessions from different project paths land in
+                                // distinct workspaces/chats, while sessions sharing
+                                // a path reuse the same workspace/chat.
+                                let mut groups: Vec<Option<String>> =
+                                    sessions.iter().map(|s| s.cwd.clone()).collect();
+                                groups.sort();
+                                groups.dedup();
+                                for cwd in groups.clone() {
+                                    let group_total =
+                                        sessions.iter().filter(|s| s.cwd == cwd).count() as i64;
+                                    let group_chat_id = match &cwd {
+                                        Some(path) => {
+                                            match crate::services::agent_history_import::ensure_workspace_chat_for_path(path).await {
+                                                Ok(id) => id,
+                                                Err(error) => {
+                                                    tracing::warn!(
+                                                        error = %error,
+                                                        path = %path,
+                                                        "Failed to ensure workspace/chat for path; falling back to current chat"
+                                                    );
+                                                    chat_id_i64
+                                                }
+                                            }
+                                        }
+                                        None => chat_id_i64,
+                                    };
+
+                                    // Track migration progress for this (agent, chat, cwd) group.
+                                    let _ = tokio::task::spawn_blocking({
+                                        let agent_id = id.clone();
+                                        let cwd_clone = cwd.clone();
+                                        move || {
+                                            let _ = crate::user_data_db::agent_history_migrations::upsert(
+                                                crate::user_data_db::agent_history_migrations::AgentHistoryMigration {
+                                                    migration_id: 0,
+                                                    agent_id,
+                                                    agent_name: None,
+                                                    chat_id: group_chat_id,
+                                                    cwd: cwd_clone,
+                                                    total_sessions: group_total,
+                                                    status: "running".to_string(),
+                                                    last_error: None,
+                                                    created_at: 0,
+                                                    updated_at: 0,
+                                                },
+                                            );
+                                        }
+                                    })
+                                    .await;
+
+                                    let payload = serde_json::json!({
+                                        "chat_id": group_chat_id,
+                                        "cwd": cwd,
+                                        "cursor": null,
+                                        "limit": 50,
+                                    });
+                                    let _ = crate::user_data_db::chats::enqueue_job(
+                                        "persistence",
+                                        "agent_session",
+                                        &id,
+                                        "import_agent_sessions_batch",
+                                        Some(&payload.to_string()),
+                                    );
                                 }
-                                let payload = serde_json::json!({
-                                    "chat_id": chat_id_i64,
-                                    "acp_session_id": s.session_id,
-                                    "title": s.title,
-                                    "capture_limit": 50,
-                                    "persist_limit": 20,
-                                });
-                                let _ = crate::user_data_db::chats::enqueue_job(
-                                    "persistence",
-                                    "agent_session",
-                                    &id,
-                                    "import_agent_session_history",
-                                    Some(&payload.to_string()),
-                                );
                             }
                         }
                     }
@@ -2658,6 +2662,8 @@ pub async fn list_agent_sessions(
                     .into_iter()
                     .map(|s| SessionInfoResponse {
                         session_id: s.session_id,
+                        cwd: s.cwd,
+                        additional_directories: s.additional_directories,
                         title: s.title,
                         created_at: s.created_at,
                         updated_at: s.updated_at,
@@ -2693,6 +2699,8 @@ pub async fn create_agent_session(
         Ok(session) => {
             let response = SessionInfoResponse {
                 session_id: session.session_id,
+                cwd: session.cwd,
+                additional_directories: session.additional_directories,
                 title: session.title,
                 created_at: session.created_at,
                 updated_at: session.updated_at,
@@ -5234,5 +5242,280 @@ mod tests {
         assert!(models.iter().any(|m| m == "sonnet[1m]"));
         assert!(!models.iter().any(|m| m.as_str().unwrap().contains(' ')));
         assert!(!models.iter().any(|m| m == "default"));
+    }
+}
+
+/// Get migration progress for an agent's history import.
+pub async fn get_agent_migration_progress(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
+
+    let agent_id = id.clone();
+    match tokio::task::spawn_blocking(move || {
+        let migrations = crate::user_data_db::agent_history_migrations::list_by_agent(&agent_id)?;
+        let mut result = Vec::new();
+        for m in migrations {
+            let processed = crate::user_data_db::agent_sessions::count_by_chat_id(m.chat_id)?;
+            result.push(serde_json::json!({
+                "migration_id": m.migration_id,
+                "agent_id": m.agent_id,
+                "chat_id": m.chat_id,
+                "cwd": m.cwd,
+                "total_sessions": m.total_sessions,
+                "processed_sessions": processed,
+                "status": m.status,
+                "last_error": m.last_error,
+            }));
+        }
+        Ok::<_, rusqlite::Error>(result)
+    })
+    .await
+    {
+        Ok(Ok(data)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "migrations": data })),
+        )
+            .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to get migration progress: {}", e),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Trigger a migration scan: spawn each installed agent temporarily, list its
+/// sessions, enqueue history import jobs grouped by their reported cwd, then
+/// stop the agent.
+pub async fn run_migration(State(_state): State<AppState>) -> impl IntoResponse {
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    tracing::info!("run_migration: started");
+    tokio::spawn(async move {
+        // Resolve installed profiles.
+        let profiles = match tokio::task::spawn_blocking(|| {
+            crate::services::profile_service::get_profile_registry()
+                .map_err(|e| anyhow::anyhow!("{}", e))
+                .and_then(|r| r.list_with_status().map_err(|e| anyhow::anyhow!("{}", e)))
+        })
+        .await
+        {
+            Ok(Ok(profiles)) => profiles,
+            _ => return,
+        };
+
+        let installed: Vec<_> = profiles.into_iter().filter(|p| p.installed).collect();
+        tracing::info!(count = installed.len(), "run_migration: installed profiles");
+
+        let default_work_dir = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".to_string());
+        let _ = std::fs::create_dir_all(format!("{}/.ergatai", default_work_dir));
+
+        for profile in installed {
+            let command = profile.command.clone();
+            let profile_name = profile.name.clone();
+
+            let workspace_spec = ergatai_runtime::WorkspaceSpec {
+                id: format!("migration-{}", profile.name),
+                work_dir: std::path::PathBuf::from(format!("{}/.ergatai", default_work_dir)),
+                env: std::collections::HashMap::new(),
+                resources: ergatai_runtime::ResourceLimits::default(),
+                capture_thoughts: false,
+            };
+
+            let agent_id = match runtime
+                .launch_agent_scoped(
+                    workspace_spec,
+                    &command,
+                    None,
+                    None,
+                    None,
+                    Some(&profile_name),
+                    profile.transport.as_deref(),
+                )
+                .await
+            {
+                Ok(id) => {
+                    tracing::info!(agent = %profile_name, agent_id = %id, "run_migration: spawned agent");
+                    id
+                }
+                Err(e) => {
+                    tracing::warn!(agent = %profile_name, error = %e, "run_migration: spawn failed");
+                    continue;
+                }
+            };
+
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+            let sessions = match crate::services::agent_service::list_agent_sessions(&agent_id)
+                .await
+            {
+                Ok(s) => {
+                    tracing::info!(agent = %profile_name, count = s.len(), "run_migration: listed sessions");
+                    s
+                }
+                Err(e) => {
+                    tracing::warn!(agent = %profile_name, error = %e, "run_migration: list sessions failed");
+                    let _ = runtime.stop_agent(&agent_id).await;
+                    continue;
+                }
+            };
+
+            let mut groups: Vec<Option<String>> = sessions.iter().map(|s| s.cwd.clone()).collect();
+            groups.sort();
+            groups.dedup();
+
+            for cwd in groups {
+                let group_total = sessions.iter().filter(|s| s.cwd == cwd).count() as i64;
+                let group_chat_id = match &cwd {
+                    Some(path) => {
+                        match crate::services::agent_history_import::ensure_workspace_chat_for_path(
+                            path,
+                        )
+                        .await
+                        {
+                            Ok(id) => id,
+                            Err(e) => {
+                                tracing::warn!(agent = %profile_name, error = %e, path = %path, "run_migration: ensure_workspace_chat_for_path failed, skipping");
+                                continue;
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::info!(agent = %profile_name, "run_migration: skipping session with no cwd");
+                        continue;
+                    }
+                };
+
+                let _ = tokio::task::spawn_blocking({
+                    let agent_id_for_track = agent_id.clone();
+                    let agent_name_for_track = profile_name.clone();
+                    let cwd_clone = cwd.clone();
+                    move || {
+                        let _ = crate::user_data_db::agent_history_migrations::upsert(
+                            crate::user_data_db::agent_history_migrations::AgentHistoryMigration {
+                                migration_id: 0,
+                                agent_id: agent_id_for_track,
+                                agent_name: Some(agent_name_for_track),
+                                chat_id: group_chat_id,
+                                cwd: cwd_clone,
+                                total_sessions: group_total,
+                                status: "running".to_string(),
+                                last_error: None,
+                                created_at: 0,
+                                updated_at: 0,
+                            },
+                        );
+                    }
+                })
+                .await;
+
+                let payload = serde_json::json!({
+                    "chat_id": group_chat_id,
+                    "cwd": cwd,
+                    "cursor": null,
+                    "limit": 50,
+                });
+                match crate::user_data_db::chats::enqueue_job(
+                    "persistence",
+                    "agent_session",
+                    &agent_id,
+                    "import_agent_sessions_batch",
+                    Some(&payload.to_string()),
+                ) {
+                    Ok(job_id) => {
+                        tracing::info!(agent = %profile_name, job_id = job_id, chat_id = group_chat_id, cwd = ?cwd, "run_migration: enqueued import job");
+                    }
+                    Err(e) => {
+                        tracing::warn!(agent = %profile_name, error = %e, "run_migration: enqueue_job failed");
+                    }
+                }
+            }
+
+            // NOTE: Do NOT stop agent here - job queue worker needs agent running to process import jobs.
+            // Agent will be cleaned up by periodic re-discovery when unhealthy, or user can manually stop.
+            tracing::info!(agent = %profile_name, agent_id = %agent_id, "run_migration: agent kept running for job processing");
+        }
+    });
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "status": "started" })),
+    )
+        .into_response()
+}
+
+/// Get migration progress across all agents.
+pub async fn get_migration_progress(State(_state): State<AppState>) -> impl IntoResponse {
+    match tokio::task::spawn_blocking(|| {
+        let db = crate::user_data_db::get_user_data_db();
+        let conn = db.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT migration_id, agent_id, agent_name, chat_id, cwd, total_sessions, status, last_error FROM agent_history_migrations ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, Option<String>>(7)?,
+            ))
+        })?;
+        let mut result = Vec::new();
+        for r in rows {
+            let (migration_id, agent_id, agent_name, chat_id, cwd, total_sessions, status, last_error) = r?;
+            // Query count directly using existing conn to avoid deadlock (Mutex is not reentrant)
+            let processed: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM agent_sessions a JOIN conversations c ON a.conversation_id = c.conversation_id WHERE c.chat_id = ?1",
+                rusqlite::params![chat_id],
+                |row| row.get(0),
+            )?;
+            result.push(serde_json::json!({
+                "migration_id": migration_id,
+                "agent_id": agent_id,
+                "agent_name": agent_name,
+                "chat_id": chat_id,
+                "cwd": cwd,
+                "total_sessions": total_sessions,
+                "processed_sessions": processed,
+                "status": status,
+                "last_error": last_error,
+            }));
+        }
+        Ok::<_, rusqlite::Error>(result)
+    })
+    .await
+    {
+        Ok(Ok(data)) => (StatusCode::OK, Json(serde_json::json!({ "migrations": data }))).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to get migration progress: {}", e),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Task join error: {}", e),
+            }),
+        )
+            .into_response(),
     }
 }

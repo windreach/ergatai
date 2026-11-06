@@ -601,6 +601,16 @@ export const ChatInputArea = memo(function ChatInputArea({
   const setLastSelectedCodexModelId = useSetAtom(lastSelectedCodexModelIdAtom)
   const setLastSelectedCodexThinking = useSetAtom(lastSelectedCodexThinkingAtom)
   const availableModels = useAvailableModels(agentId)
+  const queryClient = trpc.useContext()
+  const setAgentModelMutation = trpc.ergatai.setAgentModel.useMutation({
+    onSuccess: () => {
+      void queryClient.ergatai.listAgents.invalidate()
+      void queryClient.ergatai.getAgentProfileModels.invalidate()
+    },
+    onError: (error) => {
+      toast.error(`Failed to switch model: ${error.message}`)
+    },
+  })
   const isRuntimeModelProvider = provider !== "claude-code" && provider !== "codex"
 
   // Debug logging: only log when agentId changes
@@ -1708,6 +1718,9 @@ export const ChatInputArea = memo(function ChatInputArea({
 	                            if (!model) return
 	                            setSelectedConversationModelId(model.id)
 	                            setLastSelectedModelId(model.id)
+	                            if (agentId) {
+	                              setAgentModelMutation.mutate({ agentId, model: model.id })
+	                            }
 	                          },
 	                          hasCustomModelConfig: hasCustomClaudeConfig,
 	                          isOffline: availableModels.isOffline && availableModels.hasOllama,
@@ -1737,6 +1750,9 @@ export const ChatInputArea = memo(function ChatInputArea({
 	                            setSelectedConversationCodexThinking(nextThinking)
 	                            setLastSelectedCodexModelId(model.id)
 	                            setLastSelectedCodexThinking(nextThinking)
+	                            if (agentId) {
+	                              setAgentModelMutation.mutate({ agentId, model: model.id })
+	                            }
 	                          },
 	                          selectedThinking: selectedCodexThinking,
 	                          onSelectThinking: (thinking) => {

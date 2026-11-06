@@ -356,6 +356,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             post(api::agents::cancel_prompt),
         )
         .route(
+            "/api/v1/agents/{id}/model",
+            post(api::agents::set_agent_model),
+        )
+        .route(
             "/api/v1/agents/{id}/suspend",
             post(api::agents::suspend_agent),
         )
@@ -389,6 +393,18 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/agents/{id}/sessions",
             get(api::agents::list_agent_sessions),
+        )
+        .route(
+            "/api/v1/agents/{id}/migration-progress",
+            get(api::agents::get_agent_migration_progress),
+        )
+        .route(
+            "/api/v1/migration-progress",
+            get(api::agents::get_migration_progress),
+        )
+        .route(
+            "/api/v1/migration/run",
+            post(api::agents::run_migration),
         )
         .route(
             "/api/v1/agents/{id}/sessions",

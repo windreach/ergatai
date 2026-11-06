@@ -7,6 +7,7 @@ use ergatai_error::ConversationId;
 pub struct ImportAgentSessionHistoryInput {
     pub chat_id: Option<i64>,
     pub acp_session_id: String,
+    pub cwd: Option<String>,
     pub title: Option<String>,
     pub conversation_id: Option<i64>,
     pub capture_limit: Option<usize>,
@@ -20,11 +21,7 @@ pub async fn import_agent_session_history(
     input: ImportAgentSessionHistoryInput,
 ) -> anyhow::Result<()> {
     let capture_limit = input.capture_limit.unwrap_or(50).min(50);
-    let persist_limit = input
-        .persist_limit
-        .or(input.limit)
-        .unwrap_or(20)
-        .min(20);
+    let persist_limit = input.persist_limit.or(input.limit).unwrap_or(20).min(20);
     let acp_session_id = input.acp_session_id.clone();
 
     // Ensure conversation exists.
@@ -66,7 +63,11 @@ pub async fn import_agent_session_history(
     .unwrap_or(false);
 
     let legacy_skip = has_messages
-        && existing_state.as_ref().map(|s| s.imported_count).unwrap_or(0) == 0
+        && existing_state
+            .as_ref()
+            .map(|s| s.imported_count)
+            .unwrap_or(0)
+            == 0
         && existing_state
             .as_ref()
             .and_then(|s| s.import_cursor.clone())
@@ -77,9 +78,11 @@ pub async fn import_agent_session_history(
     }
 
     // Capture history from agent.
+    let cwd = input.cwd.as_deref().unwrap_or("/");
     let captured = match crate::services::agent_service::resume_session_capture(
         agent_id,
         &acp_session_id,
+        cwd,
         capture_limit,
     )
     .await
@@ -110,7 +113,11 @@ pub async fn import_agent_session_history(
 
     let cursor_from_payload = input.cursor.clone();
     let end = cursor_from_payload
-        .or_else(|| existing_state.as_ref().and_then(|s| s.import_cursor.clone()))
+        .or_else(|| {
+            existing_state
+                .as_ref()
+                .and_then(|s| s.import_cursor.clone())
+        })
         .and_then(|c| c.parse::<usize>().ok())
         .unwrap_or_else(|| {
             let imported = existing_state
@@ -165,18 +172,25 @@ pub async fn import_agent_session_history(
         return Ok(());
     }
 
-    let new_imported_count = existing_state
+    let prior_imported = existing_state
         .as_ref()
         .map(|s| s.imported_count)
-        .unwrap_or(0)
-        + imported_this;
-    let new_cursor = if start > 0 {
+        .unwrap_or(0);
+    let prior_total = existing_state
+        .as_ref()
+        .map(|s| s.total_captured)
+        .unwrap_or(0);
+
+    // Clamp the end index to the captured range and accumulate progress across
+    // multiple batches instead of overwriting it on every run.
+    let total_captured = prior_total.max(captured_len as i64);
+    let new_imported_count = (prior_imported + imported_this).min(total_captured);
+    let has_more = new_imported_count < total_captured;
+    let new_cursor = if start > 0 && has_more {
         Some(start.to_string())
     } else {
         None
     };
-    let has_more = start > 0;
-    let total_captured = captured_len as i64;
 
     // Persist.
     let conv_id = conversation_id;
@@ -202,6 +216,176 @@ pub async fn import_agent_session_history(
     .await
     .context("join error updating import state")?
     .context("update_import_state failed")?;
+
+    Ok(())
+}
+
+/// Session-scope batch import: paginate over an agent's ACP sessions and enqueue
+/// per-session history import jobs. `cursor` is an opaque key of the form
+/// `"<updated_at>|<session_id>"` pointing at the last processed session in the
+/// descending sort order; `None` starts from the most recently updated session.
+pub async fn ensure_workspace_chat_for_path(work_dir: &str) -> anyhow::Result<i64> {
+    let managed = crate::services::workspace_manager::create(
+        crate::services::workspace_manager::CreateManagedWorkspaceRequest {
+            id: None,
+            name: None,
+            work_dir: work_dir.to_string(),
+            env: None,
+            resources: None,
+            config: None,
+            collaboration_mode: None,
+            default_project_id: None,
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("ensure workspace failed: {:?}", e))?;
+
+    let workspace_id = ergatai_error::WorkspaceId::decode(&managed.workspace_id)
+        .map_err(|e| anyhow::anyhow!("invalid workspace id: {}", e))?;
+
+    let chat_id = tokio::task::spawn_blocking(move || -> Result<i64, rusqlite::Error> {
+        let chats = crate::user_data_db::chats::list(Some(workspace_id))?;
+        if let Some(existing) = chats.into_iter().next() {
+            return Ok(existing.chat_id.as_i64());
+        }
+        let now = chrono::Utc::now().timestamp();
+        let chat = crate::user_data_db::Chat {
+            chat_id: ergatai_error::ChatId::generate(),
+            workspace_id,
+            name: None,
+            collaboration_mode: None,
+            worktree_path: None,
+            branch: None,
+            base_branch: None,
+            pr_url: None,
+            pr_number: None,
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+        };
+        crate::user_data_db::chats::create(chat.clone())?;
+        Ok(chat.chat_id.as_i64())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("join error ensuring chat: {}", e))?
+    .map_err(|e| anyhow::anyhow!("ensure chat failed: {}", e))?;
+
+    Ok(chat_id)
+}
+
+pub async fn import_agent_sessions_batch(
+    agent_id: &str,
+    chat_id: i64,
+    cwd_filter: Option<String>,
+    cursor: Option<String>,
+    limit: usize,
+) -> anyhow::Result<()> {
+    let limit = limit.clamp(1, 100);
+
+    let sessions = crate::services::agent_service::list_agent_sessions(agent_id).await?;
+
+    // Optionally restrict to sessions whose cwd matches the filter.
+    let sessions: Vec<_> = if let Some(ref filter) = cwd_filter {
+        sessions
+            .into_iter()
+            .filter(|s| s.cwd.as_deref() == Some(filter.as_str()))
+            .collect()
+    } else {
+        sessions
+    };
+
+    // Build sort keys and sort descending (most recently updated first).
+    let mut keyed: Vec<(String, ergatai_runtime::SessionInfo)> = sessions
+        .into_iter()
+        .map(|s| {
+            let key = format!(
+                "{}|{}",
+                s.updated_at.as_deref().unwrap_or_default(),
+                s.session_id
+            );
+            (key, s)
+        })
+        .collect();
+    keyed.sort_by(|a, b| b.0.cmp(&a.0));
+
+    // Resolve cursor position: process sessions whose key is strictly less than
+    // the cursor key (i.e. come after it in descending order).
+    let start = if let Some(ref c) = cursor {
+        keyed.iter().position(|(k, _)| k < c).unwrap_or(keyed.len())
+    } else {
+        0
+    };
+
+    let end = (start + limit).min(keyed.len());
+    let batch = &keyed[start..end];
+
+    for (_key, session) in batch {
+        // Skip sessions already bound to a conversation.
+        let already_bound = tokio::task::spawn_blocking({
+            let sid = session.session_id.clone();
+            move || {
+                crate::user_data_db::agent_sessions::get_by_acp_session_id(&sid)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            }
+        })
+        .await
+        .unwrap_or(false);
+        if already_bound {
+            continue;
+        }
+
+        let payload = serde_json::json!({
+            "chat_id": chat_id,
+            "acp_session_id": session.session_id,
+            "cwd": session.cwd,
+            "title": session.title,
+            "capture_limit": 50,
+            "persist_limit": 20,
+        });
+
+        let _ = tokio::task::spawn_blocking({
+            let agent_id = agent_id.to_string();
+            let payload_str = payload.to_string();
+            move || {
+                crate::user_data_db::chats::enqueue_job(
+                    "persistence",
+                    "agent_session",
+                    &agent_id,
+                    "import_agent_session_history",
+                    Some(&payload_str),
+                )
+            }
+        })
+        .await;
+    }
+
+    // Enqueue next batch if there are more sessions.
+    if end < keyed.len() {
+        if let Some((last_key, _)) = batch.last() {
+            let next_cursor = last_key.clone();
+            let payload = serde_json::json!({
+                "chat_id": chat_id,
+                "cursor": next_cursor,
+                "limit": limit,
+            });
+            let _ = tokio::task::spawn_blocking({
+                let agent_id = agent_id.to_string();
+                let payload_str = payload.to_string();
+                move || {
+                    crate::user_data_db::chats::enqueue_job(
+                        "persistence",
+                        "agent_session",
+                        &agent_id,
+                        "import_agent_sessions_batch",
+                        Some(&payload_str),
+                    )
+                }
+            })
+            .await;
+        }
+    }
 
     Ok(())
 }

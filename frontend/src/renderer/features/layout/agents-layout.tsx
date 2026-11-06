@@ -35,6 +35,7 @@ import { useUpdateChecker } from "../../lib/hooks/use-update-checker"
 import { useAgentConversationStore } from "../agents"
 import { QueueProcessor } from "../agents"
 import { SettingsSidebar } from "../settings"
+import { MigrationProgressWidget } from "../../components/migration-progress-widget"
 
 // ============================================================================
 // Constants

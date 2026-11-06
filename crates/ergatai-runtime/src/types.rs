@@ -252,6 +252,12 @@ pub struct SessionInfo {
     /// Unique session identifier (assigned by the ACP agent)
     pub session_id: String,
 
+    /// Working directory for this session (ACP `cwd`), if provided.
+    pub cwd: Option<String>,
+
+    /// Additional workspace roots reported for this session.
+    pub additional_directories: Vec<String>,
+
     /// Human-readable title (may be auto-generated or user-provided)
     pub title: Option<String>,
 

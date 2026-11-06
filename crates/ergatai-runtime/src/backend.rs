@@ -197,6 +197,11 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
         agent_id: &str,
     ) -> ErgataiResult<Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>>;
 
+    /// Switch the model of a running agent session via ACP (best-effort).
+    async fn set_session_model(&self, agent_id: &str, model: &str) -> ErgataiResult<()> {
+        let _ = (agent_id, model);
+        Err(ErgataiError::BackendUnsupported("set_session_model".into()))
+    }
     /// Get the agent's token usage statistics (input_tokens, output_tokens).
     async fn usage(&self, agent_id: &str) -> ErgataiResult<Option<(usize, usize)>>;
 
@@ -219,9 +224,10 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
         &self,
         agent_id: &str,
         session_id: &str,
+        cwd: &str,
         max_messages: usize,
     ) -> ErgataiResult<Vec<serde_json::Value>> {
-        let _ = (agent_id, session_id, max_messages);
+        let _ = (agent_id, session_id, cwd, max_messages);
         Ok(Vec::new())
     }
 

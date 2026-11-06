@@ -38,6 +38,48 @@ export const agentsRouter = router({
       return agents.find((a) => a.agent_id === input.agentId) ?? null
     }),
 
+  /** Get migration progress for an agent's history import */
+  getAgentMigrationProgress: publicProcedure
+    .input(z.object({ agentId: agentIdSchema }))
+    .query(async ({ input }) => {
+      return ergataiFetch<{
+        migrations: Array<{
+          migration_id: number
+          agent_id: string
+          chat_id: number
+          cwd: string | null
+          total_sessions: number
+          processed_sessions: number
+          status: string
+          last_error: string | null
+        }>
+      }>(`/api/v1/agents/${encodeURIComponent(input.agentId)}/migration-progress`)
+    }),
+
+  /** Get migration progress across all agents */
+  getMigrationProgress: publicProcedure.query(async () => {
+    return ergataiFetch<{
+      migrations: Array<{
+        migration_id: number
+        agent_id: string
+        agent_name: string | null
+        chat_id: number
+        cwd: string | null
+        total_sessions: number
+        processed_sessions: number
+        status: string
+        last_error: string | null
+      }>
+    }>(`/api/v1/migration-progress`)
+  }),
+
+  /** Trigger a migration scan across all running agents */
+  runMigration: publicProcedure.mutation(async () => {
+    return ergataiFetch<{ status: string; agents: unknown[] }>(`/api/v1/migration/run`, {
+      method: "POST",
+    })
+  }),
+
   /** Spawn a new agent */
   spawnAgent: publicProcedure
     .input(
@@ -695,6 +737,16 @@ export const agentsRouter = router({
     .mutation(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/suspend`, {
         method: "POST",
+      })
+    }),
+
+  /** Set agent model */
+  setAgentModel: publicProcedure
+    .input(z.object({ agentId: agentIdSchema, model: z.string() }))
+    .mutation(async ({ input }) => {
+      return ergataiFetch(`/api/v1/agents/${input.agentId}/model`, {
+        method: "POST",
+        body: JSON.stringify({ model: input.model }),
       })
     }),
 

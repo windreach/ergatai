@@ -45,8 +45,8 @@ pub struct ManagedAdapter {
 pub const MANAGED_ADAPTERS: &[ManagedAdapter] = &[
     ManagedAdapter {
         profile_id: "claude-code",
-        npm_package: "@zed-industries/claude-code-acp",
-        bin_name: "claude-code-acp", // .bin/claude-code-acp → dist/index.js
+        npm_package: "@agentclientprotocol/claude-agent-acp",
+        bin_name: "claude-agent-acp", // .bin/claude-agent-acp → dist/index.js
     },
     ManagedAdapter {
         profile_id: "codex",
@@ -81,6 +81,44 @@ pub fn resolve_managed_base(adapters_base: &Path) -> PathBuf {
     adapters_base.join("managed")
 }
 
+/// Look up a managed adapter definition by its profile ID.
+pub fn managed_adapter(profile_id: &str) -> Option<&'static ManagedAdapter> {
+    MANAGED_ADAPTERS
+        .iter()
+        .find(|adapter| adapter.profile_id == profile_id)
+}
+
+/// Resolve the executable produced by a managed adapter release.
+pub fn managed_adapter_bin_path(release_dir: &Path, adapter: &ManagedAdapter) -> Option<PathBuf> {
+    let bin_path = release_dir
+        .join("node_modules")
+        .join(".bin")
+        .join(adapter.bin_name);
+    bin_path.is_file().then_some(bin_path)
+}
+
+/// Build the profile command for a managed adapter release.
+pub fn managed_adapter_command_for_profile(release_dir: &Path, profile_id: &str) -> Option<String> {
+    managed_adapter(profile_id)
+        .and_then(|adapter| managed_adapter_bin_path(release_dir, adapter))
+        .map(|bin_path| bin_path.display().to_string())
+}
+
+/// Run one update cycle and return the active release directory.
+///
+/// This is the single activation path used by startup, per-spawn refreshes,
+/// and first-install recovery. It enforces staging locking, verification,
+/// atomic pointer flipping, and profile-row synchronization.
+pub async fn ensure_latest_release(
+    db_path: &Path,
+    managed: &Path,
+) -> Result<PathBuf, ErgataiError> {
+    update_cycle(db_path, managed).await?;
+    current_release_dir(managed).ok_or_else(|| {
+        ErgataiError::internal("Managed adapter release is missing after activation")
+    })
+}
+
 /// Spawn the background manager for one-time update check on startup.
 /// No-op when disabled via `ERGATAI_ADAPTERS_AUTO_UPDATE=0` or when called
 /// outside a tokio runtime.
@@ -108,15 +146,18 @@ pub fn spawn_adapter_manager(profile_registry_db: String, adapters_base: PathBuf
 }
 
 async fn run_startup_check(db_path: String, managed: PathBuf) {
-    // Startup duties: retire releases from previous session, then point
-    // managed profile rows at the current release.
-    if let Err(error) = retire_old_releases(&managed) {
-        warn!(error = %error, "Adapter release cleanup failed (non-fatal)");
-    }
+    // Startup duties: point managed profile rows at the current release first,
+    // then retire old releases. Retiring first could delete the release an
+    // existing profile command still points to if a previous activation
+    // updated the pointer but crashed before updating profile rows.
     if let Some(release_dir) = current_release_dir(&managed) {
         if let Err(error) = refresh_profile_rows(Path::new(&db_path), &release_dir) {
             warn!(error = %error, "Failed to refresh managed adapter profile rows (non-fatal)");
         }
+    }
+
+    if let Err(error) = retire_old_releases(&managed) {
+        warn!(error = %error, "Adapter release cleanup failed (non-fatal)");
     }
 
     // Wait briefly for startup/network to settle, then check for updates once.
@@ -166,7 +207,11 @@ async fn build_and_activate(
         let mut all_valid = true;
         let mut failed_adapters = Vec::new();
         for adapter in MANAGED_ADAPTERS {
-            if let Err(error) = verify_adapter(current_dir, adapter).await {
+            let expected_version = current_manifest
+                .adapters
+                .get(adapter.npm_package)
+                .map(String::as_str);
+            if let Err(error) = verify_adapter(current_dir, adapter, expected_version).await {
                 warn!(
                     adapter = adapter.profile_id,
                     error = %error,
@@ -200,8 +245,9 @@ async fn build_and_activate(
 
     let mut built = ReleaseManifest::default();
     for adapter in MANAGED_ADAPTERS {
-        npm_install_package(staging, adapter.npm_package).await?;
-        verify_adapter(staging, adapter).await?;
+        let version = upstream[adapter.npm_package].clone();
+        npm_install_package(staging, adapter.npm_package, &version).await?;
+        verify_adapter(staging, adapter, Some(&version)).await?;
         built.adapters.insert(
             adapter.npm_package.to_string(),
             upstream[adapter.npm_package].clone(),
@@ -234,27 +280,29 @@ async fn build_and_activate(
 /// (user-modified) commands are left untouched; missing rows are created so
 /// fresh installs work out of the box.
 pub fn refresh_profile_rows(db_path: &Path, release_dir: &Path) -> Result<(), ErgataiError> {
-    let conn = Connection::open(db_path).map_err(|e| {
+    let mut conn = Connection::open(db_path).map_err(|e| {
         ErgataiError::internal(format!("Failed to open profile registry database: {}", e))
+    })?;
+    let tx = conn.transaction().map_err(|e| {
+        ErgataiError::internal(format!("Failed to begin profile transaction: {}", e))
     })?;
 
     for adapter in MANAGED_ADAPTERS {
-        // Use npm's standard .bin/ directory (automatically created from package.json's "bin" field)
-        let bin_path = release_dir
+        let expected_bin_path = release_dir
             .join("node_modules")
             .join(".bin")
             .join(adapter.bin_name);
-        if !bin_path.is_file() {
+        let Some(bin_path) = managed_adapter_bin_path(release_dir, adapter) else {
             debug!(
                 profile = adapter.profile_id,
-                path = %bin_path.display(),
+                path = %expected_bin_path.display(),
                 "Managed adapter binary missing in .bin/; skipping profile refresh"
             );
             continue;
-        }
+        };
         // Execute the binary directly (npm .bin/ files are executable)
         let command = bin_path.display().to_string();
-        let existing: Option<String> = conn
+        let existing: Option<String> = tx
             .query_row(
                 "SELECT command FROM agent_registrations WHERE id = ?1",
                 params![adapter.profile_id],
@@ -265,9 +313,9 @@ pub fn refresh_profile_rows(db_path: &Path, release_dir: &Path) -> Result<(), Er
 
         match existing {
             Some(current_command) if command_matches_managed_pattern(&current_command) => {
-                conn.execute(
-                    "UPDATE agent_registrations SET command = ?1 WHERE id = ?2",
-                    params![command, adapter.profile_id],
+                tx.execute(
+                    "UPDATE agent_registrations SET command = ?1, package_name = ?2 WHERE id = ?3",
+                    params![command, adapter.npm_package, adapter.profile_id],
                 )
                 .map_err(|e| {
                     ErgataiError::internal(format!("Failed to update profile row: {}", e))
@@ -286,11 +334,16 @@ pub fn refresh_profile_rows(db_path: &Path, release_dir: &Path) -> Result<(), Er
                 );
             }
             None => {
-                conn.execute(
+                tx.execute(
                     "INSERT OR IGNORE INTO agent_registrations \
                      (id, name, command, agent_type, package_name, avatar_url, created_at) \
-                     VALUES (?1, ?1, ?2, 'acp', NULL, NULL, ?3)",
-                    params![adapter.profile_id, command, Utc::now().to_rfc3339()],
+                     VALUES (?1, ?1, ?2, 'acp', ?3, NULL, ?4)",
+                    params![
+                        adapter.profile_id,
+                        command,
+                        adapter.npm_package,
+                        Utc::now().to_rfc3339()
+                    ],
                 )
                 .map_err(|e| {
                     ErgataiError::internal(format!("Failed to insert profile row: {}", e))
@@ -302,7 +355,8 @@ pub fn refresh_profile_rows(db_path: &Path, release_dir: &Path) -> Result<(), Er
             }
         }
     }
-    Ok(())
+    tx.commit()
+        .map_err(|e| ErgataiError::internal(format!("Failed to commit profile refresh: {}", e)))
 }
 
 /// Commands the manager may take over: the historical `npx -y
@@ -324,7 +378,7 @@ fn read_current_pointer(managed: &Path) -> Option<String> {
         .filter(|contents| !contents.is_empty())
 }
 
-fn current_release_dir(managed: &Path) -> Option<PathBuf> {
+pub fn current_release_dir(managed: &Path) -> Option<PathBuf> {
     let release_id = read_current_pointer(managed)?;
     let dir = managed.join(RELEASES_DIR).join(&release_id);
     dir.is_dir().then_some(dir)
@@ -449,7 +503,11 @@ fn staging_is_stale(staging: &Path) -> bool {
 
 /// Gate a staging install before it can go live: the binary must exist, be non-empty,
 /// and pass `node --check` (a broken install must never replace a working release).
-async fn verify_adapter(release_dir: &Path, adapter: &ManagedAdapter) -> Result<(), ErgataiError> {
+async fn verify_adapter(
+    release_dir: &Path,
+    adapter: &ManagedAdapter,
+    expected_version: Option<&str>,
+) -> Result<(), ErgataiError> {
     // Check the .bin/ executable (npm standard)
     let bin_path = release_dir
         .join("node_modules")
@@ -468,6 +526,44 @@ async fn verify_adapter(release_dir: &Path, adapter: &ManagedAdapter) -> Result<
             "Binary is empty for {}",
             adapter.bin_name
         )));
+    }
+
+    // Verify the installed package version matches the manifest entry. This
+    // catches a package being replaced between `npm view` and install.
+    if let Some(expected_version) = expected_version {
+        let package_json_path = release_dir
+            .join("node_modules")
+            .join(adapter.npm_package)
+            .join("package.json");
+        let package_json = std::fs::read_to_string(&package_json_path).map_err(|e| {
+            ErgataiError::internal(format!(
+                "Failed to read {}: {}",
+                package_json_path.display(),
+                e
+            ))
+        })?;
+        let package_json: serde_json::Value = serde_json::from_str(&package_json).map_err(|e| {
+            ErgataiError::internal(format!(
+                "Failed to parse {}: {}",
+                package_json_path.display(),
+                e
+            ))
+        })?;
+        let installed_version = package_json
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                ErgataiError::internal(format!(
+                    "Version missing from {}",
+                    package_json_path.display()
+                ))
+            })?;
+        if installed_version != expected_version {
+            return Err(ErgataiError::internal(format!(
+                "Adapter version mismatch for {}: expected {}, found {}",
+                adapter.npm_package, expected_version, installed_version
+            )));
+        }
     }
 
     // The .bin/ file is a symlink to the actual JS file, so we need to resolve it for node --check.
@@ -564,7 +660,12 @@ async fn npm_latest_version(package: &str) -> Result<String, ErgataiError> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-async fn npm_install_package(dest: &Path, package: &str) -> Result<(), ErgataiError> {
+async fn npm_install_package(
+    dest: &Path,
+    package: &str,
+    version: &str,
+) -> Result<(), ErgataiError> {
+    let package_spec = format!("{package}@{version}");
     let mut cmd = Command::new("npm");
     cmd.args([
         "install",
@@ -572,7 +673,7 @@ async fn npm_install_package(dest: &Path, package: &str) -> Result<(), ErgataiEr
         "--no-audit",
         "--no-fund",
         "--loglevel=error",
-        package,
+        &package_spec,
     ])
     .current_dir(dest);
     run_command(cmd, NPM_INSTALL_TIMEOUT).await.map(|_| ())
@@ -725,7 +826,7 @@ mod tests {
         let bin_path = bin_dir.join(adapter.bin_name);
 
         // Missing binary.
-        assert!(verify_adapter(release_dir, &adapter).await.is_err());
+        assert!(verify_adapter(release_dir, &adapter, None).await.is_err());
 
         // Valid binary (symlink to a valid JS file).
         let dist_dir = release_dir
@@ -736,11 +837,11 @@ mod tests {
         let js_file = dist_dir.join("index.js");
         std::fs::write(&js_file, "module.exports = 1;\n").unwrap();
         std::os::unix::fs::symlink(&js_file, &bin_path).unwrap();
-        assert!(verify_adapter(release_dir, &adapter).await.is_ok());
+        assert!(verify_adapter(release_dir, &adapter, None).await.is_ok());
 
         // Syntax-broken artifact.
         std::fs::write(&js_file, "this is {{{ not js").unwrap();
-        assert!(verify_adapter(release_dir, &adapter).await.is_err());
+        assert!(verify_adapter(release_dir, &adapter, None).await.is_err());
     }
 
     #[test]
@@ -790,7 +891,7 @@ mod tests {
             )
             .unwrap();
         assert!(
-            claude_command.contains("node_modules/.bin/claude-code-acp"),
+            claude_command.contains("node_modules/.bin/claude-agent-acp"),
             "switched: {}",
             claude_command
         );
@@ -798,6 +899,17 @@ mod tests {
         assert!(
             !claude_command.starts_with("node "),
             "should not use node prefix"
+        );
+        let claude_package: Option<String> = conn
+            .query_row(
+                "SELECT package_name FROM agent_registrations WHERE id = 'claude-code'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            claude_package.as_deref(),
+            Some("@agentclientprotocol/claude-agent-acp")
         );
 
         let codex_command: String = conn
@@ -845,7 +957,8 @@ mod tests {
         refresh_profile_rows(&db_path, &release_dir).unwrap();
 
         let conn = Connection::open(&db_path).unwrap();
-        for (profile_id, bin_name) in [("claude-code", "claude-code-acp"), ("codex", "codex-acp")] {
+        for (profile_id, bin_name) in [("claude-code", "claude-agent-acp"), ("codex", "codex-acp")]
+        {
             let command: String = conn
                 .query_row(
                     "SELECT command FROM agent_registrations WHERE id = ?1",

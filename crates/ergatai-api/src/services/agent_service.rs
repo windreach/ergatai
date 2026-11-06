@@ -739,6 +739,27 @@ pub async fn execute_agent_command(
         .await?)
 }
 
+/// Switch the model of a running agent.
+///
+/// Prefers the ACP `session/set_model` request when the agent supports it.
+/// Falls back to the `/model` slash command for agents that do not.
+pub async fn set_agent_model(agent_id: &str, model: &str) -> anyhow::Result<String> {
+    let backend = backend();
+    match backend.set_session_model(agent_id, model.trim()).await {
+        Ok(()) => return Ok(String::new()),
+        Err(e) => {
+            tracing::debug!(
+                agent_id = %agent_id,
+                error = %e,
+                "ACP set_session_model unavailable, falling back to /model"
+            );
+        }
+    }
+
+    let command = format!("/model {}", model.trim());
+    execute_agent_command(agent_id, &command, 30).await
+}
+
 /// List available ACP sessions for an agent.
 pub async fn list_agent_sessions(
     agent_id: &str,
@@ -749,10 +770,11 @@ pub async fn list_agent_sessions(
 pub async fn resume_session_capture(
     agent_id: &str,
     session_id: &str,
+    cwd: &str,
     max_messages: usize,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
     Ok(backend()
-        .resume_session_capture(agent_id, session_id, max_messages)
+        .resume_session_capture(agent_id, session_id, cwd, max_messages)
         .await?)
 }
 
