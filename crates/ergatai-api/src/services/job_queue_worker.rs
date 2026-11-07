@@ -159,6 +159,26 @@ async fn process_persistence_job(job: &crate::user_data_db::chats::Job) -> anyho
 
             let payload: Payload = serde_json::from_str(job.payload.as_deref().unwrap_or("{}"))?;
             let agent_id = job.entity_id.clone();
+
+            // Skip permanently if no native data and agent is not alive.
+            let cwd = payload.cwd.clone().unwrap_or_else(|| "/".to_string());
+            let sid = payload.acp_session_id.clone();
+            let native_ok = crate::services::agent_history_import::has_native_capture(&sid, &cwd);
+            let runtime = crate::context::get_app_context().agent_runtime.clone();
+            let agent_alive = runtime.get_agent(&agent_id).await.is_some();
+            if !native_ok && !agent_alive {
+                let jid = job.id;
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::user_data_db::chats::mark_job_failed(
+                        jid,
+                        1,
+                        Some("agent not alive and no native history; skipping"),
+                    )
+                })
+                .await;
+                return Ok(());
+            }
+
             let input = crate::services::agent_history_import::ImportAgentSessionHistoryInput {
                 chat_id: payload.chat_id,
                 acp_session_id: payload.acp_session_id,

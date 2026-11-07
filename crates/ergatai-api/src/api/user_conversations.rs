@@ -2171,6 +2171,8 @@ pub struct ImportConversationHistoryRequest {
     pub agent_id: String,
     pub acp_session_id: String,
     #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
     pub limit: Option<usize>,
     #[serde(default)]
     pub cursor: Option<String>,
@@ -2282,13 +2284,14 @@ pub async fn import_conversation_history(
         Err((status, json)) => return (status, json).into_response(),
     };
 
-    let limit = request.limit.unwrap_or(20).min(20);
+    let limit = request.limit.unwrap_or(100).min(500);
     let sync = request.sync.unwrap_or(false);
 
     if sync {
         let input = crate::services::agent_history_import::ImportAgentSessionHistoryInput {
             conversation_id: Some(id_i64.as_i64()),
             acp_session_id: request.acp_session_id.clone(),
+            cwd: request.cwd.clone(),
             capture_limit: Some(50),
             persist_limit: Some(limit),
             limit: Some(limit),
@@ -2316,6 +2319,9 @@ pub async fn import_conversation_history(
             "acp_session_id": request.acp_session_id,
             "limit": limit,
         });
+        if let Some(cwd) = &request.cwd {
+            payload["cwd"] = serde_json::json!(cwd);
+        }
         if let Some(cursor) = request.cursor {
             payload["cursor"] = serde_json::json!(cursor);
         }

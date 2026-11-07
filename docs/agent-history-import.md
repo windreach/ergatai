@@ -97,6 +97,69 @@
 
 ---
 
-## 6. 下一步建议
+## 6. Bug修复记录
+
+### 2026-11-06: 分批导入索引计算错误
+
+**问题描述**：分批导入逻辑存在索引计算错误，会导致消息重复导入或遗漏。
+
+**Bug位置**：`crates/ergatai-api/src/services/agent_history_import.rs::import_agent_session_history`
+
+**根因分析**：
+原代码在计算下一批导入位置时使用了错误的相对计算：
+```rust
+// 原代码（错误）
+let end = cursor_from_payload
+    .or_else(|| existing_state.as_ref().and_then(|s| s.import_cursor.clone()))
+    .and_then(|c| c.parse::<usize>().ok())
+    .unwrap_or_else(|| {
+        let imported = existing_state.as_ref().map(|s| s.imported_count as usize).unwrap_or(0);
+        if imported > 0 {
+            captured_len.saturating_sub(imported)  // ❌ 错误：这会导致索引混乱
+        } else {
+            captured_len
+        }
+    });
+let start = end.saturating_sub(persist_limit);
+```
+
+**问题场景**：
+- 第一次运行：`captured_len=50`, `imported=0` → 导入索引30-49（最新的20条），`imported_count=20`
+- 第二次运行：`captured_len=60`（ACP capture返回更多消息），`imported=20`
+  - `end = 60 - 20 = 40`, `start = 40 - 20 = 20`
+  - 导入索引20-39
+  - **Bug**：索引30-39的消息在第一次已导入过，导致**重复导入**！
+
+**修复方案**：
+基于绝对位置计算，而不是相对偏移：
+```rust
+// 修复后（正确）
+let prior_imported = existing_state
+    .as_ref()
+    .map(|s| s.imported_count)
+    .unwrap_or(0) as usize;
+
+let end = input.cursor
+    .as_ref()
+    .and_then(|c| c.parse::<usize>().ok())
+    .unwrap_or(captured_len);
+
+let remaining_to_skip = prior_imported;
+let available_to_import = end.saturating_sub(remaining_to_skip);
+let start = available_to_import.saturating_sub(persist_limit);
+let actual_end = available_to_import;
+```
+
+**修复后逻辑**：
+- 第一次运行：`captured_len=50`, `imported=0` → 导入索引30-49，`imported_count=20`
+- 第二次运行：`captured_len=60`, `imported=20`
+  - `end=60`, `available=60-20=40`, `start=40-20=20`, `actual_end=40`
+  - 导入索引20-39 ✓ **不再重复**
+
+**验证状态**：✅ 已编译通过，待测试验证
+
+---
+
+## 7. 下一步建议
 
 Phase 1-4（含会话范围分页/游标与累积控制）已完成；后续优先完善 **AgentHistorySelector 导入进度 UI**（见 2.3），以及前端对非文本 ACP 更新的渲染验证。

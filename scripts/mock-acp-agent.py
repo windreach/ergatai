@@ -134,40 +134,90 @@ class SimpleAcpAgent:
         }
         self.send_response(id, result)
 
+    def handle_session_list(self, id: Any, params: Dict):
+        """处理 session/list 请求（列出可用的会话）"""
+        self.log("列出会话")
+
+        # 返回模拟的会话列表
+        sessions = [
+            {
+                "sessionId": "session-mock-1",
+                "cwd": "/root/ergatai",
+                "title": "测试会话 1",
+                "createdAt": "2026-11-06T10:00:00Z",
+                "updatedAt": "2026-11-06T14:00:00Z",
+                "additionalDirectories": []
+            },
+            {
+                "sessionId": "session-mock-2",
+                "cwd": "/root/ergatai",
+                "title": "测试会话 2",
+                "createdAt": "2026-11-05T10:00:00Z",
+                "updatedAt": "2026-11-05T14:00:00Z",
+                "additionalDirectories": []
+            },
+            {
+                "sessionId": "session-mock-3",
+                "cwd": "/tmp",
+                "title": "临时会话",
+                "createdAt": "2026-11-04T10:00:00Z",
+                "updatedAt": "2026-11-04T14:00:00Z",
+                "additionalDirectories": []
+            }
+        ]
+
+        result = {"sessions": sessions}
+        self.send_response(id, result)
+
     def handle_session_resume(self, id: Any, params: Dict):
         """处理 session/resume 请求（ACP v2 历史导入）"""
         self.session_id = params.get("sessionId", self.session_id or f"session-{int(time.time() * 1000)}-{random.randint(1000, 9999)}")
         self.log(f"会话恢复 (session/resume): {self.session_id}")
 
-        # 发送重放的历史消息
-        self.send_notification("session/update", {
-            "sessionId": self.session_id,
-            "update": {
-                "sessionUpdate": "user_message_chunk",
-                "content": {
-                    "type": "text",
-                    "text": "历史用户消息"
-                }
-            }
-        })
-        time.sleep(0.1)
-        self.send_notification("session/update", {
-            "sessionId": self.session_id,
-            "update": {
-                "sessionUpdate": "agent_message_chunk",
-                "content": {
-                    "type": "text",
-                    "text": "历史助手回复"
-                }
-            }
-        })
-        time.sleep(0.1)
+        # 发送重放的历史消息 - 根据session_id返回不同的历史
+        if self.session_id == "session-mock-1":
+            # 会话1有5条消息
+            self.send_replay_messages(5)
+        elif self.session_id == "session-mock-2":
+            # 会话2有3条消息
+            self.send_replay_messages(3)
+        else:
+            # 默认发送2条消息
+            self.send_replay_messages(2)
 
         result = {
             "sessionId": self.session_id,
             "status": "resumed"
         }
         self.send_response(id, result)
+
+    def send_replay_messages(self, count: int):
+        """发送重放的历史消息"""
+        for i in range(count):
+            time.sleep(0.05)
+            # 用户消息
+            self.send_notification("session/update", {
+                "sessionId": self.session_id,
+                "update": {
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {
+                        "type": "text",
+                        "text": f"历史用户消息 {i+1}"
+                    }
+                }
+            })
+            time.sleep(0.05)
+            # 助手回复
+            self.send_notification("session/update", {
+                "sessionId": self.session_id,
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {
+                        "type": "text",
+                        "text": f"历史助手回复 {i+1}"
+                    }
+                }
+            })
 
     def handle_session_prompt(self, id: Any, params: Dict):
         """处理 session/prompt 请求（接收消息）"""
@@ -437,6 +487,8 @@ class SimpleAcpAgent:
             self.handle_session_start(id, params)
         elif method == "session/new":
             self.handle_session_new(id, params)
+        elif method == "session/list":
+            self.handle_session_list(id, params)
         elif method == "session/resume":
             self.handle_session_resume(id, params)
         elif method == "session/prompt":

@@ -613,6 +613,74 @@ fn migrate_add_agent_name_to_history_migrations(conn: &Connection) -> Result<()>
 }
 
 /// Get the global database connection
+/// Drop per-conversation message tables whose conversation no longer exists,
+/// and run VACUUM to reclaim space. Safe to call at startup.
+pub fn cleanup_stale_message_tables() {
+    let db = get_user_data_db();
+    let conn = db.lock().unwrap();
+
+    // Build set of expected table names from existing conversations.
+    let mut expected: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT conversation_id FROM conversations") {
+        if let Ok(rows) = stmt.query_map([], |row| row.get::<_, i64>(0)) {
+            for r in rows.flatten() {
+                let cid = ConversationId::new(r);
+                expected.insert(message_table_name(cid));
+            }
+        }
+    }
+
+    // Find message_* tables
+    let mut stmt = match conn.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'messages_%'",
+    ) {
+        Ok(s) => s,
+        Err(_) => {
+            let db_clone = get_user_data_db();
+            std::thread::spawn(move || {
+                if let Ok(conn) = db_clone.lock() {
+                    let _ = conn.execute_batch("VACUUM;");
+                }
+            });
+            return;
+        }
+    };
+    let tables: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+
+    for t in tables {
+        if !t.starts_with("messages_") {
+            continue;
+        }
+        let suffix = &t["messages_".len()..];
+        if suffix.is_empty() || suffix.contains(|c: char| !c.is_alphanumeric() && c != '_') {
+            tracing::warn!(table = %t, "Skipping table with invalid name pattern");
+            continue;
+        }
+        // Drop if orphaned (no corresponding conversation), regardless of row count.
+        if !expected.contains(&t) {
+            let _ = conn.execute(&format!("DROP TABLE IF EXISTS {}", t), []);
+            tracing::info!("Dropped stale message table: {}", t);
+        }
+    }
+    // Clean up agent_sessions whose conversation no longer exists.
+    let _ = conn.execute(
+        "DELETE FROM agent_sessions WHERE conversation_id NOT IN (SELECT conversation_id FROM conversations)",
+        [],
+    );
+
+    // Run VACUUM in a background thread to avoid blocking startup on large DBs.
+    let db_clone = get_user_data_db();
+    std::thread::spawn(move || {
+        if let Ok(conn) = db_clone.lock() {
+            let _ = conn.execute_batch("VACUUM;");
+        }
+    });
+}
+
+
 pub fn get_user_data_db() -> Arc<Mutex<Connection>> {
     Arc::clone(&USER_DATA_DB)
 }

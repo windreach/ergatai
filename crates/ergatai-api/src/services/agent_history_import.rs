@@ -16,12 +16,90 @@ pub struct ImportAgentSessionHistoryInput {
     pub cursor: Option<String>,
 }
 
+use std::sync::{Mutex as StdMutex, RwLock as StdRwLock};
+
+static NATIVE_CACHE: StdRwLock<Option<std::collections::HashMap<String, (u64, Vec<serde_json::Value>)>>> =
+    StdRwLock::new(None);
+
+fn native_cache_key(session_id: &str, cwd: &str) -> String {
+    format!("{}|{}", session_id, cwd)
+}
+
+fn file_mtime(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))
+        .unwrap_or(0)
+}
+
+/// Cached wrapper around try_native_capture. Reuses parsed result when the
+/// underlying source file's mtime is unchanged.
+fn try_native_capture_cached(session_id: &str, cwd: &str) -> Option<Vec<serde_json::Value>> {
+    // Determine source mtime for cache invalidation.
+    let home = std::env::var("HOME").ok()?;
+    let claude_path = std::path::PathBuf::from(&home)
+        .join(".claude/projects")
+        .join(format!("-{}", cwd.trim_start_matches('/').replace('/', "-")))
+        .join(format!("{}.jsonl", session_id));
+    let opencode_path = std::path::PathBuf::from(&home).join(".local/share/opencode/opencode.db");
+    let mtime = if claude_path.exists() {
+        file_mtime(&claude_path)
+    } else if opencode_path.exists() {
+        file_mtime(&opencode_path)
+    } else {
+        0
+    };
+
+    let key = native_cache_key(session_id, cwd);
+    // Check cache (read lock allows concurrent readers)
+    {
+        let guard = NATIVE_CACHE.read().unwrap();
+        if let Some(map) = guard.as_ref() {
+            if let Some((cached_mtime, msgs)) = map.get(&key) {
+                if *cached_mtime == mtime {
+                    return Some(msgs.clone());
+                }
+            }
+        }
+    }
+    // Compute
+    let result = try_native_capture(session_id, cwd);
+    // Store (write lock for mutation)
+    if let Some(msgs) = &result {
+        let mut guard = NATIVE_CACHE.write().unwrap();
+        let map = guard.get_or_insert_with(std::collections::HashMap::new);
+        map.insert(key, (mtime, msgs.clone()));
+    }
+    result
+}
+
+use tokio::sync::Mutex as TokioMutex;
+
+static IMPORT_LOCKS: StdMutex<Option<std::collections::HashMap<i64, std::sync::Arc<TokioMutex<()>>>>> =
+    StdMutex::new(None);
+
+async fn acquire_import_lock(conv_id: i64) -> std::sync::Arc<TokioMutex<()>> {
+    let lock = {
+        let mut guard = IMPORT_LOCKS.lock().unwrap();
+        let map = guard.get_or_insert_with(std::collections::HashMap::new);
+        map.entry(conv_id)
+            .or_insert_with(|| std::sync::Arc::new(TokioMutex::new(())))
+            .clone()
+    };
+    lock
+}
+
 pub async fn import_agent_session_history(
     agent_id: &str,
     input: ImportAgentSessionHistoryInput,
 ) -> anyhow::Result<()> {
-    let capture_limit = input.capture_limit.unwrap_or(50).min(50);
-    let persist_limit = input.persist_limit.or(input.limit).unwrap_or(20).min(20);
+    tracing::info!(
+        agent_id = agent_id,
+        acp_session_id = %input.acp_session_id,
+        "import_agent_session_history called"
+    );
+
+    let persist_limit = input.persist_limit.or(input.limit).unwrap_or(100).min(500);
     let acp_session_id = input.acp_session_id.clone();
 
     // Ensure conversation exists.
@@ -40,6 +118,9 @@ pub async fn import_agent_session_history(
     } else {
         return Err(anyhow::anyhow!("missing conversation_id or chat_id"));
     };
+
+    let _import_lock = acquire_import_lock(conversation_id.as_i64()).await;
+    let _import_guard = _import_lock.lock().await;
 
     // Load existing import state.
     let existing_state = tokio::task::spawn_blocking({
@@ -77,71 +158,96 @@ pub async fn import_agent_session_history(
         return Ok(());
     }
 
-    // Capture history from agent.
-    let cwd = input.cwd.as_deref().unwrap_or("/");
-    let captured = match crate::services::agent_service::resume_session_capture(
-        agent_id,
-        &acp_session_id,
-        cwd,
-        capture_limit,
-    )
+    // Capture history. Prefer agent-native storage (Claude JSONL / opencode DB /
+    // codex sessions) for full fidelity; fall back to ACP resume capture.
+    let cwd = input.cwd.as_deref().unwrap_or("/").to_string();
+    let native = tokio::task::spawn_blocking({
+        let sid = acp_session_id.clone();
+        let cwd = cwd.clone();
+        move || try_native_capture_cached(&sid, &cwd)
+    })
     .await
-    {
-        Ok(captured) => {
-            let _ = crate::user_data_db::agent_sessions::update_resume_status(
-                conversation_id.as_i64(),
-                None,
-                true,
-            );
-            captured
-        }
-        Err(error) => {
-            let _ = crate::user_data_db::agent_sessions::update_resume_status(
-                conversation_id.as_i64(),
-                Some(error.to_string()),
-                false,
-            );
-            return Err(error).context("resume_session_capture failed");
+    .unwrap_or(None);
+
+    let capture_limit = input.capture_limit.unwrap_or(50).min(50);
+    let captured = if let Some(msgs) = native {
+        let _ = crate::user_data_db::agent_sessions::update_resume_status(
+            conversation_id.as_i64(),
+            None,
+            true,
+        );
+        msgs
+    } else {
+        // Fall back to ACP resume capture for agents without native storage.
+        match crate::services::agent_service::resume_session_capture(
+            agent_id,
+            &acp_session_id,
+            &cwd,
+            capture_limit,
+        )
+        .await
+        {
+            Ok(captured) => {
+                let _ = crate::user_data_db::agent_sessions::update_resume_status(
+                    conversation_id.as_i64(),
+                    None,
+                    true,
+                );
+                captured
+            }
+            Err(error) => {
+                let _ = crate::user_data_db::agent_sessions::update_resume_status(
+                    conversation_id.as_i64(),
+                    Some(error.to_string()),
+                    false,
+                );
+                return Err(error).context("resume_session_capture failed");
+            }
         }
     };
 
+    tracing::info!(
+        acp_session_id = %acp_session_id,
+        captured_count = captured.len(),
+        "Resume session capture completed"
+    );
+
     if captured.is_empty() {
+        tracing::warn!(acp_session_id = %acp_session_id, "No messages captured");
         return Ok(());
     }
 
     let captured_len = captured.len();
 
-    let cursor_from_payload = input.cursor.clone();
-    let end = cursor_from_payload
-        .or_else(|| {
-            existing_state
-                .as_ref()
-                .and_then(|s| s.import_cursor.clone())
-        })
+    // Determine the range of messages to import in this batch.
+    // We import from newest to oldest in batches of `persist_limit`.
+    // `prior_imported` tracks how many messages we've already imported,
+    // so we skip those and import the next batch.
+    let prior_imported = existing_state
+        .as_ref()
+        .map(|s| s.imported_count)
+        .unwrap_or(0) as usize;
+
+    // Use cursor if provided (for manual override), otherwise calculate based on imported_count.
+    let end = input.cursor
+        .as_ref()
         .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or_else(|| {
-            let imported = existing_state
-                .as_ref()
-                .map(|s| s.imported_count as usize)
-                .unwrap_or(0);
-            if imported > 0 {
-                captured_len.saturating_sub(imported)
-            } else {
-                captured_len
-            }
-        });
+        .unwrap_or(captured_len);
 
-    if end == 0 {
-        return Ok(());
-    }
+    // Calculate start position: skip messages we've already imported.
+    // If we've imported 20 messages and captured has 50, we want to import
+    // messages at indices (50-20-20)=10 to (50-20)=30 (next 20 older messages).
+    let remaining_to_skip = prior_imported;
+    let available_to_import = end.saturating_sub(remaining_to_skip);
+    let start = available_to_import.saturating_sub(persist_limit);
+    let actual_end = available_to_import;
 
-    let start = end.saturating_sub(persist_limit);
-    if start >= captured_len && end > captured_len {
+    if actual_end == 0 || start >= actual_end {
         return Ok(());
     }
 
     let mut messages = Vec::new();
-    for update in captured.iter().skip(start).take(end.saturating_sub(start)) {
+    for update in captured.iter().skip(start).take(actual_end.saturating_sub(start)) {
         let session_update = update
             .get("sessionUpdate")
             .and_then(|v| v.as_str())
@@ -172,27 +278,41 @@ pub async fn import_agent_session_history(
         return Ok(());
     }
 
-    let prior_imported = existing_state
-        .as_ref()
-        .map(|s| s.imported_count)
-        .unwrap_or(0);
     let prior_total = existing_state
         .as_ref()
         .map(|s| s.total_captured)
         .unwrap_or(0);
 
-    // Clamp the end index to the captured range and accumulate progress across
-    // multiple batches instead of overwriting it on every run.
+    // Update import progress: accumulate the count of imported messages.
     let total_captured = prior_total.max(captured_len as i64);
-    let new_imported_count = (prior_imported + imported_this).min(total_captured);
+    let new_imported_count = (prior_imported as i64 + imported_this).min(total_captured);
     let has_more = new_imported_count < total_captured;
-    let new_cursor = if start > 0 && has_more {
-        Some(start.to_string())
-    } else {
-        None
-    };
+    // Cursor is not needed with the new logic, but keep for compatibility.
+    let new_cursor = None;
 
     // Persist.
+    // Ensure message table exists before appending (idempotent).
+    tracing::info!(
+        conversation_id = conversation_id.as_i64(),
+        conversation_id_formatted = %conversation_id,
+        "Creating message table for conversation"
+    );
+    let conv_id_for_table = conversation_id;
+    let table_result = tokio::task::spawn_blocking(move || {
+        crate::user_data_db::create_message_table(conv_id_for_table)
+    })
+    .await
+    .context("join error creating message table")?;
+
+    if let Err(ref e) = table_result {
+        tracing::error!(
+            error = ?e,
+            conversation_id = conversation_id.as_i64(),
+            "create_message_table failed with error"
+        );
+    }
+    table_result.context("create_message_table failed")?;
+
     let conv_id = conversation_id;
     tokio::task::spawn_blocking({
         let msgs = messages;
@@ -367,6 +487,7 @@ pub async fn import_agent_sessions_batch(
             let next_cursor = last_key.clone();
             let payload = serde_json::json!({
                 "chat_id": chat_id,
+                "cwd": cwd_filter,
                 "cursor": next_cursor,
                 "limit": limit,
             });
@@ -388,4 +509,334 @@ pub async fn import_agent_sessions_batch(
     }
 
     Ok(())
+}
+
+// ============================================================================
+// Agent-native history capture (bypass ACP for full fidelity)
+// ============================================================================
+
+/// Try to capture history from agent-native storage. Returns `Some(messages)` if
+/// a supported backend has the session; `None` to fall back to ACP capture.
+pub fn has_native_capture(session_id: &str, cwd: &str) -> bool {
+    try_native_capture(session_id, cwd).map(|v| !v.is_empty()).unwrap_or(false)
+}
+
+fn try_native_capture(session_id: &str, cwd: &str) -> Option<Vec<serde_json::Value>> {
+    if let Some(msgs) = try_claude_capture(session_id, cwd) {
+        if !msgs.is_empty() {
+            return Some(msgs);
+        }
+    }
+    if let Some(msgs) = try_opencode_capture(session_id) {
+        if !msgs.is_empty() {
+            return Some(msgs);
+        }
+    }
+    if let Some(msgs) = try_codex_capture(session_id) {
+        if !msgs.is_empty() {
+            return Some(msgs);
+        }
+    }
+    None
+}
+
+/// Claude: read ~/.claude/projects/<encoded_cwd>/<session_id>.jsonl
+fn try_claude_capture(session_id: &str, cwd: &str) -> Option<Vec<serde_json::Value>> {
+    let home = std::env::var("HOME").ok()?;
+    let encoded = format!("-{}", cwd.trim_start_matches('/').replace('/', "-"));
+    let path = std::path::PathBuf::from(home)
+        .join(".claude/projects")
+        .join(&encoded)
+        .join(format!("{}.jsonl", session_id));
+    if !path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&path).ok()?;
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        let role = match ty {
+            "user" => "user",
+            "assistant" => "assistant",
+            _ => continue,
+        };
+        let msg = v.get("message").unwrap_or(&v);
+        let content = msg.get("content").unwrap_or(&serde_json::Value::Null);
+        // content can be string or array
+        if let Some(s) = content.as_str() {
+            if !s.trim().is_empty() {
+                let su = if role == "user" {
+                    "user_message_chunk"
+                } else {
+                    "agent_message_chunk"
+                };
+                out.push(serde_json::json!({
+                    "sessionUpdate": su,
+                    "content": {"type": "text", "text": s}
+                }));
+            }
+            continue;
+        }
+        if let Some(arr) = content.as_array() {
+            for block in arr {
+                let btype = block.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                match btype {
+                    "text" => {
+                        if let Some(text) = block.get("text").and_then(|x| x.as_str()) {
+                            if !text.trim().is_empty() {
+                                let su = if role == "user" {
+                                    "user_message_chunk"
+                                } else {
+                                    "agent_message_chunk"
+                                };
+                                out.push(serde_json::json!({
+                                    "sessionUpdate": su,
+                                    "content": {"type": "text", "text": text}
+                                }));
+                            }
+                        }
+                    }
+                    "thinking" => {
+                        if let Some(text) = block.get("thinking").and_then(|x| x.as_str()) {
+                            if !text.trim().is_empty() && role == "assistant" {
+                                out.push(serde_json::json!({
+                                    "sessionUpdate": "agent_thought_chunk",
+                                    "content": {"type": "text", "text": text}
+                                }));
+                            }
+                        }
+                    }
+                    "tool_use" => {
+                        if role == "assistant" {
+                            let id = block
+                                .get("id")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let name = block
+                                .get("name")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let input = block.get("input").cloned().unwrap_or(serde_json::json!({}));
+                            out.push(serde_json::json!({
+                                "sessionUpdate": "tool_call",
+                                "toolCallId": id,
+                                "title": name,
+                                "rawInput": input
+                            }));
+                        }
+                    }
+                    "tool_result" => {
+                        let id = block
+                            .get("tool_use_id")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let raw = block.get("content").cloned().unwrap_or(serde_json::json!(null));
+                        out.push(serde_json::json!({
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": id,
+                            "status": "completed",
+                            "rawOutput": raw
+                        }));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// opencode: read ~/.local/share/opencode/opencode.db
+fn try_opencode_capture(session_id: &str) -> Option<Vec<serde_json::Value>> {
+    let home = std::env::var("HOME").ok()?;
+    let db_path = std::path::PathBuf::from(home)
+        .join(".local/share/opencode/opencode.db");
+    if !db_path.exists() {
+        return None;
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+    // message role map
+    let mut stmt = conn
+        .prepare("SELECT id, data FROM message WHERE session_id = ?1")
+        .ok()?;
+    let mut role_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let rows = stmt
+        .query_map(rusqlite::params![session_id], |row| {
+            let id: String = row.get(0)?;
+            let data: String = row.get(1)?;
+            Ok((id, data))
+        })
+        .ok()?;
+    for r in rows.flatten() {
+        let (id, data) = r;
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+            let role = v
+                .get("role")
+                .and_then(|x| x.as_str())
+                .unwrap_or("assistant")
+                .to_string();
+            role_map.insert(id, role);
+        }
+    }
+    if role_map.is_empty() {
+        return None;
+    }
+    // parts ordered by time_created
+    let mut stmt = conn
+        .prepare("SELECT message_id, data FROM part WHERE session_id = ?1 ORDER BY time_created ASC")
+        .ok()?;
+    let rows = stmt
+        .query_map(rusqlite::params![session_id], |row| {
+            let mid: String = row.get(0)?;
+            let data: String = row.get(1)?;
+            Ok((mid, data))
+        })
+        .ok()?;
+    let mut out = Vec::new();
+    for r in rows.flatten() {
+        let (mid, data) = r;
+        let role = role_map.get(&mid).cloned().unwrap_or_else(|| "assistant".to_string());
+        let v: serde_json::Value = match serde_json::from_str(&data) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let ptype = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        match ptype {
+            "text" => {
+                if let Some(text) = v.get("text").and_then(|x| x.as_str()) {
+                    if !text.trim().is_empty() {
+                        let su = if role == "user" {
+                            "user_message_chunk"
+                        } else {
+                            "agent_message_chunk"
+                        };
+                        out.push(serde_json::json!({
+                            "sessionUpdate": su,
+                            "content": {"type": "text", "text": text}
+                        }));
+                    }
+                }
+            }
+            "reasoning" => {
+                if let Some(text) = v.get("text").and_then(|x| x.as_str()) {
+                    if !text.trim().is_empty() && role == "assistant" {
+                        out.push(serde_json::json!({
+                            "sessionUpdate": "agent_thought_chunk",
+                            "content": {"type": "text", "text": text}
+                        }));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// codex: search ~/.codex/sessions for a rollout file whose name contains session_id
+fn try_codex_capture(session_id: &str) -> Option<Vec<serde_json::Value>> {
+    let home = std::env::var("HOME").ok()?;
+    let base = std::path::PathBuf::from(home).join(".codex/sessions");
+    if !base.exists() {
+        return None;
+    }
+    // find file
+    let mut found: Option<std::path::PathBuf> = None;
+    for entry in walkdir(&base) {
+        if entry.to_string_lossy().contains(session_id) && entry.extension().map(|e| e == "jsonl").unwrap_or(false) {
+            found = Some(entry);
+            break;
+        }
+    }
+    let path = found?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        // codex rollout format: {"type":"response_item","payload":{"type":"message","role":"user/assistant","content":[...]}}
+        let item_type = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        if item_type != "response_item" {
+            continue;
+        }
+        let payload = match v.get("payload") {
+            Some(p) => p,
+            None => continue,
+        };
+        if payload.get("type").and_then(|x| x.as_str()) != Some("message") {
+            continue;
+        }
+        let role = payload.get("role").and_then(|x| x.as_str()).unwrap_or("");
+        let su = match role {
+            "user" => "user_message_chunk",
+            "assistant" => "agent_message_chunk",
+            _ => continue,
+        };
+        if let Some(content) = payload.get("content").and_then(|x| x.as_array()) {
+            for block in content {
+                let btype = block.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                if btype == "input_text" || btype == "output_text" || btype == "text" {
+                    if let Some(text) = block.get("text").and_then(|x| x.as_str()) {
+                        if !text.trim().is_empty() {
+                            out.push(serde_json::json!({
+                                "sessionUpdate": su,
+                                "content": {"type": "text", "text": text}
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn walkdir(base: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut result = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                result.extend(walkdir(&path));
+            } else {
+                result.push(path);
+            }
+        }
+    }
+    result
 }

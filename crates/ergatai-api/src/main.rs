@@ -562,6 +562,12 @@ async fn async_main(args: Args) -> Result<()> {
         Arc<ergatai_api::services::collab_runtime::CollabRuntimeManager>,
     > = None;
 
+    // Clean up orphaned nats-server processes from previous runs.
+    let cleaned = nats::server::cleanup_leaked_nats_servers();
+    if cleaned > 0 {
+        tracing::info!(count = cleaned, "Cleaned up leaked nats-server processes");
+    }
+
     // Initialize NATS
     match nats::init_nats().await {
         Ok(conn) => {
@@ -667,6 +673,7 @@ async fn async_main(args: Args) -> Result<()> {
             // Get accumulator registry before moving app_context
             let accumulator_registry = app_context.accumulator_registry.clone();
 
+            ergatai_api::user_data_db::cleanup_stale_message_tables();
             ergatai_api::context::init_app_context(app_context);
             tracing::info!("✅ AppContext initialized");
 
