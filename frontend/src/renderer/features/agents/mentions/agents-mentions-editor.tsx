@@ -895,19 +895,19 @@ export const AgentsMentionsEditor = memo(
             const afterAt = textBeforeCursor.slice(atIndex + 1)
 
             // Get position for dropdown
-            // Use cursor position for vertical, parent container left edge for horizontal alignment
-            if (range && editorRef.current) {
+            // Align the dropdown's left edge with the '@' trigger character,
+            // not with the caret position after the typed query.
+            if (range && editorRef.current && atPosition) {
               const tempRange = document.createRange()
-              tempRange.setStart(range.endContainer, range.endOffset)
-              tempRange.setEnd(range.endContainer, range.endOffset)
-              const cursorRect = tempRange.getBoundingClientRect()
+              tempRange.setStart(atPosition.node, atPosition.offset)
+              tempRange.setEnd(atPosition.node, atPosition.offset + 1)
+              const triggerRect = tempRange.getBoundingClientRect()
 
-              // Use CURSOR position - menu should appear under cursor, not at text start
               const rect = new DOMRect(
-                cursorRect.left,   // Use actual cursor position for horizontal
-                cursorRect.top,    // Use cursor top for vertical position
+                triggerRect.left,   // Align with '@'
+                triggerRect.top,    // Trigger line top
                 0,
-                cursorRect.height
+                triggerRect.height
               )
 
               onTrigger({ searchText: afterAt, rect })
@@ -929,20 +929,18 @@ export const AgentsMentionsEditor = memo(
 
             const afterSlash = textBeforeCursor.slice(slashIndex + 1)
 
-            // Get position for dropdown
-            // Use cursor position for vertical, parent container left edge for horizontal alignment
-            if (range && editorRef.current) {
+            // Align the dropdown's left edge with the '/' trigger character
+            if (range && editorRef.current && slashPosition) {
               const tempRange = document.createRange()
-              tempRange.setStart(range.endContainer, range.endOffset)
-              tempRange.setEnd(range.endContainer, range.endOffset)
-              const cursorRect = tempRange.getBoundingClientRect()
+              tempRange.setStart(slashPosition.node, slashPosition.offset)
+              tempRange.setEnd(slashPosition.node, slashPosition.offset + 1)
+              const triggerRect = tempRange.getBoundingClientRect()
 
-              // Use CURSOR position - menu should appear under cursor, not at text start
               const rect = new DOMRect(
-                cursorRect.left,   // Use actual cursor position for horizontal
-                cursorRect.top,    // Use cursor top for vertical position
+                triggerRect.left,
+                triggerRect.top,
                 0,
-                cursorRect.height
+                triggerRect.height
               )
 
               onSlashTrigger({ searchText: afterSlash, rect })

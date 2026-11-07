@@ -90,8 +90,10 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
     migrate_message_columns(conn)?;
     migrate_conversation_context_columns(conn)?;
     migrate_add_agent_name_to_history_migrations(conn)?;
-
-    Ok(())
+    migrate_backfill_agent_id_in_agent_sessions(conn)?;
+    migrate_backfill_worktree_path_in_chats(conn)?;
+    migrate_backfill_chat_name_in_chats(conn)?;
+    migrate_backfill_thinking_parts(conn)?;    Ok(())
 }
 
 /// Create all tables if they don't already exist (safe for production)
@@ -237,6 +239,7 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
             agent_session_id INTEGER PRIMARY KEY,
             conversation_id INTEGER NOT NULL UNIQUE,
             acp_session_id TEXT,
+            agent_id TEXT,
             mode TEXT NOT NULL DEFAULT 'agent',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
@@ -432,6 +435,7 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
         "ALTER TABLE agent_sessions ADD COLUMN resume_supported INTEGER NOT NULL DEFAULT 1",
         [],
     );
+    let _ = conn.execute("ALTER TABLE agent_sessions ADD COLUMN agent_id TEXT", []);
 
     // Migrate legacy deletion_queue rows into the generic job_queue (idempotent).
     let legacy_exists: i64 = conn
@@ -589,6 +593,180 @@ fn migrate_conversation_context_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Backfill agent_id in agent_sessions from completed import jobs.
+fn migrate_backfill_agent_id_in_agent_sessions(conn: &Connection) -> Result<()> {
+    // Best-effort backfill for sessions imported before agent_id was tracked.
+    // Prefer the migration record that owns the chat/conversation, since that
+    // preserves the correct agent even when multiple agents were imported.
+    let _ = conn.execute(
+        "UPDATE agent_sessions \
+         SET agent_id = ( \
+             SELECT m.agent_id \
+             FROM agent_history_migrations m \
+             JOIN conversations c ON c.chat_id = m.chat_id \
+             WHERE c.conversation_id = agent_sessions.conversation_id \
+             LIMIT 1 \
+         ) \
+         WHERE agent_id IS NULL",
+        [],
+    );
+
+    // Fallback for opencode sessions (ses_*) when no migration row is available.
+    let _ = conn.execute(
+        "UPDATE agent_sessions SET agent_id = (SELECT agent_id FROM agent_history_migrations WHERE agent_name = 'opencode' LIMIT 1) \
+         WHERE agent_id IS NULL AND acp_session_id LIKE 'ses_%'",
+        [],
+    );
+
+    // Fallback for other sessions (Claude/Codex use UUID-like session ids).
+    let _ = conn.execute(
+        "UPDATE agent_sessions SET agent_id = (SELECT agent_id FROM agent_history_migrations LIMIT 1) \
+         WHERE agent_id IS NULL AND acp_session_id IS NOT NULL AND acp_session_id NOT LIKE 'ses_%'",
+        [],
+    );
+    Ok(())
+}
+
+/// Backfill worktree_path for chats created by migration (so the frontend can render them).
+fn migrate_backfill_worktree_path_in_chats(conn: &Connection) -> Result<()> {
+    let _ = conn.execute(
+        "UPDATE chats SET worktree_path = (SELECT w.work_dir FROM workspaces w WHERE w.workspace_id = chats.workspace_id) \
+         WHERE worktree_path IS NULL",
+        [],
+    );
+    Ok(())
+}
+
+/// Backfill chat name for chats created by migration (so the sidebar list shows a title).
+///
+/// Prefer the associated conversation's title (the "main conversation" title) over
+/// the workspace directory name. The directory name is only used as a last-resort
+/// fallback when no conversation title is available. This keeps the chats list in
+/// sync with the title shown inside the conversation.
+fn migrate_backfill_chat_name_in_chats(conn: &Connection) -> Result<()> {
+    // 1. Prefer the main conversation's title whenever one exists.
+    let _ = conn.execute(
+        "UPDATE chats \
+         SET name = (SELECT v.name FROM conversations v \
+                     WHERE v.chat_id = chats.chat_id AND v.name IS NOT NULL \
+                     ORDER BY v.created_at ASC LIMIT 1) \
+         WHERE EXISTS (SELECT 1 FROM conversations v \
+                       WHERE v.chat_id = chats.chat_id AND v.name IS NOT NULL)",
+        [],
+    );
+
+    // 2. Fall back to the workspace name (derived from the directory) only when
+    //    no conversation title is available.
+    let _ = conn.execute(
+        "UPDATE chats SET name = (SELECT w.name FROM workspaces w WHERE w.workspace_id = chats.workspace_id) \
+         WHERE name IS NULL",
+        [],
+    );
+    Ok(())
+}
+
+/// Backfill persisted imported messages whose ACP update was an
+/// `agent_thought_chunk` but which were stored with a plain `text` part.
+///
+/// Older import runs persisted the thinking text as a normal assistant text
+/// reply, so the frontend rendered it as an agent message instead of a
+/// collapsible "Thinking" block. Rewrite those rows to use a `reasoning`
+/// part so they render consistently with live streaming.
+fn migrate_backfill_thinking_parts(conn: &Connection) -> Result<()> {
+    let tables: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'messages_%'",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    for table in tables {
+        // Skip tables with unexpected names for safety.
+        if !table.starts_with("messages_") {
+            continue;
+        }
+
+        let mut select = match conn.prepare(&format!(
+            "SELECT message_id, parts, metadata FROM \"{}\"",
+            table
+        )) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        let rows: Vec<(i64, Option<String>, Option<String>)> = select
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for (message_id, parts, metadata) in rows {
+            let metadata = match metadata {
+                Some(m) if !m.trim().is_empty() => m,
+                _ => continue,
+            };
+
+            let parsed: serde_json::Value = match serde_json::from_str(&metadata) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let session_update = parsed
+                .get("acp_update")
+                .and_then(|v| v.get("sessionUpdate"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if session_update != "agent_thought_chunk" {
+                continue;
+            }
+
+            // Only rewrite rows that are currently stored as plain text parts.
+            let parts_value: serde_json::Value =
+                serde_json::from_str(parts.as_deref().unwrap_or("[]")).unwrap_or(serde_json::json!([]));
+            let needs_rewrite = match &parts_value {
+                serde_json::Value::Array(arr) => arr.iter().any(|p| {
+                    p.get("type").and_then(|v| v.as_str()) == Some("text")
+                }) && !arr.iter().any(|p| {
+                    p.get("type").and_then(|v| v.as_str()) == Some("reasoning")
+                }),
+                _ => true,
+            };
+            if !needs_rewrite {
+                continue;
+            }
+
+            let text = parsed
+                .get("acp_update")
+                .and_then(|v| v.get("content"))
+                .and_then(|v| v.get("text"))
+                .and_then(|v| v.as_str())
+                .or_else(|| {
+                    parsed
+                        .get("acp_update")
+                        .and_then(|v| v.get("text"))
+                        .and_then(|v| v.as_str())
+                });
+
+            let text = match text {
+                Some(t) if !t.trim().is_empty() => t.to_string(),
+                _ => continue,
+            };
+
+            let new_parts = serde_json::json!([{"type": "reasoning", "text": text}]).to_string();
+
+            let _ = conn.execute(
+                &format!("UPDATE \"{}\" SET parts = ?1 WHERE message_id = ?2", table),
+                params![new_parts, message_id],
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Add agent_name column to agent_history_migrations table if it doesn't exist.
 fn migrate_add_agent_name_to_history_migrations(conn: &Connection) -> Result<()> {
     let existing_columns: std::collections::HashSet<String> = {
@@ -661,7 +839,7 @@ pub fn cleanup_stale_message_tables() {
         }
         // Drop if orphaned (no corresponding conversation), regardless of row count.
         if !expected.contains(&t) {
-            let _ = conn.execute(&format!("DROP TABLE IF EXISTS {}", t), []);
+            let _ = conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", t), []);
             tracing::info!("Dropped stale message table: {}", t);
         }
     }
@@ -770,6 +948,7 @@ pub struct AgentSession {
     pub agent_session_id: i64,
     pub conversation_id: i64,
     pub acp_session_id: Option<String>,
+    pub agent_id: Option<String>,
     pub mode: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -1825,6 +2004,16 @@ pub mod conversations {
             ],
         )?;
 
+        // Keep the chat's display name in sync with the (root) conversation title.
+        // Only sync for root conversations (parent_id IS NULL), so sub-conversations
+        // don't overwrite the chat title.
+        if conversation.parent_id.is_none() {
+            let _ = conn.execute(
+                "UPDATE chats SET name = ?1, updated_at = ?2 WHERE chat_id = ?3",
+                params![conversation.name, conversation.updated_at, conversation.chat_id],
+            );
+        }
+
         // Create per-conversation message table
         drop(conn); // Release lock before creating table (table creation acquires its own lock)
         create_message_table(conversation.conversation_id)?;
@@ -1838,14 +2027,20 @@ pub mod conversations {
         chat_id: ChatId,
         acp_session_id: &str,
         title: Option<String>,
+        agent_id: Option<&str>,
     ) -> Result<ConversationId> {
         // Idempotent: if binding already exists, return existing conversation.
         if let Some(existing) = super::agent_sessions::get_by_acp_session_id(acp_session_id)? {
+            if let Some(aid) = agent_id {
+                let _ = super::agent_sessions::set_agent_id(existing.conversation_id, aid);
+            }
             return Ok(existing.conversation_id.into());
         }
 
         let chat =
             super::chats::get(chat_id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+
+        // Note: Chat name sync is now handled in conversations::create() at the DB layer.
 
         // Get or create collaboration session for this chat.
         let sessions = super::collaboration_sessions::list(Some(chat.chat_id))?;
@@ -1894,6 +2089,7 @@ pub mod conversations {
             agent_session_id,
             conversation_id: conversation.conversation_id.as_i64(),
             acp_session_id: Some(acp_session_id.to_string()),
+            agent_id: agent_id.map(|s| s.to_string()),
             mode: "agent".to_string(),
             created_at: now,
             updated_at: now,
@@ -2134,6 +2330,15 @@ pub mod conversations {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
+        // Fetch the old conversation to detect name changes.
+        let old_name: Option<String> = conn
+            .query_row(
+                "SELECT name FROM conversations WHERE conversation_id = ?1",
+                params![conversation.conversation_id],
+                |row| row.get(0),
+            )
+            .ok();
+
         conn.execute(
             "UPDATE conversations
              SET collaboration_session_id = ?1, chat_id = ?2, parent_id = ?3, name = ?4,
@@ -2155,6 +2360,22 @@ pub mod conversations {
                 conversation.context_updated_at,
             ],
         )?;
+
+        // Keep the chat's display name in sync with the (root) conversation title.
+        // Only sync when the name actually changed and this is a root conversation
+        // (parent_id IS NULL), so sub-conversations don't overwrite the chat title.
+        let name_changed = old_name != conversation.name;
+        let is_root = conversation.parent_id.is_none();
+        if name_changed && is_root {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let _ = conn.execute(
+                "UPDATE chats SET name = ?1, updated_at = ?2 WHERE chat_id = ?3",
+                params![conversation.name, now, conversation.chat_id],
+            );
+        }
 
         Ok(())
     }
@@ -2238,10 +2459,11 @@ pub mod agent_sessions {
         let conn = db.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO agent_sessions (agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured, last_error, resume_supported)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO agent_sessions (agent_session_id, conversation_id, acp_session_id, agent_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured, last_error, resume_supported)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(conversation_id) DO UPDATE SET
                acp_session_id = excluded.acp_session_id,
+               agent_id = COALESCE(excluded.agent_id, agent_sessions.agent_id),
                mode = excluded.mode,
                updated_at = excluded.updated_at,
                imported_count = excluded.imported_count,
@@ -2254,6 +2476,7 @@ pub mod agent_sessions {
                 session.agent_session_id,
                 session.conversation_id,
                 session.acp_session_id,
+                session.agent_id,
                 session.mode,
                 session.created_at,
                 session.updated_at,
@@ -2274,7 +2497,7 @@ pub mod agent_sessions {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured, last_error, resume_supported
+            "SELECT agent_session_id, conversation_id, acp_session_id, agent_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured, last_error, resume_supported
              FROM agent_sessions WHERE conversation_id = ?1",
         )?;
 
@@ -2283,15 +2506,16 @@ pub mod agent_sessions {
                 agent_session_id: row.get(0)?,
                 conversation_id: row.get(1)?,
                 acp_session_id: row.get(2)?,
-                mode: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-                imported_count: row.get(6)?,
-                import_cursor: row.get(7)?,
-                has_more: row.get::<_, i64>(8)? != 0,
-                total_captured: row.get(9)?,
-                last_error: row.get(10)?,
-                resume_supported: row.get::<_, i64>(11)? != 0,
+                agent_id: row.get(3)?,
+                mode: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                imported_count: row.get(7)?,
+                import_cursor: row.get(8)?,
+                has_more: row.get::<_, i64>(9)? != 0,
+                total_captured: row.get(10)?,
+                last_error: row.get(11)?,
+                resume_supported: row.get::<_, i64>(12)? != 0,
             })
         })?;
 
@@ -2307,7 +2531,7 @@ pub mod agent_sessions {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured, last_error, resume_supported
+            "SELECT agent_session_id, conversation_id, acp_session_id, agent_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured, last_error, resume_supported
              FROM agent_sessions WHERE agent_session_id = ?1",
         )?;
 
@@ -2316,15 +2540,16 @@ pub mod agent_sessions {
                 agent_session_id: row.get(0)?,
                 conversation_id: row.get(1)?,
                 acp_session_id: row.get(2)?,
-                mode: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-                imported_count: row.get(6)?,
-                import_cursor: row.get(7)?,
-                has_more: row.get::<_, i64>(8)? != 0,
-                total_captured: row.get(9)?,
-                last_error: row.get(10)?,
-                resume_supported: row.get::<_, i64>(11)? != 0,
+                agent_id: row.get(3)?,
+                mode: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                imported_count: row.get(7)?,
+                import_cursor: row.get(8)?,
+                has_more: row.get::<_, i64>(9)? != 0,
+                total_captured: row.get(10)?,
+                last_error: row.get(11)?,
+                resume_supported: row.get::<_, i64>(12)? != 0,
             })
         })?;
 
@@ -2340,7 +2565,7 @@ pub mod agent_sessions {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT agent_session_id, conversation_id, acp_session_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured, last_error, resume_supported
+            "SELECT agent_session_id, conversation_id, acp_session_id, agent_id, mode, created_at, updated_at, imported_count, import_cursor, has_more, total_captured, last_error, resume_supported
              FROM agent_sessions WHERE acp_session_id = ?1",
         )?;
 
@@ -2349,15 +2574,16 @@ pub mod agent_sessions {
                 agent_session_id: row.get(0)?,
                 conversation_id: row.get(1)?,
                 acp_session_id: row.get(2)?,
-                mode: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-                imported_count: row.get(6)?,
-                import_cursor: row.get(7)?,
-                has_more: row.get::<_, i64>(8)? != 0,
-                total_captured: row.get(9)?,
-                last_error: row.get(10)?,
-                resume_supported: row.get::<_, i64>(11)? != 0,
+                agent_id: row.get(3)?,
+                mode: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                imported_count: row.get(7)?,
+                import_cursor: row.get(8)?,
+                has_more: row.get::<_, i64>(9)? != 0,
+                total_captured: row.get(10)?,
+                last_error: row.get(11)?,
+                resume_supported: row.get::<_, i64>(12)? != 0,
             })
         })?;
 
@@ -2420,12 +2646,40 @@ pub mod agent_sessions {
         Ok(())
     }
 
-    pub fn count_by_chat_id(chat_id: i64) -> Result<i64> {
+    pub fn set_agent_id(conversation_id: i64, agent_id: &str) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        conn.execute(
+            "UPDATE agent_sessions SET agent_id = ?1, updated_at = ?2 WHERE conversation_id = ?3 AND (agent_id IS NULL OR agent_id = ?1)",
+            params![agent_id, now, conversation_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn count_by_chat_id(chat_id: i64, agent_id: Option<&str>) -> Result<i64> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         conn.query_row(
-            "SELECT COUNT(*) FROM agent_sessions a JOIN conversations c ON a.conversation_id = c.conversation_id WHERE c.chat_id = ?1",
-            params![chat_id],
+            "SELECT COUNT(*) FROM agent_sessions a JOIN conversations c ON a.conversation_id = c.conversation_id WHERE c.chat_id = ?1 AND (?2 IS NULL OR a.agent_id = ?2)",
+            params![chat_id, agent_id],
+            |row| row.get(0),
+        )
+    }
+
+    pub fn count_by_agent_and_worktree(agent_id: Option<&str>, work_dir: Option<&str>) -> Result<i64> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM agent_sessions a \
+             JOIN conversations c ON a.conversation_id = c.conversation_id \
+             JOIN chats ch ON c.chat_id = ch.chat_id \
+             WHERE (?1 IS NULL OR a.agent_id = ?1) \
+               AND (?2 IS NULL OR ch.worktree_path = ?2)",
+            params![agent_id, work_dir],
             |row| row.get(0),
         )
     }

@@ -60,7 +60,7 @@ export function AgentHistorySelector({ agentId, conversationId }: AgentHistorySe
       // If this session has not been imported into the current conversation yet,
       // trigger a synchronous import so its history is available immediately.
       if (conversationId) {
-        void importSync(sessionId, undefined)
+        void importSync(sessionId)
         void utils.ergatai.getConversationImportState.invalidate({ conversationId })
         void utils.ergatai.listConversationMessages.invalidate({ conversationId })
       }

@@ -1768,6 +1768,7 @@ pub async fn send_message(
                         agent_session_id: agent_session_id_i64,
                         conversation_id: agent_conversation_id_i64.as_i64(),
                         acp_session_id: Some(session_id),
+                        agent_id: None,
                         mode: "agent".to_string(),
                         created_at: now,
                         updated_at: now,
@@ -3562,6 +3563,7 @@ pub async fn prompt_agent(
                     agent_session_id,
                     conversation_id: conversation_id_for_session.as_i64(),
                     acp_session_id: Some(session_id),
+                    agent_id: None,
                     mode: conversation_mode,
                     created_at: now,
                     updated_at: now,
@@ -5259,8 +5261,7 @@ pub async fn get_agent_migration_progress(
         let migrations = crate::user_data_db::agent_history_migrations::list_by_agent(&agent_id)?;
         let mut result = Vec::new();
         for m in migrations {
-            let processed = crate::user_data_db::agent_sessions::count_by_chat_id(m.chat_id)?;
-            result.push(serde_json::json!({
+            let processed = crate::user_data_db::agent_sessions::count_by_agent_and_worktree(Some(&m.agent_id), m.cwd.as_deref())?;            result.push(serde_json::json!({
                 "migration_id": m.migration_id,
                 "agent_id": m.agent_id,
                 "chat_id": m.chat_id,
@@ -5379,7 +5380,7 @@ pub async fn run_migration(State(_state): State<AppState>) -> impl IntoResponse 
             groups.dedup();
 
             for cwd in groups {
-                let group_total = sessions.iter().filter(|s| s.cwd == cwd).count() as i64;
+                let group_total = sessions.iter().filter(|s| s.cwd == cwd).count().min(50) as i64;
                 let group_chat_id = match &cwd {
                     Some(path) => {
                         match crate::services::agent_history_import::ensure_workspace_chat_for_path(
@@ -5424,7 +5425,7 @@ pub async fn run_migration(State(_state): State<AppState>) -> impl IntoResponse 
                 .await;
 
                 let payload = serde_json::json!({
-                    "chat_id": group_chat_id,
+                    "chat_id": null,
                     "cwd": cwd,
                     "cursor": null,
                     "limit": 50,
@@ -5481,11 +5482,34 @@ pub async fn get_migration_progress(State(_state): State<AppState>) -> impl Into
         for r in rows {
             let (migration_id, agent_id, agent_name, chat_id, cwd, total_sessions, status, last_error) = r?;
             // Query count directly using existing conn to avoid deadlock (Mutex is not reentrant)
+            // Count sessions that have finished importing (no more pending history)
+            // instead of merely being bound, so the progress bar does not claim
+            // completion while messages are still being imported.
             let processed: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM agent_sessions a JOIN conversations c ON a.conversation_id = c.conversation_id WHERE c.chat_id = ?1",
-                rusqlite::params![chat_id],
+                "SELECT COUNT(*) FROM agent_sessions a \
+                 JOIN conversations c ON a.conversation_id = c.conversation_id \
+                 JOIN chats ch ON c.chat_id = ch.chat_id \
+                 WHERE (?1 IS NULL OR a.agent_id = ?1) \
+                   AND (?2 IS NULL OR ch.worktree_path = ?2) \
+                   AND a.has_more = 0",
+                rusqlite::params![agent_id, cwd],
                 |row| row.get(0),
             )?;
+            // Auto-complete migrations whose sessions have all been imported so the
+            // UI does not stay stuck in "running" forever.
+            let final_status = if status == "running" && total_sessions > 0 && processed >= total_sessions {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let _ = conn.execute(
+                    "UPDATE agent_history_migrations SET status = 'done', updated_at = ?1 WHERE migration_id = ?2",
+                    rusqlite::params![now, migration_id],
+                );
+                "done".to_string()
+            } else {
+                status
+            };
             result.push(serde_json::json!({
                 "migration_id": migration_id,
                 "agent_id": agent_id,
@@ -5494,7 +5518,7 @@ pub async fn get_migration_progress(State(_state): State<AppState>) -> impl Into
                 "cwd": cwd,
                 "total_sessions": total_sessions,
                 "processed_sessions": processed,
-                "status": status,
+                "status": final_status,
                 "last_error": last_error,
             }));
         }

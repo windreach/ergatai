@@ -1,4 +1,5 @@
 pub mod acp_server;
+pub mod agent_sdk;
 pub mod activity;
 pub mod activity_routes;
 pub mod agent_profiles;
@@ -9,6 +10,7 @@ pub mod ids;
 pub mod locks;
 pub mod mcp_servers;
 pub mod openapi;
+pub mod skills;
 pub mod permissions;
 pub mod status;
 pub mod terminal_sessions;

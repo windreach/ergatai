@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { trpc } from "../lib/trpc"
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover"
 import { Progress } from "./ui/progress"
@@ -8,20 +8,19 @@ import { Button } from "./ui/button"
 
 export function MigrationProgressWidget({ inline = false }: { inline?: boolean }) {
   const [open, setOpen] = useState(false)
+  const utils = trpc.useUtils()
   const progressQuery = trpc.ergatai.getMigrationProgress.useQuery(undefined, {
     refetchInterval: 5000,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
   })
 
   const migrations = progressQuery.data?.migrations ?? []
 
-  // DEBUG: Log query state
-  console.log("[MigrationProgressWidget]", {
-    hasData: !!progressQuery.data,
-    isLoading: progressQuery.isLoading,
-    isFetching: progressQuery.isFetching,
-    migrationsCount: migrations.length,
-    data: progressQuery.data,
-  })
+  // Keep the chat list in sync while migration creates chats in the background.
+  useEffect(() => {
+    void utils.chats.list.invalidate()
+  }, [progressQuery.data, utils])
 
   // Aggregate per agent
   const byAgent = new Map<string, { name: string; total: number; done: number; status: string }>()
@@ -92,7 +91,6 @@ export function MigrationProgressWidget({ inline = false }: { inline?: boolean }
           <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
             Agent 历史迁移
           </div>
-          <Progress value={percent} className="h-1.5" />
           <div className="space-y-2">
             {rows.map((m) => {
                 const p = m.total > 0 ? Math.round((m.done / m.total) * 100) : 0

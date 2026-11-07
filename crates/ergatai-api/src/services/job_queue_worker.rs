@@ -123,11 +123,13 @@ async fn process_persistence_job(job: &crate::user_data_db::chats::Job) -> anyho
             let payload: Payload = serde_json::from_str(job.payload.as_deref().unwrap_or("{}"))?;
             let chat_id = ergatai_error::ChatId::new(payload.chat_id);
 
+            let entity_agent_id = job.entity_id.clone();
             tokio::task::spawn_blocking(move || {
                 crate::user_data_db::conversations::create_for_agent_session(
                     chat_id,
                     &payload.acp_session_id,
                     payload.title,
+                    Some(&entity_agent_id),
                 )
             })
             .await
@@ -163,7 +165,14 @@ async fn process_persistence_job(job: &crate::user_data_db::chats::Job) -> anyho
             // Skip permanently if no native data and agent is not alive.
             let cwd = payload.cwd.clone().unwrap_or_else(|| "/".to_string());
             let sid = payload.acp_session_id.clone();
-            let native_ok = crate::services::agent_history_import::has_native_capture(&sid, &cwd);
+            // Use spawn_blocking to avoid blocking the async executor with I/O
+            let sid_clone = sid.clone();
+            let cwd_clone = cwd.clone();
+            let native_ok = tokio::task::spawn_blocking(move || {
+                crate::services::agent_history_import::has_native_capture(&sid_clone, &cwd_clone)
+            })
+            .await
+            .unwrap_or(false);
             let runtime = crate::context::get_app_context().agent_runtime.clone();
             let agent_alive = runtime.get_agent(&agent_id).await.is_some();
             if !native_ok && !agent_alive {
@@ -198,7 +207,7 @@ async fn process_persistence_job(job: &crate::user_data_db::chats::Job) -> anyho
             #[derive(serde::Deserialize, Default)]
             struct Payload {
                 #[serde(default)]
-                chat_id: i64,
+                chat_id: Option<i64>,
                 #[serde(default)]
                 cwd: Option<String>,
                 #[serde(default)]

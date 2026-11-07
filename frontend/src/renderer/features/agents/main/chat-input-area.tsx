@@ -479,6 +479,8 @@ export const ChatInputArea = memo(function ChatInputArea({
   const [showMentionDropdown, setShowMentionDropdown] = useState(false)
   const [mentionSearchText, setMentionSearchText] = useState("")
   const [mentionPosition, setMentionPosition] = useState({ top: 0, left: 0 })
+  const [inputContainerWidth, setInputContainerWidth] = useState(0)
+  const [inputContainerLeft, setInputContainerLeft] = useState(0)
   const [mentionScope, setMentionScope] = useState<
     "agents" | "resources" | "all"
   >("agents")
@@ -1537,10 +1539,17 @@ export const ChatInputArea = memo(function ChatInputArea({
             height: 0,
             width: 0,
           }
+          // Align with the centered max-w-2xl container that also wraps
+          // the status card above the input, not the outer padded wrapper.
+          const inner = el.querySelector(".max-w-2xl") as HTMLElement | null
+          const target = inner ?? el
+          const rect = target.getBoundingClientRect()
           el.style.setProperty("--chat-input-height", `${height}px`)
-          el.style.setProperty("--chat-input-width", `${width}px`)
+          el.style.setProperty("--chat-input-width", `${rect.width}px`)
           parent?.style.setProperty("--chat-input-height", `${height}px`)
-          parent?.style.setProperty("--chat-input-width", `${width}px`)
+          parent?.style.setProperty("--chat-input-width", `${rect.width}px`)
+          setInputContainerWidth(rect.width)
+          setInputContainerLeft(rect.left)
         })
         observer.observe(el)
         resizeObserverRef.current = observer
@@ -1900,6 +1909,8 @@ export const ChatInputArea = memo(function ChatInputArea({
         onSelect={handleMentionSelect}
         searchText={mentionSearchText}
         position={mentionPosition}
+        containerWidth={inputContainerWidth}
+        containerLeft={inputContainerLeft}
         teamId={teamId}
         repository={repository}
         sandboxId={sandboxId}
@@ -1921,6 +1932,8 @@ export const ChatInputArea = memo(function ChatInputArea({
         onSelect={handleSlashSelect}
         searchText={slashSearchText}
         position={slashPosition}
+        containerWidth={inputContainerWidth}
+        containerLeft={inputContainerLeft}
         chatId={parentChatId}
         mode={conversationMode}
       />

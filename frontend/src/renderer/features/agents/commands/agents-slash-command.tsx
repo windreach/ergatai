@@ -16,7 +16,6 @@ import type { SlashCommandOption } from "./types"
 import { filterBuiltinCommands } from "./builtin-commands"
 import type { AgentMode } from "../atoms"
 import { getDropdownDimensions } from "../ui/dropdown-sizes"
-import { useDropdownScale } from "../../../lib/hooks/use-dropdown-scale"
 
 interface AgentsSlashCommandProps {
   isOpen: boolean
@@ -24,6 +23,8 @@ interface AgentsSlashCommandProps {
   onSelect: (command: SlashCommandOption) => void
   searchText: string
   position: { top: number; left: number }
+  containerWidth?: number
+  containerLeft?: number
   chatId?: string
   mode?: AgentMode
   disabledCommands?: string[]
@@ -38,6 +39,8 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
   onSelect,
   searchText,
   position,
+  containerWidth,
+  containerLeft,
   chatId,
   mode,
   disabledCommands,
@@ -272,10 +275,7 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
   // react-doctor-disable-next-line prefer-use-effect-event
   }, [isOpen, onClose])
 
-  // Get dropdown dimensions with dynamic scaling based on window size
-  const scale = useDropdownScale()
-
-  const dimensions = getDropdownDimensions(scale)
+  const dimensions = getDropdownDimensions()
 
   // Calculate dropdown dimensions (matching file mention style)
   const dropdownWidth = dimensions.width
@@ -321,9 +321,8 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
     ? position.top - gap
     : position.top + gap + caretOffsetBelow
 
-  // Slight left bias to better align with '/'
-  const leftOffset = -4
-  let finalLeft = position.left + leftOffset
+  // Align the dropdown's left edge with the input container (status box)
+  let finalLeft = containerLeft ?? position.left
 
   // Adjust horizontal overflow
   if (finalLeft + dropdownWidth > window.innerWidth - safeMargin) {
@@ -333,26 +332,24 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
     finalLeft = safeMargin
   }
 
-  // Compute actual maxHeight based on available space on the chosen side
+  // Keep the max height aligned with the Resume popover standard (max-h-72),
+  // so the box stays the same size instead of shrinking with available space.
   const computedMaxHeight = Math.max(
     80,
-    Math.min(
-      requestedHeight,
-      placeAbove ? availableAbove - gap : availableBelow - gap,
-    ),
+    Math.min(requestedHeight, dimensions.maxHeight),
   )
   const transformY = placeAbove ? "translateY(-100%)" : "translateY(0)"
 
   return createPortal(
     <div
       ref={dropdownRef}
-      className="fixed z-[99999] overflow-y-auto rounded-[10px] border border-border bg-popover py-1 text-xs text-popover-foreground shadow-lg dark [&::-webkit-scrollbar]:hidden"
+      className="fixed z-[99999] overflow-y-auto rounded-[10px] border border-border bg-popover py-1 text-xs text-popover-foreground shadow-lg [&::-webkit-scrollbar]:hidden"
       style={{
         top: finalTop,
         left: finalLeft,
-        width: `${dropdownWidth}px`,
-        maxHeight: `${computedMaxHeight}px`,
-        transform: `${transformY} scale(${scale})`,
+        width: containerWidth ? `${containerWidth}px` : "20rem",
+        maxHeight: "18rem",
+        transform: transformY,
         transformOrigin: placeAbove ? 'bottom' : 'top',
         scrollbarWidth: 'none',
         msOverflowStyle: 'none',

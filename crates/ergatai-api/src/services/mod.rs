@@ -4,6 +4,7 @@
 //! handler 只负责 HTTP 协议细节（请求解析、响应格式化、状态码映射）。
 
 pub mod agent_history_import;
+pub mod agent_sdk_service;
 pub mod agent_output_cleanup;
 pub mod agent_output_persistence;
 pub mod agent_service;
@@ -24,6 +25,7 @@ pub mod message_service;
 pub mod nats_interrupt_event_publisher;
 pub mod nats_output_publisher;
 pub mod profile_service;
+pub mod skills_service;
 pub mod terminal_sessions;
 pub mod workspace_manager;
 pub mod workspace_service;

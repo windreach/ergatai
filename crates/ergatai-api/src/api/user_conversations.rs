@@ -470,6 +470,9 @@ pub async fn update_conversation(
         }
     }
 
+    // Note: Chat name sync is now handled in conversations::update() at the DB layer,
+    // so it applies to all update paths (not just this API).
+
     let id_for_reload = id.clone();
     let id_for_reload_i64 =
         match crate::http_error::parse_typed_id::<ConversationId>(&id_for_reload, "Conversation") {

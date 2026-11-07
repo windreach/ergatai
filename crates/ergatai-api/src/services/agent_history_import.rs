@@ -16,77 +16,110 @@ pub struct ImportAgentSessionHistoryInput {
     pub cursor: Option<String>,
 }
 
-use std::sync::{Mutex as StdMutex, RwLock as StdRwLock};
+use std::sync::Mutex as StdMutex;
+use std::num::NonZeroUsize;
+use lru::LruCache;
 
-static NATIVE_CACHE: StdRwLock<Option<std::collections::HashMap<String, (u64, Vec<serde_json::Value>)>>> =
-    StdRwLock::new(None);
+// LRU cache with bounded capacity to prevent unbounded memory growth.
+// Capacity: 100 sessions (each with full message history).
+// Eviction: Least Recently Used when capacity is reached.
+static NATIVE_CACHE: StdMutex<Option<LruCache<String, (u64, Vec<serde_json::Value>)>>> =
+    StdMutex::new(None);
+const NATIVE_CACHE_CAPACITY: usize = 100;
 
 fn native_cache_key(session_id: &str, cwd: &str) -> String {
     format!("{}|{}", session_id, cwd)
 }
 
-fn file_mtime(path: &std::path::Path) -> u64 {
+/// Returns the modification time of the file, or None if it cannot be read.
+/// Using Option<u64> instead of a sentinel value (like 0) allows distinguishing
+/// between "file not found" and "error reading metadata", preventing false cache hits.
+fn file_mtime(path: &std::path::Path) -> Option<u64> {
     std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .map(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))
-        .unwrap_or(0)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
 }
 
 /// Cached wrapper around try_native_capture. Reuses parsed result when the
 /// underlying source file's mtime is unchanged.
+/// Uses LRU cache with bounded capacity to prevent unbounded memory growth.
 fn try_native_capture_cached(session_id: &str, cwd: &str) -> Option<Vec<serde_json::Value>> {
     // Determine source mtime for cache invalidation.
+    // Check all possible source files (claude, opencode, codex) to ensure
+    // cache is invalidated when any of them changes.
     let home = std::env::var("HOME").ok()?;
     let claude_path = std::path::PathBuf::from(&home)
         .join(".claude/projects")
         .join(format!("-{}", cwd.trim_start_matches('/').replace('/', "-")))
         .join(format!("{}.jsonl", session_id));
     let opencode_path = std::path::PathBuf::from(&home).join(".local/share/opencode/opencode.db");
+    let codex_path = std::path::PathBuf::from(&home)
+        .join(".codex/sessions")
+        .join(format!("{}.jsonl", session_id));
+
+    // Get mtime from whichever source file exists (if any).
+    // Return None if mtime cannot be determined to avoid false cache hits.
     let mtime = if claude_path.exists() {
-        file_mtime(&claude_path)
+        file_mtime(&claude_path)?
     } else if opencode_path.exists() {
-        file_mtime(&opencode_path)
+        file_mtime(&opencode_path)?
+    } else if codex_path.exists() {
+        file_mtime(&codex_path)?
     } else {
-        0
+        return None; // No source file found
     };
 
     let key = native_cache_key(session_id, cwd);
-    // Check cache (read lock allows concurrent readers)
+
+    // Check cache (Mutex lock required since LRU get() updates access order)
     {
-        let guard = NATIVE_CACHE.read().unwrap();
-        if let Some(map) = guard.as_ref() {
-            if let Some((cached_mtime, msgs)) = map.get(&key) {
-                if *cached_mtime == mtime {
-                    return Some(msgs.clone());
-                }
+        let mut guard = NATIVE_CACHE.lock().unwrap();
+        let cache = guard.get_or_insert_with(|| {
+            LruCache::new(NonZeroUsize::new(NATIVE_CACHE_CAPACITY).unwrap())
+        });
+        if let Some((cached_mtime, msgs)) = cache.get(&key) {
+            if *cached_mtime == mtime {
+                return Some(msgs.clone());
             }
         }
     }
+
     // Compute
     let result = try_native_capture(session_id, cwd);
-    // Store (write lock for mutation)
+
+    // Store in LRU cache (will evict least recently used entry if at capacity)
     if let Some(msgs) = &result {
-        let mut guard = NATIVE_CACHE.write().unwrap();
-        let map = guard.get_or_insert_with(std::collections::HashMap::new);
-        map.insert(key, (mtime, msgs.clone()));
+        let mut guard = NATIVE_CACHE.lock().unwrap();
+        let cache = guard.get_or_insert_with(|| {
+            LruCache::new(NonZeroUsize::new(NATIVE_CACHE_CAPACITY).unwrap())
+        });
+        cache.put(key, (mtime, msgs.clone()));
     }
+
     result
 }
 
 use tokio::sync::Mutex as TokioMutex;
 
-static IMPORT_LOCKS: StdMutex<Option<std::collections::HashMap<i64, std::sync::Arc<TokioMutex<()>>>>> =
-    StdMutex::new(None);
+// Sharded lock scheme to prevent unbounded memory growth.
+// Fixed number of shards (64) bounds memory regardless of conversation count.
+// Different conversations may share a shard lock, but contention is rare
+// since import operations are infrequent and short-lived.
+const IMPORT_LOCK_SHARDS: usize = 64;
+static IMPORT_LOCKS: [StdMutex<Option<std::sync::Arc<TokioMutex<()>>>>; IMPORT_LOCK_SHARDS] = {
+    // Initialize array of None values
+    const INIT: StdMutex<Option<std::sync::Arc<TokioMutex<()>>>> = StdMutex::new(None);
+    [INIT; IMPORT_LOCK_SHARDS]
+};
 
 async fn acquire_import_lock(conv_id: i64) -> std::sync::Arc<TokioMutex<()>> {
-    let lock = {
-        let mut guard = IMPORT_LOCKS.lock().unwrap();
-        let map = guard.get_or_insert_with(std::collections::HashMap::new);
-        map.entry(conv_id)
-            .or_insert_with(|| std::sync::Arc::new(TokioMutex::new(())))
-            .clone()
-    };
-    lock
+    let shard_idx = (conv_id as usize) % IMPORT_LOCK_SHARDS;
+    let mut guard = IMPORT_LOCKS[shard_idx].lock().unwrap();
+    guard
+        .get_or_insert_with(|| std::sync::Arc::new(TokioMutex::new(())))
+        .clone()
 }
 
 pub async fn import_agent_session_history(
@@ -99,25 +132,56 @@ pub async fn import_agent_session_history(
         "import_agent_session_history called"
     );
 
-    let persist_limit = input.persist_limit.or(input.limit).unwrap_or(100).min(500);
+    let _persist_limit = input.persist_limit.or(input.limit).unwrap_or(100).min(500);
     let acp_session_id = input.acp_session_id.clone();
+    let cwd_for_chat = input.cwd.clone().unwrap_or_else(|| "/".to_string());
+
+    // Resolve a chat for this session. When importing migrated history we create
+    // one chat per session (1:1 with conversation) instead of sharing a chat
+    // across every session in the same cwd.
+    let resolved_chat_id = if let Some(id) = input.chat_id {
+        id
+    } else if let Ok(Some(existing)) = crate::user_data_db::agent_sessions::get_by_acp_session_id(&acp_session_id) {
+        let cid = existing.conversation_id;
+        let chat = tokio::task::spawn_blocking(move || {
+            crate::user_data_db::conversations::get(ergatai_error::ConversationId::new(cid))
+                .ok()
+                .flatten()
+                .map(|c| c.chat_id.as_i64())
+        })
+        .await
+        .unwrap_or(None);
+        match chat {
+            Some(id) => id,
+            None => crate::services::agent_history_import::ensure_chat_for_session(&cwd_for_chat, input.title.clone()).await?,
+        }
+    } else {
+        crate::services::agent_history_import::ensure_chat_for_session(&cwd_for_chat, input.title.clone()).await?
+    };
 
     // Ensure conversation exists.
     let conversation_id = if let Some(id) = input.conversation_id {
         ConversationId::new(id)
-    } else if let Some(chat_id) = input.chat_id {
-        let chat_id = ergatai_error::ChatId::new(chat_id);
+    } else {
+        let chat_id = ergatai_error::ChatId::new(resolved_chat_id);
         let title = input.title.clone();
         let acp = acp_session_id.clone();
+        let agent_id_owned = agent_id.to_string();
         tokio::task::spawn_blocking(move || {
-            crate::user_data_db::conversations::create_for_agent_session(chat_id, &acp, title)
+            crate::user_data_db::conversations::create_for_agent_session(chat_id, &acp, title, Some(agent_id_owned.as_str()))
         })
         .await
         .context("join error creating conversation")?
         .context("create_for_agent_session failed")?
-    } else {
-        return Err(anyhow::anyhow!("missing conversation_id or chat_id"));
     };
+
+    // Ensure the imported session is attributed to the owning agent for progress tracking.
+    let _ = tokio::task::spawn_blocking({
+        let cid = conversation_id;
+        let aid = agent_id.to_string();
+        move || crate::user_data_db::agent_sessions::set_agent_id(cid.as_i64(), &aid)
+    })
+    .await;
 
     let _import_lock = acquire_import_lock(conversation_id.as_i64()).await;
     let _import_guard = _import_lock.lock().await;
@@ -155,6 +219,16 @@ pub async fn import_agent_session_history(
             .is_none()
         && input.cursor.is_none();
     if legacy_skip {
+        return Ok(());
+    }
+
+    // Already imported this session once: do not paginate further.
+    if existing_state
+        .as_ref()
+        .map(|s| s.imported_count)
+        .unwrap_or(0)
+        > 0
+    {
         return Ok(());
     }
 
@@ -219,28 +293,13 @@ pub async fn import_agent_session_history(
 
     let captured_len = captured.len();
 
-    // Determine the range of messages to import in this batch.
-    // We import from newest to oldest in batches of `persist_limit`.
-    // `prior_imported` tracks how many messages we've already imported,
-    // so we skip those and import the next batch.
-    let prior_imported = existing_state
-        .as_ref()
-        .map(|s| s.imported_count)
-        .unwrap_or(0) as usize;
+    // Full import: bring in every captured message for this session.
+    let persist_limit = captured_len.max(1);
 
-    // Use cursor if provided (for manual override), otherwise calculate based on imported_count.
-    let end = input.cursor
-        .as_ref()
-        .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(captured_len);
-
-    // Calculate start position: skip messages we've already imported.
-    // If we've imported 20 messages and captured has 50, we want to import
-    // messages at indices (50-20-20)=10 to (50-20)=30 (next 20 older messages).
-    let remaining_to_skip = prior_imported;
-    let available_to_import = end.saturating_sub(remaining_to_skip);
-    let start = available_to_import.saturating_sub(persist_limit);
-    let actual_end = available_to_import;
+    // Simple online import: bring in only the most recent `persist_limit`
+    // messages for this session in a single pass; no further pagination.
+    let start = captured_len.saturating_sub(persist_limit);
+    let actual_end = captured_len;
 
     if actual_end == 0 || start >= actual_end {
         return Ok(());
@@ -263,10 +322,40 @@ pub async fn import_agent_session_history(
             .and_then(|v| v.as_str())
             .or_else(|| update.get("text").and_then(|v| v.as_str()));
 
-        let parts = if let Some(text) = text.filter(|t| !t.is_empty()) {
-            serde_json::json!([{"type": "text", "text": text}])
-        } else {
-            serde_json::json!([update.clone()])
+        // Skip environment/context injection messages that are not real user turns.
+        if let Some(t) = text {
+            if t.contains("<environment_context>") {
+                continue;
+            }
+        }
+
+        // Convert ACP updates into frontend-renderable parts so imported history
+        // renders consistently with live streaming (text, reasoning, tool calls).
+        let parts = match session_update {
+            "agent_thought_chunk" => {
+                if let Some(t) = text.filter(|t| !t.is_empty()) {
+                    serde_json::json!([{"type": "reasoning", "text": t}])
+                } else {
+                    serde_json::json!([update.clone()])
+                }
+            }
+            "tool_call" => {
+                let title = update.get("title").and_then(|v| v.as_str()).unwrap_or("tool");
+                let tool_call_id = update.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("");
+                let input = update.get("rawInput").cloned().unwrap_or(serde_json::json!({}));
+                serde_json::json!([{
+                    "type": format!("tool-{}", title),
+                    "toolCallId": tool_call_id,
+                    "input": input,
+                }])
+            }
+            _ => {
+                if let Some(text) = text.filter(|t| !t.is_empty()) {
+                    serde_json::json!([{"type": "text", "text": text}])
+                } else {
+                    serde_json::json!([update.clone()])
+                }
+            }
         };
 
         let metadata = serde_json::json!({ "acp_update": update });
@@ -278,16 +367,10 @@ pub async fn import_agent_session_history(
         return Ok(());
     }
 
-    let prior_total = existing_state
-        .as_ref()
-        .map(|s| s.total_captured)
-        .unwrap_or(0);
-
-    // Update import progress: accumulate the count of imported messages.
-    let total_captured = prior_total.max(captured_len as i64);
-    let new_imported_count = (prior_imported as i64 + imported_this).min(total_captured);
-    let has_more = new_imported_count < total_captured;
-    // Cursor is not needed with the new logic, but keep for compatibility.
+    // Single-pass import: mark the session as fully imported (no more pages).
+    let total_captured = captured_len as i64;
+    let new_imported_count = imported_this;
+    let has_more = false;
     let new_cursor = None;
 
     // Persist.
@@ -363,9 +446,21 @@ pub async fn ensure_workspace_chat_for_path(work_dir: &str) -> anyhow::Result<i6
     let workspace_id = ergatai_error::WorkspaceId::decode(&managed.workspace_id)
         .map_err(|e| anyhow::anyhow!("invalid workspace id: {}", e))?;
 
+    let work_dir_owned = work_dir.to_string();
     let chat_id = tokio::task::spawn_blocking(move || -> Result<i64, rusqlite::Error> {
         let chats = crate::user_data_db::chats::list(Some(workspace_id))?;
         if let Some(existing) = chats.into_iter().next() {
+            // Ensure imported chats expose a working directory to the frontend.
+            // Only update if worktree_path is not already set (avoid repeated writes).
+            if existing.worktree_path.is_none() {
+                let mut updated = existing.clone();
+                updated.worktree_path = Some(work_dir_owned.clone());
+                updated.updated_at = chrono::Utc::now().timestamp();
+                match crate::user_data_db::chats::update(updated) {
+                    Ok(_) => tracing::debug!(chat_id = %existing.chat_id.as_i64(), "Set worktree_path for imported chat"),
+                    Err(e) => tracing::warn!(chat_id = %existing.chat_id.as_i64(), error = %e, "Failed to set worktree_path for imported chat"),
+                }
+            }
             return Ok(existing.chat_id.as_i64());
         }
         let now = chrono::Utc::now().timestamp();
@@ -374,7 +469,60 @@ pub async fn ensure_workspace_chat_for_path(work_dir: &str) -> anyhow::Result<i6
             workspace_id,
             name: None,
             collaboration_mode: None,
-            worktree_path: None,
+            worktree_path: Some(work_dir_owned.clone()),
+            branch: None,
+            base_branch: None,
+            pr_url: None,
+            pr_number: None,
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+        };
+        crate::user_data_db::chats::create(chat.clone())?;
+        Ok(chat.chat_id.as_i64())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("join error ensuring chat: {}", e))?
+    .map_err(|e| anyhow::anyhow!("ensure chat failed: {}", e))?;
+
+    Ok(chat_id)
+}
+
+/// Create a dedicated chat for a single imported session under the workspace for `work_dir`.
+pub async fn ensure_chat_for_session(work_dir: &str, name: Option<String>) -> anyhow::Result<i64> {
+    let managed = crate::services::workspace_manager::create(
+        crate::services::workspace_manager::CreateManagedWorkspaceRequest {
+            id: None,
+            name: None,
+            work_dir: work_dir.to_string(),
+            env: None,
+            resources: None,
+            config: None,
+            collaboration_mode: None,
+            default_project_id: None,
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("ensure workspace failed: {:?}", e))?;
+
+    let workspace_id = ergatai_error::WorkspaceId::decode(&managed.workspace_id)
+        .map_err(|e| anyhow::anyhow!("invalid workspace id: {}", e))?;
+
+    let work_dir_owned = work_dir.to_string();
+    let chat_name = name.clone().or_else(|| {
+        std::path::Path::new(work_dir)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+    });
+    let chat_id = tokio::task::spawn_blocking(move || -> Result<i64, rusqlite::Error> {
+        let now = chrono::Utc::now().timestamp();
+        let chat = crate::user_data_db::Chat {
+            chat_id: ergatai_error::ChatId::generate(),
+            workspace_id,
+            name: chat_name,
+            collaboration_mode: None,
+            worktree_path: Some(work_dir_owned.clone()),
             branch: None,
             base_branch: None,
             pr_url: None,
@@ -395,9 +543,9 @@ pub async fn ensure_workspace_chat_for_path(work_dir: &str) -> anyhow::Result<i6
 
 pub async fn import_agent_sessions_batch(
     agent_id: &str,
-    chat_id: i64,
+    chat_id: Option<i64>,
     cwd_filter: Option<String>,
-    cursor: Option<String>,
+    _cursor: Option<String>,
     limit: usize,
 ) -> anyhow::Result<()> {
     let limit = limit.clamp(1, 100);
@@ -428,16 +576,10 @@ pub async fn import_agent_sessions_batch(
         .collect();
     keyed.sort_by(|a, b| b.0.cmp(&a.0));
 
-    // Resolve cursor position: process sessions whose key is strictly less than
-    // the cursor key (i.e. come after it in descending order).
-    let start = if let Some(ref c) = cursor {
-        keyed.iter().position(|(k, _)| k < c).unwrap_or(keyed.len())
-    } else {
-        0
-    };
-
-    let end = (start + limit).min(keyed.len());
-    let batch = &keyed[start..end];
+    // Only the first `limit` sessions per workspace are brought online; no
+    // cursor-based pagination across the remaining sessions.
+    let end = limit.min(keyed.len());
+    let batch = &keyed[..end];
 
     for (_key, session) in batch {
         // Skip sessions already bound to a conversation.
@@ -481,32 +623,6 @@ pub async fn import_agent_sessions_batch(
         .await;
     }
 
-    // Enqueue next batch if there are more sessions.
-    if end < keyed.len() {
-        if let Some((last_key, _)) = batch.last() {
-            let next_cursor = last_key.clone();
-            let payload = serde_json::json!({
-                "chat_id": chat_id,
-                "cwd": cwd_filter,
-                "cursor": next_cursor,
-                "limit": limit,
-            });
-            let _ = tokio::task::spawn_blocking({
-                let agent_id = agent_id.to_string();
-                let payload_str = payload.to_string();
-                move || {
-                    crate::user_data_db::chats::enqueue_job(
-                        "persistence",
-                        "agent_session",
-                        &agent_id,
-                        "import_agent_sessions_batch",
-                        Some(&payload_str),
-                    )
-                }
-            })
-            .await;
-        }
-    }
 
     Ok(())
 }
@@ -765,12 +881,19 @@ fn try_codex_capture(session_id: &str) -> Option<Vec<serde_json::Value>> {
     if !base.exists() {
         return None;
     }
-    // find file
+    // find file - match exact filename stem to avoid substring false positives
     let mut found: Option<std::path::PathBuf> = None;
     for entry in walkdir(&base) {
-        if entry.to_string_lossy().contains(session_id) && entry.extension().map(|e| e == "jsonl").unwrap_or(false) {
-            found = Some(entry);
-            break;
+        if entry.extension().map(|e| e == "jsonl").unwrap_or(false) {
+            let stem_matches = entry
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|stem| stem == session_id)
+                .unwrap_or(false);
+            if stem_matches {
+                found = Some(entry);
+                break;
+            }
         }
     }
     let path = found?;
@@ -827,12 +950,25 @@ fn try_codex_capture(session_id: &str) -> Option<Vec<serde_json::Value>> {
 }
 
 fn walkdir(base: &std::path::Path) -> Vec<std::path::PathBuf> {
+    walkdir_with_depth(base, 0, 10)
+}
+
+fn walkdir_with_depth(base: &std::path::Path, current_depth: usize, max_depth: usize) -> Vec<std::path::PathBuf> {
     let mut result = Vec::new();
+    if current_depth > max_depth {
+        tracing::warn!(path = ?base, "Max directory depth exceeded, stopping recursion");
+        return result;
+    }
     if let Ok(entries) = std::fs::read_dir(base) {
         for entry in entries.flatten() {
             let path = entry.path();
+            // Skip symlinks to prevent infinite loops
+            if path.is_symlink() {
+                tracing::debug!(path = ?path, "Skipping symlink");
+                continue;
+            }
             if path.is_dir() {
-                result.extend(walkdir(&path));
+                result.extend(walkdir_with_depth(&path, current_depth + 1, max_depth));
             } else {
                 result.push(path);
             }

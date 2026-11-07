@@ -4635,24 +4635,33 @@ impl AcpBackendInterface for AcpBackend {
                                     .block_task()
                                     .await;
 
-                                // Update current session id on success
-                                if result.is_ok() {
-                                    session_id = agent_client_protocol::schema::v1::SessionId::from(target_session_id.clone());
+                                match result {
+                                    Ok(load_resp) => {
+                                        info!(
+                                            session_id = %target_session_id,
+                                            "Captured load session response"
+                                        );
+                                        // Extract config_options from response (includes model selector if supported)
+                                        // This matches the behavior of the LoadSession handler above.
+                                        if let Some(config_opts) = load_resp.config_options {
+                                            debug!(count = config_opts.len(), "Captured config_options from load_session_capture response");
+                                            *task_config_options.write() = config_opts;
+                                        }
+                                        // Update current session id on success
+                                        session_id = agent_client_protocol::schema::v1::SessionId::from(target_session_id.clone());
+
+                                        let collected = collect_replay_messages(&mut cap_rx, max_messages).await;
+                                        capture_mode.store(false, std::sync::atomic::Ordering::SeqCst);
+                                        *capture_tx.lock().await = None;
+                                        let _ = response_tx.send(Ok(collected));
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "Failed to load session for capture");
+                                        capture_mode.store(false, std::sync::atomic::Ordering::SeqCst);
+                                        *capture_tx.lock().await = None;
+                                        let _ = response_tx.send(Err(ErgataiError::internal(format!("load capture failed: {e}"))));
+                                    }
                                 }
-
-                                let collected = if result.is_ok() {
-                                    collect_replay_messages(&mut cap_rx, max_messages).await
-                                } else {
-                                    Vec::new()
-                                };
-
-                                capture_mode.store(false, std::sync::atomic::Ordering::SeqCst);
-                                *capture_tx.lock().await = None;
-
-                                let _ = response_tx.send(match result {
-                                    Ok(_) => Ok(collected),
-                                    Err(e) => Err(ErgataiError::internal(format!("load capture failed: {e}"))),
-                                });
                             }
                             Some(AcpCommand::DeleteSession {
                                 session_id: target_session_id,

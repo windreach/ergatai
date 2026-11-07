@@ -275,6 +275,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/terminal-sessions/{id}/audit",
             get(api::terminal_sessions::list_audit),
         )
+        // Skills discovery (agent skill directories)
+        .route("/api/v1/skills", get(api::skills::list_skills))
+        // Agent SDK auxiliary discovery (skills/models/commands via Node SDKs)
+        .route("/api/v1/agent-sdk/discover", get(api::agent_sdk::discover))
         // Path registration lookup (single-call replacement for N+1 client-side path resolution)
         .route(
             "/api/v1/registered-path",

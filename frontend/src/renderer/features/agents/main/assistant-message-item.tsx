@@ -869,7 +869,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
       )
     }
 
-    const mcpInfo = parseMcpToolType(part.type)
+    const mcpInfo = parseMcpToolType(part?.type)
     if (mcpInfo) {
       return (
         <AgentMcpToolCall

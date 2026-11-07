@@ -1,8 +1,6 @@
 import { z } from "zod"
 import { router, publicProcedure } from "../index"
-
-// Skills file reading removed - each agent has different skill formats
-// UI commands /skills and /mcp are kept but return empty lists
+import { ergataiFetch } from "../../ergatai/api"
 
 export interface Skill {
   name: string
@@ -13,8 +11,7 @@ export interface Skill {
 
 export const skillsRouter = router({
   /**
-   * List skills - returns empty array
-   * File reading removed: each agent (Claude, Codex, etc.) has different skill formats
+   * List skills discovered by the backend from known agent directories.
    */
   list: publicProcedure
     .input(
@@ -24,8 +21,11 @@ export const skillsRouter = router({
         })
         .optional(),
     )
-    .query(async (): Promise<Skill[]> => {
-      return []
+    .query(async ({ input }): Promise<Skill[]> => {
+      const response = await ergataiFetch<{ skills: Skill[] }>(
+        `/api/v1/skills${input?.cwd ? `?cwd=${encodeURIComponent(input.cwd)}` : ""}`,
+      )
+      return response.skills || []
     }),
 
   /**
@@ -39,7 +39,10 @@ export const skillsRouter = router({
         })
         .optional(),
     )
-    .query(async (): Promise<Skill[]> => {
-      return []
+    .query(async ({ input }): Promise<Skill[]> => {
+      const response = await ergataiFetch<{ skills: Skill[] }>(
+        `/api/v1/skills${input?.cwd ? `?cwd=${encodeURIComponent(input.cwd)}` : ""}`,
+      )
+      return response.skills || []
     }),
 })

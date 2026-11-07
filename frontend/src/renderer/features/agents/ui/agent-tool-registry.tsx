@@ -651,7 +651,8 @@ const BUILTIN_MCP_TOOLS: Record<string, McpToolInfo> = {
   "tool-ReadMcpResourceTool": { serverName: "mcp", toolName: "read_resource", displayName: "Read Resource", category: "get" },
 }
 
-export function parseMcpToolType(partType: string): McpToolInfo | null {
+export function parseMcpToolType(partType: string | undefined | null): McpToolInfo | null {
+  if (!partType) return null
   // Check built-in MCP tools first
   const builtin = BUILTIN_MCP_TOOLS[partType]
   if (builtin) return builtin
