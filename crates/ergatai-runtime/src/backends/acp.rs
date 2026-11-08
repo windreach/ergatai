@@ -2070,7 +2070,11 @@ async fn collect_replay_messages(
     let subsequent_timeout = std::time::Duration::from_millis(800);
     let mut collected = Vec::new();
     for i in 0..max_messages {
-        let timeout_duration = if i == 0 { first_msg_timeout } else { subsequent_timeout };
+        let timeout_duration = if i == 0 {
+            first_msg_timeout
+        } else {
+            subsequent_timeout
+        };
         match tokio::time::timeout(timeout_duration, cap_rx.recv()).await {
             Ok(Some(v)) => collected.push(v),
             Ok(None) => break,

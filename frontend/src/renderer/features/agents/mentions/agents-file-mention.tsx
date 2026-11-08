@@ -13,12 +13,11 @@ import {
   memo,
 } from "react"
 import { createPortal } from "react-dom"
-import { useAtomValue } from "jotai"
 import type { FileMentionOption } from "./agents-mentions-editor"
 import { MENTION_PREFIXES } from "./mentions-utils"
-import { sessionInfoAtom } from "../../../lib/atoms"
 import type { CoreAgentOption } from "../lib/agent-contract-api"
 import { getDropdownDimensions } from "../ui/dropdown-sizes"
+import { useDiscoveryGroups } from "../discovery/use-discovery-groups"
 
 
 interface ChangedFile {
@@ -45,9 +44,7 @@ interface AgentsFileMentionProps {
   agentId?: string // Agent ID for discovery endpoint (skills, commands, MCP)
   // Subpage navigation state
   showingFilesList?: boolean
-  showingSkillsList?: boolean
   showingAgentsList?: boolean
-  showingToolsList?: boolean
   scope?: "agents" | "resources" | "all"
   boundAgents?: CoreAgentOption[]
 }
@@ -55,9 +52,7 @@ interface AgentsFileMentionProps {
 // Category navigation options (shown on root view)
 const CATEGORY_OPTIONS: FileMentionOption[] = [
   { id: "files", label: "Files & Folders", type: "category", path: "", repository: "" },
-  { id: "skills", label: "Skills", type: "category", path: "", repository: "" },
   { id: "agents", label: "Agents", type: "category", path: "", repository: "" },
-  { id: "tools", label: "MCP", type: "category", path: "", repository: "" },
 ]
 
 // Tool icon component (MCP icon) - slightly larger for visibility
@@ -193,9 +188,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   changedFiles = [],
   agentId,
   showingFilesList = false,
-  showingSkillsList = false,
   showingAgentsList = false,
-  showingToolsList = false,
   scope = "all",
   boundAgents,
 }: AgentsFileMentionProps) {
@@ -204,37 +197,9 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   const placementRef = useRef<"above" | "below" | null>(null)
   const [debouncedSearchText, setDebouncedSearchText] = useState(searchText)
 
-  // Get session info (MCP servers, tools) from atom
-  const sessionInfo = useAtomValue(sessionInfoAtom)
 
-  // Fetch discovery info (skills, commands, MCP) if agentId is available
-  const { data: discoveryData, error: discoveryError } = trpc.discovery.getAgentDiscovery.useQuery(
-    { agentId: agentId!, cwd: projectPath },
-    {
-      enabled: isOpen && !!agentId && scope !== "agents",
-      staleTime: 30 * 1000, // 30 seconds cache
-    },
-  )
-
-  const discoveryWarning = discoveryError?.message
-    || (Array.isArray(discoveryData?.errors) && discoveryData.errors.length > 0
-      ? discoveryData.errors.map((e: { message?: string }) => e?.message).filter(Boolean).join("; ")
-      : null)
-
-  // Fetch skills from filesystem (cached for 5 minutes) - fallback when no agentId
-  const { data: skills = [], isFetching: _isFetchingSkills } = trpc.skills.listEnabled.useQuery(
-    projectPath ? { cwd: projectPath } : undefined,
-    {
-      enabled: isOpen && scope !== "agents" && !agentId,
-      staleTime: 5 * 60 * 1000, // 5 minutes - skills don't change frequently
-    },
-  )
-
-  // Use discovery skills if available, otherwise use filesystem skills
-  type DiscoverySkill = { name: string; description: string; path: string; source: "user" | "project" | "plugin" | "agent-sdk" | "convention" }
-  const allSkills = (agentId && discoveryData?.skills
-    ? discoveryData.skills
-    : skills) as DiscoverySkill[]
+  // Generic discovery aggregation (shared abstraction for trigger dropdowns).
+  const { groups: discoveryGroups } = useDiscoveryGroups(isOpen ? agentId : undefined, projectPath)
 
   // Fetch custom agents from filesystem (cached for 5 minutes)
   const { data: customAgents = [], isFetching: _isFetchingAgents } = trpc.agents.listEnabled.useQuery(
@@ -280,7 +245,8 @@ export const AgentsFileMention = memo(function AgentsFileMention({
     },
     {
       // Enable if we have projectPath (desktop) OR teamId with repository/sandboxId/branch (web)
-      enabled: isOpen && scope !== "agents" && (!!projectPath || (!!teamId && (!!repository || !!sandboxId || !!branch))),
+      // Also enable when showingFilesList is true (user explicitly selected files category)
+      enabled: isOpen && (showingFilesList || scope !== "agents") && (!!projectPath || (!!teamId && (!!repository || !!sandboxId || !!branch))),
       staleTime: 5000,
       refetchOnWindowFocus: false,
       // Keep showing previous results while fetching new ones
@@ -313,6 +279,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
           truncatedPath: dirPath,
           additions: file.additions,
           deletions: file.deletions,
+          group: "Changed Files",
         }
       })
 
@@ -346,6 +313,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
           repository: file.repository,
           truncatedPath: dirPath,
           type: (file as { type?: "file" | "folder" }).type ?? "file",
+          group: "Files",
         }
       })
 
@@ -353,28 +321,38 @@ export const AgentsFileMention = memo(function AgentsFileMention({
     return sortFilesByRelevance(mapped, debouncedSearchText)
   }, [fileResults, changedFilePaths, debouncedSearchText])
 
-  // Convert skills to mention options
-  const skillOptions: FileMentionOption[] = useMemo(() => {
+  // Generic discovery -> mention options (shared abstraction).
+  const discoveryMentionOptions: FileMentionOption[] = useMemo(() => {
     const searchLower = debouncedSearchText.toLowerCase()
-
-    return allSkills
-      .filter((skill) =>
-        // Multi-word search: all words must match in name OR description
-        matchesMultiWordSearch(skill.name, searchLower) ||
-        matchesMultiWordSearch(skill.description, searchLower)
-      )
-      .map((skill) => ({
-        id: `${MENTION_PREFIXES.SKILL}${skill.name}`,
-        label: skill.name,
-        path: skill.path, // file path for tooltip
-        repository: "",
-        truncatedPath: skill.description,
-        type: "skill" as const,
-        // Extended data for rich tooltip
-        description: skill.description,
-        source: skill.source,
-      }))
-  }, [allSkills, debouncedSearchText])
+    const out: FileMentionOption[] = []
+    for (const g of discoveryGroups) {
+      for (const it of g.items) {
+        if (it.type === "agent") continue // agents handled separately
+        const mentionType =
+          it.type === "mcp" ? "tool" :
+          it.type === "skill" ? "skill" :
+          it.type === "command" ? "command" :
+          it.type === "plugin" ? "plugin" : "skill"
+        const prefix =
+          mentionType === "skill" ? MENTION_PREFIXES.SKILL :
+          mentionType === "command" ? MENTION_PREFIXES.COMMAND :
+          mentionType === "tool" ? MENTION_PREFIXES.TOOL :
+          mentionType === "plugin" ? MENTION_PREFIXES.PLUGIN :
+          MENTION_PREFIXES.SKILL
+        if (!matchesMultiWordSearch(it.name, searchLower) && !matchesMultiWordSearch(it.description || "", searchLower)) continue
+        out.push({
+          id: `${prefix}${it.name}`,
+          label: it.name,
+          path: it.name,
+          repository: "",
+          type: mentionType,
+          group: g.id,
+          description: it.description || "",
+        })
+      }
+    }
+    return out
+  }, [discoveryGroups, debouncedSearchText])
 
   // Convert custom agents to mention options
   const agentOptions: FileMentionOption[] = useMemo(() => {
@@ -389,6 +367,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
           path: agent.name,
           repository: "",
           type: "agent" as const,
+          group: "Agents",
         }))
     }
 
@@ -405,6 +384,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
         repository: "",
         truncatedPath: agent.description,
         type: "agent" as const,
+        group: "Agents",
         // Extended data for rich tooltip
         description: agent.description,
         tools: agent.tools,
@@ -413,40 +393,11 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       }))
   }, [customAgents, debouncedSearchText, scope, boundAgents])
 
-  // Convert MCP servers to mention options (show servers, not individual tools)
-  const allToolOptions: FileMentionOption[] = useMemo(() => {
-    if (!sessionInfo?.mcpServers) return []
-
-    const connectedServers = sessionInfo.mcpServers
-      .filter(s => s.status === "connected")
-
-    return connectedServers.map(server => ({
-      id: `${MENTION_PREFIXES.TOOL}${server.name}`,
-      label: server.name,
-      path: server.name,
-      repository: "",
-      truncatedPath: "",
-      type: "tool" as const,
-      mcpServer: server.name,
-    }))
-  }, [sessionInfo])
-
-  // Filtered tool options based on search (searches by server name)
-  const toolOptions: FileMentionOption[] = useMemo(() => {
-    if (!debouncedSearchText) return allToolOptions
-
-    const searchLower = debouncedSearchText.toLowerCase()
-    return allToolOptions.filter(tool => {
-      return matchesMultiWordSearch(tool.label, searchLower)
-    })
-  }, [allToolOptions, debouncedSearchText])
-
-  // Check if we have skills, agents, or tools
-  // Use base data (not search-filtered) for stable category display
-  const hasSkills = allSkills.length > 0
+  // Keep only files and agents
+  const hasSkills = discoveryMentionOptions.some((o) => o.type === "skill")
   const hasAgents = customAgents.length > 0
-  const hasTools = allToolOptions.length > 0
-  const hasOnlyFiles = !hasSkills && !hasAgents && !hasTools
+  const hasTools = discoveryMentionOptions.some((o) => o.type === "tool")
+  const hasOnlyFiles = discoveryMentionOptions.length === 0 && !hasAgents
 
   // Determine if we're in a subpage view (or showing files directly when no skills/agents/tools)
 
@@ -482,19 +433,9 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       return allFiles
     }
 
-    // SUBPAGE: Skills
-    if (showingSkillsList) {
-      return skillOptions // already filtered by search in skillOptions memo
-    }
-
     // SUBPAGE: Agents
     if (showingAgentsList) {
       return agentOptions // already filtered by search in agentOptions memo
-    }
-
-    // SUBPAGE: MCP Tools
-    if (showingToolsList) {
-      return toolOptions // already filtered by search in toolOptions memo
     }
 
     // ROOT VIEW
@@ -506,26 +447,74 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       )
       const allItems = [
         ...changedFileOptions,
-        ...filteredCategories,
+        ...filteredCategories.filter(c => c.id === "agents" || c.id === "files" || c.id === "skills" || c.id === "tools"),
         ...(scope === "all" ? agentOptions : []),
-        ...skillOptions,
-        ...toolOptions,
+        ...discoveryMentionOptions,
         ...repoFileOptions,
       ]
       return sortFilesByRelevance(allItems, debouncedSearchText)
     }
 
-    // No search: Changed files FIRST (quick access), then category navigation
-    return [...changedFileOptions, ...availableCategoryOptions]
-  }, [scope, showingFilesList, showingSkillsList, showingAgentsList, showingToolsList, debouncedSearchText, changedFileOptions, repoFileOptions, skillOptions, agentOptions, toolOptions, hasOnlyFiles, availableCategoryOptions])
+    // No search: Flat grouped list with category headers (no drill-down).
+    // Each non-empty group is preceded by a non-selectable category header.
+    // Data-driven sections: format convention declared here; backend-provided
+    // categories can be appended by extending this list without touching render.
+    const sections: { id: string; label: string; items: FileMentionOption[] }[] = [
+      { id: "changed", label: "Changed Files", items: changedFileOptions },
+      ...(scope !== "resources" ? [{ id: "agents", label: "Agents", items: agentOptions }] : []),
+    ]
+    // Dynamic grouping: group items by their `type` (or `group` override).
+    // No hardcoded category list — any new type becomes its own category.
+    const TYPE_LABELS: Record<string, string> = {
+      agent: "Agents",
+      file: "Files",
+      folder: "Files",
+      skill: "Skills",
+      command: "Commands",
+      plugin: "Plugins",
+      tool: "MCP Tools",
+    }
+    const groups = new Map<string, FileMentionOption[]>()
+    const groupOrder: string[] = []
+    const addToGroup = (item: FileMentionOption) => {
+      const key = item.group || item.type || "other"
+      if (!groups.has(key)) {
+        groups.set(key, [])
+        groupOrder.push(key)
+      }
+      groups.get(key)!.push(item)
+    }
+    if (scope !== "resources") {
+      agentOptions.forEach(addToGroup)
+    }
+    discoveryMentionOptions.forEach(addToGroup)
+    changedFileOptions.forEach(addToGroup)
+    const flat: FileMentionOption[] = []
+    for (const key of groupOrder) {
+      const items = groups.get(key) || []
+      if (items.length === 0) continue
+      const label = TYPE_LABELS[key] || key
+      flat.push({ id: `group:${key}`, label, path: "", repository: "", type: "group-header" })
+      flat.push(...items)
+    }
+    // Files & folders stay as a drill-down category (can be huge)
+    const fileCategory = availableCategoryOptions.find(c => c.id === "files")
+    if (fileCategory && repoFileOptions.length === 0 && changedFileOptions.length === 0) {
+      flat.push(fileCategory)
+    } else if (repoFileOptions.length > 0 && !debouncedSearchText) {
+      flat.push({ id: "category:files", label: "Files & Folders", path: "", repository: "", type: "category" })
+    }
+    if (flat.length === 0) {
+      return availableCategoryOptions
+    }
+    return flat
+  }, [scope, showingFilesList, showingAgentsList, debouncedSearchText, changedFileOptions, repoFileOptions, agentOptions, hasOnlyFiles, availableCategoryOptions])
 
   // Track previous values for smarter selection reset
   const prevIsOpenRef = useRef(isOpen)
   const prevSearchRef = useRef(debouncedSearchText)
   const prevShowingFilesListRef = useRef(showingFilesList)
-  const prevShowingSkillsListRef = useRef(showingSkillsList)
   const prevShowingAgentsListRef = useRef(showingAgentsList)
-  const prevShowingToolsListRef = useRef(showingToolsList)
 
   // CONSOLIDATED: Single useLayoutEffect for selection management (was 3 separate)
   useLayoutEffect(() => {
@@ -533,9 +522,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
     const didSearchChange = debouncedSearchText !== prevSearchRef.current
     const didSubpageChange =
       showingFilesList !== prevShowingFilesListRef.current ||
-      showingSkillsList !== prevShowingSkillsListRef.current ||
-      showingAgentsList !== prevShowingAgentsListRef.current ||
-      showingToolsList !== prevShowingToolsListRef.current
+      showingAgentsList !== prevShowingAgentsListRef.current
 
     // Reset to 0 when opening, search changes, or subpage changes
     if (didJustOpen || didSearchChange || didSubpageChange) {
@@ -551,10 +538,8 @@ export const AgentsFileMention = memo(function AgentsFileMention({
     prevIsOpenRef.current = isOpen
     prevSearchRef.current = debouncedSearchText
     prevShowingFilesListRef.current = showingFilesList
-    prevShowingSkillsListRef.current = showingSkillsList
     prevShowingAgentsListRef.current = showingAgentsList
-    prevShowingToolsListRef.current = showingToolsList
-  }, [isOpen, debouncedSearchText, options.length, selectedIndex, showingFilesList, showingSkillsList, showingAgentsList, showingToolsList])
+  }, [isOpen, debouncedSearchText, options.length, selectedIndex, showingFilesList, showingAgentsList])
 
   // Reset placement when closed
   useEffect(() => {
@@ -574,22 +559,34 @@ export const AgentsFileMention = memo(function AgentsFileMention({
           e.preventDefault()
           e.stopPropagation()
           e.stopImmediatePropagation()
-          setSelectedIndex((prev) => (prev + 1) % options.length)
+          setSelectedIndex((prev) => {
+            let next = prev
+            for (let i = 0; i < options.length; i++) {
+              next = (next + 1) % options.length
+              if (options[next]?.type !== "group-header") return next
+            }
+            return prev
+          })
           break
         case "ArrowUp":
           e.preventDefault()
           e.stopPropagation()
           e.stopImmediatePropagation()
-          setSelectedIndex(
-            (prev) => (prev - 1 + options.length) % options.length,
-          )
+          setSelectedIndex((prev) => {
+            let next = prev
+            for (let i = 0; i < options.length; i++) {
+              next = (next - 1 + options.length) % options.length
+              if (options[next]?.type !== "group-header") return next
+            }
+            return prev
+          })
           break
         case "Enter":
           if (e.shiftKey) return
           e.preventDefault()
           e.stopPropagation()
           e.stopImmediatePropagation()
-          if (options[selectedIndex]) {
+          if (options[selectedIndex] && options[selectedIndex].type !== "group-header") {
             onSelect(options[selectedIndex])
           }
           break
@@ -717,12 +714,6 @@ export const AgentsFileMention = memo(function AgentsFileMention({
         msOverflowStyle: 'none',
       } as React.CSSProperties}
     >
-      {/* Discovery warning */}
-      {discoveryWarning && (
-        <div className="px-2.5 py-1 mx-1 text-xs text-amber-500">
-          {discoveryWarning}
-        </div>
-      )}
 
       {/* All mentions in one section */}
       {options.length > 0 && (
@@ -737,6 +728,18 @@ export const AgentsFileMention = memo(function AgentsFileMention({
           )}
           {options.map((option, index) => {
             const isSelected = selectedIndex === index
+            const isGroupHeader = option.type === "group-header"
+            if (isGroupHeader) {
+              return (
+                <div
+                  key={option.id}
+                  data-option-index={index}
+                  className="px-2.5 py-1.5 mx-1 text-xs font-bold text-foreground"
+                >
+                  {option.label}
+                </div>
+              )
+            }
             return (
               <div
                 // react-doctor-disable-next-line prefer-tag-over-role

@@ -2,7 +2,15 @@ const agent = process.argv[2];
 const cwd = process.argv[3] || process.cwd();
 
 function safe(fn, fallback) {
-  return fn().catch(() => fallback);
+  try {
+    const r = fn();
+    if (r && typeof r.then === "function") {
+      return r.catch(() => fallback);
+    }
+    return Promise.resolve(r ?? fallback);
+  } catch (e) {
+    return Promise.resolve(fallback);
+  }
 }
 
 async function claude() {
@@ -33,18 +41,21 @@ async function claude() {
       source: "agent-sdk",
       argumentHint: c.argumentHint || "",
       aliases: c.aliases || [],
+      builtin: c.builtin === true,
     }));
     const cmds = (commands || []).map((c) => ({
       name: c.name,
       description: c.description || "",
       argumentHint: c.argumentHint || "",
       aliases: c.aliases || [],
+      builtin: c.builtin === true,
       source: "agent-sdk",
     }));
     const modelList = (models || []).map((m) => ({
       id: m.value || m.id || m.name || m.model || "",
       name: m.displayName || m.name || m.value || m.model || "",
       description: m.description || "",
+      provider: "Anthropic",
     }));
     const mcpList = (mcp || []).map((s) => ({
       name: s.name,
@@ -74,45 +85,120 @@ async function claude() {
   }
 }
 
+async function opencodeBaseUrl() {
+  if (process.env.OPENCODE_URL) return process.env.OPENCODE_URL;
+  // Try opencode service status
+  try {
+    const { execFileSync } = await import("node:child_process");
+    const out = execFileSync("opencode", ["service", "status"], { encoding: "utf8", timeout: 5000 });
+    const m = out.match(/https?:\/\/[^\\s]+/);
+    if (m) return m[0];
+  } catch {}
+  return "http://127.0.0.1:4096";
+}
+
+async function opencodeAuthHeaders() {
+  const headers = {};
+  // Password from env or service.json
+  let pw = process.env.OPENCODE_SERVER_PASSWORD;
+  if (!pw) {
+    try {
+      const fs = await import("node:fs");
+      const os = await import("node:os");
+      const sp = os.homedir() + "/.config/opencode/service.json";
+      if (fs.existsSync(sp)) {
+        const j = JSON.parse(fs.readFileSync(sp, "utf8"));
+        pw = j.password;
+      }
+    } catch {}
+  }
+  if (pw) {
+    headers["Authorization"] = "Basic " + Buffer.from("opencode:" + pw).toString("base64");
+  }
+  return headers;
+}
+
+async function opencodeFetch(path) {
+  const base = await opencodeBaseUrl();
+  const headers = await opencodeAuthHeaders();
+  const url = base.replace(/\/$/, "") + (path.startsWith("/") ? path : "/" + path);
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
 async function opencode() {
-  const { createRequire } = await import("node:module");
-  const require = createRequire(import.meta.url);
-  const { createOpencodeClient } = require("@opencode-ai/sdk");
-  const client = createOpencodeClient({ baseUrl: process.env.OPENCODE_URL || "http://127.0.0.1:4096" });
-  const [skills, commands, mcp, config] = await Promise.all([
-    safe(() => client.skills().then((r) => r?.data || r || []), []),
-    safe(() => client.commands().then((r) => r?.data || r || []), []),
-    safe(() => client.mcpStatus().then((r) => r?.data || r || {}), {}),
-    safe(() => client.config().then((r) => r?.data || r || {}), {}),
-  ]);
-  const skillList = (Array.isArray(skills) ? skills : []).map((s) => ({
-    name: s.name,
+  const base = await opencodeBaseUrl();
+  const headers = await opencodeAuthHeaders();
+  const dir = cwd;
+  const q = "?directory=" + encodeURIComponent(dir);
+
+  const skillsResp = await safe(() => opencodeFetch("/api/skill" + q), { data: [] });
+  const commandsResp = await safe(() => opencodeFetch("/api/command" + q), { data: [] });
+  const mcpResp = await safe(() => opencodeFetch("/api/mcp" + q), { data: [] });
+  const configResp = await safe(() => opencodeFetch("/api/config"), {});
+  const modelsResp = await safe(() => opencodeFetch("/api/model"), { data: [] });
+
+  const skillList = (Array.isArray(skillsResp?.data) ? skillsResp.data : []).map((s) => ({
+    name: s.name || s.id,
     description: s.description || "",
     path: s.path || "",
     source: "agent-sdk",
   }));
-  const cmdList = (Array.isArray(commands) ? commands : []).map((c) => ({
+
+  const cmdList = (Array.isArray(commandsResp?.data) ? commandsResp.data : []).map((c) => ({
     name: c.name,
     description: c.description || "",
     argumentHint: c.argumentHint || "",
     aliases: c.aliases || [],
     source: "agent-sdk",
   }));
-  const mcpObj = mcp && typeof mcp === "object" && !Array.isArray(mcp) ? mcp : {};
-  const mcpList = Object.keys(mcpObj).map((name) => ({
-    name,
-    status: (mcpObj[name] && (mcpObj[name].status || mcpObj[name])) || "pending",
-    config: (mcpObj[name] && mcpObj[name].config) || null,
+
+  const mcpArr = Array.isArray(mcpResp?.data) ? mcpResp.data : [];
+  const mcpList = mcpArr.map((m) => ({
+    name: m.name || m.id,
+    status: m.status || "pending",
+    config: m.config || null,
     source: "agent-sdk",
   }));
-  const providers = (config && (config.providers || config.provider)) || [];
-  const modelList = (Array.isArray(providers) ? providers : []).flatMap((p) =>
-    (p.models || []).map((m) => ({
-      id: m.id || m.value || m.name || "",
-      name: m.name || m.displayName || m.id || "",
+
+  // Models from /api/model
+  const modelsArr = Array.isArray(modelsResp?.data) ? modelsResp.data : (Array.isArray(modelsResp) ? modelsResp : []);
+  const seenModelIds = new Set();
+  const modelList = modelsArr.flatMap((m) => {
+    const id = m.id || m.modelID || m.value || m.name || m.model || "";
+    if (id && seenModelIds.has(id)) return [];
+    if (id) seenModelIds.add(id);
+    return [{
+      id,
+      name: m.name || m.displayName || m.id || m.modelID || m.model || "",
       description: m.description || "",
-    }))
-  );
+      provider: m.providerID || m.provider || "",
+    }];
+  });
+  const configInfo = Array.isArray(configResp)
+    ? (configResp.find((d) => d?.info?.model)?.info || configResp[0]?.info || {})
+    : (configResp?.info || configResp || {});
+  // Prioritize the configured default model so it becomes the default selection.
+  if (configInfo?.model) {
+    const mm = configInfo.model;
+    const configuredId = mm.model || "";
+    if (configuredId) {
+      const idx = modelList.findIndex((m) => m.id === configuredId);
+      if (idx > 0) {
+        const [configured] = modelList.splice(idx, 1);
+        modelList.unshift(configured);
+      } else if (idx === -1) {
+        modelList.unshift({ id: configuredId, name: mm.model || configuredId, description: "" });
+      }
+    }
+  }
+  // Fallback: config.model
+  if (modelList.length === 0 && configInfo?.model) {
+    const mm = configInfo.model;
+    modelList.push({ id: (mm.providerID || "") + "/" + (mm.model || ""), name: mm.model || "", description: "" });
+  }
+
   return { skills: skillList, commands: cmdList, models: modelList, mcp: mcpList, plugins: [] };
 }
 

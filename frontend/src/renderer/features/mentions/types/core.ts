@@ -59,7 +59,7 @@ export interface MentionTrigger {
 /**
  * Category for grouping mentions in the dropdown UI
  */
-export interface MentionCategory {
+export interface MentionGroup {
   /**
    * Unique category ID
    */
@@ -158,7 +158,7 @@ export interface MentionItem<TData = unknown> {
     /**
      * Type hint for rendering
      */
-    type?: "file" | "folder" | "skill" | "agent" | "tool" | "category" | "symbol" | "command"
+    type?: "file" | "folder" | "skill" | "agent" | "tool" | "category" | "symbol" | "command" | "plugin"
 
     /**
      * Repository name (for multi-repo support)
@@ -178,6 +178,7 @@ export const MENTION_PREFIXES = {
   AGENT: "agent:",
   TOOL: "tool:",
   COMMAND: "command:",
+  PLUGIN: "plugin:",
   QUOTE: "quote:",
   DIFF: "diff:",
   PASTED: "pasted:",

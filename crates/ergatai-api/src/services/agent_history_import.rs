@@ -16,13 +16,14 @@ pub struct ImportAgentSessionHistoryInput {
     pub cursor: Option<String>,
 }
 
-use std::sync::Mutex as StdMutex;
-use std::num::NonZeroUsize;
 use lru::LruCache;
+use std::num::NonZeroUsize;
+use std::sync::Mutex as StdMutex;
 
 // LRU cache with bounded capacity to prevent unbounded memory growth.
 // Capacity: 100 sessions (each with full message history).
 // Eviction: Least Recently Used when capacity is reached.
+#[allow(clippy::type_complexity)]
 static NATIVE_CACHE: StdMutex<Option<LruCache<String, (u64, Vec<serde_json::Value>)>>> =
     StdMutex::new(None);
 const NATIVE_CACHE_CAPACITY: usize = 100;
@@ -52,7 +53,10 @@ fn try_native_capture_cached(session_id: &str, cwd: &str) -> Option<Vec<serde_js
     let home = std::env::var("HOME").ok()?;
     let claude_path = std::path::PathBuf::from(&home)
         .join(".claude/projects")
-        .join(format!("-{}", cwd.trim_start_matches('/').replace('/', "-")))
+        .join(format!(
+            "-{}",
+            cwd.trim_start_matches('/').replace('/', "-")
+        ))
         .join(format!("{}.jsonl", session_id));
     let opencode_path = std::path::PathBuf::from(&home).join(".local/share/opencode/opencode.db");
     let codex_path = std::path::PathBuf::from(&home)
@@ -110,6 +114,7 @@ use tokio::sync::Mutex as TokioMutex;
 const IMPORT_LOCK_SHARDS: usize = 64;
 static IMPORT_LOCKS: [StdMutex<Option<std::sync::Arc<TokioMutex<()>>>>; IMPORT_LOCK_SHARDS] = {
     // Initialize array of None values
+    #[allow(clippy::declare_interior_mutable_const)]
     const INIT: StdMutex<Option<std::sync::Arc<TokioMutex<()>>>> = StdMutex::new(None);
     [INIT; IMPORT_LOCK_SHARDS]
 };
@@ -141,7 +146,9 @@ pub async fn import_agent_session_history(
     // across every session in the same cwd.
     let resolved_chat_id = if let Some(id) = input.chat_id {
         id
-    } else if let Ok(Some(existing)) = crate::user_data_db::agent_sessions::get_by_acp_session_id(&acp_session_id) {
+    } else if let Ok(Some(existing)) =
+        crate::user_data_db::agent_sessions::get_by_acp_session_id(&acp_session_id)
+    {
         let cid = existing.conversation_id;
         let chat = tokio::task::spawn_blocking(move || {
             crate::user_data_db::conversations::get(ergatai_error::ConversationId::new(cid))
@@ -153,10 +160,20 @@ pub async fn import_agent_session_history(
         .unwrap_or(None);
         match chat {
             Some(id) => id,
-            None => crate::services::agent_history_import::ensure_chat_for_session(&cwd_for_chat, input.title.clone()).await?,
+            None => {
+                crate::services::agent_history_import::ensure_chat_for_session(
+                    &cwd_for_chat,
+                    input.title.clone(),
+                )
+                .await?
+            }
         }
     } else {
-        crate::services::agent_history_import::ensure_chat_for_session(&cwd_for_chat, input.title.clone()).await?
+        crate::services::agent_history_import::ensure_chat_for_session(
+            &cwd_for_chat,
+            input.title.clone(),
+        )
+        .await?
     };
 
     // Ensure conversation exists.
@@ -168,7 +185,12 @@ pub async fn import_agent_session_history(
         let acp = acp_session_id.clone();
         let agent_id_owned = agent_id.to_string();
         tokio::task::spawn_blocking(move || {
-            crate::user_data_db::conversations::create_for_agent_session(chat_id, &acp, title, Some(agent_id_owned.as_str()))
+            crate::user_data_db::conversations::create_for_agent_session(
+                chat_id,
+                &acp,
+                title,
+                Some(agent_id_owned.as_str()),
+            )
         })
         .await
         .context("join error creating conversation")?
@@ -306,7 +328,11 @@ pub async fn import_agent_session_history(
     }
 
     let mut messages = Vec::new();
-    for update in captured.iter().skip(start).take(actual_end.saturating_sub(start)) {
+    for update in captured
+        .iter()
+        .skip(start)
+        .take(actual_end.saturating_sub(start))
+    {
         let session_update = update
             .get("sessionUpdate")
             .and_then(|v| v.as_str())
@@ -340,9 +366,18 @@ pub async fn import_agent_session_history(
                 }
             }
             "tool_call" => {
-                let title = update.get("title").and_then(|v| v.as_str()).unwrap_or("tool");
-                let tool_call_id = update.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("");
-                let input = update.get("rawInput").cloned().unwrap_or(serde_json::json!({}));
+                let title = update
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("tool");
+                let tool_call_id = update
+                    .get("toolCallId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let input = update
+                    .get("rawInput")
+                    .cloned()
+                    .unwrap_or(serde_json::json!({}));
                 serde_json::json!([{
                     "type": format!("tool-{}", title),
                     "toolCallId": tool_call_id,
@@ -623,7 +658,6 @@ pub async fn import_agent_sessions_batch(
         .await;
     }
 
-
     Ok(())
 }
 
@@ -634,7 +668,9 @@ pub async fn import_agent_sessions_batch(
 /// Try to capture history from agent-native storage. Returns `Some(messages)` if
 /// a supported backend has the session; `None` to fall back to ACP capture.
 pub fn has_native_capture(session_id: &str, cwd: &str) -> bool {
-    try_native_capture(session_id, cwd).map(|v| !v.is_empty()).unwrap_or(false)
+    try_native_capture(session_id, cwd)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
 }
 
 fn try_native_capture(session_id: &str, cwd: &str) -> Option<Vec<serde_json::Value>> {
@@ -742,7 +778,8 @@ fn try_claude_capture(session_id: &str, cwd: &str) -> Option<Vec<serde_json::Val
                                 .and_then(|x| x.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            let input = block.get("input").cloned().unwrap_or(serde_json::json!({}));
+                            let input =
+                                block.get("input").cloned().unwrap_or(serde_json::json!({}));
                             out.push(serde_json::json!({
                                 "sessionUpdate": "tool_call",
                                 "toolCallId": id,
@@ -757,7 +794,10 @@ fn try_claude_capture(session_id: &str, cwd: &str) -> Option<Vec<serde_json::Val
                             .and_then(|x| x.as_str())
                             .unwrap_or("")
                             .to_string();
-                        let raw = block.get("content").cloned().unwrap_or(serde_json::json!(null));
+                        let raw = block
+                            .get("content")
+                            .cloned()
+                            .unwrap_or(serde_json::json!(null));
                         out.push(serde_json::json!({
                             "sessionUpdate": "tool_call_update",
                             "toolCallId": id,
@@ -780,8 +820,7 @@ fn try_claude_capture(session_id: &str, cwd: &str) -> Option<Vec<serde_json::Val
 /// opencode: read ~/.local/share/opencode/opencode.db
 fn try_opencode_capture(session_id: &str) -> Option<Vec<serde_json::Value>> {
     let home = std::env::var("HOME").ok()?;
-    let db_path = std::path::PathBuf::from(home)
-        .join(".local/share/opencode/opencode.db");
+    let db_path = std::path::PathBuf::from(home).join(".local/share/opencode/opencode.db");
     if !db_path.exists() {
         return None;
     }
@@ -795,8 +834,7 @@ fn try_opencode_capture(session_id: &str) -> Option<Vec<serde_json::Value>> {
     let mut stmt = conn
         .prepare("SELECT id, data FROM message WHERE session_id = ?1")
         .ok()?;
-    let mut role_map: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut role_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let rows = stmt
         .query_map(rusqlite::params![session_id], |row| {
             let id: String = row.get(0)?;
@@ -820,7 +858,9 @@ fn try_opencode_capture(session_id: &str) -> Option<Vec<serde_json::Value>> {
     }
     // parts ordered by time_created
     let mut stmt = conn
-        .prepare("SELECT message_id, data FROM part WHERE session_id = ?1 ORDER BY time_created ASC")
+        .prepare(
+            "SELECT message_id, data FROM part WHERE session_id = ?1 ORDER BY time_created ASC",
+        )
         .ok()?;
     let rows = stmt
         .query_map(rusqlite::params![session_id], |row| {
@@ -832,7 +872,10 @@ fn try_opencode_capture(session_id: &str) -> Option<Vec<serde_json::Value>> {
     let mut out = Vec::new();
     for r in rows.flatten() {
         let (mid, data) = r;
-        let role = role_map.get(&mid).cloned().unwrap_or_else(|| "assistant".to_string());
+        let role = role_map
+            .get(&mid)
+            .cloned()
+            .unwrap_or_else(|| "assistant".to_string());
         let v: serde_json::Value = match serde_json::from_str(&data) {
             Ok(v) => v,
             Err(_) => continue,
@@ -953,7 +996,11 @@ fn walkdir(base: &std::path::Path) -> Vec<std::path::PathBuf> {
     walkdir_with_depth(base, 0, 10)
 }
 
-fn walkdir_with_depth(base: &std::path::Path, current_depth: usize, max_depth: usize) -> Vec<std::path::PathBuf> {
+fn walkdir_with_depth(
+    base: &std::path::Path,
+    current_depth: usize,
+    max_depth: usize,
+) -> Vec<std::path::PathBuf> {
     let mut result = Vec::new();
     if current_depth > max_depth {
         tracing::warn!(path = ?base, "Max directory depth exceeded, stopping recursion");

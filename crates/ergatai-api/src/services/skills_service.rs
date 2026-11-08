@@ -86,21 +86,41 @@ pub fn list_skills(cwd: Option<&str>) -> Vec<SkillInfo> {
     // Claude
     scan_dir(&home.join(".claude").join("skills"), "user", &mut out);
     if let Some(cwd) = cwd {
-        scan_dir(&Path::new(cwd).join(".claude").join("skills"), "project", &mut out);
+        scan_dir(
+            &Path::new(cwd).join(".claude").join("skills"),
+            "project",
+            &mut out,
+        );
     }
 
     // Codex
     scan_dir(&home.join(".codex").join("skills"), "user", &mut out);
     // Codex system skills (nested under .system)
-    scan_dir(&home.join(".codex").join("skills").join(".system"), "user", &mut out);
+    scan_dir(
+        &home.join(".codex").join("skills").join(".system"),
+        "user",
+        &mut out,
+    );
     if let Some(cwd) = cwd {
-        scan_dir(&Path::new(cwd).join(".codex").join("skills"), "project", &mut out);
+        scan_dir(
+            &Path::new(cwd).join(".codex").join("skills"),
+            "project",
+            &mut out,
+        );
     }
 
     // OpenCode
-    scan_dir(&home.join(".config").join("opencode").join("skills"), "user", &mut out);
+    scan_dir(
+        &home.join(".config").join("opencode").join("skills"),
+        "user",
+        &mut out,
+    );
     if let Some(cwd) = cwd {
-        scan_dir(&Path::new(cwd).join(".opencode").join("skills"), "project", &mut out);
+        scan_dir(
+            &Path::new(cwd).join(".opencode").join("skills"),
+            "project",
+            &mut out,
+        );
     }
     // OpenCode does not define a stable filesystem skills directory.
     // Keep discovery limited to official convention paths above.

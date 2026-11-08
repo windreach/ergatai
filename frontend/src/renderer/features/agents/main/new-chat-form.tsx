@@ -67,10 +67,10 @@ import {
 import { toast } from "sonner"
 import { trpc, trpcClient } from "../../../lib/trpc"
 import {
-  AgentsSlashCommand,
   COMMAND_PROMPTS,
   type SlashCommandOption,
 } from "../commands"
+import { AgentsSlashCommand } from "../commands"
 import { useAgentsFileUpload } from "../hooks/use-agents-file-upload"
 import { usePastedTextFiles } from "../hooks/use-pasted-text-files"
 import { useFocusInputOnEnter } from "../hooks/use-focus-input-on-enter"
@@ -776,14 +776,13 @@ export function NewChatForm({
 
   // Mention subpage navigation state
   const [showingFilesList, setShowingFilesList] = useState(false)
-  const [showingSkillsList, setShowingSkillsList] = useState(false)
   const [showingAgentsList, setShowingAgentsList] = useState(false)
-  const [showingToolsList, setShowingToolsList] = useState(false)
 
-  // Slash command dropdown state
   const [showSlashDropdown, setShowSlashDropdown] = useState(false)
   const [slashSearchText, setSlashSearchText] = useState("")
   const [slashPosition, setSlashPosition] = useState({ top: 0, left: 0 })
+  // Slash command dropdown state
+
 
   const [_isModelDropdownOpen, _setIsModelDropdownOpen] = useState(false)
 
@@ -1356,16 +1355,8 @@ export function NewChatForm({
         setShowingFilesList(true)
         return
       }
-      if (mention.id === "skills") {
-        setShowingSkillsList(true)
-        return
-      }
       if (mention.id === "agents") {
         setShowingAgentsList(true)
-        return
-      }
-      if (mention.id === "tools") {
-        setShowingToolsList(true)
         return
       }
     }
@@ -1375,9 +1366,7 @@ export function NewChatForm({
     setShowMentionDropdown(false)
     // Reset subpage state
     setShowingFilesList(false)
-    setShowingSkillsList(false)
     setShowingAgentsList(false)
-    setShowingToolsList(false)
   }, [])
 
   // Save draft to localStorage when content changes
@@ -1441,9 +1430,7 @@ export function NewChatForm({
         setMentionPosition({ top: rect.top, left: rect.left })
         // Reset subpage state when opening dropdown
         setShowingFilesList(false)
-        setShowingSkillsList(false)
         setShowingAgentsList(false)
-        setShowingToolsList(false)
         setShowMentionDropdown(true)
       }
     },
@@ -1454,9 +1441,7 @@ export function NewChatForm({
     setShowMentionDropdown(false)
     // Reset subpage state when closing
     setShowingFilesList(false)
-    setShowingSkillsList(false)
     setShowingAgentsList(false)
-    setShowingToolsList(false)
   }, [])
 
   // Slash command handlers
@@ -1475,49 +1460,11 @@ export function NewChatForm({
 
   const handleSlashSelect = useCallback(
     (command: SlashCommandOption) => {
-      // Clear the slash command text from editor
       editorRef.current?.clearSlashCommand()
       setShowSlashDropdown(false)
-
-      // Handle builtin commands that change app state (no text input needed)
-      if (command.category === "builtin") {
-        switch (command.name) {
-          case "clear":
-            editorRef.current?.clear()
-            return
-          case "plan":
-            if (agentMode !== "plan") {
-              setAgentMode("plan")
-            }
-            return
-          case "agent":
-            if (agentMode === "plan") {
-              setAgentMode("agent")
-            }
-            return
-          case "files":
-            setMentionScope("resources")
-            setShowingFilesList(true)
-            setShowMentionDropdown(true)
-            return
-          case "skills":
-            setMentionScope("resources")
-            setShowingSkillsList(true)
-            setShowMentionDropdown(true)
-            return
-          case "mcp":
-            setMentionScope("resources")
-            setShowingToolsList(true)
-            setShowMentionDropdown(true)
-            return
-        }
-      }
-
-      // For all other commands (builtin prompts):
-      // insert the command and let user add arguments or press Enter to send
       editorRef.current?.setValue(`/${command.name} `)
     },
-    [agentMode],
+    [editorRef],
   )
 
   // Paste handler for images, plain text, and large text (saved as files)
@@ -2093,6 +2040,19 @@ export function NewChatForm({
                   </PromptInputActions>
                 </PromptInput>
 
+                {/* Slash command dropdown */}
+                <AgentsSlashCommand
+                  isOpen={showSlashDropdown}
+                  onClose={handleCloseSlashTrigger}
+                  onSelect={handleSlashSelect}
+                  searchText={slashSearchText}
+                  position={slashPosition}
+                  chatId={selectedChatId ?? undefined}
+                  cwd={validatedProject?.path}
+                  mode={agentMode}
+                  disabledCommands={["clear"]}
+                />
+
                 {/* Project, Work Mode, and Branch selectors - directly under input */}
                 <div className="mt-1.5 md:mt-2 ml-[5px] flex items-center gap-2">
 
@@ -2270,33 +2230,18 @@ export function NewChatForm({
                     setShowMentionDropdown(false)
                     // Reset subpage state when dropdown closes
                     setShowingFilesList(false)
-                    setShowingSkillsList(false)
                     setShowingAgentsList(false)
-                    setShowingToolsList(false)
                   }}
                   onSelect={handleMentionSelect}
                   searchText={mentionSearchText}
                   position={mentionPosition}
                   projectPath={validatedProject?.path}
                   showingFilesList={showingFilesList}
-                  showingSkillsList={showingSkillsList}
                   showingAgentsList={showingAgentsList}
-                  showingToolsList={showingToolsList}
                   scope={mentionScope}
                   boundAgents={collaborationMode === "group" ? boundGroupAgents : undefined}
                 />
 
-                {/* Slash command dropdown */}
-                <AgentsSlashCommand
-                  isOpen={showSlashDropdown}
-                  onClose={handleCloseSlashTrigger}
-                  onSelect={handleSlashSelect}
-                  searchText={slashSearchText}
-                  position={slashPosition}
-                  chatId={selectedChatId ?? undefined}
-                  mode={agentMode}
-                  disabledCommands={["clear"]}
-                />
               </div>
             </div>
           )}

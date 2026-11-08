@@ -374,9 +374,45 @@ export const workspacesRouter = router({
         },
       )
 
-      // If projectId is provided, set it as default project
+      // If projectId is provided, register it in the workspace and set as default
       let didUpdateDefaultProject = false
       if (input.projectId) {
+        // First, check if project already belongs to this workspace by listing projects
+        const existingProjects = await ergataiFetch<BackendWorkspaceProject[]>(
+          `/api/v1/workspaces/managed/${encodeURIComponent(workspace.workspace_id)}/projects`,
+          { method: "GET" },
+        )
+        const projectAlreadyRegistered = existingProjects.some(p => p.project_id === input.projectId)
+
+        // If project doesn't belong to this workspace, we need to register it
+        // This handles the case where user selects an existing project from another workspace
+        if (!projectAlreadyRegistered) {
+          // Fetch project details to register it in the new workspace
+          const projectDetails = await ergataiFetch<BackendWorkspaceProject>(
+            `/api/v1/projects/${encodeURIComponent(input.projectId)}`,
+            { method: "GET" },
+          )
+
+          // Register the project in the new workspace
+          await ergataiFetch<BackendWorkspaceProject>(
+            `/api/v1/workspaces/managed/${encodeURIComponent(workspace.workspace_id)}/projects`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                name: projectDetails.name,
+                path: projectDetails.path,
+                description: projectDetails.description,
+                git_remote_url: projectDetails.git_remote_url,
+                git_provider: projectDetails.git_provider,
+                git_owner: projectDetails.git_owner,
+                git_repo: projectDetails.git_repo,
+                icon_path: projectDetails.icon_path,
+              }),
+            },
+          )
+        }
+
+        // Now set as default project
         await ergataiFetch<BackendManagedWorkspace>(
           `/api/v1/workspaces/managed/${encodeURIComponent(workspace.workspace_id)}`,
           {

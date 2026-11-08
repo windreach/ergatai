@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { router, publicProcedure as procedure } from "../index"
+import { ergataiFetch } from "../../ergatai/api"
 
 /**
  * Unified discovery endpoint for agent auxiliary information.
@@ -10,25 +11,15 @@ import { router, publicProcedure as procedure } from "../index"
  * - Runtime state
  */
 async function fetchAgentDiscovery(agentId: string, cwd?: string, refresh?: boolean) {
-  const url = new URL(
-    `/api/v1/agents/${agentId}/discovery`,
-    process.env.ERGATAI_API_URL || "http://localhost:3000"
-  )
-  if (cwd) url.searchParams.set("cwd", cwd)
-  if (refresh) url.searchParams.set("refresh", "1")
+  const params = new URLSearchParams()
+  if (cwd) params.set("cwd", cwd)
+  if (refresh) params.set("refresh", "1")
+  const query = params.toString()
+  const path = `/api/v1/agents/${agentId}/discovery${query ? `?${query}` : ""}`
 
-  const response = await fetch(url.toString(), {
+  const data = await ergataiFetch<Record<string, unknown>>(path, {
     method: "GET",
-    headers: {
-      "Content-Type": "application/json",
-    },
   })
-
-  if (!response.ok) {
-    throw new Error(`Discovery failed: ${response.statusText}`)
-  }
-
-  const data = await response.json()
 
   return {
     skills: Array.isArray(data.skills) ? data.skills : [],
@@ -36,6 +27,7 @@ async function fetchAgentDiscovery(agentId: string, cwd?: string, refresh?: bool
     mcp: Array.isArray(data.mcp) ? data.mcp : [],
     plugins: Array.isArray(data.plugins) ? data.plugins : [],
     errors: Array.isArray(data.errors) ? data.errors : [],
+    triggers: Array.isArray(data.triggers) ? data.triggers : [],
   }
 }
 
@@ -56,73 +48,5 @@ export const discoveryRouter = router({
       return fetchAgentDiscovery(input.agentId, input.cwd, input.refresh)
     }),
 
-  /**
-   * Get skills for an agent (convenience wrapper).
-   */
-  getSkills: procedure
-    .input(
-      z.object({
-        agentId: z.string().min(1),
-        cwd: z.string().optional(),
-      })
-    )
-    .query(async ({ input }) => {
-      const discovery = await fetchAgentDiscovery(input.agentId, input.cwd)
-      return discovery.skills
-    }),
-
-  /**
-   * Get commands for an agent (convenience wrapper).
-   */
-  getCommands: procedure
-    .input(
-      z.object({
-        agentId: z.string().min(1),
-        cwd: z.string().optional(),
-      })
-    )
-    .query(async ({ input }) => {
-      const discovery = await fetchAgentDiscovery(input.agentId, input.cwd)
-      return discovery.commands
-    }),
-
-  /**
-   * Get MCP status for an agent (convenience wrapper).
-   */
-  getMcpStatus: procedure
-    .input(
-      z.object({
-        agentId: z.string().min(1),
-        cwd: z.string().optional(),
-      })
-    )
-    .query(async ({ input }) => {
-      const discovery = await fetchAgentDiscovery(input.agentId, input.cwd)
-      return discovery.mcp
-    }),
-
-  /**
-   * Get plugins (Claude marketplace scan).
-   * Plugins are global, not agent-specific.
-   */
-  getPlugins: procedure.query(async () => {
-    // Plugins are global, not agent-specific.
-    const response = await fetch(
-      `${process.env.ERGATAI_API_URL || "http://localhost:3000"}/api/v1/plugins`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-        },
-      }
-    )
-
-    if (!response.ok) {
-      // Fallback to empty if backend fails
-      return []
-    }
-
-    const data = await response.json()
-    return Array.isArray(data.plugins) ? data.plugins : []
-  }),
+  // Convenience wrappers removed; use getAgentDiscovery for all auxiliary data.
 })

@@ -12,9 +12,34 @@ async function claude() {
 }
 
 async function opencode() {
-  const { createOpencodeClient } = await import("@opencode-ai/sdk");
-  const client = createOpencodeClient({ baseUrl: process.env.OPENCODE_URL || "http://127.0.0.1:4096" });
-  await client.sessionSwitchModel({ path: { id: sessionId }, body: { model } });
+  const base = process.env.OPENCODE_URL;
+  let baseUrl = base;
+  if (!baseUrl) {
+    try {
+      const { execFileSync } = await import("node:child_process");
+      const out = execFileSync("opencode", ["service", "status"], { encoding: "utf8", timeout: 5000 });
+      const m = out.match(/https?:\/\/[^\\s]+/);
+      if (m) baseUrl = m[0];
+    } catch {}
+  }
+  if (!baseUrl) baseUrl = "http://127.0.0.1:4096";
+  let pw = process.env.OPENCODE_SERVER_PASSWORD;
+  if (!pw) {
+    try {
+      const fs = await import("node:fs");
+      const os = await import("node:os");
+      const sp = os.homedir() + "/.config/opencode/service.json";
+      if (fs.existsSync(sp)) pw = JSON.parse(fs.readFileSync(sp, "utf8")).password;
+    } catch {}
+  }
+  const headers = { "Content-Type": "application/json" };
+  if (pw) headers["Authorization"] = "Basic " + Buffer.from("opencode:" + pw).toString("base64");
+  const res = await fetch(baseUrl.replace(/\/$/, "") + "/api/session/" + encodeURIComponent(sessionId) + "/model", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ model }),
+  });
+  if (!res.ok) throw new Error("HTTP " + res.status);
   return { ok: true };
 }
 

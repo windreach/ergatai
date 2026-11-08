@@ -76,7 +76,8 @@ export interface FileMentionOption {
   truncatedPath?: string // directory path for inline display or skill description
   additions?: number // for changed files
   deletions?: number // for changed files
-  type?: "file" | "folder" | "skill" | "agent" | "category" | "tool" // entry type (default: file)
+  type?: "file" | "folder" | "skill" | "agent" | "category" | "tool" | "command" | "plugin" | "group-header" // entry type (default: file)
+  group?: string // dynamic category label; items with same group render under one header
   // Extended data for rich tooltips (skills/agents/tools)
   description?: string // skill/agent/tool description
   tools?: string[] // agent allowed tools
@@ -149,7 +150,7 @@ function createMentionNode(option: FileMentionOption): HTMLSpanElement {
     "inline-flex items-center gap-1 px-[6px] py-[1px] rounded-[4px] text-sm align-middle bg-black/[0.04] dark:bg-white/[0.08] text-foreground/80 [&.mention-selected]:bg-primary/70 [&.mention-selected]:text-primary-foreground"
 
   // Create icon element (pass type for folder icon)
-  const iconElement = createFileIconElement(option.label, option.type)
+  const iconElement = createFileIconElement(option.label, option.type === "group-header" ? "category" : option.type)
   span.appendChild(iconElement)
 
   const label = document.createElement("span")

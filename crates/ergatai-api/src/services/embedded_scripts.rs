@@ -5,7 +5,6 @@
 ///
 /// At runtime, embedded scripts are written to a temporary directory and executed from there.
 /// This avoids the fragile `project_root()` lookup in production environments.
-
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -57,8 +56,8 @@ fn get_or_extract_script(name: &str, content: &str) -> PathBuf {
     // In debug builds (or when explicitly opted in), prefer the source tree scripts
     // so developers can iterate without recompiling. In release builds, always use
     // the embedded copy to avoid stale scripts next to the binary.
-    let allow_dev_scripts = cfg!(debug_assertions)
-        || std::env::var("ERGATAI_DEV_SCRIPTS").as_deref() == Ok("1");
+    let allow_dev_scripts =
+        cfg!(debug_assertions) || std::env::var("ERGATAI_DEV_SCRIPTS").as_deref() == Ok("1");
     if allow_dev_scripts {
         if let Ok(root) = std::env::current_exe() {
             let mut dir = root.parent().map(|p| p.to_path_buf());

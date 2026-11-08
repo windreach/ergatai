@@ -207,7 +207,7 @@ async fn test_acp_resume_session_capture() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     let captured = backend
-        .resume_session_capture(&handle.agent_id, "resume-test-session", 10)
+        .resume_session_capture(&handle.agent_id, "resume-test-session", "/tmp", 10)
         .await
         .expect("resume_session_capture should succeed");
 

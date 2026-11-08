@@ -13,7 +13,7 @@
 import type { ReactNode } from "react"
 import type {
   MentionProviderId,
-  MentionCategory,
+  MentionGroup,
   MentionTrigger,
   MentionItem,
 } from "./core"
@@ -34,9 +34,9 @@ export interface MentionProvider<TData = unknown> {
   readonly name: string
 
   /**
-   * Category for grouping in dropdown UI
+   * Group for grouping in dropdown UI
    */
-  readonly category: MentionCategory
+  readonly group: MentionGroup
 
   /**
    * Trigger configuration (when to activate this provider)
@@ -158,7 +158,7 @@ export type TypedMentionProvider<TData> = MentionProvider<TData>
 export interface MentionProviderOptions<TData = unknown> {
   id: string
   name: string
-  category: Omit<MentionCategory, "id"> & { id?: string }
+  group: Omit<MentionGroup, "id"> & { id?: string }
   trigger?: Partial<MentionTrigger>
   priority?: number
   search: MentionProvider<TData>["search"]
@@ -183,11 +183,11 @@ export function createMentionProvider<TData = unknown>(
   return {
     id: options.id as MentionProviderId,
     name: options.name,
-    category: {
-      id: options.category.id ?? options.id,
-      label: options.category.label,
-      icon: options.category.icon,
-      priority: options.category.priority,
+    group: {
+      id: options.group.id ?? options.id,
+      label: options.group.label,
+      icon: options.group.icon,
+      priority: options.group.priority,
     },
     trigger: {
       char: options.trigger?.char ?? "@",

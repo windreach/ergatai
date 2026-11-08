@@ -70,13 +70,21 @@ const ACP_VERB_TO_TOOL_TYPE: Record<string, string> = {
   Run: "Bash",
   List: "Glob",
   Search: "Grep",
+  Searched: "Grep",
   Grep: "Grep",
   Glob: "Glob",
   Edit: "Edit",
   Write: "Write",
   Thought: "Thinking",
+  Thinking: "Thinking",
   Fetch: "WebFetch",
   Terminal: "Bash",
+  // Past-tense variants some agents emit
+  ReadFile: "Read",
+  Wrote: "Write",
+  Ran: "Bash",
+  Created: "Write",
+  Updated: "Edit",
 }
 
 // Check if a part.type looks like an ACP title-based type (e.g. "tool-Read README.md")

@@ -27,6 +27,7 @@ interface ModelItem {
   id: string
   name: string
   version: string
+  provider?: string
 }
 
 interface UseAvailableModelsReturn {
@@ -61,6 +62,12 @@ function normalizeModelId(modelName: string): string {
  * Map backend model name to UI format.
  * Uses the normalized name (without context window suffix) as the ID for deduplication.
  */
+function extractModelVersion(text?: string): string {
+  if (!text) return ""
+  const match = text.match(/\d+(?:\.\d+)+/)
+  return match ? match[0] : ""
+}
+
 function mapBackendModelToUI(modelName: string): ModelItem | null {
   const raw = modelName.trim()
   if (!raw || raw.toLowerCase() === "default") return null
@@ -81,6 +88,37 @@ function mapBackendModelToUI(modelName: string): ModelItem | null {
     .join(" ")
 
   return { id, name: displayName, version: "" }
+}
+
+function mapBackendModelDetailToUI(detail: {
+  id: string
+  name?: string
+  description?: string
+  provider?: string
+}): ModelItem | null {
+  const raw = detail.id.trim()
+  if (!raw || raw.toLowerCase() === "default") return null
+
+  const id = normalizeModelId(raw)
+  if (!id) return null
+
+  const displayName =
+    (detail.name && detail.name.trim()) ||
+    raw
+      .replace(/^models\//, "")
+      .replace(/^claude-/i, "")
+      .replace(/-\d{8,}$/i, "")
+      .replace(/\[\d+m\]$/, "")
+      .split(/[-_\s]/)
+      .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+      .join(" ")
+
+  return {
+    id,
+    name: displayName,
+    version: extractModelVersion(detail.description),
+    provider: detail.provider,
+  }
 }
 
 type RuntimeConfigOption = {
@@ -246,9 +284,11 @@ export function useAvailableModels(agentId?: string | null): UseAvailableModelsR
       return null
     }
 
-    const mapped = modelData.models
-      .map(mapBackendModelToUI)
-      .filter((m): m is NonNullable<typeof m> => m !== null)
+    const sourceModels = (modelData as { model_details?: { id: string; name?: string; description?: string; provider?: string }[] }).model_details
+    const mapped = (sourceModels && sourceModels.length > 0
+      ? sourceModels.map(mapBackendModelDetailToUI)
+      : modelData.models.map(mapBackendModelToUI)
+    ).filter((m): m is NonNullable<typeof m> => m !== null)
 
     // Deduplicate by id
     const seen = new Set<string>()

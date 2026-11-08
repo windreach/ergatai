@@ -381,10 +381,6 @@ pub fn build_rest_app(state: AppState) -> Router {
             post(api::agents::cancel_prompt),
         )
         .route(
-            "/api/v1/agents/{id}/model",
-            post(api::agents::set_agent_model),
-        )
-        .route(
             "/api/v1/agents/{id}/suspend",
             post(api::agents::suspend_agent),
         )

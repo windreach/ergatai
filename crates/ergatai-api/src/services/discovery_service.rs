@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
@@ -37,9 +38,9 @@ static CACHE: Mutex<Option<DiscoveryCache>> = Mutex::new(None);
 // SDK bundle is bounded by its least-fresh component (MCP status → 30s).
 // ---------------------------------------------------------------------------
 const CONVENTION_SKILLS_TTL: Duration = Duration::from_secs(300); // 5 minutes
-const ACP_COMMANDS_TTL: Duration = Duration::from_secs(60);       // 1 minute
-const SDK_BUNDLE_TTL: Duration = Duration::from_secs(30);         // 30 seconds
-const PLUGINS_TTL: Duration = Duration::from_secs(3600);          // 1 hour
+const ACP_COMMANDS_TTL: Duration = Duration::from_secs(60); // 1 minute
+const SDK_BUNDLE_TTL: Duration = Duration::from_secs(30); // 30 seconds
+const PLUGINS_TTL: Duration = Duration::from_secs(3600); // 1 hour
 
 /// Stale data is served up to 2× TTL; beyond that it's treated as a miss.
 const REVALIDATE_WINDOW_FACTOR: u32 = 2;
@@ -217,7 +218,10 @@ fn resolve_agent_kind(profile: Option<&str>, command: Option<&str>) -> &'static 
     }
 }
 
-async fn resolve_context(agent_id: &str, cwd: Option<&str>) -> (Option<String>, String) {
+async fn resolve_context(
+    agent_id: &str,
+    cwd: Option<&str>,
+) -> (Option<String>, String, Option<String>) {
     let runtime = crate::context::get_app_context().agent_runtime.clone();
     let agent_info = runtime.get_agent(agent_id).await;
 
@@ -242,7 +246,8 @@ async fn resolve_context(agent_id: &str, cwd: Option<&str>) -> (Option<String>, 
             if let Ok(reg) = crate::services::profile_service::get_profile_registry() {
                 if let Ok(profiles) = reg.list_with_status() {
                     if let Some(p) = profiles.into_iter().find(|x| x.name == pn) {
-                        let hay = format!("{} {} {}", p.name, p.command, p.agent_type).to_lowercase();
+                        let hay =
+                            format!("{} {} {}", p.name, p.command, p.agent_type).to_lowercase();
                         if hay.contains("opencode") {
                             kind = "opencode".into();
                         } else if hay.contains("codex") {
@@ -262,7 +267,7 @@ async fn resolve_context(agent_id: &str, cwd: Option<&str>) -> (Option<String>, 
     if kind.is_empty() {
         kind = resolve_agent_kind(profile_name.as_deref(), None).to_string();
     }
-    (resolved_cwd, kind)
+    (resolved_cwd, kind, profile_name)
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +290,7 @@ async fn fetch_convention_skills(cwd: Option<&str>) -> Value {
                 "description": s.description,
                 "path": s.path,
                 "source": s.source,
+                "group": "Skills",
             })
         })
         .collect();
@@ -303,6 +309,7 @@ async fn fetch_acp_commands(agent_id: &str) -> Value {
                         "argumentHint": "",
                         "aliases": [],
                         "source": "acp",
+                        "group": "Commands",
                     })
                 })
                 .collect(),
@@ -316,17 +323,14 @@ async fn fetch_sdk_bundle(kind: &str, cwd: Option<&str>) -> Value {
 }
 
 async fn fetch_plugins() -> Value {
-    let plugins = tokio::task::spawn_blocking(scan_plugins).await.unwrap_or_default();
+    let plugins = tokio::task::spawn_blocking(scan_plugins)
+        .await
+        .unwrap_or_default();
     json!(plugins)
 }
 
 /// Fetch a source by name. Pure function dispatching to the right fetcher.
-async fn fetch_source(
-    source: &str,
-    kind: &str,
-    agent_id: &str,
-    cwd: Option<&str>,
-) -> Value {
+async fn fetch_source(source: &str, kind: &str, agent_id: &str, cwd: Option<&str>) -> Value {
     match source {
         SRC_CONVENTION_SKILLS => fetch_convention_skills(cwd).await,
         SRC_ACP_COMMANDS => fetch_acp_commands(agent_id).await,
@@ -340,12 +344,7 @@ async fn fetch_source(
 /// this key, wait for it instead of starting a duplicate fetch.
 ///
 /// Uses RAII `InFlightGuard` to ensure cleanup even on panic/cancellation.
-async fn fetch_source_dedup(
-    source: &str,
-    kind: &str,
-    agent_id: &str,
-    cwd: Option<&str>,
-) -> Value {
+async fn fetch_source_dedup(source: &str, kind: &str, agent_id: &str, cwd: Option<&str>) -> Value {
     let key = cache_key(source, agent_id, cwd);
     let in_flight = get_in_flight(&key);
 
@@ -379,7 +378,11 @@ async fn fetch_source_dedup(
 fn dedup_by_name(items: &mut Vec<Value>, key: &str) {
     let mut seen: HashSet<String> = HashSet::new();
     items.retain(|v| {
-        let name = v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let name = v
+            .get(key)
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
         if name.is_empty() {
             return true;
         }
@@ -401,15 +404,20 @@ fn merge_sources(
     let mut errors: Vec<Value> = Vec::new();
 
     // Skills: convention + SDK
-    let mut skills: Vec<Value> = convention_skills
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let mut skills: Vec<Value> = convention_skills.as_array().cloned().unwrap_or_default();
+    for s in &mut skills {
+        if s.get("group").is_none() {
+            s["group"] = json!("Skills");
+        }
+    }
     if let Some(arr) = sdk_bundle.get("skills").and_then(|v| v.as_array()) {
         for s in arr {
             let mut s = s.clone();
             if s.get("source").is_none() {
                 s["source"] = json!("agent-sdk");
+            }
+            if s.get("group").is_none() {
+                s["group"] = json!("Skills");
             }
             skills.push(s);
         }
@@ -418,11 +426,19 @@ fn merge_sources(
 
     // Commands: ACP + SDK
     let mut commands: Vec<Value> = acp_commands.as_array().cloned().unwrap_or_default();
+    for c in &mut commands {
+        if c.get("group").is_none() {
+            c["group"] = json!("Commands");
+        }
+    }
     if let Some(arr) = sdk_bundle.get("commands").and_then(|v| v.as_array()) {
         for c in arr {
             let mut c = c.clone();
             if c.get("source").is_none() {
                 c["source"] = json!("agent-sdk");
+            }
+            if c.get("group").is_none() {
+                c["group"] = json!("Commands");
             }
             commands.push(c);
         }
@@ -430,11 +446,18 @@ fn merge_sources(
     dedup_by_name(&mut commands, "name");
 
     // MCP: from SDK only
-    let mcp: Vec<Value> = sdk_bundle
+    let mut mcp: Vec<Value> = sdk_bundle
         .get("mcp")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
+    for m in &mut mcp {
+        if m.get("group").is_none() {
+            m["group"] = json!("MCP");
+        }
+    }
+    // MCP fallback from registry also gets category
+    // (handled at merge end? set here for registry items in discovery.rs)
 
     // Plugins: backend marketplace scan + SDK (Claude reloadPlugins)
     let scan_plugins: Vec<Value> = plugins.as_array().cloned().unwrap_or_default();
@@ -448,6 +471,12 @@ fn merge_sources(
         }
     }
 
+    let mut scan_plugins = scan_plugins;
+    for p in &mut scan_plugins {
+        if p.get("group").is_none() {
+            p["group"] = json!("Plugins");
+        }
+    }
     let mut plugins: Vec<Value> = scan_plugins;
     if let Some(arr) = sdk_bundle.get("plugins").and_then(|v| v.as_array()) {
         for p in arr {
@@ -456,16 +485,37 @@ fn merge_sources(
                 p["source"] = json!("agent-sdk");
             }
             // Enrich SDK plugin metadata from marketplace scan when available.
-            if let Some(name) = p.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+            if let Some(name) = p
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+            {
                 if let Some(scan) = scan_by_name.get(&name) {
-                    for key in ["version", "description", "marketplace", "category", "homepage", "tags"] {
-                        if p.get(key).map(|v| v.is_null() || (v.is_string() && v.as_str().unwrap_or("").is_empty()) || (v.is_array() && v.as_array().unwrap().is_empty())).unwrap_or(true) {
+                    for key in [
+                        "version",
+                        "description",
+                        "marketplace",
+                        "category",
+                        "homepage",
+                        "tags",
+                    ] {
+                        if p.get(key)
+                            .map(|v| {
+                                v.is_null()
+                                    || (v.is_string() && v.as_str().unwrap_or("").is_empty())
+                                    || (v.is_array() && v.as_array().unwrap().is_empty())
+                            })
+                            .unwrap_or(true)
+                        {
                             if let Some(val) = scan.get(key) {
                                 p[key] = val.clone();
                             }
                         }
                     }
                 }
+            }
+            if p.get("group").is_none() {
+                p["group"] = json!("Plugins");
             }
             plugins.push(p);
         }
@@ -486,7 +536,127 @@ fn merge_sources(
         "mcp": mcp,
         "plugins": plugins,
         "errors": errors,
+        "triggers": [
+            {
+                "char": "/",
+                "position": "start-of-line",
+                "types": ["skill", "command", "mcp", "plugin", "agent", "file", "folder"],
+            },
+            {
+                "char": "@",
+                "position": "standalone",
+                "types": ["skill", "command", "mcp", "plugin", "agent", "file", "folder"],
+                "allowSpaces": true,
+            },
+        ],
     })
+}
+
+// ---------------------------------------------------------------------------
+// Persistent (last-known-good) cache
+//
+// Discovery results are persisted per (agent kind, cwd) so that a suspended or
+// not-yet-registered agent can still surface the last successfully discovered
+// commands/MCP/models instead of an empty list. The file is updated only when
+// a "rich" result (commands or MCP present) is obtained, and served as a
+// fallback when the live fetch is degraded.
+// ---------------------------------------------------------------------------
+
+fn persistent_cache_path() -> PathBuf {
+    let base = std::env::var("ERGATAI_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            // Fall back to user data dir if available, else temp.
+            std::env::var("HOME")
+                .map(|h| PathBuf::from(h).join(".ergatai"))
+                .unwrap_or_else(|_| std::env::temp_dir().join("ergatai"))
+        });
+    let _ = std::fs::create_dir_all(&base);
+    base.join("discovery-cache.json")
+}
+
+fn canonical_keys(agent_id: &str, profile_name: Option<&str>, cwd: Option<&str>) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let Some(p) = profile_name {
+        keys.push(format!("profile::{}::{}", p, cwd.unwrap_or("")));
+    }
+    keys.push(format!("agent::{}::{}", agent_id, cwd.unwrap_or("")));
+    keys
+}
+
+fn load_agent_profile(agent_id: &str) -> Option<String> {
+    let path = persistent_cache_path();
+    let content = std::fs::read_to_string(&path).ok()?;
+    let parsed: Value = serde_json::from_str(&content).ok()?;
+    parsed
+        .get("__agent_profiles__")
+        .and_then(|v| v.get(agent_id))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn load_persistent(agent_id: &str, profile_name: Option<&str>, cwd: Option<&str>) -> Option<Value> {
+    let path = persistent_cache_path();
+    let content = std::fs::read_to_string(&path).ok()?;
+    let parsed: Value = serde_json::from_str(&content).ok()?;
+
+    // Try canonical keys first.
+    for key in canonical_keys(agent_id, profile_name, cwd) {
+        if let Some(v) = parsed.get(&key) {
+            return Some(v.clone());
+        }
+    }
+    // Fall back to persisted profile mapping for suspended agents.
+    if let Some(p) = load_agent_profile(agent_id) {
+        let key = format!("profile::{}::{}", p, cwd.unwrap_or(""));
+        if let Some(v) = parsed.get(&key) {
+            return Some(v.clone());
+        }
+    }
+    None
+}
+
+fn save_persistent(agent_id: &str, profile_name: Option<&str>, cwd: Option<&str>, value: &Value) {
+    // Only persist "rich" results that actually carry agent-provided data.
+    let commands_empty = value
+        .get("commands")
+        .and_then(|v| v.as_array())
+        .map(|a| a.is_empty())
+        .unwrap_or(true);
+    let mcp_empty = value
+        .get("mcp")
+        .and_then(|v| v.as_array())
+        .map(|a| a.is_empty())
+        .unwrap_or(true);
+    if commands_empty && mcp_empty {
+        return;
+    }
+
+    let path = persistent_cache_path();
+    let mut root: serde_json::Map<String, Value> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<Value>(&c).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+
+    // Persist under all canonical keys so both agent-id and profile lookups work.
+    for key in canonical_keys(agent_id, profile_name, cwd) {
+        root.insert(key, value.clone());
+    }
+
+    // Maintain agent_id -> profile mapping for suspended-agent fallback.
+    if let Some(p) = profile_name {
+        let mut mapping = root
+            .get("__agent_profiles__")
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+        mapping.insert(agent_id.to_string(), Value::String(p.to_string()));
+        root.insert("__agent_profiles__".to_string(), Value::Object(mapping));
+    }
+
+    if let Ok(serialized) = serde_json::to_string_pretty(&Value::Object(root)) {
+        let _ = std::fs::write(&path, serialized);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -514,7 +684,7 @@ const ALL_SOURCES: &[&str] = &[
 /// via an in-flight handle.
 pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value {
     let started = Instant::now();
-    let (resolved_cwd, kind) = resolve_context(agent_id, cwd).await;
+    let (resolved_cwd, kind, profile_name) = resolve_context(agent_id, cwd).await;
     let kind = kind.as_str();
     let cwd_opt = resolved_cwd.as_deref();
 
@@ -552,7 +722,9 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
 
     // Assemble the merged result from whatever we have.
     let mut result = merge_sources(
-        fresh_values.get(SRC_CONVENTION_SKILLS).unwrap_or(&json!([])),
+        fresh_values
+            .get(SRC_CONVENTION_SKILLS)
+            .unwrap_or(&json!([])),
         fresh_values.get(SRC_SDK_BUNDLE).unwrap_or(&json!({})),
         fresh_values.get(SRC_ACP_COMMANDS).unwrap_or(&json!([])),
         fresh_values.get(SRC_PLUGINS).unwrap_or(&json!([])),
@@ -581,6 +753,7 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
                             "url": s.url,
                         },
                         "source": "registry",
+                        "group": "MCP",
                     })
                 })
                 .collect()
@@ -593,6 +766,37 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
         }
     }
 
+    // Persistent cache: prefer last-known-good data when the live fetch is
+    // degraded (e.g. agent suspended / not registered), so the UI keeps
+    // showing the previously discovered commands/MCP instead of going empty.
+    let live_commands_empty = result
+        .get("commands")
+        .and_then(|v| v.as_array())
+        .map(|a| a.is_empty())
+        .unwrap_or(true);
+    let live_mcp_empty = result
+        .get("mcp")
+        .and_then(|v| v.as_array())
+        .map(|a| a.is_empty())
+        .unwrap_or(true);
+
+    if live_commands_empty && live_mcp_empty {
+        if let Some(cached) = load_persistent(agent_id, profile_name.as_deref(), cwd_opt) {
+            // Fill empty fields from the cached (last good) result.
+            for field in ["commands", "mcp", "models"] {
+                let cached_arr = cached.get(field).cloned();
+                if let Some(arr) = cached_arr {
+                    if arr.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
+                        result[field] = arr;
+                    }
+                }
+            }
+        }
+    } else {
+        // Rich result: persist for future degraded runs.
+        save_persistent(agent_id, profile_name.as_deref(), cwd_opt, &result);
+    }
+
     // Background revalidation for stale sources.
     if !stale_sources.is_empty() {
         let stale = stale_sources;
@@ -601,13 +805,9 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
         let cwd_owned = resolved_cwd.clone();
         tokio::spawn(async move {
             for source in stale {
-                let _ = fetch_source_dedup(
-                    source,
-                    &kind_owned,
-                    &agent_id_owned,
-                    cwd_owned.as_deref(),
-                )
-                .await;
+                let _ =
+                    fetch_source_dedup(source, &kind_owned, &agent_id_owned, cwd_owned.as_deref())
+                        .await;
             }
         });
     }
@@ -631,8 +831,13 @@ pub fn list_plugins() -> Vec<Value> {
 
 fn scan_plugins() -> Vec<Value> {
     let mut out = Vec::new();
-    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
-    let marketplaces_dir = std::path::PathBuf::from(&home).join(".claude").join("plugins").join("marketplaces");
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
+    let marketplaces_dir = std::path::PathBuf::from(&home)
+        .join(".claude")
+        .join("plugins")
+        .join("marketplaces");
     let entries = match std::fs::read_dir(&marketplaces_dir) {
         Ok(e) => e,
         Err(_) => return out,
@@ -644,7 +849,13 @@ fn scan_plugins() -> Vec<Value> {
         let marketplace = entry.file_name().to_string_lossy().to_string();
         let mj = entry.path().join(".claude-plugin").join("marketplace.json");
         let alt = entry.path().join("marketplace.json");
-        let path = if mj.exists() { mj } else if alt.exists() { alt } else { continue };
+        let path = if mj.exists() {
+            mj
+        } else if alt.exists() {
+            alt
+        } else {
+            continue;
+        };
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => continue,
@@ -653,7 +864,11 @@ fn scan_plugins() -> Vec<Value> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let plugins = parsed.get("plugins").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let plugins = parsed
+            .get("plugins")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         for p in plugins {
             out.push(json!({
                 "name": p.get("name").and_then(|v| v.as_str()).unwrap_or(""),
@@ -721,12 +936,7 @@ mod tests {
             "error": "SDK connection failed"
         });
 
-        let result = merge_sources(
-            &json!([]),
-            &sdk_with_error,
-            &json!([]),
-            &json!([]),
-        );
+        let result = merge_sources(&json!([]), &sdk_with_error, &json!([]), &json!([]));
 
         assert!(result.get("errors").is_some());
         let errors = result["errors"].as_array().unwrap();
@@ -743,12 +953,7 @@ mod tests {
             "mcp": [],
         });
 
-        let result = merge_sources(
-            &json!([]),
-            &sdk_success,
-            &json!([]),
-            &json!([]),
-        );
+        let result = merge_sources(&json!([]), &sdk_success, &json!([]), &json!([]));
 
         assert!(result.get("errors").is_some());
         let errors = result["errors"].as_array().unwrap();
@@ -773,9 +978,7 @@ mod tests {
 
         // Should have 3 unique skills (shared-skill deduped)
         assert_eq!(skills.len(), 3);
-        let names: Vec<&str> = skills.iter()
-            .filter_map(|s| s["name"].as_str())
-            .collect();
+        let names: Vec<&str> = skills.iter().filter_map(|s| s["name"].as_str()).collect();
         assert!(names.contains(&"shared-skill"));
         assert!(names.contains(&"unique-conv"));
         assert!(names.contains(&"unique-sdk"));
@@ -802,10 +1005,19 @@ mod tests {
         invalidate_agent("agent-1", Some("/path1"));
 
         // agent-1 entries should be gone
-        assert!(matches!(check_cache("sdk_bundle::agent-1::/path1"), CacheStatus::Miss));
-        assert!(matches!(check_cache("plugins::agent-1::/path1"), CacheStatus::Miss));
+        assert!(matches!(
+            check_cache("sdk_bundle::agent-1::/path1"),
+            CacheStatus::Miss
+        ));
+        assert!(matches!(
+            check_cache("plugins::agent-1::/path1"),
+            CacheStatus::Miss
+        ));
 
         // agent-2 entries should still be there
-        assert!(matches!(check_cache("sdk_bundle::agent-2::/path2"), CacheStatus::Fresh(_)));
+        assert!(matches!(
+            check_cache("sdk_bundle::agent-2::/path2"),
+            CacheStatus::Fresh(_)
+        ));
     }
 }

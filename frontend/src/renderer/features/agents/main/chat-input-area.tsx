@@ -51,9 +51,10 @@ import {
   type ConversationFileChange,
 } from "../atoms"
 import { useAgentConversationStore } from "../stores/conversation-store"
-import { AgentsSlashCommand, type SlashCommandOption } from "../commands"
 import { AgentModelSelector } from "../components/agent-model-selector"
 import { getCoreAgentIcon } from "../components/core-agent-selector"
+import { AgentsSlashCommand } from "../commands"
+import type { SlashCommandOption } from "../commands"
 import { PermissionModeSelector } from "../components/permission-mode-selector"
 import {
   loadGroupAgentIds,
@@ -565,14 +566,13 @@ export const ChatInputArea = memo(function ChatInputArea({
 
   // Mention dropdown subpage navigation state
   const [showingFilesList, setShowingFilesList] = useState(false)
-  const [showingSkillsList, setShowingSkillsList] = useState(false)
   const [showingAgentsList, setShowingAgentsList] = useState(false)
-  const [showingToolsList, setShowingToolsList] = useState(false)
 
   // Slash command dropdown state
   const [showSlashDropdown, setShowSlashDropdown] = useState(false)
   const [slashSearchText, setSlashSearchText] = useState("")
   const [slashPosition, setSlashPosition] = useState({ top: 0, left: 0 })
+
   const [nativeTriggerMatch, setNativeTriggerMatch] = useState<NativeTriggerHintPayload | null>(null)
 
   // Model dropdown state
@@ -584,6 +584,11 @@ export const ChatInputArea = memo(function ChatInputArea({
   const [selectedConversationModelId, setSelectedConversationModelId] = useAtom(
     conversationModelIdAtom,
   )
+
+  // Avoid stale model selections leaking across agents/conversations.
+  useEffect(() => {
+    setSelectedConversationModelId("")
+  }, [agentId, provider])
   const conversationCodexModelIdAtom = useMemo(
     () => conversationCodexModelIdAtomFamily(conversationId),
     [conversationId],
@@ -604,12 +609,24 @@ export const ChatInputArea = memo(function ChatInputArea({
   const setLastSelectedCodexThinking = useSetAtom(lastSelectedCodexThinkingAtom)
   const availableModels = useAvailableModels(agentId)
   const queryClient = trpc.useContext()
+  const { data: runtimeAgentsForModelSwitch } = trpc.ergatai.listAgents.useQuery(undefined, {
+    enabled: !!agentId,
+    refetchOnWindowFocus: false,
+  })
+  const isAgentKnownNotAliveForModelSwitch = useMemo(
+    () =>
+      !!agentId &&
+      runtimeAgentsForModelSwitch !== undefined &&
+      !(runtimeAgentsForModelSwitch ?? []).some((a) => a.agent_id === agentId && a.is_alive),
+    [agentId, runtimeAgentsForModelSwitch],
+  )
   const setAgentModelMutation = trpc.ergatai.setAgentModel.useMutation({
     onSuccess: () => {
       void queryClient.ergatai.listAgents.invalidate()
       void queryClient.ergatai.getAgentProfileModels.invalidate()
     },
     onError: (error) => {
+      if (error.message.includes("agent not found")) return
       toast.error(`Failed to switch model: ${error.message}`)
     },
   })
@@ -1211,16 +1228,8 @@ export const ChatInputArea = memo(function ChatInputArea({
         setShowingFilesList(true)
         return
       }
-      if (mention.id === "skills") {
-        setShowingSkillsList(true)
-        return
-      }
       if (mention.id === "agents") {
         setShowingAgentsList(true)
-        return
-      }
-      if (mention.id === "tools") {
-        setShowingToolsList(true)
         return
       }
     }
@@ -1230,9 +1239,7 @@ export const ChatInputArea = memo(function ChatInputArea({
     setShowMentionDropdown(false)
     // Reset subpage state
     setShowingFilesList(false)
-    setShowingSkillsList(false)
     setShowingAgentsList(false)
-    setShowingToolsList(false)
   }, [editorRef])
 
   // Slash command handlers
@@ -1251,56 +1258,11 @@ export const ChatInputArea = memo(function ChatInputArea({
 
   const handleSlashSelect = useCallback(
     (command: SlashCommandOption) => {
-      // Clear the slash command text from editor
       editorRef.current?.clearSlashCommand()
       setShowSlashDropdown(false)
-
-      // Handle builtin commands that change app state (no text input needed)
-      if (command.category === "builtin") {
-        switch (command.name) {
-          case "clear":
-            // Create a new conversation (fresh conversation)
-            if (onCreateNewConversation) {
-              onCreateNewConversation()
-            }
-            return
-          case "plan":
-            if (conversationMode !== "plan") {
-              updateMode("plan")
-            }
-            return
-          case "agent":
-            if (conversationMode === "plan") {
-              updateMode("agent")
-            }
-            return
-          case "files":
-            setMentionScope("resources")
-            setShowingFilesList(true)
-            setShowMentionDropdown(true)
-            return
-          case "skills":
-            setMentionScope("resources")
-            setShowingSkillsList(true)
-            setShowMentionDropdown(true)
-            return
-          case "mcp":
-            setMentionScope("resources")
-            setShowingToolsList(true)
-            setShowMentionDropdown(true)
-            return
-          case "compact":
-            // Trigger context compaction
-            onCompact()
-            return
-        }
-      }
-
-      // For all other commands (builtin prompts):
-      // insert the command and let user add arguments or press Enter to send
       editorRef.current?.setValue(`/${command.name} `)
     },
-    [conversationMode, updateMode, onCreateNewConversation, onCompact, editorRef],
+    [editorRef],
   )
 
   // Paste handler for images, plain text, and large text (saved as files)
@@ -1658,13 +1620,11 @@ export const ChatInputArea = memo(function ChatInputArea({
                     setShowMentionDropdown(false)
                     // Reset subpage state when closing
                     setShowingFilesList(false)
-                    setShowingSkillsList(false)
                     setShowingAgentsList(false)
-                    setShowingToolsList(false)
                   }}
+                  nativeTriggers={nativeTriggers}
                   onSlashTrigger={handleSlashTrigger}
                   onCloseSlashTrigger={handleCloseSlashTrigger}
-                  nativeTriggers={nativeTriggers}
                   onNativeTrigger={setNativeTriggerMatch}
                   onCloseNativeTrigger={() => setNativeTriggerMatch(null)}
                   onContentChange={handleContentChange}
@@ -1727,8 +1687,8 @@ export const ChatInputArea = memo(function ChatInputArea({
 	                            if (!model) return
 	                            setSelectedConversationModelId(model.id)
 	                            setLastSelectedModelId(model.id)
-	                            if (agentId) {
-	                              setAgentModelMutation.mutate({ agentId, model: model.id })
+	                            if (agentId && !isAgentKnownNotAliveForModelSwitch) {
+	                              setAgentModelMutation.mutate({ agentId, model: model.id, conversationId })
 	                            }
 	                          },
 	                          hasCustomModelConfig: hasCustomClaudeConfig,
@@ -1759,8 +1719,8 @@ export const ChatInputArea = memo(function ChatInputArea({
 	                            setSelectedConversationCodexThinking(nextThinking)
 	                            setLastSelectedCodexModelId(model.id)
 	                            setLastSelectedCodexThinking(nextThinking)
-	                            if (agentId) {
-	                              setAgentModelMutation.mutate({ agentId, model: model.id })
+	                            if (agentId && !isAgentKnownNotAliveForModelSwitch) {
+	                              setAgentModelMutation.mutate({ agentId, model: model.id, conversationId })
 	                            }
 	                          },
 	                          selectedThinking: selectedCodexThinking,
@@ -1902,9 +1862,7 @@ export const ChatInputArea = memo(function ChatInputArea({
           setShowMentionDropdown(false)
           // Reset subpage state when closing
           setShowingFilesList(false)
-          setShowingSkillsList(false)
           setShowingAgentsList(false)
-          setShowingToolsList(false)
         }}
         onSelect={handleMentionSelect}
         searchText={mentionSearchText}
@@ -1916,12 +1874,9 @@ export const ChatInputArea = memo(function ChatInputArea({
         sandboxId={sandboxId}
         projectPath={projectPath}
         changedFiles={changedFiles}
-        agentId={agentId ?? undefined}
         // Subpage navigation state
         showingFilesList={showingFilesList}
-        showingSkillsList={showingSkillsList}
         showingAgentsList={showingAgentsList}
-        showingToolsList={showingToolsList}
         scope={mentionScope}
         boundAgents={isGroupMode ? boundGroupAgents : undefined}
       />
@@ -1936,6 +1891,7 @@ export const ChatInputArea = memo(function ChatInputArea({
         containerWidth={inputContainerWidth}
         containerLeft={inputContainerLeft}
         chatId={parentChatId}
+        cwd={projectPath}
         mode={conversationMode}
       />
 

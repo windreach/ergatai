@@ -122,8 +122,8 @@ scripts/
 
 ## 前端
 
-- `@` / `/` 触发时调用 `/api/v1/agents/:id/discovery`。
-- 合并展示 skills、commands、MCP、plugins。
+- `@` / `/` 触发时调用 `/api/v1/agents/:id/discovery`（仅作为辅助数据源）。
+- 前端 mention 仅保留 `@agents` 与文件识别；skills/commands/MCP 不再作为 mention provider。
 - 不再自己扫描文件系统，不感知 SDK 存在。
 - plugins：当前由前端 main 进程扫描 Claude marketplace；若纳入统一端点，需决定后端复刻或前端继续负责（见风险）。
 

@@ -48,7 +48,7 @@ function getFilename(path: string): string {
 export const filesProvider = createMentionProvider<FileData>({
   id: "files",
   name: "Files & Folders",
-  category: {
+  group: {
     label: "Files & Folders",
     priority: 100,
   },

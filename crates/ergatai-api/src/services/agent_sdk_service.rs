@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::path::PathBuf;
-use tokio::process::Command;
 use std::sync::{Arc, Mutex};
+use tokio::process::Command;
 // atomic import removed
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
@@ -53,7 +53,13 @@ fn build_node_path() -> String {
         }
     } else if let Some(ref home_dir) = home {
         // 3. Default managed adapters location: $HOME/.local/share/ergatai/adapters
-        let adapters_base = home_dir.join(".local").join("share").join("ergatai").join("adapters").join("managed").join("releases");
+        let adapters_base = home_dir
+            .join(".local")
+            .join("share")
+            .join("ergatai")
+            .join("adapters")
+            .join("managed")
+            .join("releases");
         if adapters_base.exists() {
             if let Ok(entries) = std::fs::read_dir(&adapters_base) {
                 for entry in entries.flatten() {
@@ -68,7 +74,10 @@ fn build_node_path() -> String {
         // 4. OpenCode SDK locations
         let opencode_paths = [
             home_dir.join(".opencode").join("node_modules"),
-            home_dir.join(".config").join("opencode").join("node_modules"),
+            home_dir
+                .join(".config")
+                .join("opencode")
+                .join("node_modules"),
         ];
         for p in opencode_paths {
             if p.exists() && !paths.contains(&p) {
@@ -78,7 +87,8 @@ fn build_node_path() -> String {
     }
 
     // 5. System-wide Claude ACP adapter (only if it exists)
-    let system_claude = PathBuf::from("/usr/lib/node_modules/@agentclientprotocol/claude-agent-acp/node_modules");
+    let system_claude =
+        PathBuf::from("/usr/lib/node_modules/@agentclientprotocol/claude-agent-acp/node_modules");
     if system_claude.exists() && !paths.contains(&system_claude) {
         paths.push(system_claude);
     }
@@ -109,16 +119,18 @@ static SDK_SEMAPHORE: Semaphore = Semaphore::const_new(4);
 
 fn get_opencode_state() -> Arc<AsyncMutex<OpenCodeServerState>> {
     let mut guard = OPENCODE_STATE.lock().unwrap();
-    guard.get_or_insert_with(|| {
-        Arc::new(AsyncMutex::new(OpenCodeServerState {
-            last_health_check: Instant::now() - Duration::from_secs(60), // Force initial check
-            is_healthy: false,
-        }))
-    }).clone()
+    guard
+        .get_or_insert_with(|| {
+            Arc::new(AsyncMutex::new(OpenCodeServerState {
+                last_health_check: Instant::now() - Duration::from_secs(60), // Force initial check
+                is_healthy: false,
+            }))
+        })
+        .clone()
 }
 
 /// Check if OpenCode server is healthy via HTTP ping
-fn opencode_base_url() -> String {
+async fn opencode_base_url() -> String {
     if let Ok(url) = std::env::var("OPENCODE_URL") {
         if !url.trim().is_empty() {
             return url;
@@ -127,11 +139,35 @@ fn opencode_base_url() -> String {
     if let Some(url) = OPENCODE_URL_OVERRIDE.lock().unwrap().clone() {
         return url;
     }
+    // Try to discover the running OpenCode service URL.
+    if let Ok(output) = tokio::process::Command::new("opencode")
+        .args(["service", "status"])
+        .output()
+        .await
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let parsed = stdout.split_whitespace().find_map(|token| {
+                let token = token.trim_end_matches([')', ',', ';', '.', ']', '}']);
+                if (token.starts_with("http://") || token.starts_with("https://"))
+                    && token.len() > "http://".len()
+                {
+                    Some(token.to_string())
+                } else {
+                    None
+                }
+            });
+            if let Some(url) = parsed {
+                *OPENCODE_URL_OVERRIDE.lock().unwrap() = Some(url.clone());
+                return url;
+            }
+        }
+    }
     "http://127.0.0.1:4096".to_string()
 }
 
 async fn check_opencode_health() -> bool {
-    let url = opencode_base_url();
+    let url = opencode_base_url().await;
     let health_url = format!("{}/health", url.trim_end_matches('/'));
 
     // Simple HTTP GET with timeout
@@ -140,12 +176,10 @@ async fn check_opencode_health() -> bool {
         .build();
 
     match client {
-        Ok(c) => {
-            match c.get(&health_url).send().await {
-                Ok(resp) => resp.status().is_success(),
-                Err(_) => false,
-            }
-        }
+        Ok(c) => match c.get(&health_url).send().await {
+            Ok(resp) => resp.status().is_success(),
+            Err(_) => false,
+        },
         Err(_) => false,
     }
 }
@@ -168,9 +202,7 @@ async fn try_autostart_opencode() {
     tracing::info!("Attempting to auto-start OpenCode background service");
     let output = tokio::time::timeout(
         Duration::from_secs(15),
-        Command::new("opencode")
-            .args(["service", "start"])
-            .output(),
+        Command::new("opencode").args(["service", "start"]).output(),
     )
     .await;
 
@@ -181,9 +213,7 @@ async fn try_autostart_opencode() {
             // Parse the server URL defensively: strip trailing punctuation and
             // validate it looks like an HTTP(S) URL.
             let parsed_url = stdout.split_whitespace().find_map(|token| {
-                let token = token.trim_end_matches(|c: char| {
-                    matches!(c, ')' | ',' | ';' | '.' | ']' | '}')
-                });
+                let token = token.trim_end_matches([')', ',', ';', '.', ']', '}']);
                 if (token.starts_with("http://") || token.starts_with("https://"))
                     && token.len() > "http://".len()
                 {
@@ -239,7 +269,12 @@ async fn ensure_opencode_ready() -> bool {
     healthy
 }
 
-pub async fn switch_model(agent: &str, model: &str, cwd: Option<&str>, session_id: Option<&str>) -> Value {
+pub async fn switch_model(
+    agent: &str,
+    model: &str,
+    cwd: Option<&str>,
+    session_id: Option<&str>,
+) -> Value {
     let script = crate::services::embedded_scripts::model_script_path();
     let mut cmd = Command::new("node");
     cmd.arg(script).arg(agent).arg(model);
@@ -250,7 +285,7 @@ pub async fn switch_model(agent: &str, model: &str, cwd: Option<&str>, session_i
         cmd.env("SESSION_ID", s);
     }
     if agent == "opencode" {
-        cmd.env("OPENCODE_URL", opencode_base_url());
+        cmd.env("OPENCODE_URL", opencode_base_url().await);
     }
 
     // Build NODE_PATH dynamically based on user home and env vars
@@ -295,17 +330,15 @@ pub async fn switch_model(agent: &str, model: &str, cwd: Option<&str>, session_i
 
 pub async fn discover(agent: &str, cwd: Option<&str>) -> Value {
     // For OpenCode, check server health first to avoid hanging SDK calls
-    if agent == "opencode" {
-        if !ensure_opencode_ready().await {
-            tracing::debug!("OpenCode server unavailable, returning empty discovery result");
-            return serde_json::json!({
-                "skills": [],
-                "commands": [],
-                "models": [],
-                "mcp": [],
-                "error": "OpenCode server not reachable"
-            });
-        }
+    if agent == "opencode" && !ensure_opencode_ready().await {
+        tracing::debug!("OpenCode server unavailable, returning empty discovery result");
+        return serde_json::json!({
+            "skills": [],
+            "commands": [],
+            "models": [],
+            "mcp": [],
+            "error": "OpenCode server not reachable"
+        });
     }
 
     let script = crate::services::embedded_scripts::discover_script_path();
@@ -315,7 +348,7 @@ pub async fn discover(agent: &str, cwd: Option<&str>) -> Value {
         cmd.arg(c);
     }
     if agent == "opencode" {
-        cmd.env("OPENCODE_URL", opencode_base_url());
+        cmd.env("OPENCODE_URL", opencode_base_url().await);
     }
 
     // Build NODE_PATH dynamically based on user home and env vars
@@ -369,14 +402,17 @@ pub async fn discover(agent: &str, cwd: Option<&str>) -> Value {
 /// Inject MCP servers into a running agent via SDK.
 ///
 /// `servers_json` is a JSON object mapping server name -> SDK-shaped config.
-pub async fn inject_mcp(agent: &str, cwd: Option<&str>, session_id: Option<&str>, servers_json: &str) -> Value {
-    if agent == "opencode" {
-        if !ensure_opencode_ready().await {
-            return serde_json::json!({
-                "ok": false,
-                "error": "OpenCode server not reachable"
-            });
-        }
+pub async fn inject_mcp(
+    agent: &str,
+    cwd: Option<&str>,
+    session_id: Option<&str>,
+    servers_json: &str,
+) -> Value {
+    if agent == "opencode" && !ensure_opencode_ready().await {
+        return serde_json::json!({
+            "ok": false,
+            "error": "OpenCode server not reachable"
+        });
     }
 
     let script = crate::services::embedded_scripts::inject_mcp_script_path();
@@ -389,7 +425,7 @@ pub async fn inject_mcp(agent: &str, cwd: Option<&str>, session_id: Option<&str>
         cmd.arg(s);
     }
     if agent == "opencode" {
-        cmd.env("OPENCODE_URL", opencode_base_url());
+        cmd.env("OPENCODE_URL", opencode_base_url().await);
     }
 
     let node_path = build_node_path();

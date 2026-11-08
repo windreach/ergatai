@@ -242,7 +242,7 @@ function createMCPIconElement(): SVGSVGElement {
 }
 
 // Create SVG icon element in DOM based on file extension or type
-export function createFileIconElement(filename: string, type?: "file" | "folder" | "skill" | "agent" | "category" | "tool"): SVGSVGElement {
+export function createFileIconElement(filename: string, type?: "file" | "folder" | "skill" | "agent" | "category" | "tool" | "command" | "plugin"): SVGSVGElement {
   // Tool type: create MCP icon directly via DOM API (flushSync is unreliable for this icon)
   if (type === "tool") {
     return createMCPIconElement()

@@ -1,6 +1,49 @@
 use axum::extract::{Path, Query};
 use axum::Json;
+use lru::LruCache;
 use serde::Deserialize;
+use std::num::NonZeroUsize;
+use std::sync::LazyLock;
+use std::sync::Mutex;
+
+/// Maximum number of conversation model overrides to keep in memory.
+/// Oldest entries are evicted when this limit is reached (LRU policy).
+const CONVERSATION_MODEL_CACHE_SIZE: usize = 1000;
+
+fn conversation_model_store() -> &'static Mutex<LruCache<String, String>> {
+    static STORE: LazyLock<Mutex<LruCache<String, String>>> = LazyLock::new(|| {
+        Mutex::new(LruCache::new(
+            NonZeroUsize::new(CONVERSATION_MODEL_CACHE_SIZE).unwrap(),
+        ))
+    });
+    &STORE
+}
+
+pub fn set_conversation_model_override(conv: &str, model: &str) {
+    if let Ok(mut g) = conversation_model_store().lock() {
+        g.put(conv.to_string(), model.to_string());
+    }
+}
+
+pub fn get_conversation_model_override(conv: &str) -> Option<String> {
+    // LruCache::get requires &mut self to update access order
+    conversation_model_store().lock().ok()?.get(conv).cloned()
+}
+
+pub async fn apply_model_override(agent_id: &str, conversation_id: &str) {
+    if let Some(model) = get_conversation_model_override(conversation_id) {
+        let body = SwitchModelRequest {
+            model,
+            session_id: None,
+            conversation_id: None,
+        };
+        let result = switch_model(Path(agent_id.to_string()), Json(body)).await;
+        // Log if the switch returned an error in the JSON response
+        if let Some(error) = result.0.get("error") {
+            tracing::warn!(%agent_id, %conversation_id, %error, "Failed to apply model override");
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct DiscoverQuery {
@@ -21,6 +64,8 @@ pub async fn discover(Query(q): Query<DiscoverQuery>) -> Json<serde_json::Value>
 pub struct SwitchModelRequest {
     pub model: String,
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
 }
 
 /// POST /api/v1/agents/:id/model
@@ -36,6 +81,16 @@ pub async fn switch_model(
     let agent_info = runtime.get_agent(&agent_id).await;
 
     if agent_info.is_none() {
+        if let Some(conv) = body.conversation_id.as_deref() {
+            if !body.model.trim().is_empty() {
+                set_conversation_model_override(conv, body.model.trim());
+                return Json(serde_json::json!({
+                    "ok": true,
+                    "recorded": true,
+                    "message": "model recorded for agent resume"
+                }));
+            }
+        }
         return Json(serde_json::json!({
             "ok": false,
             "error": format!("agent not found: {}", agent_id)
@@ -102,7 +157,9 @@ pub async fn switch_model(
                 tracing::debug!(agent_id = %agent_id, "Skipping SDK model refresh: unknown agent kind");
             } else {
                 match crate::services::profile_service::refresh_profile_models_via_sdk(
-                    &kind, pn, cwd.as_deref(),
+                    &kind,
+                    pn,
+                    cwd.as_deref(),
                 )
                 .await
                 {
@@ -120,6 +177,14 @@ pub async fn switch_model(
                     }
                 }
             }
+        }
+    }
+
+    // Persist the selected model for this conversation so a later auto-resume
+    // can re-apply it to the restored agent.
+    if result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if let Some(conv) = body.conversation_id.as_deref() {
+            set_conversation_model_override(conv, body.model.trim());
         }
     }
 
@@ -271,7 +336,9 @@ pub async fn inject_mcp(
             if ok {
                 info.handle.metadata.remove("mcp_pending_injection");
             } else {
-                info.handle.metadata.insert("mcp_pending_injection".to_string(), "true".to_string());
+                info.handle
+                    .metadata
+                    .insert("mcp_pending_injection".to_string(), "true".to_string());
             }
         }
     }
@@ -287,15 +354,24 @@ pub async fn inject_mcp_running() -> Json<serde_json::Value> {
     let agents = runtime.list_agents().await;
     let mut results = Vec::new();
     for agent in agents {
-        let is_inactive = matches!(agent.lifecycle, ergatai_runtime::agent_lifecycle::AgentLifecycleState::Suspended { .. })
-            || matches!(agent.lifecycle, ergatai_runtime::agent_lifecycle::AgentLifecycleState::Created)
-            || matches!(agent.lifecycle, ergatai_runtime::agent_lifecycle::AgentLifecycleState::Terminated { .. });
+        let is_inactive = matches!(
+            agent.lifecycle,
+            ergatai_runtime::agent_lifecycle::AgentLifecycleState::Suspended { .. }
+        ) || matches!(
+            agent.lifecycle,
+            ergatai_runtime::agent_lifecycle::AgentLifecycleState::Created
+        ) || matches!(
+            agent.lifecycle,
+            ergatai_runtime::agent_lifecycle::AgentLifecycleState::Terminated { .. }
+        );
         if is_inactive {
             // Mark pending and skip
             {
                 let mut guard = runtime.registry().write().await;
                 if let Some(info) = guard.get_mut(&agent.agent_id) {
-                    info.handle.metadata.insert("mcp_pending_injection".to_string(), "true".to_string());
+                    info.handle
+                        .metadata
+                        .insert("mcp_pending_injection".to_string(), "true".to_string());
                 }
             }
             results.push(serde_json::json!({
@@ -307,7 +383,11 @@ pub async fn inject_mcp_running() -> Json<serde_json::Value> {
             continue;
         }
         // Reuse per-agent logic by calling inject_mcp handler is not possible (needs Path); inline minimal.
-        let cwd = agent.handle.metadata.get("work_dir").cloned()
+        let cwd = agent
+            .handle
+            .metadata
+            .get("work_dir")
+            .cloned()
             .or_else(|| agent.handle.workspace.metadata.get("work_dir").cloned());
         let profile_name = agent.profile.clone();
         let mut kind = String::new();
@@ -315,10 +395,15 @@ pub async fn inject_mcp_running() -> Json<serde_json::Value> {
             if let Ok(reg) = crate::services::profile_service::get_profile_registry() {
                 if let Ok(profiles) = reg.list_with_status() {
                     if let Some(p) = profiles.into_iter().find(|x| x.name == pn) {
-                        let hay = format!("{} {} {}", p.name, p.command, p.agent_type).to_lowercase();
-                        if hay.contains("opencode") { kind = "opencode".into(); }
-                        else if hay.contains("codex") { kind = "codex".into(); }
-                        else if hay.contains("claude") { kind = "claude".into(); }
+                        let hay =
+                            format!("{} {} {}", p.name, p.command, p.agent_type).to_lowercase();
+                        if hay.contains("opencode") {
+                            kind = "opencode".into();
+                        } else if hay.contains("codex") {
+                            kind = "codex".into();
+                        } else if hay.contains("claude") {
+                            kind = "claude".into();
+                        }
                     }
                 }
             }
@@ -326,19 +411,30 @@ pub async fn inject_mcp_running() -> Json<serde_json::Value> {
         if kind.is_empty() {
             if let Some(pn) = profile_name.as_deref() {
                 let hay = pn.to_lowercase();
-                if hay.contains("opencode") { kind = "opencode".into(); }
-                else if hay.contains("codex") { kind = "codex".into(); }
-                else if hay.contains("claude") { kind = "claude".into(); }
+                if hay.contains("opencode") {
+                    kind = "opencode".into();
+                } else if hay.contains("codex") {
+                    kind = "codex".into();
+                } else if hay.contains("claude") {
+                    kind = "claude".into();
+                }
             }
         }
 
-        let session_id = runtime.backend().session_id(&agent.agent_id).await.ok().flatten();
+        let session_id = runtime
+            .backend()
+            .session_id(&agent.agent_id)
+            .await
+            .ok()
+            .flatten();
 
         // Build servers map
         let mut map = serde_json::Map::new();
         if let Ok(servers) = crate::user_data_db::mcp_servers::list() {
             for s in servers {
-                if !s.enabled { continue; }
+                if !s.enabled {
+                    continue;
+                }
                 let cfg = match s.server_type.as_str() {
                     "stdio" => serde_json::json!({
                         "type": "stdio",
@@ -378,7 +474,9 @@ pub async fn inject_mcp_running() -> Json<serde_json::Value> {
                 if ok {
                     info.handle.metadata.remove("mcp_pending_injection");
                 } else {
-                    info.handle.metadata.insert("mcp_pending_injection".to_string(), "true".to_string());
+                    info.handle
+                        .metadata
+                        .insert("mcp_pending_injection".to_string(), "true".to_string());
                 }
             }
         }
@@ -412,12 +510,21 @@ pub async fn process_pending_mcp_injections() -> Json<serde_json::Value> {
             continue;
         }
         // Only inject when alive
-        let alive = !matches!(agent.lifecycle, ergatai_runtime::agent_lifecycle::AgentLifecycleState::Suspended { .. })
-            && !matches!(agent.lifecycle, ergatai_runtime::agent_lifecycle::AgentLifecycleState::Terminated { .. });
+        let alive = !matches!(
+            agent.lifecycle,
+            ergatai_runtime::agent_lifecycle::AgentLifecycleState::Suspended { .. }
+        ) && !matches!(
+            agent.lifecycle,
+            ergatai_runtime::agent_lifecycle::AgentLifecycleState::Terminated { .. }
+        );
         if !alive {
             continue;
         }
-        let cwd = agent.handle.metadata.get("work_dir").cloned()
+        let cwd = agent
+            .handle
+            .metadata
+            .get("work_dir")
+            .cloned()
             .or_else(|| agent.handle.workspace.metadata.get("work_dir").cloned());
         let profile_name = agent.profile.clone();
         let mut kind = String::new();
@@ -425,10 +532,15 @@ pub async fn process_pending_mcp_injections() -> Json<serde_json::Value> {
             if let Ok(reg) = crate::services::profile_service::get_profile_registry() {
                 if let Ok(profiles) = reg.list_with_status() {
                     if let Some(p) = profiles.into_iter().find(|x| x.name == pn) {
-                        let hay = format!("{} {} {}", p.name, p.command, p.agent_type).to_lowercase();
-                        if hay.contains("opencode") { kind = "opencode".into(); }
-                        else if hay.contains("codex") { kind = "codex".into(); }
-                        else if hay.contains("claude") { kind = "claude".into(); }
+                        let hay =
+                            format!("{} {} {}", p.name, p.command, p.agent_type).to_lowercase();
+                        if hay.contains("opencode") {
+                            kind = "opencode".into();
+                        } else if hay.contains("codex") {
+                            kind = "codex".into();
+                        } else if hay.contains("claude") {
+                            kind = "claude".into();
+                        }
                     }
                 }
             }
@@ -436,18 +548,29 @@ pub async fn process_pending_mcp_injections() -> Json<serde_json::Value> {
         if kind.is_empty() {
             if let Some(pn) = profile_name.as_deref() {
                 let hay = pn.to_lowercase();
-                if hay.contains("opencode") { kind = "opencode".into(); }
-                else if hay.contains("codex") { kind = "codex".into(); }
-                else if hay.contains("claude") { kind = "claude".into(); }
+                if hay.contains("opencode") {
+                    kind = "opencode".into();
+                } else if hay.contains("codex") {
+                    kind = "codex".into();
+                } else if hay.contains("claude") {
+                    kind = "claude".into();
+                }
             }
         }
 
-        let session_id = runtime.backend().session_id(&agent.agent_id).await.ok().flatten();
+        let session_id = runtime
+            .backend()
+            .session_id(&agent.agent_id)
+            .await
+            .ok()
+            .flatten();
 
         let mut map = serde_json::Map::new();
         if let Ok(servers) = crate::user_data_db::mcp_servers::list() {
             for s in servers {
-                if !s.enabled { continue; }
+                if !s.enabled {
+                    continue;
+                }
                 let cfg = match s.server_type.as_str() {
                     "stdio" => serde_json::json!({
                         "type": "stdio",

@@ -13,8 +13,8 @@ import {
 } from "react"
 import { createPortal } from "react-dom"
 import type { SlashCommandOption } from "./types"
-import { filterBuiltinCommands } from "./builtin-commands"
 import type { AgentMode } from "../atoms"
+import { useDiscoveryGroups } from "../discovery/use-discovery-groups"
 import { getDropdownDimensions } from "../ui/dropdown-sizes"
 
 interface AgentsSlashCommandProps {
@@ -26,6 +26,7 @@ interface AgentsSlashCommandProps {
   containerWidth?: number
   containerLeft?: number
   chatId?: string
+  cwd?: string
   mode?: AgentMode
   disabledCommands?: string[]
 }
@@ -42,6 +43,7 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
   containerWidth,
   containerLeft,
   chatId,
+  cwd,
   mode,
   disabledCommands,
 }: AgentsSlashCommandProps) {
@@ -70,31 +72,21 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
   // Use the first binding's agentId (or the one matching the chat)
   const agentId = bindings?.[0]?.agentId
 
-  // Fetch available commands from the running agent via ergatai backend
-  const { data: agentCommandsData } = trpc.ergatai.getAgentCommands.useQuery(
-    { agentId: agentId ?? "" },
-    {
-      enabled: isOpen && !!agentId,
-      staleTime: 30_000, // Cache for 30 seconds - commands rarely change mid-session
-      refetchOnWindowFocus: false,
-    },
-  )
+  // Generic discovery aggregation (shared abstraction for trigger dropdowns).
+  const { groups: discoveryGroups } = useDiscoveryGroups(isOpen ? agentId : undefined, cwd)
 
-  // Transform backend commands to SlashCommandOption
-  // The ergatai backend returns { commands: Array<{ name: string; description?: string }> }
-  // but ergataiFetch doesn't have typed returns, so we use unknown and validate
   const agentCommands: SlashCommandOption[] = useMemo(() => {
-    const data = agentCommandsData as { commands?: Array<{ name: string; description?: string }> } | undefined
-    const raw = data?.commands
-    if (!Array.isArray(raw)) return []
-    return raw.map((cmd) => ({
-      id: `agent:${cmd.name}`,
-      name: cmd.name,
-      command: `/${cmd.name}`,
-      description: cmd.description || "",
-      category: "agent" as const,
-    }))
-  }, [agentCommandsData])
+    return discoveryGroups.flatMap((g) =>
+      g.items.map((it) => ({
+        id: `${it.source ?? "agent"}:${it.name}`,
+        name: it.name,
+        command: `/${it.name}`,
+        description: it.description || "",
+        category: "agent" as const,
+        group: g.id,
+      })),
+    )
+  }, [discoveryGroups])
 
   // Handle command selection
   const handleSelect = useCallback(
@@ -104,54 +96,16 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
     [onSelect],
   )
 
-  // Combine builtin + agent commands, filtered by search
+  // Show only backend SDK-reported agent commands.
   const options: SlashCommandOption[] = useMemo(() => {
-    let builtinFiltered = filterBuiltinCommands(debouncedSearchText)
-
-    // Hide /plan when already in Plan mode, hide /agent when already in Agent mode
-    if (mode !== undefined) {
-      builtinFiltered = builtinFiltered.filter((cmd) => {
-        if (mode === "plan" && cmd.name === "plan") return false
-        if (mode === "agent" && cmd.name === "agent") return false
-        return true
-      })
-    }
-
-    // Filter out disabled commands
-    if (disabledCommands?.length) {
-      builtinFiltered = builtinFiltered.filter(
-        // react-doctor-disable-next-line js-set-map-lookups
-        (cmd) => !disabledCommands.includes(cmd.name),
-      )
-    }
-
-    // Filter agent commands by search
-    let agentFiltered = agentCommands
-    if (debouncedSearchText) {
-      const query = debouncedSearchText.toLowerCase()
-      agentFiltered = agentCommands.filter(
-        (cmd) =>
-          cmd.name.toLowerCase().includes(query) ||
-          cmd.command.toLowerCase().includes(query),
-      )
-    }
-
-    // Deduplicate: agent commands override builtin commands with same name
-    const agentNames = new Set(agentFiltered.map((c) => c.name))
-    const dedupedBuiltin = builtinFiltered.filter(
-      (cmd) => !agentNames.has(cmd.name),
+    if (!debouncedSearchText) return agentCommands
+    const query = debouncedSearchText.toLowerCase()
+    return agentCommands.filter(
+      (cmd) =>
+        cmd.name.toLowerCase().includes(query) ||
+        cmd.command.toLowerCase().includes(query),
     )
-
-    // Sort: agent commands first, then builtin, each group sorted by name length
-    return [
-      ...agentFiltered.sort(
-        (a, b) => a.name.length - b.name.length || a.name.localeCompare(b.name),
-      ),
-      ...dedupedBuiltin.sort(
-        (a, b) => a.name.length - b.name.length || a.name.localeCompare(b.name),
-      ),
-    ]
-  }, [debouncedSearchText, agentCommands, mode, disabledCommands])
+  }, [debouncedSearchText, agentCommands])
 
   // Track previous values for smarter selection reset
   const prevIsOpenRef = useRef(isOpen)
@@ -355,33 +309,38 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
         msOverflowStyle: 'none',
       } as React.CSSProperties}
     >
-      {/* All commands in one section - custom first, then builtin */}
+      {/* Grouped commands by source/group */}
       {options.length > 0 && (
         <>
-          <div className="px-2.5 py-1.5 mx-1 text-xs font-medium text-muted-foreground">
-            Commands
-          </div>
-          {options.map((option, index) => {
-            const isSelected = selectedIndex === index
-            return (
-              <div
-                // react-doctor-disable-next-line prefer-tag-over-role
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault()
-                    ;(e.currentTarget as HTMLElement).click()
-                  }
-                }}
-                key={option.id}
-                data-option-index={index}
-                onMouseDown={(e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  handleSelect(option)
-                }}
-                onMouseEnter={() => setSelectedIndex(index)}
+          {Array.from(new Set(options.map((o) => o.group || "commands"))).map((group) => (
+            <div key={group}>
+              <div className="px-2.5 py-1.5 mx-1 text-xs font-bold text-muted-foreground">
+                {group}
+              </div>
+              {options
+                .filter((option) => (option.group || "commands") === group)
+                .map((option) => {
+                  const index = options.indexOf(option)
+                  const isSelected = selectedIndex === index
+                  return (
+                    <div
+                      // react-doctor-disable-next-line prefer-tag-over-role
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault()
+                          ;(e.currentTarget as HTMLElement).click()
+                        }
+                      }}
+                      key={option.id}
+                      data-option-index={index}
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        handleSelect(option)
+                      }}
+                      onMouseEnter={() => setSelectedIndex(index)}
                 className={cn(
                   "group inline-flex w-[calc(100%-8px)] mx-1 items-center whitespace-nowrap outline-none",
                   "h-7 px-1.5 justify-start text-xs rounded-md",
@@ -403,7 +362,9 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
                 </span>
               </div>
             )
-          })}
+                })}
+            </div>
+          ))}
         </>
       )}
 

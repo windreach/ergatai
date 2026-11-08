@@ -614,6 +614,7 @@ export const agentsRouter = router({
           status: "available" | "unsupported" | "not_detected"
           source: "acp_config_options" | "none"
           models: string[]
+          model_details?: { id: string; name: string; description?: string; provider?: string }[]
           last_known_models?: string[]
           option_id?: string | null
           verified_at?: number | null
@@ -643,6 +644,7 @@ export const agentsRouter = router({
           | "detection_failed"
           | "no_agent"
         models: string[]
+        model_details?: { id: string; name: string; description?: string }[]
         last_known_models?: string[]
         current: string | null
       }>(`/api/v1/agent-profiles/${encodeURIComponent(input.profileName)}/models/refresh`, {
@@ -742,11 +744,11 @@ export const agentsRouter = router({
 
   /** Set agent model */
   setAgentModel: publicProcedure
-    .input(z.object({ agentId: agentIdSchema, model: z.string() }))
+    .input(z.object({ agentId: agentIdSchema, model: z.string(), conversationId: z.string().optional() }))
     .mutation(async ({ input }) => {
       return ergataiFetch(`/api/v1/agents/${input.agentId}/model`, {
         method: "POST",
-        body: JSON.stringify({ model: input.model }),
+        body: JSON.stringify({ model: input.model, conversation_id: input.conversationId }),
       })
     }),
 

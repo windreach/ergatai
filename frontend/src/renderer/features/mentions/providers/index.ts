@@ -1,24 +1,21 @@
 /**
  * Mention Providers
  *
- * This module exports all built-in mention providers and provides
+ * This module exports built-in mention providers and provides
  * utilities for registering them with the mention registry.
+ *
+ * NOTE: Only files and agents providers are retained. Skills/commands/MCP
+ * mention providers were removed as part of the group unification cleanup.
  */
 
 export { filesProvider, type FileData } from "./files-provider"
-export { skillsProvider, type SkillData, type SkillsSearchContext } from "./skills-provider"
 export { agentsProvider, type AgentData, type AgentModel } from "./agents-provider"
-export { toolsProvider, type ToolData, type ToolsSearchContext } from "./tools-provider"
-export { commandsProvider, type CommandData, type CommandsSearchContext } from "./commands-provider"
 
 // Re-export types
 export type { MentionProvider } from "../types"
 
 import { filesProvider } from "./files-provider"
-import { skillsProvider } from "./skills-provider"
 import { agentsProvider } from "./agents-provider"
-import { toolsProvider } from "./tools-provider"
-import { commandsProvider } from "./commands-provider"
 import { mentionRegistry } from "../registry"
 import type { MentionProvider } from "../types"
 
@@ -27,10 +24,7 @@ import type { MentionProvider } from "../types"
  */
 export const builtInProviders: MentionProvider[] = [
   filesProvider,
-  skillsProvider,
   agentsProvider,
-  toolsProvider,
-  commandsProvider,
 ]
 
 /**

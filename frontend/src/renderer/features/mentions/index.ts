@@ -47,7 +47,7 @@
 export type {
   MentionProviderId,
   MentionTrigger,
-  MentionCategory,
+  MentionGroup,
   MentionItem,
   MentionPrefix,
   MentionProvider,
@@ -78,23 +78,20 @@ export {
   useMentionProviders,
   useMentionProvidersByTrigger,
   useAvailableMentionProviders,
-  useMentionCategories,
+  useMentionGroups,
   useMentionProvider,
 } from "./registry"
 
 // Providers
 export {
   filesProvider,
-  skillsProvider,
   agentsProvider,
-  toolsProvider,
-  commandsProvider,
   builtInProviders,
   registerBuiltInProviders,
   registerProvider,
 } from "./providers"
 
-export type { FileData, SkillData, SkillsSearchContext, AgentData, ToolData, ToolsSearchContext, CommandData, CommandsSearchContext } from "./providers"
+export type { FileData, AgentData, AgentModel } from "./providers"
 
 // Agent-native trigger allowlists
 export {

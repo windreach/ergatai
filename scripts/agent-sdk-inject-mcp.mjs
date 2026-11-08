@@ -13,7 +13,15 @@ try {
 }
 
 function safe(fn, fallback) {
-  return fn().catch((e) => ({ __error: String(e), ...(fallback || {}) }));
+  try {
+    const r = fn();
+    if (r && typeof r.then === "function") {
+      return r.catch((e) => ({ __error: String(e), ...(fallback || {}) }));
+    }
+    return Promise.resolve(r ?? fallback);
+  } catch (e) {
+    return Promise.resolve({ __error: String(e), ...(fallback || {}) });
+  }
 }
 
 async function claude() {
@@ -39,19 +47,56 @@ async function claude() {
   }
 }
 
+async function opencodeBaseUrl() {
+  if (process.env.OPENCODE_URL) return process.env.OPENCODE_URL;
+  try {
+    const { execFileSync } = await import("node:child_process");
+    const out = execFileSync("opencode", ["service", "status"], { encoding: "utf8", timeout: 5000 });
+    const m = out.match(/https?:\/\/[^\\s]+/);
+    if (m) return m[0];
+  } catch {}
+  return "http://127.0.0.1:4096";
+}
+
+async function opencodeAuthHeaders() {
+  const headers = { "Content-Type": "application/json" };
+  let pw = process.env.OPENCODE_SERVER_PASSWORD;
+  if (!pw) {
+    try {
+      const fs = await import("node:fs");
+      const os = await import("node:os");
+      const sp = os.homedir() + "/.config/opencode/service.json";
+      if (fs.existsSync(sp)) {
+        const j = JSON.parse(fs.readFileSync(sp, "utf8"));
+        pw = j.password;
+      }
+    } catch {}
+  }
+  if (pw) {
+    headers["Authorization"] = "Basic " + Buffer.from("opencode:" + pw).toString("base64");
+  }
+  return headers;
+}
+
 async function opencode() {
-  const { createRequire } = await import("node:module");
-  const require = createRequire(import.meta.url);
-  const { createOpencodeClient } = require("@opencode-ai/sdk");
-  const baseUrl = process.env.OPENCODE_URL || "http://127.0.0.1:4096";
-  const client = createOpencodeClient({ baseUrl });
+  const base = await opencodeBaseUrl();
+  const headers = await opencodeAuthHeaders();
   const results = {};
   for (const [name, config] of Object.entries(servers)) {
     const ocConfig = config.type === "stdio"
       ? { type: "local", command: [config.command, ...(config.args || [])], environment: config.env || {} }
       : { type: "remote", url: config.url, headers: config.headers || {}, enabled: true };
-    const res = await safe(() => client.mcp.add({ body: { name, config: ocConfig }, query: { directory: cwd } }), {});
-    results[name] = res && res.__error ? { ok: false, error: res.__error } : { ok: true, data: res };
+    try {
+      const res = await fetch(base.replace(/\/$/, "") + "/api/mcp?directory=" + encodeURIComponent(cwd), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ name, config: ocConfig }),
+      });
+      const data = await res.json().catch(() => ({}));
+      results[name] = res.ok ? { ok: true, data } : { ok: false, error: data?.message || res.statusText };
+    } catch (e) {
+      results[name] = { ok: false, error: String(e) };
+    }
   }
   const ok = Object.values(results).every((r) => r.ok !== false);
   return { ok, results };

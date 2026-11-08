@@ -93,7 +93,8 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
     migrate_backfill_agent_id_in_agent_sessions(conn)?;
     migrate_backfill_worktree_path_in_chats(conn)?;
     migrate_backfill_chat_name_in_chats(conn)?;
-    migrate_backfill_thinking_parts(conn)?;    Ok(())
+    migrate_backfill_thinking_parts(conn)?;
+    Ok(())
 }
 
 /// Create all tables if they don't already exist (safe for production)
@@ -725,13 +726,16 @@ fn migrate_backfill_thinking_parts(conn: &Connection) -> Result<()> {
 
             // Only rewrite rows that are currently stored as plain text parts.
             let parts_value: serde_json::Value =
-                serde_json::from_str(parts.as_deref().unwrap_or("[]")).unwrap_or(serde_json::json!([]));
+                serde_json::from_str(parts.as_deref().unwrap_or("[]"))
+                    .unwrap_or(serde_json::json!([]));
             let needs_rewrite = match &parts_value {
-                serde_json::Value::Array(arr) => arr.iter().any(|p| {
-                    p.get("type").and_then(|v| v.as_str()) == Some("text")
-                }) && !arr.iter().any(|p| {
-                    p.get("type").and_then(|v| v.as_str()) == Some("reasoning")
-                }),
+                serde_json::Value::Array(arr) => {
+                    arr.iter()
+                        .any(|p| p.get("type").and_then(|v| v.as_str()) == Some("text"))
+                        && !arr
+                            .iter()
+                            .any(|p| p.get("type").and_then(|v| v.as_str()) == Some("reasoning"))
+                }
                 _ => true,
             };
             if !needs_rewrite {
@@ -809,9 +813,9 @@ pub fn cleanup_stale_message_tables() {
     }
 
     // Find message_* tables
-    let mut stmt = match conn.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'messages_%'",
-    ) {
+    let mut stmt = match conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'messages_%'")
+    {
         Ok(s) => s,
         Err(_) => {
             let db_clone = get_user_data_db();
@@ -857,7 +861,6 @@ pub fn cleanup_stale_message_tables() {
         }
     });
 }
-
 
 pub fn get_user_data_db() -> Arc<Mutex<Connection>> {
     Arc::clone(&USER_DATA_DB)
@@ -2010,7 +2013,11 @@ pub mod conversations {
         if conversation.parent_id.is_none() {
             let _ = conn.execute(
                 "UPDATE chats SET name = ?1, updated_at = ?2 WHERE chat_id = ?3",
-                params![conversation.name, conversation.updated_at, conversation.chat_id],
+                params![
+                    conversation.name,
+                    conversation.updated_at,
+                    conversation.chat_id
+                ],
             );
         }
 
@@ -2670,7 +2677,10 @@ pub mod agent_sessions {
         )
     }
 
-    pub fn count_by_agent_and_worktree(agent_id: Option<&str>, work_dir: Option<&str>) -> Result<i64> {
+    pub fn count_by_agent_and_worktree(
+        agent_id: Option<&str>,
+        work_dir: Option<&str>,
+    ) -> Result<i64> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
         conn.query_row(

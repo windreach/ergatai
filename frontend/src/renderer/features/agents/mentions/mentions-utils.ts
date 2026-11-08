@@ -3,17 +3,9 @@
  * Separated from render-file-mentions.tsx to maintain Fast Refresh compatibility.
  */
 
-export const MENTION_PREFIXES = {
-  FILE: "file:",
-  FOLDER: "folder:",
-  SKILL: "skill:",
-  AGENT: "agent:",
-  TOOL: "tool:",
-  QUOTE: "quote:",
-  DIFF: "diff:",
-  PASTED: "pasted:",
-  CHAT_HISTORY: "chatHistory:",
-} as const
+// Unified mention prefixes (single source of truth).
+import { MENTION_PREFIXES } from "../../mentions/types/core"
+export { MENTION_PREFIXES }
 
 
 interface ParsedMention {
@@ -21,7 +13,7 @@ interface ParsedMention {
   label: string
   path: string
   repository: string
-  type: "file" | "folder" | "skill" | "agent" | "tool" | "quote" | "diff" | "pasted" | "chatHistory"
+  type: "file" | "folder" | "skill" | "agent" | "tool" | "command" | "plugin" | "quote" | "diff" | "pasted" | "chatHistory"
   // Extra data for quote/diff/pasted mentions
   fullText?: string
   lineNumber?: number
@@ -233,6 +225,32 @@ export function parseMention(id: string): ParsedMention | null {
       path: "",
       repository: "",
       type: "agent",
+    }
+  }
+
+  // Handle command mentions (simpler format: command:name)
+  const isCommand = id.startsWith(MENTION_PREFIXES.COMMAND)
+  if (isCommand) {
+    const commandName = id.slice(MENTION_PREFIXES.COMMAND.length)
+    return {
+      id,
+      label: commandName,
+      path: commandName,
+      repository: "",
+      type: "command",
+    }
+  }
+
+  // Handle plugin mentions (simpler format: plugin:name)
+  const isPlugin = id.startsWith(MENTION_PREFIXES.PLUGIN)
+  if (isPlugin) {
+    const pluginName = id.slice(MENTION_PREFIXES.PLUGIN.length)
+    return {
+      id,
+      label: pluginName,
+      path: pluginName,
+      repository: "",
+      type: "plugin",
     }
   }
 

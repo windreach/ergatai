@@ -41,6 +41,7 @@ type ClaudeModelOption = {
   id: string
   name: string
   version: string
+  provider?: string
 }
 
 type CodexModelOption = {
@@ -396,6 +397,25 @@ export function AgentModelSelector({
     })
   }, [allModels, search])
 
+  // Group Claude models by provider for sectioned rendering.
+  const claudeProviderGroups = useMemo(() => {
+    if (selectedAgentId !== "claude-code") return null
+    if (claude.isOffline && claude.ollamaModels.length > 0) return null
+    if (claude.hasCustomModelConfig) return null
+    const groups: { provider: string; items: FlatModelItem[] }[] = []
+    const index = new Map<string, number>()
+    for (const item of filteredModels) {
+      if (item.type !== "claude") continue
+      const provider = item.model.provider || "Other"
+      if (!index.has(provider)) {
+        index.set(provider, groups.length)
+        groups.push({ provider, items: [] })
+      }
+      groups[index.get(provider)!].items.push(item)
+    }
+    return groups.length > 0 ? groups : null
+  }, [selectedAgentId, claude, filteredModels])
+
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
       onOpenChange(nextOpen)
@@ -558,7 +578,6 @@ export function AgentModelSelector({
             triggerClassName,
           )}
         >
-          {triggerIcon}
           <span className="truncate">{selectedModelLabel}</span>
           <IconChevronDown className="h-3 w-3 shrink-0 opacity-50" />
         </button>
@@ -616,29 +635,63 @@ export function AgentModelSelector({
           <CommandList className="max-h-[300px] overflow-y-auto">
             {filteredModels.length > 0 ? (
               <CommandGroup>
-                {filteredModels.map((item) => {
-                  const selected = isItemSelected(item)
-                  const disabled = isItemDisabled(item)
-                  const crossProvider = isItemCrossProvider(item)
-                  return (
-                    <CommandItem
-                      key={getItemKey(item)}
-                      value={getItemKey(item)}
-                      onSelect={() => handleItemClick(item)}
-                      disabled={disabled}
-                      className={cn("gap-2", crossProvider && "opacity-60")}
-                    >
-                      {getItemIcon(item)}
-                      <span className="truncate flex-1">{getItemLabel(item)}</span>
-                      {crossProvider && (
-                        <span className="text-[10px] text-muted-foreground shrink-0">New chat</span>
-                      )}
-                      {selected && (
-                        <CheckIcon className="h-4 w-4 shrink-0" />
-                      )}
-                    </CommandItem>
-                  )
-                })}
+                {claudeProviderGroups
+                  ? claudeProviderGroups.map((group) => (
+                      <div key={group.provider}>
+                        <div className="px-2 py-1.5 text-xs font-semibold text-foreground">
+                          {group.provider}
+                        </div>
+                        {group.items.map((item) => {
+                          const selected = isItemSelected(item)
+                          const disabled = isItemDisabled(item)
+                          const crossProvider = isItemCrossProvider(item)
+                          return (
+                            <CommandItem
+                              key={getItemKey(item)}
+                              value={getItemKey(item)}
+                              onSelect={() => handleItemClick(item)}
+                              disabled={disabled}
+                              className={cn("gap-2", crossProvider && "opacity-60")}
+                            >
+                              <span className="truncate flex-1">{getItemLabel(item)}</span>
+                              {crossProvider && (
+                                <span className="text-[10px] text-muted-foreground shrink-0">New chat</span>
+                              )}
+                              {selected && (
+                                <CheckIcon className="h-4 w-4 shrink-0" />
+                              )}
+                            </CommandItem>
+                          )
+                        })}
+                      </div>
+                    ))
+                  : filteredModels.map((item) => {
+                      const selected = isItemSelected(item)
+                      const disabled = isItemDisabled(item)
+                      const crossProvider = isItemCrossProvider(item)
+                      return (
+                        <CommandItem
+                          key={getItemKey(item)}
+                          value={getItemKey(item)}
+                          onSelect={() => handleItemClick(item)}
+                          disabled={disabled}
+                          className={cn("gap-2", crossProvider && "opacity-60")}
+                        >
+                          <span className="truncate flex-1">{getItemLabel(item)}</span>
+                          {item.type === "claude" && item.model.provider && (
+                            <span className="text-[10px] text-muted-foreground shrink-0">
+                              {item.model.provider}
+                            </span>
+                          )}
+                          {crossProvider && (
+                            <span className="text-[10px] text-muted-foreground shrink-0">New chat</span>
+                          )}
+                          {selected && (
+                            <CheckIcon className="h-4 w-4 shrink-0" />
+                          )}
+                        </CommandItem>
+                      )
+                    })}
               </CommandGroup>
             ) : (
               <CommandEmpty>No models found.</CommandEmpty>

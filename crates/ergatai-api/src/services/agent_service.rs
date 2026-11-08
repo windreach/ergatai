@@ -256,6 +256,13 @@ pub async fn try_auto_resume_suspended_agent(
                     new_agent_id = %new_agent_id,
                     "Successfully resumed suspended agent by ID"
                 );
+                if !suspended.conversation_id.is_empty() {
+                    crate::api::agent_sdk::apply_model_override(
+                        &new_agent_id,
+                        &suspended.conversation_id,
+                    )
+                    .await;
+                }
                 return Some(new_agent_id);
             }
             Err(e) => {
@@ -289,6 +296,8 @@ pub async fn try_auto_resume_suspended_agent(
                         conversation_id = %conversation_id,
                         "Successfully resumed suspended agent by conversation_id"
                     );
+                    crate::api::agent_sdk::apply_model_override(&new_agent_id, conversation_id)
+                        .await;
                     return Some(new_agent_id);
                 }
                 Err(e) => {

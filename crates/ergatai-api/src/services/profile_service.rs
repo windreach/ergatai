@@ -44,6 +44,18 @@ pub enum ProfileModelSource {
     None,
 }
 
+/// Rich model metadata returned by agent SDKs.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProfileModelDetail {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provider: String,
+}
+
 /// Profile-level model catalog returned by the HTTP API.
 ///
 /// `current` is deliberately not persisted here. A profile can have multiple
@@ -54,6 +66,9 @@ pub struct ProfileModelCatalog {
     pub status: ProfileModelStatus,
     pub source: ProfileModelSource,
     pub models: Vec<String>,
+    /// Rich model metadata (name/description) when detected via SDK.
+    #[serde(skip_serializing_if = "Vec::is_empty", rename = "model_details")]
+    pub model_details: Vec<ProfileModelDetail>,
     /// The last successfully observed list, preserved when a later refresh
     /// proves that the current agent does not expose a model selector.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -74,6 +89,8 @@ struct StoredProfileModels {
     source: Option<ProfileModelSource>,
     #[serde(default)]
     models: Vec<String>,
+    #[serde(default, rename = "model_details")]
+    model_details: Vec<ProfileModelDetail>,
     #[serde(default)]
     last_known_models: Vec<String>,
     #[serde(default)]
@@ -108,6 +125,7 @@ fn normalize_profile_models(
         status,
         source,
         models,
+        model_details: stored.model_details,
         last_known_models: stored.last_known_models,
         option_id: stored.option_id,
         verified_at: updated_at,
@@ -329,6 +347,7 @@ pub async fn get_profile_models_by_name(name: &str) -> Result<ProfileModelCatalo
             status: ProfileModelStatus::NotDetected,
             source: ProfileModelSource::None,
             models: Vec::new(),
+            model_details: Vec::new(),
             last_known_models: Vec::new(),
             option_id: None,
             verified_at: None,
@@ -362,37 +381,186 @@ pub async fn refresh_profile_models_via_sdk(
     agent_kind: &str,
     profile_name: &str,
     cwd: Option<&str>,
-) -> Result<Vec<String>> {
+) -> Result<Vec<ProfileModelDetail>> {
     let sdk = crate::services::agent_sdk_service::discover(agent_kind, cwd).await;
-    let models: Vec<String> = sdk
+    let mut details: Vec<ProfileModelDetail> = sdk
         .get("models")
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
                 .filter_map(|m| {
-                    m.get("id")
+                    let id = m
+                        .get("id")
                         .or_else(|| m.get("value"))
                         .or_else(|| m.get("name"))
+                        .or_else(|| m.get("model"))
+                        .and_then(|v| v.as_str())?
+                        .to_string();
+                    if id.is_empty() {
+                        return None;
+                    }
+                    let name = m
+                        .get("name")
+                        .or_else(|| m.get("displayName"))
                         .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
+                        .unwrap_or(&id)
+                        .to_string();
+                    let description = m
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let mut provider = m
+                        .get("provider")
+                        .or_else(|| m.get("providerID"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if provider.is_empty() {
+                        provider = match agent_kind {
+                            "claude" => "Anthropic".to_string(),
+                            "codex" => "Codex".to_string(),
+                            _ => String::new(),
+                        };
+                    }
+                    Some(ProfileModelDetail {
+                        id,
+                        name,
+                        description,
+                        provider,
+                    })
                 })
                 .collect()
         })
         .unwrap_or_default();
 
-    if models.is_empty() {
-        return Ok(models);
+    // Claude Code may be configured to use an external/gateway model (e.g. qwen)
+    // that is not part of the SDK's built-in supportedModels() list. Merge the
+    // CLI-reported current model so detection reflects the user's configuration.
+    if agent_kind == "claude" {
+        let claude = if std::path::Path::new("/root/.local/bin/claude").exists() {
+            "/root/.local/bin/claude"
+        } else {
+            "claude"
+        };
+        if let Ok(output) = tokio::process::Command::new(claude)
+            .arg("/model")
+            .output()
+            .await
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            if let Some(parsed) = crate::api::agents::parse_model_output(&text) {
+                if let Some(current) = parsed.get("current").and_then(|v| v.as_str()) {
+                    if !current.is_empty() && !details.iter().any(|d| d.id == current) {
+                        // Prefer the user-configured model as the first entry so it
+                        // becomes the default selection in the UI.
+                        details.insert(
+                            0,
+                            ProfileModelDetail {
+                                id: current.to_string(),
+                                name: current.to_string(),
+                                description: "Configured model".to_string(),
+                                provider: "Configured".to_string(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
     }
 
+    // Codex has no SDK model list; use the model configured in ~/.codex/config.toml
+    // so detection at least reflects the user's configured default model.
+    if agent_kind == "codex" {
+        if let Some(home) = dirs::home_dir() {
+            let config_path = home.join(".codex").join("config.toml");
+            if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
+                // Match: model = "some-model"
+                let configured = content.lines().find_map(|line| {
+                    let trimmed = line.trim();
+                    if !trimmed.starts_with("model") {
+                        return None;
+                    }
+                    let mut parts = trimmed.splitn(2, '=');
+                    let key = parts.next()?.trim();
+                    if key != "model" {
+                        return None;
+                    }
+                    let value = parts.next()?.trim().trim_matches('"').to_string();
+                    if value.is_empty() {
+                        None
+                    } else {
+                        Some(value)
+                    }
+                });
+                // Parse model_provider for grouping.
+                let configured_provider = content
+                    .lines()
+                    .find_map(|line| {
+                        let trimmed = line.trim();
+                        if !trimmed.starts_with("model_provider") {
+                            return None;
+                        }
+                        let mut parts = trimmed.splitn(2, '=');
+                        let key = parts.next()?.trim();
+                        if key != "model_provider" {
+                            return None;
+                        }
+                        let value = parts.next()?.trim().trim_matches('"').to_string();
+                        if value.is_empty() {
+                            None
+                        } else {
+                            Some(value)
+                        }
+                    })
+                    .unwrap_or_else(|| "Codex".to_string());
+
+                if let Some(current) = configured {
+                    if !details.iter().any(|d| d.id == current) {
+                        details.insert(
+                            0,
+                            ProfileModelDetail {
+                                id: current.clone(),
+                                name: current,
+                                description: "Configured model".to_string(),
+                                provider: configured_provider.clone(),
+                            },
+                        );
+                    } else if let Some(pos) = details.iter().position(|d| d.id == current) {
+                        if pos != 0 {
+                            let item = details.remove(pos);
+                            details.insert(0, item);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if details.is_empty() {
+        return Ok(details);
+    }
+
+    let models: Vec<String> = details.iter().map(|d| d.id.clone()).collect();
     let registry = get_profile_registry()?;
-    let json = models_json_with_source(&models, None, ProfileModelSource::AgentSdk);
+    // Persist both compact IDs and rich metadata in the existing JSON column.
+    let json = serde_json::json!({
+        "status": ProfileModelStatus::Available,
+        "source": ProfileModelSource::AgentSdk,
+        "models": models,
+        "model_details": details,
+        "last_known_models": models,
+        "option_id": Option::<String>::None,
+        "verified_at": chrono::Utc::now().timestamp_millis(),
+    })
+    .to_string();
     let now_ms = chrono::Utc::now().timestamp_millis();
     registry
         .update_models_by_name(profile_name, &json, now_ms)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to save SDK-detected models: {}", e))?;
 
-    Ok(models)
+    Ok(details)
 }
 
 /// 获取指定 profile 的模型目录（按 profile ID 查询）。
@@ -404,6 +572,7 @@ pub async fn get_profile_models(id: &str) -> Result<ProfileModelCatalog> {
             status: ProfileModelStatus::NotDetected,
             source: ProfileModelSource::None,
             models: Vec::new(),
+            model_details: Vec::new(),
             last_known_models: Vec::new(),
             option_id: None,
             verified_at: None,

@@ -32,7 +32,7 @@ class MentionProviderRegistry {
   // Memoization for preventing re-renders
   private cachedProviders: MentionProvider[] | null = null
   private cachedByTrigger = new BoundedCache<string, MentionProvider[]>(200)
-  private cachedCategories: Array<{ id: string; label: string; priority: number }> | null = null
+  private cachedGroups: Array<{ id: string; label: string; priority: number }> | null = null
   private cacheVersion = 0
 
   /**
@@ -159,33 +159,33 @@ class MentionProviderRegistry {
   }
 
   /**
-   * Get categories from all providers (deduplicated)
+   * Get groups from all providers (deduplicated)
    * Returns cached array to prevent re-renders
    */
-  getCategories(): Array<{ id: string; label: string; priority: number }> {
-    if (this.cachedCategories !== null) {
-      return this.cachedCategories
+  getGroups(): Array<{ id: string; label: string; priority: number }> {
+    if (this.cachedGroups !== null) {
+      return this.cachedGroups
     }
 
-    const categories = new Map<
+    const groups = new Map<
       string,
       { id: string; label: string; priority: number }
     >()
 
     Array.from(this.providers.values()).forEach((provider) => {
-      if (!categories.has(provider.category.id)) {
-        categories.set(provider.category.id, {
-          id: provider.category.id,
-          label: provider.category.label,
-          priority: provider.category.priority,
+      if (!groups.has(provider.group.id)) {
+        groups.set(provider.group.id, {
+          id: provider.group.id,
+          label: provider.group.label,
+          priority: provider.group.priority,
         })
       }
     })
 
-    this.cachedCategories = Array.from(categories.values()).sort(
+    this.cachedGroups = Array.from(groups.values()).sort(
       (a, b) => b.priority - a.priority
     )
-    return this.cachedCategories
+    return this.cachedGroups
   }
 
   /**
@@ -221,7 +221,7 @@ class MentionProviderRegistry {
   private invalidateCache(): void {
     this.cachedProviders = null
     this.cachedByTrigger.clear()
-    this.cachedCategories = null
+    this.cachedGroups = null
     this.cacheVersion++
   }
 
@@ -319,22 +319,22 @@ export function useAvailableMentionProviders(context: {
 /**
  * Hook to get categories (reactive)
  */
-export function useMentionCategories(): Array<{
+export function useMentionGroups(): Array<{
   id: string
   label: string
   priority: number
 }> {
-  const [categories, setCategories] = useState(() =>
-    mentionRegistry.getCategories()
+  const [groups, setGroups] = useState(() =>
+    mentionRegistry.getGroups()
   )
 
   useEffect(() => {
     return mentionRegistry.subscribe(() => {
-      setCategories(mentionRegistry.getCategories())
+      setGroups(mentionRegistry.getGroups())
     })
   }, [])
 
-  return categories
+  return groups
 }
 
 /**

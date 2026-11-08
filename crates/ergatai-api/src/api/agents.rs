@@ -4405,245 +4405,111 @@ pub async fn get_agent(
 /// This is called from all agent spawn paths (REST API, initial_prompt_turns, messaging auto-spawn).
 pub(crate) fn spawn_model_detection(agent_id: String, profile_name: String) {
     tokio::spawn(async move {
-        let startup_timeout = std::time::Duration::from_secs(5);
-        let backoff_timeout = std::time::Duration::from_secs(30);
-        let start = std::time::Instant::now();
-
         tracing::info!(
             agent_id = %agent_id,
             profile = %profile_name,
-            "Model detection: background task started"
+            "Model detection: background task started (SDK-first)"
         );
 
-        // ── Phase 1: wait for config_options to appear (max 5s) ──
-        let mut startup_delay = std::time::Duration::from_millis(500);
-        let opts = loop {
-            tokio::time::sleep(startup_delay).await;
-
-            match crate::services::agent_service::get_agent_config_options(&agent_id).await {
-                Ok(Some(opts)) => break opts,
-                Ok(None) => {
-                    if start.elapsed() >= startup_timeout {
-                        tracing::info!(
-                            profile = %profile_name,
-                            elapsed_ms = start.elapsed().as_millis(),
-                            "Model detection: config_options not available after 5s startup timeout"
-                        );
-                        // Claude Code does not expose models over ACP; fall back to
-                        // its CLI output so the catalog can still be populated.
-                        if profile_name.to_lowercase().contains("claude") {
-                            if let Ok(output) = tokio::process::Command::new(
-                                if std::path::Path::new("/root/.local/bin/claude").exists() {
-                                    "/root/.local/bin/claude"
-                                } else {
-                                    "claude"
-                                },
-                            )
-                            .arg("/model")
-                            .output()
-                            .await
-                            {
-                                let text = String::from_utf8_lossy(&output.stdout);
-                                if let Some(parsed) = parse_model_output(&text) {
-                                    let models = parsed
-                                        .get("models")
-                                        .and_then(serde_json::Value::as_array)
-                                        .map(|values| {
-                                            values
-                                                .iter()
-                                                .filter_map(serde_json::Value::as_str)
-                                                .filter(|m| {
-                                                    let lower = m.to_lowercase();
-                                                    !lower.contains('[')
-                                                        && lower != "best"
-                                                        && lower != "opusplan"
-                                                        && lower != "default"
-                                                })
-                                                .map(ToString::to_string)
-                                                .collect::<Vec<_>>()
-                                        })
-                                        .unwrap_or_default();
-                                    if !models.is_empty() {
-                                        let detection = DetectedModels {
-                                            models,
-                                            current: parsed
-                                                .get("current")
-                                                .and_then(serde_json::Value::as_str)
-                                                .map(ToString::to_string),
-                                            option_id: None,
-                                        };
-                                        if let Err(e) =
-                                            crate::services::profile_service::save_profile_models_by_name(
-                                                &profile_name,
-                                                &detection.models,
-                                                detection.option_id.as_deref(),
-                                            )
-                                            .await
-                                        {
-                                            tracing::warn!(error = %e, "Failed to save Claude models");
-                                        } else {
-                                            tracing::info!(
-                                                models_count = detection.models.len(),
-                                                "Claude models detected via CLI fallback"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        return;
-                    }
-                    startup_delay = (startup_delay * 2).min(std::time::Duration::from_secs(1));
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        profile = %profile_name,
-                        "Model detection failed during startup wait"
-                    );
-                    return;
-                }
+        // Infer agent kind from profile name (same heuristic as agent_sdk routes).
+        let kind = {
+            let hay = profile_name.to_lowercase();
+            if hay.contains("opencode") {
+                "opencode"
+            } else if hay.contains("codex") {
+                "codex"
+            } else if hay.contains("claude") {
+                "claude"
+            } else {
+                ""
             }
         };
 
-        tracing::info!(
-            profile = %profile_name,
-            elapsed_ms = start.elapsed().as_millis(),
-            config_count = opts.len(),
-            "Model detection: config_options available, extracting models"
-        );
+        if kind.is_empty() {
+            tracing::debug!(profile = %profile_name, "Model detection: unknown agent kind, skipping");
+            return;
+        }
 
-        // ── Phase 2: extract models, retry with backoff if no model category (max 30s) ──
-        let mut backoff_delay = std::time::Duration::from_secs(1);
-        let mut current_opts = opts;
-        loop {
-            match extract_models_from_config_options(&current_opts) {
-                Some(detection) => {
-                    if let Err(e) = crate::services::profile_service::save_profile_models_by_name(
-                        &profile_name,
-                        &detection.models,
-                        detection.option_id.as_deref(),
-                    )
-                    .await
-                    {
-                        tracing::warn!(
-                            error = %e,
-                            profile = %profile_name,
-                            "Failed to save detected models"
-                        );
-                    } else {
-                        tracing::info!(
-                            profile = %profile_name,
-                            models_count = detection.models.len(),
-                            elapsed_ms = start.elapsed().as_millis(),
-                            "Models detected and saved"
-                        );
-                    }
-                    return;
-                }
-                None => {
-                    if start.elapsed() >= backoff_timeout {
-                        tracing::info!(
-                            profile = %profile_name,
-                            elapsed_ms = start.elapsed().as_millis(),
-                            "Model detection: no model category found after 30s backoff timeout"
-                        );
-                        // Claude Code does not expose models over ACP; try CLI fallback.
-                        if profile_name.to_lowercase().contains("claude") {
-                            if let Ok(output) = tokio::process::Command::new(
-                                if std::path::Path::new("/root/.local/bin/claude").exists() {
-                                    "/root/.local/bin/claude"
-                                } else {
-                                    "claude"
-                                },
-                            )
-                            .arg("/model")
-                            .output()
-                            .await
-                            {
-                                let text = String::from_utf8_lossy(&output.stdout);
-                                if let Some(parsed) = parse_model_output(&text) {
-                                    let current = parsed
-                                        .get("current")
-                                        .and_then(serde_json::Value::as_str)
-                                        .map(ToString::to_string);
-                                    let is_gateway = current
-                                        .as_ref()
-                                        .map(|c| {
-                                            let l = c.to_lowercase();
-                                            !(l.contains("sonnet")
-                                                || l.contains("opus")
-                                                || l.contains("haiku")
-                                                || l.contains("fable")
-                                                || l.contains("claude"))
-                                        })
-                                        .unwrap_or(false);
-                                    let models = parsed
-                                        .get("models")
-                                        .and_then(serde_json::Value::as_array)
-                                        .map(|values| {
-                                            values
-                                                .iter()
-                                                .filter_map(serde_json::Value::as_str)
-                                                .filter(|m| {
-                                                    if !is_gateway {
-                                                        return true;
-                                                    }
-                                                    let lower = m.to_lowercase();
-                                                    !lower.contains('[')
-                                                        && lower != "best"
-                                                        && lower != "opusplan"
-                                                        && lower != "default"
-                                                })
-                                                .map(ToString::to_string)
-                                                .collect::<Vec<_>>()
-                                        })
-                                        .unwrap_or_default();
-                                    if !models.is_empty() {
-                                        if let Err(e) =
-                                            crate::services::profile_service::save_profile_models_by_name(
-                                                &profile_name,
-                                                &models,
-                                                None,
-                                            )
-                                            .await
-                                        {
-                                            tracing::warn!(error = %e, "Failed to save Claude models");
-                                        } else {
-                                            tracing::info!(
-                                                models_count = models.len(),
-                                                "Claude models detected via CLI fallback"
-                                            );
-                                        }
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                        // Config options were successfully read, but never contained
-                        // a model selector. Treat that as definitive for this agent
-                        // so the UI does not keep displaying an old catalog as current.
+        // Primary: agent SDK (Claude supportedModels / OpenCode providers).
+        match crate::services::profile_service::refresh_profile_models_via_sdk(
+            kind,
+            &profile_name,
+            None,
+        )
+        .await
+        {
+            Ok(details) if !details.is_empty() => {
+                tracing::info!(
+                    models_count = details.len(),
+                    profile = %profile_name,
+                    "Model detection: models detected via SDK"
+                );
+                return;
+            }
+            Ok(_) => {
+                tracing::debug!(
+                    profile = %profile_name,
+                    "Model detection: SDK returned no models"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    profile = %profile_name,
+                    "Model detection: SDK refresh failed"
+                );
+            }
+        }
+
+        // Claude fallback: CLI `/model` output, in case the SDK adapter is unavailable.
+        if kind == "claude" {
+            let claude = if std::path::Path::new("/root/.local/bin/claude").exists() {
+                "/root/.local/bin/claude"
+            } else {
+                "claude"
+            };
+            if let Ok(output) = tokio::process::Command::new(claude)
+                .arg("/model")
+                .output()
+                .await
+            {
+                let text = String::from_utf8_lossy(&output.stdout);
+                if let Some(parsed) = parse_model_output(&text) {
+                    let models: Vec<String> = parsed
+                        .get("models")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .filter(|m| {
+                                    let lower = m.to_lowercase();
+                                    !lower.contains('[')
+                                        && lower != "best"
+                                        && lower != "opusplan"
+                                        && lower != "default"
+                                })
+                                .map(ToString::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !models.is_empty() {
                         if let Err(e) =
-                            crate::services::profile_service::mark_profile_models_unavailable_by_name(
+                            crate::services::profile_service::save_profile_models_by_name(
                                 &profile_name,
+                                &models,
+                                None,
                             )
                             .await
                         {
-                            tracing::warn!(
-                                error = %e,
-                                profile = %profile_name,
-                                "Failed to mark models unsupported"
+                            tracing::warn!(error = %e, "Failed to save Claude models (CLI fallback)");
+                        } else {
+                            tracing::info!(
+                                models_count = models.len(),
+                                "Claude models detected via CLI fallback"
                             );
                         }
-                        return;
                     }
-                    tokio::time::sleep(backoff_delay).await;
-                    if let Ok(Some(latest)) =
-                        crate::services::agent_service::get_agent_config_options(&agent_id).await
-                    {
-                        current_opts = latest;
-                    }
-                    backoff_delay = (backoff_delay * 2).min(std::time::Duration::from_secs(15));
                 }
             }
         }
@@ -5261,7 +5127,11 @@ pub async fn get_agent_migration_progress(
         let migrations = crate::user_data_db::agent_history_migrations::list_by_agent(&agent_id)?;
         let mut result = Vec::new();
         for m in migrations {
-            let processed = crate::user_data_db::agent_sessions::count_by_agent_and_worktree(Some(&m.agent_id), m.cwd.as_deref())?;            result.push(serde_json::json!({
+            let processed = crate::user_data_db::agent_sessions::count_by_agent_and_worktree(
+                Some(&m.agent_id),
+                m.cwd.as_deref(),
+            )?;
+            result.push(serde_json::json!({
                 "migration_id": m.migration_id,
                 "agent_id": m.agent_id,
                 "chat_id": m.chat_id,

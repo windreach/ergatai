@@ -157,19 +157,8 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
     >
       {/* Header - at top */}
       <div
-        role="button"
-        tabIndex={0}
-        onClick={() => hasExpandableContent && setIsExpanded(!isExpanded)}
-        onKeyDown={(e) => {
-          if (hasExpandableContent && (e.key === "Enter" || e.key === " ")) {
-            e.preventDefault()
-            setIsExpanded(!isExpanded)
-          }
-        }}
-        aria-expanded={hasExpandableContent ? isExpanded : undefined}
-        aria-label={`${isExpanded ? "Collapse" : "Expand"} status details`}
         className={cn(
-          "flex items-center justify-between pr-1 pl-3 h-8 transition-colors duration-150 focus:outline-none rounded-sm",
+          "flex items-center justify-between pr-1 pl-3 h-8 transition-colors duration-150 rounded-sm",
           hasExpandableContent ? "cursor-pointer hover:bg-muted/50" : "cursor-default"
         )}
       >
@@ -181,11 +170,9 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
           {hasExpandableContent && (
             <button
               type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                setIsExpanded(!isExpanded)
-              }}
+              onClick={() => setIsExpanded(!isExpanded)}
               className="flex items-center justify-center w-5 h-5 rounded hover:bg-muted/60"
+              aria-expanded={isExpanded}
               aria-label={`${isExpanded ? "Collapse" : "Expand"} status details`}
             >
               <ChevronDown

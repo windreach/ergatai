@@ -6,7 +6,7 @@
  */
 
 // Core types
-export type { MentionProviderId, MentionTrigger, MentionCategory, MentionItem } from "./core"
+export type { MentionProviderId, MentionTrigger, MentionGroup, MentionItem } from "./core"
 export { createProviderId, MENTION_PREFIXES, getMentionPrefix, isMentionType } from "./core"
 export type { MentionPrefix } from "./core"
 

@@ -593,6 +593,42 @@ pub async fn refresh_profile_models(Path(name): Path<String>) -> axum::response:
         }
     };
 
+    // 0. SDK-first detection (preferred over ACP/CLI).
+    {
+        let kind = {
+            let hay = profile.name.to_lowercase();
+            if hay.contains("opencode") {
+                "opencode"
+            } else if hay.contains("codex") {
+                "codex"
+            } else if hay.contains("claude") {
+                "claude"
+            } else {
+                ""
+            }
+        };
+        if !kind.is_empty() {
+            if let Ok(details) =
+                profile_service::refresh_profile_models_via_sdk(kind, &name, None).await
+            {
+                if !details.is_empty() {
+                    let models: Vec<String> = details.iter().map(|d| d.id.clone()).collect();
+                    return (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "status": "available",
+                            "source": "agent_sdk",
+                            "models": models,
+                            "model_details": details,
+                            "current": null,
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+
     // 2. Claude Code has no ACP model selector; detect via CLI subprocess.
     if profile.name.to_lowercase().contains("claude") {
         if let Ok(output) = tokio::process::Command::new(claude_cli_path())

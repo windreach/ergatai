@@ -9,6 +9,7 @@ export interface SlashCommand {
   name: string // Display name without slash, e.g. "clear", "help"
   description: string
   category: SlashCommandCategory
+  group?: string
   // For custom commands - hint for expected arguments (e.g. "[file_path]")
   argumentHint?: string
 }

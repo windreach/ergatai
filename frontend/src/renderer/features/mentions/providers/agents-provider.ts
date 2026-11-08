@@ -41,7 +41,7 @@ export interface AgentData {
 export const agentsProvider = createMentionProvider<AgentData>({
   id: "agents",
   name: "Agents",
-  category: {
+  group: {
     label: "Agents",
     priority: 70,
   },
