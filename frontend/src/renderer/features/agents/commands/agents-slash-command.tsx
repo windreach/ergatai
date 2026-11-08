@@ -3,19 +3,15 @@
 import { cn } from "../../../lib/utils"
 import { trpc } from "../../../lib/trpc"
 import {
-  useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
-  useRef,
-  useState,
   memo,
 } from "react"
 import { createPortal } from "react-dom"
 import type { SlashCommandOption } from "./types"
 import type { AgentMode } from "../atoms"
 import { useDiscoveryGroups } from "../discovery/use-discovery-groups"
-import { getDropdownDimensions } from "../ui/dropdown-sizes"
+import { useDropdownShell, getDropdownContainerStyle } from "../discovery/use-dropdown-shell"
 
 interface AgentsSlashCommandProps {
   isOpen: boolean
@@ -47,19 +43,6 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
   mode,
   disabledCommands,
 }: AgentsSlashCommandProps) {
-  const dropdownRef = useRef<HTMLDivElement>(null)
-  const [selectedIndex, setSelectedIndex] = useState(0)
-  const placementRef = useRef<"above" | "below" | null>(null)
-  const [debouncedSearchText, setDebouncedSearchText] = useState(searchText)
-
-  // Debounce search text (300ms to match file mention)
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearchText(searchText)
-    }, 300)
-    return () => clearTimeout(timer)
-  }, [searchText])
-
   // Fetch agent bindings to get the agentId for the current chat
   const { data: bindings } = trpc.ergatai.getAgentBindings.useQuery(
     { chatId: chatId ?? "" },
@@ -88,16 +71,40 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
     )
   }, [discoveryGroups])
 
-  // Handle command selection
-  const handleSelect = useCallback(
-    (option: SlashCommandOption) => {
-      onSelect(option)
-    },
-    [onSelect],
-  )
+  // Filter options with raw searchText for option count (used by shell for keyboard nav)
+  const filteredOptions: SlashCommandOption[] = useMemo(() => {
+    if (!searchText) return agentCommands
+    const query = searchText.toLowerCase()
+    return agentCommands.filter(
+      (cmd) =>
+        cmd.name.toLowerCase().includes(query) ||
+        cmd.command.toLowerCase().includes(query),
+    )
+  }, [searchText, agentCommands])
 
-  // Show only backend SDK-reported agent commands.
-  const options: SlashCommandOption[] = useMemo(() => {
+  // Shared dropdown shell (keyboard nav, placement, auto-scroll, click outside, debounce)
+  const {
+    dropdownRef,
+    selectedIndex,
+    debouncedSearchText,
+    setSelectedIndex,
+    finalTop,
+    finalLeft,
+    dropdownWidth,
+    computedMaxHeight,
+    transformY,
+  } = useDropdownShell({
+    isOpen,
+    onClose,
+    position,
+    containerWidth,
+    containerLeft,
+    optionCount: filteredOptions.length,
+    searchText,
+  })
+
+  // Re-filter with debounced text for display (smoother UX during typing)
+  const displayOptions: SlashCommandOption[] = useMemo(() => {
     if (!debouncedSearchText) return agentCommands
     const query = debouncedSearchText.toLowerCase()
     return agentCommands.filter(
@@ -107,220 +114,61 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
     )
   }, [debouncedSearchText, agentCommands])
 
-  // Track previous values for smarter selection reset
-  const prevIsOpenRef = useRef(isOpen)
-  const prevSearchRef = useRef(debouncedSearchText)
-
-  // CONSOLIDATED: Single useLayoutEffect for selection management
-  useLayoutEffect(() => {
-    const didJustOpen = isOpen && !prevIsOpenRef.current
-    const didSearchChange = debouncedSearchText !== prevSearchRef.current
-
-    // Reset to 0 when opening or search changes
-    if (didJustOpen || didSearchChange) {
-      // react-doctor-disable-next-line no-adjust-state-on-prop-change
-      setSelectedIndex(0)
-    }
-    // Clamp to valid range if options shrunk
-    else if (options.length > 0 && selectedIndex >= options.length) {
-      setSelectedIndex(Math.max(0, options.length - 1))
-    }
-
-    // Update refs
-    prevIsOpenRef.current = isOpen
-    prevSearchRef.current = debouncedSearchText
-  }, [isOpen, debouncedSearchText, options.length, selectedIndex])
-
-  // Reset placement when closed
-  useEffect(() => {
-    if (!isOpen) {
-      placementRef.current = null
-    }
-  }, [isOpen])
-
-  // Keyboard navigation
+  // Enter/Tab selection (shell handles Escape/Arrow)
   useEffect(() => {
     if (!isOpen) return
 
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleSelect_key = (e: KeyboardEvent) => {
       switch (e.key) {
-        case "ArrowDown":
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          // Guard against modulo by zero when no options
-          if (options.length > 0) {
-            setSelectedIndex((prev) => (prev + 1) % options.length)
-          }
-          break
-        case "ArrowUp":
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          // Guard against modulo by zero when no options
-          if (options.length > 0) {
-            setSelectedIndex(
-              (prev) => (prev - 1 + options.length) % options.length,
-            )
-          }
-          break
         case "Enter":
           if (e.shiftKey) return
           e.preventDefault()
           e.stopPropagation()
           e.stopImmediatePropagation()
-          if (options[selectedIndex]) {
-            handleSelect(options[selectedIndex])
+          if (displayOptions[selectedIndex]) {
+            onSelect(displayOptions[selectedIndex])
           }
-          break
-        case "Escape":
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          onClose()
           break
         case "Tab":
           e.preventDefault()
           e.stopPropagation()
           e.stopImmediatePropagation()
-          if (options[selectedIndex]) {
-            handleSelect(options[selectedIndex])
+          if (displayOptions[selectedIndex]) {
+            onSelect(displayOptions[selectedIndex])
           }
           break
       }
     }
 
-    window.addEventListener("keydown", handleKeyDown, { capture: true })
+    window.addEventListener("keydown", handleSelect_key, { capture: true })
     return () =>
-      window.removeEventListener("keydown", handleKeyDown, { capture: true })
-  }, [isOpen, options, selectedIndex, handleSelect, onClose])
-
-  // Auto-scroll selected item into view
-  useEffect(() => {
-    if (!isOpen || !dropdownRef.current) return
-
-    if (selectedIndex === 0) {
-      dropdownRef.current.scrollTo({ top: 0, behavior: "auto" })
-      return
-    }
-
-    const elements = dropdownRef.current.querySelectorAll("[data-option-index]")
-    const selectedElement = elements[selectedIndex] as HTMLElement
-    if (selectedElement) {
-      selectedElement.scrollIntoView({ block: "nearest" })
-    }
-  }, [selectedIndex, isOpen])
-
-  // Click outside
-  useEffect(() => {
-    if (!isOpen) return
-
-    const handleClickOutside = (e: MouseEvent) => {
-      if (
-        dropdownRef.current &&
-        !dropdownRef.current.contains(e.target as Node)
-      ) {
-        onClose()
-      }
-    }
-
-    document.addEventListener("mousedown", handleClickOutside)
-    return () => document.removeEventListener("mousedown", handleClickOutside)
-  // react-doctor-disable-next-line prefer-use-effect-event
-  }, [isOpen, onClose])
-
-  const dimensions = getDropdownDimensions()
-
-  // Calculate dropdown dimensions (matching file mention style)
-  const dropdownWidth = dimensions.width
-  const itemHeight = dimensions.itemHeight
-  const headerHeight = dimensions.headerHeight
-  // Single "Commands" header for all options
-  const headersCount = options.length > 0 ? 1 : 0
-  const requestedHeight = Math.min(
-    options.length * itemHeight + headersCount * headerHeight + dimensions.gap,
-    dimensions.maxHeight,
-  )
-  const gap = dimensions.gap
-
-  // Decide placement like Radix Popover (auto-flip top/bottom)
-  const safeMargin = 10
-  const caretOffsetBelow = 20
-  const availableBelow =
-    window.innerHeight - (position.top + caretOffsetBelow) - safeMargin
-  const availableAbove = position.top - safeMargin
-
-  // Compute desired placement, but lock it for the duration of the open state.
-  // Ref is read during render (allowed); it is only written inside useLayoutEffect.
-  const placement = useMemo(() => {
-    if (placementRef.current !== null) return placementRef.current
-    const condition1 =
-      availableAbove >= requestedHeight && availableBelow < requestedHeight
-    const condition2 =
-      availableAbove > availableBelow && availableAbove >= requestedHeight
-    const shouldPlaceAbove = condition1 || condition2
-    return shouldPlaceAbove ? "above" : "below"
-  }, [availableAbove, availableBelow, requestedHeight])
-
-  useLayoutEffect(() => {
-    placementRef.current = placement
-  }, [placement])
+      window.removeEventListener("keydown", handleSelect_key, { capture: true })
+  }, [isOpen, displayOptions, selectedIndex, onSelect])
 
   if (!isOpen) return null
-
-  const placeAbove = placement === "above"
-
-  // Compute final top based on placement
-  const finalTop = placeAbove
-    ? position.top - gap
-    : position.top + gap + caretOffsetBelow
-
-  // Align the dropdown's left edge with the input container (status box)
-  let finalLeft = containerLeft ?? position.left
-
-  // Adjust horizontal overflow
-  if (finalLeft + dropdownWidth > window.innerWidth - safeMargin) {
-    finalLeft = window.innerWidth - dropdownWidth - safeMargin
-  }
-  if (finalLeft < safeMargin) {
-    finalLeft = safeMargin
-  }
-
-  // Keep the max height aligned with the Resume popover standard (max-h-72),
-  // so the box stays the same size instead of shrinking with available space.
-  const computedMaxHeight = Math.max(
-    80,
-    Math.min(requestedHeight, dimensions.maxHeight),
-  )
-  const transformY = placeAbove ? "translateY(-100%)" : "translateY(0)"
 
   return createPortal(
     <div
       ref={dropdownRef}
       className="fixed z-[99999] overflow-y-auto rounded-[10px] border border-border bg-popover py-1 text-xs text-popover-foreground shadow-lg [&::-webkit-scrollbar]:hidden"
       style={{
-        top: finalTop,
-        left: finalLeft,
-        width: containerWidth ? `${containerWidth}px` : "20rem",
-        maxHeight: "18rem",
-        transform: transformY,
-        transformOrigin: placeAbove ? 'bottom' : 'top',
-        scrollbarWidth: 'none',
-        msOverflowStyle: 'none',
+        ...getDropdownContainerStyle(finalTop, finalLeft, computedMaxHeight, transformY, containerWidth, dropdownWidth),
+        scrollbarWidth: "none",
+        msOverflowStyle: "none",
       } as React.CSSProperties}
     >
       {/* Grouped commands by source/group */}
-      {options.length > 0 && (
+      {displayOptions.length > 0 && (
         <>
-          {Array.from(new Set(options.map((o) => o.group || "commands"))).map((group) => (
+          {Array.from(new Set(displayOptions.map((o) => o.group || "commands"))).map((group) => (
             <div key={group}>
               <div className="px-2.5 py-1.5 mx-1 text-xs font-bold text-muted-foreground">
                 {group}
               </div>
-              {options
+              {displayOptions
                 .filter((option) => (option.group || "commands") === group)
                 .map((option) => {
-                  const index = options.indexOf(option)
+                  const index = displayOptions.indexOf(option)
                   const isSelected = selectedIndex === index
                   return (
                     <div
@@ -338,30 +186,30 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
                       onMouseDown={(e) => {
                         e.preventDefault()
                         e.stopPropagation()
-                        handleSelect(option)
+                        onSelect(option)
                       }}
                       onMouseEnter={() => setSelectedIndex(index)}
-                className={cn(
-                  "group inline-flex w-[calc(100%-8px)] mx-1 items-center whitespace-nowrap outline-none",
-                  "h-7 px-1.5 justify-start text-xs rounded-md",
-                  "transition-colors cursor-pointer select-none",
-                  isSelected
-                    ? "dark:bg-neutral-800 bg-accent text-foreground"
-                    : "text-muted-foreground dark:hover:bg-neutral-800 hover:bg-accent hover:text-foreground",
-                )}
-              >
-                <span className="flex items-center gap-1 w-full min-w-0">
-                  <span className="shrink-0 whitespace-nowrap font-medium">
-                    {option.command}
-                  </span>
-                  <span
-                    className="text-muted-foreground flex-1 min-w-0 ml-2 overflow-hidden text-[10px] truncate"
-                  >
-                    {option.description}
-                  </span>
-                </span>
-              </div>
-            )
+                      className={cn(
+                        "group inline-flex w-[calc(100%-8px)] mx-1 items-center whitespace-nowrap outline-none",
+                        "h-7 px-1.5 justify-start text-xs rounded-md",
+                        "transition-colors cursor-pointer select-none",
+                        isSelected
+                          ? "dark:bg-neutral-800 bg-accent text-foreground"
+                          : "text-muted-foreground dark:hover:bg-neutral-800 hover:bg-accent hover:text-foreground",
+                      )}
+                    >
+                      <span className="flex items-center gap-1 w-full min-w-0">
+                        <span className="shrink-0 whitespace-nowrap font-medium">
+                          {option.command}
+                        </span>
+                        <span
+                          className="text-muted-foreground flex-1 min-w-0 ml-2 overflow-hidden text-[10px] truncate"
+                        >
+                          {option.description}
+                        </span>
+                      </span>
+                    </div>
+                  )
                 })}
             </div>
           ))}
@@ -369,7 +217,7 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
       )}
 
       {/* Empty state */}
-      {options.length === 0 && (
+      {displayOptions.length === 0 && (
         <div className="h-7 px-1.5 mx-1 flex items-center text-xs text-muted-foreground">
           {debouncedSearchText
             ? `No commands matching "${debouncedSearchText}"`

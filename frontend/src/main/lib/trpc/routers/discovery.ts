@@ -31,6 +31,48 @@ async function fetchAgentDiscovery(agentId: string, cwd?: string, refresh?: bool
   }
 }
 
+/**
+ * Static discovery: filesystem-based sources only (convention_skills + plugins).
+ * Does not require an agent_id — usable in new-chat / no-agent scenarios.
+ */
+async function fetchStaticDiscovery(cwd?: string, refresh?: boolean) {
+  const params = new URLSearchParams()
+  if (cwd) params.set("cwd", cwd)
+  if (refresh) params.set("refresh", "1")
+  const query = params.toString()
+  const path = `/api/v1/discovery/static${query ? `?${query}` : ""}`
+
+  const data = await ergataiFetch<Record<string, unknown>>(path, {
+    method: "GET",
+  })
+
+  return {
+    skills: Array.isArray(data.skills) ? data.skills : [],
+    plugins: Array.isArray(data.plugins) ? data.plugins : [],
+    triggers: Array.isArray(data.triggers) ? data.triggers : [],
+  }
+}
+
+/**
+ * Trigger registry: returns editor trigger config (/, @, etc.).
+ * Independent of discovery — frontend can cache trigger config separately.
+ */
+async function fetchTriggers(agentId?: string, cwd?: string) {
+  const params = new URLSearchParams()
+  if (cwd) params.set("cwd", cwd)
+  if (agentId) params.set("agent_id", agentId)
+  const query = params.toString()
+  const path = `/api/v1/triggers${query ? `?${query}` : ""}`
+
+  const data = await ergataiFetch<Record<string, unknown>>(path, {
+    method: "GET",
+  })
+
+  return {
+    triggers: Array.isArray(data.triggers) ? data.triggers : [],
+  }
+}
+
 export const discoveryRouter = router({
   /**
    * Get all auxiliary information for an agent.
@@ -46,6 +88,36 @@ export const discoveryRouter = router({
     )
     .query(async ({ input }) => {
       return fetchAgentDiscovery(input.agentId, input.cwd, input.refresh)
+    }),
+
+  /**
+   * Static discovery: convention_skills + plugins.
+   * No agent_id required — works in new-chat / no-agent scenarios.
+   */
+  getStaticDiscovery: procedure
+    .input(
+      z.object({
+        cwd: z.string().optional(),
+        refresh: z.boolean().optional(),
+      })
+    )
+    .query(async ({ input }) => {
+      return fetchStaticDiscovery(input.cwd, input.refresh)
+    }),
+
+  /**
+   * Trigger registry: returns editor trigger config.
+   * Independent of discovery — can be cached with longer TTL.
+   */
+  getTriggers: procedure
+    .input(
+      z.object({
+        agentId: z.string().optional(),
+        cwd: z.string().optional(),
+      })
+    )
+    .query(async ({ input }) => {
+      return fetchTriggers(input.agentId, input.cwd)
     }),
 
   // Convenience wrappers removed; use getAgentDiscovery for all auxiliary data.

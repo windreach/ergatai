@@ -280,6 +280,8 @@ DELETE /api/v1/agent-profiles/:name  删除 profile
 
 # Agent 辅助信息发现
 GET  /api/v1/agents/:id/discovery    统一发现端点（skills/commands/mcp/plugins），支持 ?cwd=...&refresh=1
+GET  /api/v1/discovery/static        静态发现（convention_skills + plugins），无需 agentId
+GET  /api/v1/triggers                Trigger 注册表（/, @ 等编辑器触发配置），支持 ?agent_id=...&cwd=...
 GET  /api/v1/skills                  约定层 skills 扫描（Claude/Codex/OpenCode 目录）
 GET  /api/v1/agent-sdk/discover      Agent SDK 辅助信息（Node 子进程）
 GET  /api/v1/agent-sdk/models        Agent SDK 模型列表

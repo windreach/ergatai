@@ -33,10 +33,29 @@ GET /api/v1/agents/:id/discovery[?cwd=...][&refresh=1]
       commands: [...],   // ACP available commands + SDK
       mcp:      [...],   // 运行时 MCP 状态
       plugins:  [...]    // 运行时/缓存
+      triggers: [...]    // 编辑器 trigger 配置
     }
 ```
 
 前端只调用此端点，获取全部辅助信息；ACP 对话端点保持独立。
+
+### Trigger 注册表（独立端点）
+
+```
+GET /api/v1/triggers[?agent_id=...][&cwd=...]
+  → {
+      triggers: [
+        { "char": "/", "position": "start-of-line", "types": ["skill", "command", ...] },
+        { "char": "@", "position": "standalone", "types": ["skill", "plugin", ...] }
+      ]
+    }
+```
+
+Trigger 配置独立于 discovery，前端可单独缓存（5 分钟 TTL）。
+- **有 agent_id**：返回完整 types（skill, command, mcp, plugin, agent, file, folder）
+- **无 agent_id**：返回静态 types（skill, plugin only），新建对话可用
+
+前端 hook：`useRegisteredTriggers(agentId, cwd)` 提供 `isTriggerChar()`, `getTriggerTypes()`, `getTriggerPosition()` 辅助函数。
 
 ### 数据契约（统一 schema）
 
@@ -92,6 +111,7 @@ scripts/
 
 | 信息 | 是否持久化 | 策略 |
 |---|---|---|
+| Triggers | ❌ | 独立端点 `/api/v1/triggers`，前端 5 分钟缓存 |
 | Profile triggers | ✅ | `native_triggers_json`（启动回填） |
 | Models | ✅ | `models_json`（启动探测 + 手动刷新） |
 | Skills | ❌ | 运行时探测 + 5 分钟缓存 |
@@ -138,6 +158,7 @@ scripts/
 7. ⬜ Codex：约定 + ACP，无 SDK 增强（Codex 无 SDK 支持）。
 8. ✅ 模型探测接入 SDK：`profile_service::refresh_profile_models_via_sdk()` 以 `source=agent_sdk` 保存；`POST /agents/:id/model` 在切换后自动触发 SDK 模型刷新。
 9. ✅ 嵌入策略落地：`embedded_scripts.rs` 使用 `include_str!` 嵌入 Node 脚本，运行时提取到 `/tmp/ergatai-embedded-scripts/`，开发期自动 fallback 到源码 `scripts/` 目录。Shutdown 时自动清理。
+10. ✅ Trigger 注册表：独立端点 `/api/v1/triggers`，前端 `useRegisteredTriggers` hook。Schema 简化（`char`, `position`, `types`），移除 `allowSpaces`/`maxLength`。静态源（无 agent）返回 skill/plugin only。
 
 ## 风险与缓解
 

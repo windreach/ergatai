@@ -72,8 +72,23 @@ enum CacheStatus {
     Miss,
 }
 
+/// Static sources that only depend on filesystem and can be shared across agents.
+const STATIC_SOURCES: &[&str] = &[SRC_CONVENTION_SKILLS, SRC_PLUGINS];
+
+fn is_static_source(source: &str) -> bool {
+    STATIC_SOURCES.contains(&source)
+}
+
+/// Cache key generation:
+/// - Static sources (convention_skills, plugins): `{source}::{cwd}` — shared across agents.
+/// - Runtime sources (sdk_bundle, acp_commands): `{source}::{agent_id}::{cwd}` — per-agent.
 fn cache_key(source: &str, agent_id: &str, cwd: Option<&str>) -> String {
-    format!("{}::{}::{}", source, agent_id, cwd.unwrap_or(""))
+    let cwd_str = cwd.unwrap_or("");
+    if is_static_source(source) {
+        format!("{}::{}", source, cwd_str)
+    } else {
+        format!("{}::{}::{}", source, agent_id, cwd_str)
+    }
 }
 
 fn with_cache<R>(f: impl FnOnce(&mut DiscoveryCache) -> R) -> R {
@@ -141,24 +156,39 @@ fn cache_set(key: &str, value: Value) {
 }
 
 /// Invalidate all cache entries for a given agent (used by `refresh=1`).
+/// Handles both key formats:
+/// - Static: `{source}::{cwd}` — invalidated only if cwd matches (no agent_id to check).
+/// - Runtime: `{source}::{agent_id}::{cwd}` — invalidated by agent_id + cwd.
 fn invalidate_agent(agent_id: &str, cwd: Option<&str>) {
     let cwd_str = cwd.unwrap_or("");
     with_cache(|cache| {
         cache.results.retain(|k, _| {
-            // Cache key format: `{source}::{agent_id}::{cwd}`.
+            // Try runtime format first: `{source}::{agent_id}::{cwd}`
             let mut parts = k.splitn(3, "::");
-            let _source = parts.next();
-            let key_agent = parts.next().unwrap_or("");
-            let key_cwd = parts.next().unwrap_or("");
-            !(key_agent == agent_id && key_cwd == cwd_str)
+            let source = parts.next().unwrap_or("");
+            let second = parts.next().unwrap_or("");
+            let third = parts.next().unwrap_or("");
+
+            if is_static_source(source) {
+                // Static key: `{source}::{cwd}` — second is cwd
+                !(second == cwd_str)
+            } else {
+                // Runtime key: `{source}::{agent_id}::{cwd}` — second is agent_id, third is cwd
+                !(second == agent_id && third == cwd_str)
+            }
         });
         // Drop any in-flight handles for the same agent so refresh starts clean.
         cache.in_flight.retain(|k, _| {
             let mut parts = k.splitn(3, "::");
-            let _source = parts.next();
-            let key_agent = parts.next().unwrap_or("");
-            let key_cwd = parts.next().unwrap_or("");
-            !(key_agent == agent_id && key_cwd == cwd_str)
+            let source = parts.next().unwrap_or("");
+            let second = parts.next().unwrap_or("");
+            let third = parts.next().unwrap_or("");
+
+            if is_static_source(source) {
+                !(second == cwd_str)
+            } else {
+                !(second == agent_id && third == cwd_str)
+            }
         });
     });
 }
@@ -396,6 +426,7 @@ fn dedup_by_name(items: &mut Vec<Value>, key: &str) {
 }
 
 fn merge_sources(
+    agent_id: &str,
     convention_skills: &Value,
     sdk_bundle: &Value,
     acp_commands: &Value,
@@ -536,19 +567,7 @@ fn merge_sources(
         "mcp": mcp,
         "plugins": plugins,
         "errors": errors,
-        "triggers": [
-            {
-                "char": "/",
-                "position": "start-of-line",
-                "types": ["skill", "command", "mcp", "plugin", "agent", "file", "folder"],
-            },
-            {
-                "char": "@",
-                "position": "standalone",
-                "types": ["skill", "command", "mcp", "plugin", "agent", "file", "folder"],
-                "allowSpaces": true,
-            },
-        ],
+        "triggers": get_triggers(Some(agent_id), None),
     })
 }
 
@@ -722,6 +741,7 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
 
     // Assemble the merged result from whatever we have.
     let mut result = merge_sources(
+        agent_id,
         fresh_values
             .get(SRC_CONVENTION_SKILLS)
             .unwrap_or(&json!([])),
@@ -821,6 +841,117 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
 }
 
 // ---------------------------------------------------------------------------
+// Static discovery (no agent required)
+// ---------------------------------------------------------------------------
+
+/// Static discovery: returns only filesystem-based sources (convention_skills + plugins).
+/// Does not require an agent_id — usable in new-chat / no-agent scenarios.
+///
+/// Cache keys for static sources use `{source}::{cwd}` format, shared across agents.
+pub async fn discover_static(cwd: Option<&str>, refresh: bool) -> Value {
+    let started = Instant::now();
+    let cwd_opt = cwd;
+
+    if refresh {
+        // Invalidate static entries for this cwd (agent_id is irrelevant for static).
+        with_cache(|cache| {
+            cache.results.retain(|k, _| {
+                let mut parts = k.splitn(2, "::");
+                let source = parts.next().unwrap_or("");
+                let key_cwd = parts.next().unwrap_or("");
+                if is_static_source(source) {
+                    key_cwd != cwd_opt.unwrap_or("")
+                } else {
+                    true // keep runtime entries
+                }
+            });
+        });
+    }
+
+    let static_sources = [SRC_CONVENTION_SKILLS, SRC_PLUGINS];
+    let mut fresh_values: HashMap<&str, Value> = HashMap::new();
+
+    for &source in &static_sources {
+        let key = cache_key(source, "", cwd_opt); // agent_id ignored for static
+        match check_cache(&key) {
+            CacheStatus::Fresh(v) | CacheStatus::Stale(v) => {
+                fresh_values.insert(source, v);
+            }
+            CacheStatus::Miss => {
+                let value = fetch_source(source, "", "", cwd_opt).await;
+                if value.get("error").and_then(|v| v.as_str()).is_none() {
+                    cache_set(&key, value.clone());
+                }
+                fresh_values.insert(source, value);
+            }
+        }
+    }
+
+    let skills = fresh_values
+        .get(SRC_CONVENTION_SKILLS)
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let plugins = fresh_values
+        .get(SRC_PLUGINS)
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+
+    tracing::debug!(
+        elapsed_ms = %started.elapsed().as_millis(),
+        "static discovery completed"
+    );
+
+    json!({
+        "skills": skills,
+        "plugins": plugins,
+        "triggers": get_triggers(None, cwd_opt),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Trigger registry
+// ---------------------------------------------------------------------------
+
+/// Returns the registered triggers for the editor.
+///
+/// When `agent_id` is provided, returns triggers with full types
+/// (skill, command, mcp, plugin, agent, file, folder).
+/// Without `agent_id`, returns static triggers (skill, plugin only).
+///
+/// Schema: `char`, `position`, `types` — `allowSpaces`/`maxLength` removed (not needed).
+pub fn get_triggers(agent_id: Option<&str>, _cwd: Option<&str>) -> Value {
+    if agent_id.is_some() {
+        // Full discovery: agent is running, all types available
+        json!([
+            {
+                "char": "/",
+                "position": "start-of-line",
+                "types": ["skill", "command", "mcp", "plugin", "agent", "file", "folder"],
+            },
+            {
+                "char": "@",
+                "position": "standalone",
+                "types": ["skill", "command", "mcp", "plugin", "agent", "file", "folder"],
+            },
+        ])
+    } else {
+        // Static discovery: no agent, only filesystem-based types
+        json!([
+            {
+                "char": "/",
+                "position": "start-of-line",
+                "types": ["skill", "plugin"],
+            },
+            {
+                "char": "@",
+                "position": "standalone",
+                "types": ["skill", "plugin"],
+            },
+        ])
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Plugins scan (Claude marketplace)
 // ---------------------------------------------------------------------------
 
@@ -892,11 +1023,27 @@ mod tests {
 
     #[test]
     fn test_cache_key_generation() {
+        // Runtime sources include agent_id
         let key = cache_key("sdk_bundle", "agent-123", Some("/path/to/work"));
         assert_eq!(key, "sdk_bundle::agent-123::/path/to/work");
 
+        let key_acp = cache_key("acp_commands", "agent-123", Some("/path"));
+        assert_eq!(key_acp, "acp_commands::agent-123::/path");
+
+        // Static sources omit agent_id (shared across agents)
+        let key_static = cache_key("convention_skills", "agent-123", Some("/path/to/work"));
+        assert_eq!(key_static, "convention_skills::/path/to/work");
+
+        let key_plugins = cache_key("plugins", "agent-456", Some("/path"));
+        assert_eq!(key_plugins, "plugins::/path");
+
+        // Static without cwd
         let key_no_cwd = cache_key("plugins", "agent-456", None);
-        assert_eq!(key_no_cwd, "plugins::agent-456::");
+        assert_eq!(key_no_cwd, "plugins::");
+
+        // Runtime without cwd
+        let key_runtime_no_cwd = cache_key("sdk_bundle", "agent-789", None);
+        assert_eq!(key_runtime_no_cwd, "sdk_bundle::agent-789::");
     }
 
     #[test]
@@ -936,7 +1083,7 @@ mod tests {
             "error": "SDK connection failed"
         });
 
-        let result = merge_sources(&json!([]), &sdk_with_error, &json!([]), &json!([]));
+        let result = merge_sources("test-agent", &json!([]), &sdk_with_error, &json!([]), &json!([]));
 
         assert!(result.get("errors").is_some());
         let errors = result["errors"].as_array().unwrap();
@@ -953,7 +1100,7 @@ mod tests {
             "mcp": [],
         });
 
-        let result = merge_sources(&json!([]), &sdk_success, &json!([]), &json!([]));
+        let result = merge_sources("test-agent", &json!([]), &sdk_success, &json!([]), &json!([]));
 
         assert!(result.get("errors").is_some());
         let errors = result["errors"].as_array().unwrap();
@@ -973,7 +1120,7 @@ mod tests {
             ]
         });
 
-        let result = merge_sources(&convention, &sdk, &json!([]), &json!([]));
+        let result = merge_sources("test-agent", &convention, &sdk, &json!([]), &json!([]));
         let skills = result["skills"].as_array().unwrap();
 
         // Should have 3 unique skills (shared-skill deduped)
@@ -996,28 +1143,41 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalidate_agent() {
-        // Set up cache entries for multiple agents
+        // Set up cache entries — static sources use new key format (no agent_id)
         cache_set("sdk_bundle::agent-1::/path1", json!({"a": 1}));
         cache_set("sdk_bundle::agent-2::/path2", json!({"b": 2}));
-        cache_set("plugins::agent-1::", json!({"c": 3}));
+        cache_set("plugins::/path1", json!({"c": 3})); // static: shared across agents
 
-        // Invalidate agent-1
+        // Invalidate agent-1 at /path1
         invalidate_agent("agent-1", Some("/path1"));
 
-        // agent-1 entries should be gone
+        // agent-1 runtime entries should be gone
         assert!(matches!(
             check_cache("sdk_bundle::agent-1::/path1"),
             CacheStatus::Miss
         ));
-        assert!(matches!(
-            check_cache("plugins::agent-1::/path1"),
-            CacheStatus::Miss
-        ));
 
-        // agent-2 entries should still be there
+        // agent-2 runtime entries should still be there
         assert!(matches!(
             check_cache("sdk_bundle::agent-2::/path2"),
             CacheStatus::Fresh(_)
         ));
+
+        // Static entry at /path1 is invalidated (cwd match)
+        assert!(matches!(
+            check_cache("plugins::/path1"),
+            CacheStatus::Miss
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_static_cache_shared_across_agents() {
+        // Two agents at the same cwd should share static cache entries
+        let key_a = cache_key("convention_skills", "agent-a", Some("/workspace"));
+        let key_b = cache_key("convention_skills", "agent-b", Some("/workspace"));
+        assert_eq!(key_a, key_b); // Both produce "convention_skills::/workspace"
+
+        cache_set(&key_a, json!([{"name": "shared-skill"}]));
+        assert!(matches!(check_cache(&key_b), CacheStatus::Fresh(_)));
     }
 }

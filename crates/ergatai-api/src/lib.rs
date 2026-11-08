@@ -279,6 +279,13 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route("/api/v1/skills", get(api::skills::list_skills))
         // Plugins discovery (Claude marketplace scan, global)
         .route("/api/v1/plugins", get(api::skills::list_plugins))
+        // Static discovery (filesystem-based: convention_skills + plugins, no agent required)
+        .route(
+            "/api/v1/discovery/static",
+            get(api::skills::get_static_discovery),
+        )
+        // Trigger registry (editor trigger config, independent of discovery)
+        .route("/api/v1/triggers", get(api::skills::get_triggers))
         // Agent SDK auxiliary discovery (skills/models/commands via Node SDKs)
         .route("/api/v1/agent-sdk/discover", get(api::agent_sdk::discover))
         .route("/api/v1/agent-sdk/models", get(api::agent_sdk::models))

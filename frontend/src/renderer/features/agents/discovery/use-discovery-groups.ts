@@ -26,19 +26,32 @@ const TYPE_LABELS: Record<string, string> = {
 /**
  * Generic hook: fetch agent discovery and group items by backend-provided `group`.
  * Both `/` and `@` can consume this; insertion semantics stay in the caller.
+ *
+ * Degradation: when `agentId` is undefined (new chat / no agent), falls back to
+ * static discovery (convention_skills + plugins only).
  */
 export interface DiscoveryTrigger {
   char: string
   position?: string
   types?: string[]
-  allowSpaces?: boolean
 }
 
 export function useDiscoveryGroups(agentId: string | undefined, cwd?: string) {
-  const { data, isLoading } = trpc.discovery.getAgentDiscovery.useQuery(
+  // Full discovery: requires agentId
+  const { data: fullData, isLoading: fullLoading } = trpc.discovery.getAgentDiscovery.useQuery(
     { agentId: agentId ?? "", cwd },
     { enabled: !!agentId, staleTime: 30 * 1000, refetchOnWindowFocus: false },
   )
+
+  // Static fallback: convention_skills + plugins only, no agentId needed
+  const { data: staticData, isLoading: staticLoading } = trpc.discovery.getStaticDiscovery.useQuery(
+    { cwd },
+    { enabled: !agentId, staleTime: 5 * 60 * 1000, refetchOnWindowFocus: false },
+  )
+
+  // Select the active data source
+  const data = agentId ? fullData : staticData
+  const isLoading = agentId ? fullLoading : staticLoading
 
   const triggers = useMemo<DiscoveryTrigger[]>(() => {
     const d = data as { triggers?: DiscoveryTrigger[] } | undefined
