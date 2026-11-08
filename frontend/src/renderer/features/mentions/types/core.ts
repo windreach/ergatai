@@ -158,7 +158,7 @@ export interface MentionItem<TData = unknown> {
     /**
      * Type hint for rendering
      */
-    type?: "file" | "folder" | "skill" | "agent" | "tool" | "category" | "symbol"
+    type?: "file" | "folder" | "skill" | "agent" | "tool" | "category" | "symbol" | "command"
 
     /**
      * Repository name (for multi-repo support)
@@ -177,6 +177,7 @@ export const MENTION_PREFIXES = {
   SKILL: "skill:",
   AGENT: "agent:",
   TOOL: "tool:",
+  COMMAND: "command:",
   QUOTE: "quote:",
   DIFF: "diff:",
   PASTED: "pasted:",

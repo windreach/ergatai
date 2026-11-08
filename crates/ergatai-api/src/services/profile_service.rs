@@ -35,7 +35,12 @@ pub enum ProfileModelStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProfileModelSource {
+    /// Detected via ACP `/config` options (legacy path).
     AcpConfigOptions,
+    /// Detected via the agent's proprietary SDK (Claude `supportedModels()`,
+    /// OpenCode provider config, etc.). Takes precedence over ACP detection.
+    AgentSdk,
+    /// No models detected yet.
     None,
 }
 
@@ -111,9 +116,17 @@ fn normalize_profile_models(
 }
 
 fn models_json(models: &[String], option_id: Option<&str>) -> String {
+    models_json_with_source(models, option_id, ProfileModelSource::AcpConfigOptions)
+}
+
+fn models_json_with_source(
+    models: &[String],
+    option_id: Option<&str>,
+    source: ProfileModelSource,
+) -> String {
     serde_json::json!({
         "status": ProfileModelStatus::Available,
-        "source": ProfileModelSource::AcpConfigOptions,
+        "source": source,
         "models": models,
         "last_known_models": models,
         "option_id": option_id,
@@ -338,6 +351,48 @@ pub async fn save_profile_models_by_name(
         .update_models_by_name(name, &json, now_ms)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to save profile models: {}", e))
+}
+
+/// 通过 agent SDK 探测模型列表并保存到 profile。
+///
+/// 调用 `agent_sdk_service::discover` 获取 SDK 报告的模型列表，
+/// 非空时以 `source=agent_sdk` 持久化到 profile cache，优先于 ACP 探测。
+/// 返回实际保存的模型列表（空表示 SDK 未返回模型）。
+pub async fn refresh_profile_models_via_sdk(
+    agent_kind: &str,
+    profile_name: &str,
+    cwd: Option<&str>,
+) -> Result<Vec<String>> {
+    let sdk = crate::services::agent_sdk_service::discover(agent_kind, cwd).await;
+    let models: Vec<String> = sdk
+        .get("models")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    m.get("id")
+                        .or_else(|| m.get("value"))
+                        .or_else(|| m.get("name"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if models.is_empty() {
+        return Ok(models);
+    }
+
+    let registry = get_profile_registry()?;
+    let json = models_json_with_source(&models, None, ProfileModelSource::AgentSdk);
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    registry
+        .update_models_by_name(profile_name, &json, now_ms)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to save SDK-detected models: {}", e))?;
+
+    Ok(models)
 }
 
 /// 获取指定 profile 的模型目录（按 profile ID 查询）。

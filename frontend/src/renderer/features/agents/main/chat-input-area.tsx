@@ -1916,6 +1916,7 @@ export const ChatInputArea = memo(function ChatInputArea({
         sandboxId={sandboxId}
         projectPath={projectPath}
         changedFiles={changedFiles}
+        agentId={agentId ?? undefined}
         // Subpage navigation state
         showingFilesList={showingFilesList}
         showingSkillsList={showingSkillsList}

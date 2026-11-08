@@ -507,6 +507,16 @@ async fn async_main(args: Args) -> Result<()> {
                 activity_monitor::spawn_activity_monitor(monitor_runtime, monitor_shutdown);
             runtime.register_monitor_handle("activity_monitor".to_string(), monitor_handle);
             tracing::info!("✅ Activity monitor spawned (auto-suspend idle agents after 10min)");
+
+            // Periodically process pending MCP injections for agents that were marked while suspended.
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    let _ = ergatai_api::api::agent_sdk::process_pending_mcp_injections().await;
+                }
+            });
         }
         Err(e) => {
             tracing::error!("Failed to initialize AgentRuntime: {}", e);
@@ -947,5 +957,9 @@ async fn async_main(args: Args) -> Result<()> {
             tracing::warn!(error = %error, "Failed to shut down collaboration runtime cleanly");
         }
     }
+
+    // Cleanup embedded scripts extracted to temp directory
+    ergatai_api::services::embedded_scripts::cleanup_embedded_scripts();
+
     Ok(())
 }

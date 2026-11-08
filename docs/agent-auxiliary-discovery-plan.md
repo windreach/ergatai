@@ -1,5 +1,8 @@
 # Agent 辅助信息发现计划（Skills / Commands / MCP / Plugins）
 
+> 状态：**核心能力已落地**。OpenCode server 连接管理已实现（健康检查 + 自动回退）。嵌入策略已落地（`include_str!` + 临时目录）。
+> 最后更新：2026-11-08（缓存重构 + 模型 SDK 集成 + 前端迁移 + OpenCode 连接管理 + 嵌入策略）
+
 ## 目标
 
 - Ergatai 前端通过 `@` / `/` 获取 agent 辅助信息时，不再依赖硬编码或盲猜。
@@ -24,16 +27,40 @@
 ## 统一发现端点
 
 ```
-GET /api/v1/agents/:id/discovery
+GET /api/v1/agents/:id/discovery[?cwd=...][&refresh=1]
   → {
       skills:   [...],   // 约定 + SDK
-      commands: [...],   // ACP available commands
+      commands: [...],   // ACP available commands + SDK
       mcp:      [...],   // 运行时 MCP 状态
       plugins:  [...]    // 运行时/缓存
     }
 ```
 
 前端只调用此端点，获取全部辅助信息；ACP 对话端点保持独立。
+
+### 数据契约（统一 schema）
+
+```json
+{
+  "skills": [
+    { "name": "string", "description": "string", "path": "string", "source": "user|project|plugin|agent-sdk|convention" }
+  ],
+  "commands": [
+    { "name": "string", "description": "string", "argumentHint": "string", "aliases": ["string"], "source": "acp|agent-sdk" }
+  ],
+  "mcp": [
+    { "name": "string", "status": "connected|failed|needs-auth|pending", "config": "object|null", "source": "agent-sdk|acp|registry" }
+  ],
+  "plugins": [
+    { "name": "string", "version": "string", "description": "string", "path": "string", "source": "string", "marketplace": "string", "category": "string|null", "homepage": "string|null", "tags": ["string"] }
+  ]
+}
+```
+
+约定：
+- 所有数组缺失时返回 `[]`，不返回 `null`。
+- 部分失败时仍返回已获取的部分，并在顶层附 `errors: [{source, message}]`（可选）。
+- `refresh=1` 跳过缓存强制重探。
 
 ## 文件布局
 
@@ -43,18 +70,25 @@ crates/ergatai-api/
 │   ├── services/
 │   │   ├── agent_sdk_service.rs   # Rust 调用 Node SDK
 │   │   ├── skills_service.rs      # 约定扫描
-│   │   └── profile_service.rs     # 集成 SDK 结果
+│   │   └── profile_service.rs     # 集成 SDK 结果（待接入）
 │   └── api/
-│       ├── agents.rs              # /agents/:id 附带 discovery
-│       └── agent_profiles.rs      # /agent-profiles 附带元数据
+│       ├── agents.rs              # /agents/:id 附带 discovery（待实现）
+│       ├── skills.rs              # /skills
+│       └── agent_sdk.rs           # /agent-sdk/discover
 └── assets/
-    └── agent-sdk-discover.mjs     # Node helper（include_str! 嵌入）
+    └── agent-sdk-discover.mjs     # Node helper（include_str! 嵌入，待实现）
 
 scripts/
-└── agent-sdk-discover.mjs         # 开发期脚本
+├── agent-sdk-discover.mjs         # 开发期脚本
+└── agent-sdk-model.mjs            # 模型切换 helper
 ```
 
-## 持久化策略
+嵌入策略（待定，二选一）：
+- **A. 嵌入**：`assets/` + `include_str!`，运行时写入临时文件执行；需解决 node_modules 解析（把 helper 与依赖一起打包，或在运行时从安装目录解析）。
+- **B. 安装目录**：二进制与 `scripts/`、`node_modules` 一起安装到固定路径，`project_root()` 解析该目录。
+当前实现走 B 的雏形（`project_root()`），生产环境需明确安装约定。
+
+## 持久化与缓存策略
 
 | 信息 | 是否持久化 | 策略 |
 |---|---|---|
@@ -65,28 +99,54 @@ scripts/
 | MCP 状态 | ❌ | 运行时查询 + 30 秒缓存 |
 | Plugins | ⚠️ | 运行时/缓存 1 小时 |
 
+缓存设计要求：
+- key：`agent_id + cwd`（plugins 仅 `agent_id`/全局）。
+- 同一 key 并发请求复用进行中的探测，避免重复 spawn Node。
+- `refresh=1` 强制失效并重探。
+- TTL 到期后台刷新，不阻塞读取（stale-while-revalidate）。
+
+## Agent SDK 映射（按 agent）
+
+| 辅助信息 | Claude | OpenCode | Codex | 获取方式 |
+|---|---|---|---|---|
+| Skills | `reloadSkills().skills` | `client.skills()` | 约定目录 | SDK → 约定 |
+| Commands | `supportedCommands()` | `client.commands()` | ACP | SDK → ACP |
+| MCP 状态 | `mcpServerStatus()` | `client.mcpStatus()` | ACP/注册表 | SDK → ACP → 注册表 |
+| Models | `supportedModels()` | providers/config | ACP | SDK → 约定 → ACP |
+| 模型切换 | `setModel()` | `sessionSwitchModel()` | 仅启动时 | SDK → ACP `/model` |
+
+修正点（相对当前脚本）：
+- Claude 的 `skills` 与 `commands` 必须分离：`skills` 来自 `reloadSkills()`，`commands` 来自 `supportedCommands()`；当前脚本把 `supportedCommands()` 同时映射到两者，需修正。
+- Claude 必须调用 `mcpServerStatus()` 获取 MCP 状态，当前脚本未调用。
+- OpenCode 依赖运行中的 server（默认 `http://127.0.0.1:4096`）；需明确 server 启动 ownership，失败回退约定/空结果，不能静默 localhost。
+
 ## 前端
 
 - `@` / `/` 触发时调用 `/api/v1/agents/:id/discovery`。
 - 合并展示 skills、commands、MCP、plugins。
 - 不再自己扫描文件系统，不感知 SDK 存在。
+- plugins：当前由前端 main 进程扫描 Claude marketplace；若纳入统一端点，需决定后端复刻或前端继续负责（见风险）。
 
 ## 实施步骤
 
 1. ✅ 约定层：`/api/v1/skills` 目录扫描。
-2. ✅ SDK 增强层：`/api/v1/agent-sdk/discover`（Claude 验证通过）。
-3. ⬜ 统一发现端点：`/api/v1/agents/:id/discovery` 合并三段信息。
-4. ⬜ 缓存层：SDK/约定结果缓存，避免每次 spawn Node。
-5. ⬜ 前端迁移：`@` / `/` 下拉调用统一端点。
-6. ⬜ OpenCode SDK 连接：server 启动/连接逻辑。
-7. ⬜ Codex：约定 + ACP，无 SDK 增强。
+2. ✅ SDK 增强层：`/api/v1/agent-sdk/discover` + `/api/v1/agent-sdk/models`。Claude skills/commands 已正确分离，MCP 状态已接入。
+3. ✅ 统一发现端点：`/api/v1/agents/:id/discovery` 已落地（skills/commands/mcp/plugins），前端 `skills-provider.ts` / `commands-provider.ts` 已迁移。
+4. ✅ 缓存层：按 source 分 TTL（convention skills 5min / ACP commands 1min / SDK bundle 30s / plugins 1h）+ stale-while-revalidate（2×TTL 窗口内返回旧数据并后台刷新）+ 并发去重。
+5. ✅ 前端迁移：`@` / `/` 下拉调用 `trpcClient.discovery.getSkills` / `getCommands`。
+6. ✅ OpenCode SDK 连接：HTTP 健康检查（30s 间隔）+ 自动回退空结果。`OPENCODE_URL` 环境变量支持自定义地址。Server 启动 ownership 仍依赖外部（用户手动启动或集成到其他组件）。
+7. ⬜ Codex：约定 + ACP，无 SDK 增强（Codex 无 SDK 支持）。
+8. ✅ 模型探测接入 SDK：`profile_service::refresh_profile_models_via_sdk()` 以 `source=agent_sdk` 保存；`POST /agents/:id/model` 在切换后自动触发 SDK 模型刷新。
+9. ✅ 嵌入策略落地：`embedded_scripts.rs` 使用 `include_str!` 嵌入 Node 脚本，运行时提取到 `/tmp/ergatai-embedded-scripts/`，开发期自动 fallback 到源码 `scripts/` 目录。Shutdown 时自动清理。
 
 ## 风险与缓解
 
-- **Node 子进程开销**：缓存 + 手动刷新。
+- **Node 子进程开销**：缓存 + 手动刷新 + 并发去重。
 - **SDK 版本耦合**：Adapter 层隔离，失败回退约定。
-- **MCP 状态 stale**：短 TTL 缓存 + 运行时刷新。
-- **OpenCode server 依赖**：SDK 调用失败时回退约定/空结果。
+- **MCP 状态 stale**：短 TTL 缓存 + 运行时刷新 + `refresh=1`。
+- **OpenCode server 依赖**：SDK 调用失败时回退约定/空结果；明确 server 启动 ownership。
+- **生产路径**：`project_root()` 脆弱；需嵌入或固定安装目录。
+- **plugins 归属**：前端扫描 vs 后端统一；若后端接管，需复刻 marketplace 扫描或保留前端作为插件专用通道。
 
 ## 模型探测与切换（SDK 增强）
 
@@ -109,12 +169,10 @@ scripts/
 - `scripts/agent-sdk-model.mjs`：Node helper（已验证 Claude 切换成功）
 - `crates/ergatai-api/src/services/agent_sdk_service.rs`：`switch_model()` 封装
 
-## 历史消息渲染策略
+## 历史消息渲染策略（可选增强，roadmap）
 
-### 现状
-主路径继续入库（统一元数据 + 性能），导入流程保留“读 agent 文件 → 入库”。
+> 本节超出「辅助信息发现」核心范围，保留为后续独立课题。
 
-### 可选增强：后台静默迁移 + 临时文件渲染
 - 用户开启「历史渲染」时，先直接读取 agent 原生文件做**临时视图**（不入库）。
 - 后台静默执行迁移（读文件 → 入库），迁移完成后切换到数据库渲染。
 - 迁移完成后清理临时视图，避免重复数据。
@@ -136,7 +194,7 @@ scripts/
 ### SDK 支持情况
 | Agent | Skills | MCP | 说明 |
 |---|---|---|---|
-| Claude | ✅ `supportedCommands()` | ✅ `McpServerStatus` / `setMcpServers()` | SDK 可直接查询/配置 |
+| Claude | ✅ `reloadSkills()` | ✅ `McpServerStatus` / `setMcpServers()` | SDK 可直接查询/配置 |
 | OpenCode | ✅ `skills()` | ✅ `mcpStatus()` / `mcpAdd()` | HTTP SDK 提供 |
 | Codex | ❌ | ⚠️ 仅 MCP tool call 事件 | 无管理 API |
 
@@ -148,7 +206,9 @@ scripts/
 ### 原则
 SDK 是增强手段，不是唯一来源；Ergatai 自己的 MCP/Skills 注册表保留作为兜底和统一视图。
 
-## 辅助信息来源矩阵（统一）
+## 辅助信息来源矩阵（roadmap，非本期范围）
+
+> 本矩阵包含文件变更/Todo/权限/用量/历史等超出发现端点的能力，作为后续能力规划参考，不作为本期交付。
 
 | 辅助信息 | Claude | Codex | OpenCode | 优先级 |
 |---|---|---|---|---|
@@ -177,6 +237,4 @@ Codex: ACP 原生 → 约定文件 → Workaround 兜底（无 SDK）
 
 ## 一句话
 
-**ACP 走对话，约定做兜底，SDK 做增强；统一挂载到 agent 发现端点，后端保持数据源，前端无感。模型探测/切换优先 SDK，失败回退 ACP。历史渲染支持后台静默迁移 + 临时文件视图。MCP/Skills 优先 SDK，失败回退 Ergatai 注册表。辅助信息按 SDK → ACP → 约定 → Workaround 分层获取。**
-EOF
-echo "created"
+**ACP 走对话，约定做兜底，SDK 做增强；统一挂载到 agent 发现端点，后端保持数据源，前端无感。模型探测/切换优先 SDK，失败回退 ACP。MCP/Skills 优先 SDK，失败回退 Ergatai 注册表。本期聚焦 skills/commands/mcp/plugins 四类发现，其余能力列入 roadmap。**

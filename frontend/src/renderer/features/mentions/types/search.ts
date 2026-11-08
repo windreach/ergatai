@@ -39,6 +39,11 @@ export interface MentionSearchContext {
   conversationId?: string
 
   /**
+   * Agent ID for agent-specific discovery (skills, commands, MCP)
+   */
+  agentId?: string
+
+  /**
    * Parent item when drilling down in hierarchy
    * e.g., when getting symbols for a file
    */

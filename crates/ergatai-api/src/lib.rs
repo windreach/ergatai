@@ -277,8 +277,29 @@ pub fn build_rest_app(state: AppState) -> Router {
         )
         // Skills discovery (agent skill directories)
         .route("/api/v1/skills", get(api::skills::list_skills))
+        // Plugins discovery (Claude marketplace scan, global)
+        .route("/api/v1/plugins", get(api::skills::list_plugins))
         // Agent SDK auxiliary discovery (skills/models/commands via Node SDKs)
         .route("/api/v1/agent-sdk/discover", get(api::agent_sdk::discover))
+        .route("/api/v1/agent-sdk/models", get(api::agent_sdk::models))
+        // Per-agent MCP injection via SDK
+        .route(
+            "/api/v1/agents/{id}/mcp/inject",
+            axum::routing::post(api::agent_sdk::inject_mcp),
+        )
+        .route(
+            "/api/v1/mcp/inject-running",
+            axum::routing::post(api::agent_sdk::inject_mcp_running),
+        )
+        .route(
+            "/api/v1/mcp/process-pending",
+            axum::routing::post(api::agent_sdk::process_pending_mcp_injections),
+        )
+        // Per-agent model switch via SDK
+        .route(
+            "/api/v1/agents/{id}/model",
+            axum::routing::post(api::agent_sdk::switch_model),
+        )
         // Path registration lookup (single-call replacement for N+1 client-side path resolution)
         .route(
             "/api/v1/registered-path",
@@ -389,6 +410,10 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/agents/{id}/commands",
             get(api::agents::get_agent_available_commands),
+        )
+        .route(
+            "/api/v1/agents/{id}/discovery",
+            get(api::agents::get_agent_discovery),
         )
         .route(
             "/api/v1/agents/{id}/execute-command",

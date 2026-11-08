@@ -5543,3 +5543,33 @@ pub async fn get_migration_progress(State(_state): State<AppState>) -> impl Into
             .into_response(),
     }
 }
+
+/// Query params for agent discovery.
+#[derive(Debug, serde::Deserialize)]
+pub struct AgentDiscoveryQuery {
+    pub cwd: Option<String>,
+    pub refresh: Option<String>,
+}
+
+/// GET /api/v1/agents/{id}/discovery
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/discovery",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Agent discovery info", body = serde_json::Value),
+        (status = 404, description = "Agent not found", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_agent_discovery(
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(q): axum::extract::Query<AgentDiscoveryQuery>,
+) -> impl axum::response::IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
+    let refresh = q.refresh.as_deref() == Some("1") || q.refresh.as_deref() == Some("true");
+    let result = crate::services::discovery_service::discover(&id, q.cwd.as_deref(), refresh).await;
+    (axum::http::StatusCode::OK, axum::Json(result)).into_response()
+}

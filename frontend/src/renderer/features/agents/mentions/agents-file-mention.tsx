@@ -42,6 +42,7 @@ interface AgentsFileMentionProps {
   branch?: string // For fetching files from specific branch via GitHub API
   projectPath?: string // For fetching files from local project directory (desktop)
   changedFiles?: ChangedFile[] // Files changed in current conversation (shown at top)
+  agentId?: string // Agent ID for discovery endpoint (skills, commands, MCP)
   // Subpage navigation state
   showingFilesList?: boolean
   showingSkillsList?: boolean
@@ -190,6 +191,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   projectPath,
   // react-doctor-disable-next-line rerender-memo-with-default-value
   changedFiles = [],
+  agentId,
   showingFilesList = false,
   showingSkillsList = false,
   showingAgentsList = false,
@@ -205,14 +207,34 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   // Get session info (MCP servers, tools) from atom
   const sessionInfo = useAtomValue(sessionInfoAtom)
 
-  // Fetch skills from filesystem (cached for 5 minutes)
+  // Fetch discovery info (skills, commands, MCP) if agentId is available
+  const { data: discoveryData, error: discoveryError } = trpc.discovery.getAgentDiscovery.useQuery(
+    { agentId: agentId!, cwd: projectPath },
+    {
+      enabled: isOpen && !!agentId && scope !== "agents",
+      staleTime: 30 * 1000, // 30 seconds cache
+    },
+  )
+
+  const discoveryWarning = discoveryError?.message
+    || (Array.isArray(discoveryData?.errors) && discoveryData.errors.length > 0
+      ? discoveryData.errors.map((e: { message?: string }) => e?.message).filter(Boolean).join("; ")
+      : null)
+
+  // Fetch skills from filesystem (cached for 5 minutes) - fallback when no agentId
   const { data: skills = [], isFetching: _isFetchingSkills } = trpc.skills.listEnabled.useQuery(
     projectPath ? { cwd: projectPath } : undefined,
     {
-      enabled: isOpen && scope !== "agents",
+      enabled: isOpen && scope !== "agents" && !agentId,
       staleTime: 5 * 60 * 1000, // 5 minutes - skills don't change frequently
     },
   )
+
+  // Use discovery skills if available, otherwise use filesystem skills
+  type DiscoverySkill = { name: string; description: string; path: string; source: "user" | "project" | "plugin" | "agent-sdk" | "convention" }
+  const allSkills = (agentId && discoveryData?.skills
+    ? discoveryData.skills
+    : skills) as DiscoverySkill[]
 
   // Fetch custom agents from filesystem (cached for 5 minutes)
   const { data: customAgents = [], isFetching: _isFetchingAgents } = trpc.agents.listEnabled.useQuery(
@@ -335,13 +357,13 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   const skillOptions: FileMentionOption[] = useMemo(() => {
     const searchLower = debouncedSearchText.toLowerCase()
 
-    return skills
-      .filter(skill =>
+    return allSkills
+      .filter((skill) =>
         // Multi-word search: all words must match in name OR description
         matchesMultiWordSearch(skill.name, searchLower) ||
         matchesMultiWordSearch(skill.description, searchLower)
       )
-      .map(skill => ({
+      .map((skill) => ({
         id: `${MENTION_PREFIXES.SKILL}${skill.name}`,
         label: skill.name,
         path: skill.path, // file path for tooltip
@@ -352,7 +374,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
         description: skill.description,
         source: skill.source,
       }))
-  }, [skills, debouncedSearchText])
+  }, [allSkills, debouncedSearchText])
 
   // Convert custom agents to mention options
   const agentOptions: FileMentionOption[] = useMemo(() => {
@@ -421,7 +443,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
 
   // Check if we have skills, agents, or tools
   // Use base data (not search-filtered) for stable category display
-  const hasSkills = skills.length > 0
+  const hasSkills = allSkills.length > 0
   const hasAgents = customAgents.length > 0
   const hasTools = allToolOptions.length > 0
   const hasOnlyFiles = !hasSkills && !hasAgents && !hasTools
@@ -695,6 +717,13 @@ export const AgentsFileMention = memo(function AgentsFileMention({
         msOverflowStyle: 'none',
       } as React.CSSProperties}
     >
+      {/* Discovery warning */}
+      {discoveryWarning && (
+        <div className="px-2.5 py-1 mx-1 text-xs text-amber-500">
+          {discoveryWarning}
+        </div>
+      )}
+
       {/* All mentions in one section */}
       {options.length > 0 && (
         <>
@@ -731,6 +760,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
                     ? "dark:bg-neutral-800 bg-accent text-foreground"
                     : "text-muted-foreground dark:hover:bg-neutral-800 hover:bg-accent hover:text-foreground",
                 )}
+                style={{ contentVisibility: "auto", containIntrinsicSize: "0 28px" }}
               >
                 <span className="flex items-center gap-1 w-full min-w-0">
                   <span className="shrink-0 whitespace-nowrap font-medium">

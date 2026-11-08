@@ -91,6 +91,8 @@ pub fn list_skills(cwd: Option<&str>) -> Vec<SkillInfo> {
 
     // Codex
     scan_dir(&home.join(".codex").join("skills"), "user", &mut out);
+    // Codex system skills (nested under .system)
+    scan_dir(&home.join(".codex").join("skills").join(".system"), "user", &mut out);
     if let Some(cwd) = cwd {
         scan_dir(&Path::new(cwd).join(".codex").join("skills"), "project", &mut out);
     }

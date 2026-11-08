@@ -88,12 +88,13 @@ export {
   skillsProvider,
   agentsProvider,
   toolsProvider,
+  commandsProvider,
   builtInProviders,
   registerBuiltInProviders,
   registerProvider,
 } from "./providers"
 
-export type { FileData, SkillData, AgentData, ToolData, ToolsSearchContext } from "./providers"
+export type { FileData, SkillData, SkillsSearchContext, AgentData, ToolData, ToolsSearchContext, CommandData, CommandsSearchContext } from "./providers"
 
 // Agent-native trigger allowlists
 export {

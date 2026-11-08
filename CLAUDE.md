@@ -278,6 +278,13 @@ POST /api/v1/agent-profiles          注册新 profile
 GET  /api/v1/agent-profiles/:name    获取指定 profile
 DELETE /api/v1/agent-profiles/:name  删除 profile
 
+# Agent 辅助信息发现
+GET  /api/v1/agents/:id/discovery    统一发现端点（skills/commands/mcp/plugins），支持 ?cwd=...&refresh=1
+GET  /api/v1/skills                  约定层 skills 扫描（Claude/Codex/OpenCode 目录）
+GET  /api/v1/agent-sdk/discover      Agent SDK 辅助信息（Node 子进程）
+GET  /api/v1/agent-sdk/models        Agent SDK 模型列表
+POST /api/v1/agents/:id/model        切换 agent 模型（body: `{"model":"xxx","session_id":"..."}`）
+
 # File Locks (文件访问控制)
 GET  /api/v1/locks                   列出活跃锁
 GET  /api/v1/locks/audit             锁审计日志

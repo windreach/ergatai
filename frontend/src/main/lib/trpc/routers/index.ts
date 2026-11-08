@@ -35,6 +35,9 @@ import {
   skillsRouter
 } from "./skills"
 import {
+  discoveryRouter
+} from "./discovery"
+import {
   agentsRouter
 } from "./agents"
 import {
@@ -84,6 +87,7 @@ export function createAppRouter(_getWindow: () => BrowserWindow | null) {
     files: filesRouter,
     debug: debugRouter,
     skills: skillsRouter,
+    discovery: discoveryRouter,
     agents: agentsRouter,
     ergatai: ergataiRouter,
     backendTerminal: backendTerminalRouter,

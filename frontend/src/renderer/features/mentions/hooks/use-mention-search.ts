@@ -40,6 +40,11 @@ export interface UseMentionSearchOptions {
   sessionId?: string
 
   /**
+   * Agent ID for agent-specific discovery (skills, commands, MCP)
+   */
+  agentId?: string
+
+  /**
    * Debounce delay in milliseconds
    * @default 200
    */
@@ -139,6 +144,7 @@ export function useMentionSearch(
     trigger = "@",
     projectPath,
     sessionId,
+    agentId,
     debounceMs = DEFAULT_DEBOUNCE_MS,
     enabled = true,
     providerIds,
@@ -240,6 +246,7 @@ export function useMentionSearch(
           {
             projectPath,
             sessionId,
+            agentId,
             changedFiles: normalizedChangedFiles,
             // Pass MCP context for tools provider
             ...(mcpTools && { mcpTools }),
@@ -290,6 +297,7 @@ export function useMentionSearch(
     trigger,
     projectPath,
     sessionId,
+    agentId,
     debounceMs,
     enabled,
     providerIds,
