@@ -55,6 +55,6 @@ pub struct TriggersQuery {
 
 pub async fn get_triggers(Query(q): Query<TriggersQuery>) -> Json<serde_json::Value> {
     let triggers =
-        crate::services::discovery_service::get_triggers(q.agent_id.as_deref(), q.cwd.as_deref());
+        crate::services::discovery_service::get_triggers(q.agent_id.as_deref(), q.cwd.as_deref()).await;
     Json(serde_json::json!({ "triggers": triggers }))
 }

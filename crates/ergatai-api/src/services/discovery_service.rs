@@ -426,7 +426,7 @@ fn dedup_by_name(items: &mut Vec<Value>, key: &str) {
 }
 
 fn merge_sources(
-    agent_id: &str,
+    _agent_id: &str,
     convention_skills: &Value,
     sdk_bundle: &Value,
     acp_commands: &Value,
@@ -567,7 +567,7 @@ fn merge_sources(
         "mcp": mcp,
         "plugins": plugins,
         "errors": errors,
-        "triggers": get_triggers(Some(agent_id), None),
+        "triggers": json!([]),
     })
 }
 
@@ -750,6 +750,14 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
         fresh_values.get(SRC_PLUGINS).unwrap_or(&json!([])),
     );
 
+    // Populate triggers from agent-aware registry.
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert(
+            "triggers".to_string(),
+            get_triggers(Some(agent_id), None).await,
+        );
+    }
+
     // MCP fallback: if SDK did not provide runtime MCP status, fall back to
     // Ergatai's own MCP server registry so the UI still has a usable list.
     let mcp_empty = result
@@ -904,13 +912,26 @@ pub async fn discover_static(cwd: Option<&str>, refresh: bool) -> Value {
     json!({
         "skills": skills,
         "plugins": plugins,
-        "triggers": get_triggers(None, cwd_opt),
+        "triggers": get_triggers(None, cwd_opt).await,
     })
 }
 
 // ---------------------------------------------------------------------------
 // Trigger registry
 // ---------------------------------------------------------------------------
+
+async fn resolve_agent_discovery_triggers(agent_id: &str) -> Option<String> {
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    let agent_info = runtime.get_agent(agent_id).await?;
+    let profile_name = agent_info.profile?;
+
+    if let Ok(reg) = crate::services::profile_service::get_profile_registry() {
+        if let Ok(Some(profile)) = reg.get_by_name(&profile_name).await {
+            return profile.discovery_triggers_json;
+        }
+    }
+    None
+}
 
 /// Returns the registered triggers for the editor.
 ///
@@ -919,36 +940,67 @@ pub async fn discover_static(cwd: Option<&str>, refresh: bool) -> Value {
 /// Without `agent_id`, returns static triggers (skill, plugin only).
 ///
 /// Schema: `char`, `position`, `types` — `allowSpaces`/`maxLength` removed (not needed).
-pub fn get_triggers(agent_id: Option<&str>, _cwd: Option<&str>) -> Value {
-    if agent_id.is_some() {
-        // Full discovery: agent is running, all types available
-        json!([
-            {
-                "char": "/",
-                "position": "start-of-line",
-                "types": ["skill", "command", "mcp", "plugin", "agent", "file", "folder"],
-            },
-            {
-                "char": "@",
-                "position": "standalone",
-                "types": ["skill", "command", "mcp", "plugin", "agent", "file", "folder"],
-            },
-        ])
+pub async fn get_triggers(agent_id: Option<&str>, _cwd: Option<&str>) -> Value {
+    // Default triggers (always present).
+    let full_types = vec!["skill", "command", "mcp", "plugin", "agent", "file", "folder"];
+    let static_types = vec!["skill", "plugin"];
+
+    let (base_types, is_static) = if agent_id.is_some() {
+        (full_types.clone(), false)
     } else {
-        // Static discovery: no agent, only filesystem-based types
-        json!([
-            {
-                "char": "/",
-                "position": "start-of-line",
-                "types": ["skill", "plugin"],
-            },
-            {
-                "char": "@",
-                "position": "standalone",
-                "types": ["skill", "plugin"],
-            },
-        ])
+        (static_types.clone(), true)
+    };
+
+    let mut triggers = vec![
+        serde_json::json!({
+            "char": "/",
+            "position": "start-of-line",
+            "types": base_types,
+            "kind": "slash",
+        }),
+        serde_json::json!({
+            "char": "@",
+            "position": "standalone",
+            "types": base_types,
+            "kind": "mention",
+        }),
+    ];
+
+    // Agent-specific discovery triggers (only when agent is present).
+    if let Some(aid) = agent_id {
+        let discovery_json = resolve_agent_discovery_triggers(aid).await;
+        if let Some(custom) = discovery_json {
+            if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(&custom) {
+                for item in parsed {
+                    // Validate minimal shape: must have char.
+                    if item.get("char").and_then(|v| v.as_str()).is_none() {
+                        continue;
+                    }
+                    // Prevent overriding default chars.
+                    let ch = item.get("char").and_then(|v| v.as_str()).unwrap();
+                    if ch == "/" || ch == "@" {
+                        continue;
+                    }
+                    // Apply static type filtering when no agent? Already agent present here.
+                    let mut t = item.clone();
+                    if let Some(obj) = t.as_object_mut() {
+                        obj.entry("kind").or_insert(serde_json::json!("mention"));
+                        if !obj.contains_key("position") {
+                            obj.insert("position".to_string(), serde_json::json!("standalone"));
+                        }
+                        if !obj.contains_key("types") {
+                            obj.insert("types".to_string(), serde_json::json!(base_types));
+                        }
+                    }
+                    triggers.push(t);
+                }
+            }
+        }
     }
+
+    // Static type filtering for no-agent case already applied via base_types.
+    let _ = is_static;
+    serde_json::Value::Array(triggers)
 }
 
 // ---------------------------------------------------------------------------

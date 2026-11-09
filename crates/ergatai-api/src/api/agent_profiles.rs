@@ -42,6 +42,8 @@ pub struct RegisterProfileRequest {
     pub avatar_url: Option<String>,
     /// Optional native trigger allowlist. Unknown syntax remains raw text.
     pub native_triggers: Option<Vec<serde_json::Value>>,
+    /// Optional discovery trigger declarations for this agent.
+    pub discovery_triggers: Option<Vec<serde_json::Value>>,
 }
 
 /// Response for a single agent profile
@@ -54,6 +56,7 @@ pub struct ProfileResponse {
     pub package_name: Option<String>,
     pub avatar_url: Option<String>,
     pub native_triggers: Option<serde_json::Value>,
+    pub discovery_triggers: Option<serde_json::Value>,
     pub created_at: String,
 }
 
@@ -71,6 +74,18 @@ impl From<AgentRegistration> for ProfileResponse {
                 .ok()
                 .map(serde_json::Value::Array)
         });
+        let discovery_triggers = reg.discovery_triggers_json.and_then(|json| {
+            serde_json::from_str::<Vec<serde_json::Value>>(&json)
+                .inspect_err(|e| {
+                    tracing::warn!(
+                        "Failed to parse discovery_triggers_json for profile {}: {}",
+                        reg.name,
+                        e
+                    )
+                })
+                .ok()
+                .map(serde_json::Value::Array)
+        });
         Self {
             id: reg.id,
             name: reg.name,
@@ -79,6 +94,7 @@ impl From<AgentRegistration> for ProfileResponse {
             package_name: reg.package_name,
             avatar_url: reg.avatar_url,
             native_triggers,
+            discovery_triggers,
             created_at: reg.created_at.to_rfc3339(),
         }
     }
@@ -119,6 +135,7 @@ pub async fn register_profile(
         request.package_name,
         request.avatar_url,
         request.native_triggers,
+        request.discovery_triggers,
     )
     .await
     {
@@ -305,6 +322,7 @@ pub struct ProfileWithStatusResponse {
     pub package_name: Option<String>,
     pub avatar_url: Option<String>,
     pub native_triggers: Option<serde_json::Value>,
+    pub discovery_triggers: Option<serde_json::Value>,
     pub installed: bool,
     pub created_at: String,
 }
@@ -323,6 +341,18 @@ impl From<ergatai_runtime::profile_registry::ProfileWithStatus> for ProfileWithS
                 .ok()
                 .map(serde_json::Value::Array)
         });
+        let discovery_triggers = p.discovery_triggers_json.and_then(|json| {
+            serde_json::from_str::<Vec<serde_json::Value>>(&json)
+                .inspect_err(|e| {
+                    tracing::warn!(
+                        "Failed to parse discovery_triggers_json for profile {}: {}",
+                        p.name,
+                        e
+                    )
+                })
+                .ok()
+                .map(serde_json::Value::Array)
+        });
         Self {
             id: p.id,
             name: p.name,
@@ -331,6 +361,7 @@ impl From<ergatai_runtime::profile_registry::ProfileWithStatus> for ProfileWithS
             package_name: p.package_name,
             avatar_url: p.avatar_url,
             native_triggers,
+            discovery_triggers,
             installed: p.installed,
             created_at: p.created_at,
         }
@@ -1015,6 +1046,7 @@ mod tests {
             package_name: Some("@anthropic/claude".to_string()),
             avatar_url: None,
             native_triggers: None,
+            discovery_triggers: None,
             created_at: "2026-01-01T00:00:00Z".to_string(),
         };
         let json = serde_json::to_value(&resp).unwrap();
@@ -1036,6 +1068,7 @@ mod tests {
                     package_name: None,
                     avatar_url: None,
                     native_triggers: None,
+                    discovery_triggers: None,
                     created_at: "2026-01-01T00:00:00Z".to_string(),
                 },
                 ProfileResponse {
@@ -1046,6 +1079,7 @@ mod tests {
                     package_name: None,
                     avatar_url: None,
                     native_triggers: None,
+                    discovery_triggers: None,
                     created_at: "2026-01-01T00:00:00Z".to_string(),
                 },
             ],

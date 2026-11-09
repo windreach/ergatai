@@ -222,6 +222,7 @@ pub async fn register_profile(
     package_name: Option<String>,
     avatar_url: Option<String>,
     native_triggers: Option<Vec<serde_json::Value>>,
+    discovery_triggers: Option<Vec<serde_json::Value>>,
 ) -> Result<()> {
     let registry = get_profile_registry()?;
     let mut registration =
@@ -238,6 +239,11 @@ pub async fn register_profile(
     registration.native_triggers_json =
         ergatai_runtime::profile_registry::agent_triggers_json(native_triggers)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    // Discovery triggers use a looser schema (char, position, types, kind) — store as raw JSON.
+    registration.discovery_triggers_json = discovery_triggers
+        .map(|triggers| serde_json::to_string(&triggers).unwrap_or_default());
+
     registry
         .register(registration)
         .await

@@ -193,6 +193,9 @@ pub struct AgentRegistration {
     /// Optional allowlist metadata for agent-native triggers. JSON only; raw
     /// input remains the source of truth and is passed through when absent.
     pub native_triggers_json: Option<String>,
+    /// Optional discovery trigger declarations for this agent. JSON only.
+    /// When absent, defaults to `/` and `@`.
+    pub discovery_triggers_json: Option<String>,
 }
 
 impl AgentRegistration {
@@ -212,6 +215,7 @@ impl AgentRegistration {
             models_json: None,
             models_updated_at: None,
             native_triggers_json: None,
+            discovery_triggers_json: None,
         }
     }
 
@@ -235,6 +239,7 @@ impl AgentRegistration {
             models_json: None,
             models_updated_at: None,
             native_triggers_json: None,
+            discovery_triggers_json: None,
         }
     }
 
@@ -259,6 +264,7 @@ impl AgentRegistration {
             models_json: None,
             models_updated_at: None,
             native_triggers_json: None,
+            discovery_triggers_json: None,
         }
     }
 
@@ -283,6 +289,7 @@ impl AgentRegistration {
             models_json: None,
             models_updated_at: None,
             native_triggers_json: None,
+            discovery_triggers_json: None,
         }
     }
 
@@ -308,6 +315,7 @@ impl AgentRegistration {
             models_json: None,
             models_updated_at: None,
             native_triggers_json: None,
+            discovery_triggers_json: None,
         }
     }
 
@@ -332,6 +340,7 @@ impl AgentRegistration {
             models_json: None,
             models_updated_at: None,
             native_triggers_json: None,
+            discovery_triggers_json: None,
         }
     }
 
@@ -568,6 +577,8 @@ pub struct ProfileWithStatus {
     pub avatar_url: Option<String>,
     /// Optional native-trigger allowlist metadata (JSON).
     pub native_triggers_json: Option<String>,
+    /// Optional discovery-trigger declarations for this agent (JSON).
+    pub discovery_triggers_json: Option<String>,
     /// Whether the agent's binary is currently detected on the system.
     pub installed: bool,
     /// When the profile was registered (RFC3339 string).
@@ -647,7 +658,8 @@ impl ProfileRegistry {
                 package_name TEXT,
                 avatar_url TEXT,
                 created_at TEXT NOT NULL,
-                native_triggers_json TEXT
+                native_triggers_json TEXT,
+                discovery_triggers_json TEXT
             )",
             [],
         )
@@ -763,6 +775,15 @@ impl ProfileRegistry {
         {
             if !e.to_string().contains("duplicate column name") {
                 warn!(error = %e, "Failed to add native_triggers_json column");
+            }
+        }
+
+        // Add discovery_triggers_json for agent-level discovery trigger declarations.
+        if let Err(e) = conn
+            .execute_batch("ALTER TABLE agent_registrations ADD COLUMN discovery_triggers_json TEXT")
+        {
+            if !e.to_string().contains("duplicate column name") {
+                warn!(error = %e, "Failed to add discovery_triggers_json column");
             }
         }
 
@@ -1009,8 +1030,8 @@ impl ProfileRegistry {
         })?;
 
         conn.execute(
-            "INSERT OR IGNORE INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT OR IGNORE INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json, discovery_triggers_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 registration.id,
                 registration.name,
@@ -1023,7 +1044,8 @@ impl ProfileRegistry {
                 registration.created_at.to_rfc3339(),
                 registration.models_json,
                 registration.models_updated_at,
-                registration.native_triggers_json
+                registration.native_triggers_json,
+                registration.discovery_triggers_json
             ],
         )
         .map_err(|e| {
@@ -1042,8 +1064,8 @@ impl ProfileRegistry {
         })?;
 
         conn.execute(
-            "INSERT INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO agent_registrations (id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json, discovery_triggers_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 registration.id,
                 registration.name,
@@ -1056,7 +1078,8 @@ impl ProfileRegistry {
                 registration.created_at.to_rfc3339(),
                 registration.models_json,
                 registration.models_updated_at,
-                registration.native_triggers_json
+                registration.native_triggers_json,
+                registration.discovery_triggers_json
             ],
         )
         .map_err(|e| {
@@ -1082,7 +1105,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json, discovery_triggers_json
                  FROM agent_registrations WHERE id = ?1",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -1103,7 +1126,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json, discovery_triggers_json
                  FROM agent_registrations WHERE name = ?1",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -1124,7 +1147,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json, discovery_triggers_json
                  FROM agent_registrations ORDER BY created_at DESC",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -1595,7 +1618,7 @@ impl ProfileRegistry {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json
+                "SELECT id, name, command, agent_type, transport, is_managed, package_name, avatar_url, created_at, models_json, models_updated_at, native_triggers_json, discovery_triggers_json
                  FROM agent_registrations ORDER BY created_at DESC",
             )
             .map_err(|e| ErgataiError::internal(format!("Failed to prepare query: {}", e)))?;
@@ -1614,6 +1637,7 @@ impl ProfileRegistry {
                     row.get::<_, Option<String>>(7)?,
                     created_at_str,
                     row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
                 ))
             })
             .map_err(|e| ErgataiError::internal(format!("Failed to list agent profiles: {}", e)))?
@@ -1636,6 +1660,7 @@ impl ProfileRegistry {
                     avatar_url,
                     created_at,
                     native_triggers_json,
+                    discovery_triggers_json,
                 )| {
                     let installed = binary_detection::is_installed(&command);
                     ProfileWithStatus {
@@ -1648,6 +1673,7 @@ impl ProfileRegistry {
                         package_name,
                         avatar_url,
                         native_triggers_json,
+                        discovery_triggers_json,
                         installed,
                         created_at,
                     }
@@ -1797,6 +1823,7 @@ fn parse_agent_registration_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRe
         models_json: row.get(9)?,
         models_updated_at: row.get(10)?,
         native_triggers_json: row.get(11)?,
+        discovery_triggers_json: row.get(12)?,
     })
 }
 
