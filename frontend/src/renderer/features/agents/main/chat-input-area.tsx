@@ -576,6 +576,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   const [showSlashDropdown, setShowSlashDropdown] = useState(false)
   const [slashSearchText, setSlashSearchText] = useState("")
   const [slashPosition, setSlashPosition] = useState({ top: 0, left: 0 })
+  const [slashTriggerChar, setSlashTriggerChar] = useState("/")
 
   const [nativeTriggerMatch, setNativeTriggerMatch] = useState<NativeTriggerHintPayload | null>(null)
 
@@ -1248,9 +1249,10 @@ export const ChatInputArea = memo(function ChatInputArea({
 
   // Slash command handlers
   const handleSlashTrigger = useCallback(
-    ({ searchText, rect }: { searchText: string; rect: DOMRect }) => {
+    ({ searchText, rect, triggerChar }: { searchText: string; rect: DOMRect; triggerChar?: string }) => {
       setSlashSearchText(searchText)
       setSlashPosition({ top: rect.top, left: rect.left })
+      setSlashTriggerChar(triggerChar || "/")
       setShowSlashDropdown(true)
     },
     [],
@@ -1264,9 +1266,9 @@ export const ChatInputArea = memo(function ChatInputArea({
     (command: SlashCommandOption) => {
       editorRef.current?.clearSlashCommand()
       setShowSlashDropdown(false)
-      editorRef.current?.setValue(`/${command.name} `)
+      editorRef.current?.setValue(`${slashTriggerChar}${command.name} `)
     },
-    [editorRef],
+    [editorRef, slashTriggerChar],
   )
 
   // Paste handler for images, plain text, and large text (saved as files)

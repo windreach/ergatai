@@ -25,17 +25,17 @@ interface ParsedMention {
  * This prevents Tailwind from incorrectly parsing the token as a CSS arbitrary property.
  * @internal
  */
-function buildMentionToken(type: string, data: string): string {
+function buildMentionToken(type: string, data: string, triggerChar: string = "@"): string {
   // Use string concatenation to avoid Tailwind scanning mention tokens as arbitrary CSS properties
-  return "@".concat("[").concat(type).concat(data).concat("]")
+  return triggerChar.concat("[").concat(type).concat(data).concat("]")
 }
 
 /**
  * Build a generic mention token from an ID.
  * Use this to serialize unknown mention type.
  */
-export function buildGenericMentionToken(id: string): string {
-  return "@".concat("[").concat(id).concat("]")
+export function buildGenericMentionToken(id: string, triggerChar: string = "@"): string {
+  return triggerChar.concat("[").concat(id).concat("]")
 }
 
 /**

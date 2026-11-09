@@ -89,6 +89,7 @@ export interface FileMentionOption {
 type TriggerPayload = {
   searchText: string
   rect: DOMRect
+  triggerChar?: string
 }
 
 // Export SlashTriggerPayload for slash commands
@@ -161,11 +162,12 @@ function appendText(root: HTMLElement, text: string) {
 }
 
 // Create styled mention chip (matching canvas style)
-function createMentionNode(option: FileMentionOption): HTMLSpanElement {
+function createMentionNode(option: FileMentionOption, triggerChar: string = "@"): HTMLSpanElement {
   const span = document.createElement("span")
   span.setAttribute("contenteditable", "false")
   span.setAttribute("data-mention-id", option.id)
   span.setAttribute("data-mention-type", option.type || "file")
+  span.setAttribute("data-trigger-char", triggerChar)
   span.className =
     "inline-flex items-center gap-1 px-[6px] py-[1px] rounded-[4px] text-sm align-middle bg-black/[0.04] dark:bg-white/[0.08] text-foreground/80 [&.mention-selected]:bg-primary/70 [&.mention-selected]:text-primary-foreground"
 
@@ -232,7 +234,8 @@ function serializeContent(root: HTMLElement): string {
     }
     if (el.hasAttribute("data-mention-id")) {
       const id = el.getAttribute("data-mention-id") || ""
-      result += buildGenericMentionToken(id)
+      const char = el.getAttribute("data-trigger-char") || "@"
+      result += buildGenericMentionToken(id, char)
       // Skip subtree
       const next: Node | null = el.nextSibling
       if (next) {
@@ -283,7 +286,7 @@ function buildContentFromSerialized(
       root.appendChild(document.createTextNode(" "))
     } else {
       // Fallback: just show the id
-      root.appendChild(document.createTextNode(buildGenericMentionToken(id)))
+      root.appendChild(document.createTextNode(buildGenericMentionToken(id, root.getAttribute("data-trigger-char") || "@")))
     }
     lastIndex = match.index + match[0].length
   }
@@ -465,7 +468,8 @@ function walkTreeOnce(
 
       if (el.hasAttribute("data-mention-id")) {
         const id = el.getAttribute("data-mention-id") || ""
-        const mentionToken = buildGenericMentionToken(id)
+        const char = el.getAttribute("data-trigger-char") || "@"
+        const mentionToken = buildGenericMentionToken(id, char)
         serialized += mentionToken
         if (!reachedCursor) {
           textBeforeCursor += mentionToken
@@ -592,7 +596,7 @@ export const AgentsMentionsEditor = memo(
               const el = node as HTMLElement
               if (el.hasAttribute("data-mention-id")) {
                 const id = el.getAttribute("data-mention-id") || ""
-                cursorOffset += buildGenericMentionToken(id).length
+                cursorOffset += buildGenericMentionToken(id, (el as HTMLElement).getAttribute("data-trigger-char") || "@").length
                 // Skip children of mention node - jump to parent's next sibling
                 let parent: Node | null = el.parentNode
                 while (parent && parent !== editorRef.current && !parent.nextSibling) parent = parent.parentNode
@@ -681,7 +685,7 @@ export const AgentsMentionsEditor = memo(
             const el = node as HTMLElement
             if (el.hasAttribute("data-mention-id")) {
               const id = el.getAttribute("data-mention-id") || ""
-              const mentionLen = buildGenericMentionToken(id).length
+              const mentionLen = buildGenericMentionToken(id, (el as HTMLElement).getAttribute("data-trigger-char") || "@").length
               if (currentOffset + mentionLen >= offset) {
                 // Place cursor after mention
                 const range = document.createRange()
@@ -951,9 +955,9 @@ export const AgentsMentionsEditor = memo(
               )
 
               if (isSlash && onSlashTrigger) {
-                onSlashTrigger({ searchText: afterTrigger, rect })
+                onSlashTrigger({ searchText: afterTrigger, rect, triggerChar: discoveryTrigger?.char })
               } else {
-                onTrigger({ searchText: afterTrigger, rect })
+                onTrigger({ searchText: afterTrigger, rect, triggerChar: discoveryTrigger?.char })
               }
               return
             }
@@ -1237,7 +1241,7 @@ export const AgentsMentionsEditor = memo(
                   const el = walkNode as HTMLElement
                   if (el.hasAttribute("data-mention-id")) {
                     const id = el.getAttribute("data-mention-id") || ""
-                    serializedCharCount += buildGenericMentionToken(id).length
+                    serializedCharCount += buildGenericMentionToken(id, (el as HTMLElement).getAttribute("data-trigger-char") || "@").length
                     // Skip mention children - jump to parent's next sibling
                     let parent: Node | null = el.parentNode
                     while (parent && parent !== editorRef.current && !parent.nextSibling) parent = parent.parentNode
@@ -1327,7 +1331,7 @@ export const AgentsMentionsEditor = memo(
                   const el = walkNode as HTMLElement
                   if (el.hasAttribute("data-mention-id")) {
                     const id = el.getAttribute("data-mention-id") || ""
-                    serializedCharCount += buildGenericMentionToken(id).length
+                    serializedCharCount += buildGenericMentionToken(id, (el as HTMLElement).getAttribute("data-trigger-char") || "@").length
                     // Skip mention children - jump to parent's next sibling
                     let parent: Node | null = el.parentNode
                     while (parent && parent !== editorRef.current && !parent.nextSibling) parent = parent.parentNode
@@ -1348,7 +1352,7 @@ export const AgentsMentionsEditor = memo(
               node.textContent = beforeAt + afterCursor
 
               // Insert mention node
-              const mentionNode = createMentionNode(option)
+              const mentionNode = createMentionNode(option, triggerCharRef.current || "@")
               const newRange = document.createRange()
               newRange.setStart(node, localAtPosition)
               newRange.collapse(true)
