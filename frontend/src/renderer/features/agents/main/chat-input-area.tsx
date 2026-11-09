@@ -1501,9 +1501,8 @@ export const ChatInputArea = memo(function ChatInputArea({
         el.dataset.observed = "true"
         const parent = el.parentElement
         const observer = new ResizeObserver((entries) => {
-          const { height, width } = entries[0]?.contentRect ?? {
+          const { height } = entries[0]?.contentRect ?? {
             height: 0,
-            width: 0,
           }
           // Align with the centered max-w-2xl container that also wraps
           // the status card above the input, not the outer padded wrapper.

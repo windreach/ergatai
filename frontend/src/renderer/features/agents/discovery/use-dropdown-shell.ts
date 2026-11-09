@@ -1,7 +1,6 @@
 "use client"
 
 import {
-  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -51,7 +50,6 @@ interface UseDropdownPositionOptions {
 function useDropdownPosition({
   isOpen,
   position,
-  containerWidth,
   containerLeft,
   requestedHeight,
 }: UseDropdownPositionOptions) {
