@@ -105,11 +105,12 @@ export type NativeTriggerPayload = AgentTriggerMatch & {
 export interface EditorTriggerConfig {
   char: string
   position: "standalone" | "start-of-line" | "anywhere"
+  kind?: "slash" | "mention"
 }
 
 // Default triggers (fallback when no config provided)
-const DEFAULT_MENTION_TRIGGER: EditorTriggerConfig = { char: "@", position: "standalone" }
-const DEFAULT_SLASH_TRIGGER: EditorTriggerConfig = { char: "/", position: "start-of-line" }
+const DEFAULT_MENTION_TRIGGER: EditorTriggerConfig = { char: "@", position: "standalone", kind: "mention" }
+const DEFAULT_SLASH_TRIGGER: EditorTriggerConfig = { char: "/", position: "start-of-line", kind: "slash" }
 
 export type AgentsMentionsEditorHandle = {
   focus: () => void

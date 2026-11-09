@@ -9,6 +9,7 @@ export interface RegisteredTrigger {
   char: string
   position?: "start-of-line" | "standalone" | "anywhere"
   types?: string[]
+  kind?: "slash" | "mention"
 }
 
 /**
@@ -48,6 +49,7 @@ export function useRegisteredTriggers(
       char: String(t.char ?? ""),
       position: t.position as RegisteredTrigger["position"],
       types: Array.isArray(t.types) ? t.types.map(String) : undefined,
+      kind: t.kind === "slash" || t.kind === "mention" ? t.kind : undefined,
     }))
   }, [data])
 
