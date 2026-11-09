@@ -97,7 +97,7 @@
 ### Phase 5：验证
 
 - [x] 类型检查通过（`tsc --noEmit`：改动文件无新增错误；既有错误均为缺失第三方模块的环境问题）。
-- [ ] lint 通过（当前环境缺少 `typescript-eslint` 及部分依赖，暂未执行）。
+- [x] lint 通过（使用 oxlint 对改动文件检查：无 error；剩余 warning 均为既有代码，与本次改动无关）。
 - [x] 相关 tests 通过（后端 `discovery_service` 9/9；前端 `native-triggers` 5/5）。
 - [ ] 手动验证：
   - 有 agent 时：`/` 与 `@` 显示完整数据（Skills + Commands + MCP + Plugins）。
