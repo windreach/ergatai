@@ -77,3 +77,48 @@ export function useRegisteredTriggers(
     getTriggerPosition,
   }
 }
+
+/**
+ * Extract trigger config for a specific character from registered triggers.
+ */
+function extractTriggerConfig(
+  triggers: RegisteredTrigger[],
+  char: string,
+  defaultPosition: "standalone" | "start-of-line" | "anywhere",
+): { char: string; position: "standalone" | "start-of-line" | "anywhere" } | undefined {
+  const trigger = triggers.find((t) => t.char === char)
+  return trigger
+    ? { char: trigger.char, position: trigger.position ?? defaultPosition }
+    : undefined
+}
+
+/**
+ * Hook: extract editor trigger configs for @ and / from registered triggers.
+ *
+ * Convenience wrapper around useRegisteredTriggers that returns pre-extracted
+ * configs for the two main editor triggers (mention and slash command).
+ *
+ * Usage:
+ * ```tsx
+ * const { mentionTrigger, slashTrigger } = useEditorTriggerConfigs(agentId, cwd)
+ * // Pass to AgentsMentionsEditor: mentionTrigger, slashTrigger
+ * ```
+ */
+export function useEditorTriggerConfigs(
+  agentId: string | undefined,
+  cwd?: string,
+) {
+  const { triggers } = useRegisteredTriggers(agentId, cwd)
+
+  const mentionTrigger = useMemo(
+    () => extractTriggerConfig(triggers, "@", "standalone"),
+    [triggers],
+  )
+
+  const slashTrigger = useMemo(
+    () => extractTriggerConfig(triggers, "/", "start-of-line"),
+    [triggers],
+  )
+
+  return { mentionTrigger, slashTrigger }
+}

@@ -3,6 +3,7 @@ export {
   type AgentsMentionsEditorHandle,
   type FileMentionOption,
   type SlashTriggerPayload,
+  type EditorTriggerConfig,
 } from "./agents-mentions-editor"
 
 // Re-export MENTION_PREFIXES from canonical source (12 items)

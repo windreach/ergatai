@@ -91,6 +91,7 @@ import {
   type AgentTriggerMatch,
   normalizeAgentTriggers,
 } from "../../mentions"
+import { useEditorTriggerConfigs } from "../discovery/use-registered-triggers"
 import { AgentContextIndicator, type MessageTokenData } from "../ui/agent-context-indicator"
 import { AgentDiffTextContextItem } from "../ui/agent-diff-text-context-item"
 import { AgentFileItem } from "../ui/agent-file-item"
@@ -454,6 +455,9 @@ export const ChatInputArea = memo(function ChatInputArea({
   const [hasContent, setHasContent] = useState(false)
   const [isFocused, setIsFocused] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
+
+  // Fetch registered triggers from backend (for dynamic trigger detection)
+  const { mentionTrigger, slashTrigger: slashTriggerConfig } = useEditorTriggerConfigs(agentId ?? undefined, projectPath)
 
   // Hide focus ring on pointer interaction (mouse/touch), even if previously focused
   useEffect(() => {
@@ -1627,6 +1631,8 @@ export const ChatInputArea = memo(function ChatInputArea({
                   onCloseSlashTrigger={handleCloseSlashTrigger}
                   onNativeTrigger={setNativeTriggerMatch}
                   onCloseNativeTrigger={() => setNativeTriggerMatch(null)}
+                  mentionTrigger={mentionTrigger}
+                  slashTrigger={slashTriggerConfig}
                   onContentChange={handleContentChange}
                   onSubmit={onSubmitWithQuestionAnswer || handleEditorSubmit}
                   onForceSubmit={onForceSend}

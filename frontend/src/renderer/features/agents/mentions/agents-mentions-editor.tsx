@@ -98,6 +98,19 @@ export type NativeTriggerPayload = AgentTriggerMatch & {
   rect: DOMRect
 }
 
+/**
+ * Trigger configuration from backend.
+ * Used by walkTreeOnce to detect trigger characters dynamically.
+ */
+export interface EditorTriggerConfig {
+  char: string
+  position: "standalone" | "start-of-line" | "anywhere"
+}
+
+// Default triggers (fallback when no config provided)
+const DEFAULT_MENTION_TRIGGER: EditorTriggerConfig = { char: "@", position: "standalone" }
+const DEFAULT_SLASH_TRIGGER: EditorTriggerConfig = { char: "/", position: "start-of-line" }
+
 export type AgentsMentionsEditorHandle = {
   focus: () => void
   blur: () => void
@@ -121,6 +134,10 @@ type AgentsMentionsEditorProps = {
   nativeTriggers?: AgentNativeTrigger[]
   onNativeTrigger?: (payload: NativeTriggerPayload) => void
   onCloseNativeTrigger?: () => void
+  /** Trigger config for mention dropdown (default: @ standalone) */
+  mentionTrigger?: EditorTriggerConfig
+  /** Trigger config for slash command dropdown (default: / start-of-line) */
+  slashTrigger?: EditorTriggerConfig
   onContentChange?: (hasContent: boolean) => void // lightweight callback for send button state
   placeholder?: string
   className?: string
@@ -286,11 +303,35 @@ interface TreeWalkResult {
   nativeTriggerMatches: AgentTriggerMatch[]
 }
 
+/**
+ * Check if a character matches the trigger position rule.
+ * - standalone: char must be at start or after whitespace
+ * - start-of-line: char must be at start or after newline
+ * - anywhere: no restriction
+ */
+function matchesTriggerPosition(
+  charBefore: string | null,
+  position: "standalone" | "start-of-line" | "anywhere",
+): boolean {
+  switch (position) {
+    case "standalone":
+      return charBefore === null || /\s/.test(charBefore)
+    case "start-of-line":
+      return charBefore === null || charBefore === "\n"
+    case "anywhere":
+      return true
+    default:
+      return false
+  }
+}
+
 // Single O(n) tree walk that computes all needed data
 function walkTreeOnce(
   root: HTMLElement,
   range: Range | null,
   nativeTriggers: readonly AgentNativeTrigger[] = [],
+  mentionTrigger: EditorTriggerConfig = DEFAULT_MENTION_TRIGGER,
+  slashTrigger: EditorTriggerConfig = DEFAULT_SLASH_TRIGGER,
 ): TreeWalkResult {
   let serialized = ""
   let textBeforeCursor = ""
@@ -340,25 +381,25 @@ function walkTreeOnce(
         textBeforeCursor += text.slice(0, cursorOffset)
         reachedCursor = true
 
-        // Find @ in text before cursor for this node
+        // Find mention trigger char in text before cursor for this node
         const textBeforeInNode = text.slice(0, cursorOffset)
-        const localAtIdx = textBeforeInNode.lastIndexOf("@")
+        const localAtIdx = textBeforeInNode.lastIndexOf(mentionTrigger.char)
         if (localAtIdx !== -1) {
           const globalAtIdx = serialized.length + localAtIdx
 
-          // Check character before @ - must be start of text, whitespace, or newline (not part of email/word)
+          // Check character before trigger - must match position rule
           const textUpToAt = serialized + textBeforeInNode.slice(0, localAtIdx)
           const charBefore = globalAtIdx > 0 ? textUpToAt.charAt(globalAtIdx - 1) : null
-          const isStandaloneAt = charBefore === null || /\s/.test(charBefore)
+          const isValidPosition = matchesTriggerPosition(charBefore, mentionTrigger.position)
 
-          // Check if this @ is the most recent one AND is standalone
-          if (isStandaloneAt && globalAtIdx > atIndex) {
-            const afterAt = textBeforeCursor.slice(
-              textBeforeCursor.lastIndexOf("@") + 1,
+          // Check if this trigger is the most recent one AND is at valid position
+          if (isValidPosition && globalAtIdx > atIndex) {
+            const afterTrigger = textBeforeCursor.slice(
+              textBeforeCursor.lastIndexOf(mentionTrigger.char) + 1,
             )
             // Close on newline or double-space (not single space - allow multi-word search)
-            const hasNewline = afterAt.includes("\n")
-            const hasDoubleSpace = afterAt.includes("  ")
+            const hasNewline = afterTrigger.includes("\n")
+            const hasDoubleSpace = afterTrigger.includes("  ")
             if (!hasNewline && !hasDoubleSpace) {
               atIndex = globalAtIdx
               atPosition = { node, offset: localAtIdx }
@@ -366,20 +407,20 @@ function walkTreeOnce(
           }
         }
 
-        // Find / at start of line (for slash commands)
-        // Check all occurrences of / in this node
+        // Find slash trigger char (for slash commands)
+        // Check all occurrences in this node
         for (let i = 0; i < textBeforeInNode.length; i++) {
-          if (textBeforeInNode[i] === "/") {
+          if (textBeforeInNode[i] === slashTrigger.char) {
             const globalSlashIdx = serialized.length + i
-            // / is valid only at start of text OR after newline
+            // Check position rule
             const charBefore =
               globalSlashIdx === 0
                 ? null
                 : (serialized + textBeforeInNode.slice(0, i)).charAt(
                     globalSlashIdx - 1,
                   )
-            if (charBefore === null || charBefore === "\n") {
-              // Check no space between / and cursor
+            if (matchesTriggerPosition(charBefore, slashTrigger.position)) {
+              // Check no space between trigger and cursor
               const afterSlash = textBeforeCursor.slice(globalSlashIdx + 1)
               if (!afterSlash.includes(" ") && !afterSlash.includes("\n")) {
                 slashIndex = globalSlashIdx
@@ -394,16 +435,15 @@ function walkTreeOnce(
         reachedCursor = true
       } else if (!reachedCursor) {
         textBeforeCursor += text
-        // Track @ positions as we go (only if standalone - not part of email/word)
-        const localAtIdx = text.lastIndexOf("@")
+        // Track mention trigger positions as we go (only if at valid position)
+        const localAtIdx = text.lastIndexOf(mentionTrigger.char)
         if (localAtIdx !== -1) {
           const globalAtIdx = serialized.length + localAtIdx
-          // Check character before @ - must be start of text, whitespace, or newline
+          // Check character before trigger - must match position rule
           const textUpToAt = serialized + text.slice(0, localAtIdx)
           const charBefore = globalAtIdx > 0 ? textUpToAt.charAt(globalAtIdx - 1) : null
-          const isStandaloneAt = charBefore === null || /\s/.test(charBefore)
 
-          if (isStandaloneAt) {
+          if (matchesTriggerPosition(charBefore, mentionTrigger.position)) {
             atIndex = globalAtIdx
             atPosition = { node, offset: localAtIdx }
           }
@@ -521,6 +561,8 @@ export const AgentsMentionsEditor = memo(
         nativeTriggers = [],
         onNativeTrigger,
         onCloseNativeTrigger,
+        mentionTrigger,
+        slashTrigger,
         onContentChange,
         placeholder,
         className,
@@ -871,7 +913,7 @@ export const AgentsMentionsEditor = memo(
             return
           }
 
-          // Single tree walk for @ and / trigger detection
+          // Single tree walk for trigger detection (configurable via props)
           const {
             textBeforeCursor,
             atPosition,
@@ -879,7 +921,13 @@ export const AgentsMentionsEditor = memo(
             slashPosition,
             slashIndex,
             nativeTriggerMatches,
-          } = walkTreeOnce(editorRef.current, range, nativeTriggers)
+          } = walkTreeOnce(
+            editorRef.current,
+            range,
+            nativeTriggers,
+            mentionTrigger,
+            slashTrigger,
+          )
 
           // Handle @ trigger (takes priority over /)
           if (atIndex !== -1 && atPosition) {
@@ -982,13 +1030,15 @@ export const AgentsMentionsEditor = memo(
 
         // Always use requestAnimationFrame to avoid blocking input rendering
         // This allows the browser to render the typed character first,
-        // then detect @ and / triggers in the next frame
+        // then detect triggers in the next frame
         if (triggerDetectionTimeout.current) {
           cancelAnimationFrame(triggerDetectionTimeout.current)
         }
         triggerDetectionTimeout.current = requestAnimationFrame(runTriggerDetection)
       }, [
         nativeTriggers,
+        mentionTrigger,
+        slashTrigger,
         onContentChange,
         onCloseNativeTrigger,
         onCloseSlashTrigger,

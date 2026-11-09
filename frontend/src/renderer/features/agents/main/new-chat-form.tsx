@@ -87,6 +87,7 @@ import {
   type FileMentionOption,
 } from "../mentions"
 import { buildPastedMentionToken } from "../mentions/mentions-utils"
+import { useEditorTriggerConfigs } from "../discovery/use-registered-triggers"
 import { AgentFileItem } from "../ui/agent-file-item"
 import { AgentImageItem } from "../ui/agent-image-item"
 import { AgentPastedTextItem } from "../ui/agent-pasted-text-item"
@@ -337,6 +338,13 @@ export function NewChatForm({
     const exists = projectsList.some((p) => p.id === selectedWorkspace.id)
     return exists ? selectedWorkspace : null
   }, [selectedWorkspace, projectsList, isLoadingProjects])
+
+  // Fetch registered triggers from backend (for dynamic trigger detection)
+  const { mentionTrigger, slashTrigger: slashTriggerConfig } = useEditorTriggerConfigs(
+    backendAgentId ?? undefined,
+    validatedProject?.path ?? undefined,
+  )
+
   const canUseRightSidebar = true
   const terminalSidebarAtom = useMemo(
     () => terminalSidebarOpenAtomFamily(validatedProject?.id ?? ""),
@@ -1871,6 +1879,8 @@ export function NewChatForm({
                       onCloseTrigger={handleCloseTrigger}
                       onSlashTrigger={handleSlashTrigger}
                       onCloseSlashTrigger={handleCloseSlashTrigger}
+                      mentionTrigger={mentionTrigger}
+                      slashTrigger={slashTriggerConfig}
                       onContentChange={handleContentChange}
                       onSubmit={handleSend}
                       onShiftTab={toggleMode}

@@ -5,8 +5,8 @@ import { api } from "../../../lib/api-adapter"
 import { trpc } from "../../../lib/trpc"
 import { keepPreviousData } from "@tanstack/react-query"
 import {
+  useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -16,8 +16,8 @@ import { createPortal } from "react-dom"
 import type { FileMentionOption } from "./agents-mentions-editor"
 import { MENTION_PREFIXES } from "./mentions-utils"
 import type { CoreAgentOption } from "../lib/agent-contract-api"
-import { getDropdownDimensions } from "../ui/dropdown-sizes"
 import { useDiscoveryGroups } from "../discovery/use-discovery-groups"
+import { useDropdownShell, getDropdownContainerStyle } from "../discovery/use-dropdown-shell"
 
 
 interface ChangedFile {
@@ -54,24 +54,6 @@ const CATEGORY_OPTIONS: FileMentionOption[] = [
   { id: "files", label: "Files & Folders", type: "category", path: "", repository: "" },
   { id: "agents", label: "Agents", type: "category", path: "", repository: "" },
 ]
-
-// Tool icon component (MCP icon) - slightly larger for visibility
-
-
-
-// Folder icon component for consistency with file icons
-
-// Skill icon component (local wrapper for getOptionIcon)
-
-
-// ToolIconWrapper removed - use ToolIcon instead (they were identical)
-
-// Category icon component
-
-/**
- * Get icon component for a file, folder, skill, agent, tool, or category option
- */
-
 
 /**
  * Check if a string matches all search words (multi-word search)
@@ -170,7 +152,6 @@ function sortFilesByRelevance<T extends { label: string; path?: string }>(
 
 // Memoized to prevent re-renders when parent re-renders
 // react-doctor-disable-next-line no-high-complexity-react-function
-// react-doctor-disable-next-line no-giant-component
 export const AgentsFileMention = memo(function AgentsFileMention({
   isOpen,
   onClose,
@@ -192,31 +173,29 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   scope = "all",
   boundAgents,
 }: AgentsFileMentionProps) {
-  const dropdownRef = useRef<HTMLDivElement>(null)
-  const [selectedIndex, setSelectedIndex] = useState(0)
-  const placementRef = useRef<"above" | "below" | null>(null)
-  const [debouncedSearchText, setDebouncedSearchText] = useState(searchText)
+  // Track subpage changes to reset selection (file-mention specific)
+  const prevShowingFilesListRef = useRef(showingFilesList)
+  const prevShowingAgentsListRef = useRef(showingAgentsList)
 
+  // Local debounce (300ms) — needed because memos depend on debouncedSearchText,
+  // and useDropdownShell needs options.length (which depends on debouncedSearchText).
+  const [debouncedSearchText, setDebouncedSearchText] = useState(searchText)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearchText(searchText), 300)
+    return () => clearTimeout(timer)
+  }, [searchText])
 
   // Generic discovery aggregation (shared abstraction for trigger dropdowns).
   const { groups: discoveryGroups } = useDiscoveryGroups(isOpen ? agentId : undefined, projectPath)
 
   // Fetch custom agents from filesystem (cached for 5 minutes)
-  const { data: customAgents = [], isFetching: _isFetchingAgents } = trpc.agents.listEnabled.useQuery(
+  const { data: customAgents = [] } = trpc.agents.listEnabled.useQuery(
     projectPath ? { cwd: projectPath } : undefined,
     {
       enabled: isOpen,
       staleTime: 5 * 60 * 1000, // 5 minutes - agents don't change frequently
     },
   )
-
-  // Debounce search text (300ms to match canvas implementation)
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearchText(searchText)
-    }, 300)
-    return () => clearTimeout(timer)
-  }, [searchText])
 
   // For multi-word search, send only first word to API (server filters by that),
   // then filter results on client by all words
@@ -230,8 +209,6 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   // Priority: sandboxId (includes uncommitted) > branch (GitHub API) > cached file_tree
   const {
     data: fileResults = [],
-    isLoading: _isLoading,
-    isFetching: _isFetching,
     error,
   } = api.github.searchFiles.useQuery(
     {
@@ -253,6 +230,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       placeholderData: keepPreviousData,
     },
   )
+
   // Convert changed files to options (shown at top in separate group)
   const changedFileOptions: FileMentionOption[] = useMemo(() => {
     if (!changedFiles.length) return []
@@ -399,8 +377,6 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   const hasTools = discoveryMentionOptions.some((o) => o.type === "tool")
   const hasOnlyFiles = discoveryMentionOptions.length === 0 && !hasAgents
 
-  // Determine if we're in a subpage view (or showing files directly when no skills/agents/tools)
-
   // Filter category options based on available data
   const availableCategoryOptions = useMemo(() => {
     return CATEGORY_OPTIONS.filter(category => {
@@ -415,10 +391,6 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   }, [scope, hasSkills, hasAgents, hasTools])
 
   // Combined options for keyboard navigation
-  // Subpage views show only that category's items
-  // Root view shows changed files + category navigation options
-  // Search filters globally in root view, within category in subpage
-  // If no skills, agents, or tools, skip root view and show files directly
   const options: FileMentionOption[] = useMemo(() => {
     if (scope === "agents") {
       return agentOptions
@@ -456,15 +428,6 @@ export const AgentsFileMention = memo(function AgentsFileMention({
     }
 
     // No search: Flat grouped list with category headers (no drill-down).
-    // Each non-empty group is preceded by a non-selectable category header.
-    // Data-driven sections: format convention declared here; backend-provided
-    // categories can be appended by extending this list without touching render.
-    const sections: { id: string; label: string; items: FileMentionOption[] }[] = [
-      { id: "changed", label: "Changed Files", items: changedFileOptions },
-      ...(scope !== "resources" ? [{ id: "agents", label: "Agents", items: agentOptions }] : []),
-    ]
-    // Dynamic grouping: group items by their `type` (or `group` override).
-    // No hardcoded category list — any new type becomes its own category.
     const TYPE_LABELS: Record<string, string> = {
       agent: "Agents",
       file: "Files",
@@ -508,210 +471,89 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       return availableCategoryOptions
     }
     return flat
-  }, [scope, showingFilesList, showingAgentsList, debouncedSearchText, changedFileOptions, repoFileOptions, agentOptions, hasOnlyFiles, availableCategoryOptions])
+  }, [scope, showingFilesList, showingAgentsList, debouncedSearchText, changedFileOptions, repoFileOptions, agentOptions, hasOnlyFiles, availableCategoryOptions, discoveryMentionOptions])
 
-  // Track previous values for smarter selection reset
-  const prevIsOpenRef = useRef(isOpen)
-  const prevSearchRef = useRef(debouncedSearchText)
-  const prevShowingFilesListRef = useRef(showingFilesList)
-  const prevShowingAgentsListRef = useRef(showingAgentsList)
+  // Shared dropdown shell (keyboard nav, placement, auto-scroll, click outside)
+  // Note: we use local debounce (above) for memos, and pass debounceMs: 0 to skip
+  // the shell's internal debounce (avoiding double debounce delay).
+  // Memoize isSelectable to avoid re-running keyboard effect on every render.
+  const isSelectable = useCallback(
+    (index: number) => options[index]?.type !== "group-header",
+    [options],
+  )
+  const {
+    dropdownRef,
+    selectedIndex,
+    setSelectedIndex,
+    finalTop,
+    finalLeft,
+    dropdownWidth,
+    computedMaxHeight,
+    transformY,
+  } = useDropdownShell({
+    isOpen,
+    onClose,
+    position,
+    containerWidth,
+    containerLeft,
+    optionCount: options.length,
+    searchText: debouncedSearchText, // Already debounced locally
+    debounceMs: 0, // Skip internal debounce
+    isSelectable,
+  })
 
-  // CONSOLIDATED: Single useLayoutEffect for selection management (was 3 separate)
-  useLayoutEffect(() => {
-    const didJustOpen = isOpen && !prevIsOpenRef.current
-    const didSearchChange = debouncedSearchText !== prevSearchRef.current
+  // Reset selection when subpage changes (file-mention specific)
+  useEffect(() => {
     const didSubpageChange =
       showingFilesList !== prevShowingFilesListRef.current ||
       showingAgentsList !== prevShowingAgentsListRef.current
 
-    // Reset to 0 when opening, search changes, or subpage changes
-    if (didJustOpen || didSearchChange || didSubpageChange) {
-      // react-doctor-disable-next-line no-adjust-state-on-prop-change
+    if (didSubpageChange) {
       setSelectedIndex(0)
     }
-    // Clamp to valid range if options shrunk
-    else if (options.length > 0 && selectedIndex >= options.length) {
-      setSelectedIndex(Math.max(0, options.length - 1))
-    }
 
-    // Update refs
-    prevIsOpenRef.current = isOpen
-    prevSearchRef.current = debouncedSearchText
     prevShowingFilesListRef.current = showingFilesList
     prevShowingAgentsListRef.current = showingAgentsList
-  }, [isOpen, debouncedSearchText, options.length, selectedIndex, showingFilesList, showingAgentsList])
+  }, [showingFilesList, showingAgentsList, setSelectedIndex])
 
-  // Reset placement when closed
-  useEffect(() => {
-    if (!isOpen) {
-      placementRef.current = null
-    }
-  }, [isOpen])
-
-  // Keyboard navigation
+  // Enter/Tab selection (shell handles Escape/Arrow)
   useEffect(() => {
     if (!isOpen) return
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (options.length === 0) return
+    const handleSelectKey = (e: KeyboardEvent) => {
       switch (e.key) {
-        case "ArrowDown":
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          setSelectedIndex((prev) => {
-            let next = prev
-            for (let i = 0; i < options.length; i++) {
-              next = (next + 1) % options.length
-              if (options[next]?.type !== "group-header") return next
-            }
-            return prev
-          })
-          break
-        case "ArrowUp":
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          setSelectedIndex((prev) => {
-            let next = prev
-            for (let i = 0; i < options.length; i++) {
-              next = (next - 1 + options.length) % options.length
-              if (options[next]?.type !== "group-header") return next
-            }
-            return prev
-          })
-          break
         case "Enter":
           if (e.shiftKey) return
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          if (options[selectedIndex] && options[selectedIndex].type !== "group-header") {
-            onSelect(options[selectedIndex])
-          }
+          // fall through to shared selection logic
           break
-        case "Escape":
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          onClose()
+        case "Tab":
           break
+        default:
+          return
+      }
+      e.preventDefault()
+      e.stopPropagation()
+      e.stopImmediatePropagation()
+      if (options[selectedIndex] && options[selectedIndex].type !== "group-header") {
+        onSelect(options[selectedIndex])
       }
     }
 
-    window.addEventListener("keydown", handleKeyDown, { capture: true })
+    window.addEventListener("keydown", handleSelectKey, { capture: true })
     return () =>
-      window.removeEventListener("keydown", handleKeyDown, { capture: true })
-  }, [isOpen, options, selectedIndex, onSelect, onClose])
-
-  // Auto-scroll selected item into view
-  useEffect(() => {
-    if (!isOpen || !dropdownRef.current) return
-
-    // Account for header element
-    if (selectedIndex === 0) {
-      dropdownRef.current.scrollTo({ top: 0, behavior: "auto" })
-      return
-    }
-
-    const elements = dropdownRef.current.querySelectorAll("[data-option-index]")
-    const selectedElement = elements[selectedIndex] as HTMLElement
-    if (selectedElement) {
-      selectedElement.scrollIntoView({ block: "nearest" })
-    }
-  }, [selectedIndex, isOpen])
-
-  // Click outside
-  useEffect(() => {
-    if (!isOpen) return
-
-    const handleClickOutside = (e: MouseEvent) => {
-      if (
-        dropdownRef.current &&
-        !dropdownRef.current.contains(e.target as Node)
-      ) {
-        onClose()
-      }
-    }
-
-    document.addEventListener("mousedown", handleClickOutside)
-    return () => document.removeEventListener("mousedown", handleClickOutside)
-  // react-doctor-disable-next-line prefer-use-effect-event
-  }, [isOpen, onClose])
+      window.removeEventListener("keydown", handleSelectKey, { capture: true })
+  }, [isOpen, options, selectedIndex, onSelect])
 
   if (!isOpen) return null
-
-  const dimensions = getDropdownDimensions()
-
-  // Calculate dropdown dimensions (matching / command style)
-  const dropdownWidth = dimensions.width
-  const itemHeight = dimensions.itemHeight
-  const headerHeight = dimensions.headerHeight
-  const headersCount = options.length > 0 ? 1 : 0
-  const requestedHeight = Math.min(
-    options.length * itemHeight + headersCount * headerHeight + dimensions.gap,
-    dimensions.maxHeight,
-  )
-  const gap = dimensions.gap
-
-  // Decide placement like Radix Popover (auto-flip top/bottom)
-  const safeMargin = 10
-  const caretOffsetBelow = 20
-  const availableBelow =
-    window.innerHeight - (position.top + caretOffsetBelow) - safeMargin
-  const availableAbove = position.top - safeMargin
-
-  // Compute desired placement, but lock it for the duration of the open state
-  if (placementRef.current === null) {
-    const condition1 =
-      availableAbove >= requestedHeight && availableBelow < requestedHeight
-    const condition2 =
-      availableAbove > availableBelow && availableAbove >= requestedHeight
-    const shouldPlaceAbove = condition1 || condition2
-    // react-doctor-disable-next-line no-ref-current-in-render
-    placementRef.current = shouldPlaceAbove ? "above" : "below"
-  }
-  const placeAbove = placementRef.current === "above"
-
-  // Compute final top based on placement
-  const finalTop = placeAbove
-    ? position.top - gap
-    : position.top + gap + caretOffsetBelow
-
-  // Align the dropdown's left edge with the input container (status box),
-  // not with the trigger character.
-  let finalLeft = containerLeft ?? position.left
-
-
-  // Adjust horizontal overflow
-  if (finalLeft + dropdownWidth > window.innerWidth - safeMargin) {
-    finalLeft = window.innerWidth - dropdownWidth - safeMargin
-  }
-  if (finalLeft < safeMargin) {
-    finalLeft = safeMargin
-  }
-
-  // Keep the max height aligned with the Resume popover standard (max-h-72),
-  // so the box stays the same size instead of shrinking with available space.
-  const computedMaxHeight = Math.max(
-    80,
-    Math.min(requestedHeight, dimensions.maxHeight),
-  )
-  const transformY = placeAbove ? "translateY(-100%)" : "translateY(0)"
 
   return createPortal(
     <div
       ref={dropdownRef}
       className="fixed z-[99999] overflow-y-auto rounded-[10px] border border-border bg-popover py-1 text-xs text-popover-foreground shadow-lg [&::-webkit-scrollbar]:hidden"
       style={{
-        top: finalTop,
-        left: finalLeft,
-        width: containerWidth ? `${containerWidth}px` : "20rem",
-        maxHeight: "18rem",
-        transform: transformY,
-        transformOrigin: placeAbove ? 'bottom' : 'top',
-        scrollbarWidth: 'none',
-        msOverflowStyle: 'none',
+        ...getDropdownContainerStyle(finalTop, finalLeft, computedMaxHeight, transformY, containerWidth, dropdownWidth),
+        scrollbarWidth: "none",
+        msOverflowStyle: "none",
       } as React.CSSProperties}
     >
 

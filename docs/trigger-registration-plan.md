@@ -73,9 +73,9 @@
 - [x] 插入语义按 item `type` 分发（slash command 用 `/name`，mention 用 `@[type:name]`）。
 - [x] 提取 `useDropdownShell` 通用 hook（位置计算、键盘导航、自动滚动、点击外部、搜索防抖）。
 - [x] `agents-slash-command.tsx` 使用 `useDropdownShell`，从 ~380 行缩减到 ~230 行。
-- [ ] `agents-file-mention.tsx` 使用 `useDropdownShell`（该组件逻辑更复杂（818行，含子页面导航），暂保持独立）。
-- [x] 移除 `DiscoveryTrigger` 接口中的 `allowSpaces` 字段（后端已简化 schema）。
-
+- [x] `agents-file-mention.tsx` 使用 `useDropdownShell`，从 ~818 行缩减到 ~657 行（减少 161 行）。
+- [x] `useDropdownShell` 支持 `debounceMs: 0` 跳过内部 debounce（避免 double debounce）。
+- [x] 移除 `DiscoveryTrigger` 接口中的 `allowSpaces` 字段（后端已简化 schema）。（当前 `DiscoveryTrigger` 仅含 `char`/`position`/`types`）
 > **注意**：trigger 检测（`walkTreeOnce` 中的 `@`/`/` 字符匹配）深度集成在 contenteditable
 > 编辑器的树遍历逻辑中，完全动态化需要重构编辑器核心。当前阶段保持硬编码检测，
 > 后端 triggers 仅作为数据源提供给 dropdown 渲染。
@@ -85,13 +85,20 @@
 - [x] 移除前端 `DiscoveryTrigger` 接口中的 `allowSpaces` 字段。
 - [x] 后端 trigger schema 简化（`char`, `position`, `types` 三字段）。
 - [x] 更新 `docs/agent-auxiliary-discovery-plan.md`，说明 trigger 由后端注册。
-- [ ] 完全移除编辑器中的 trigger 硬编码检测（需编辑器核心重构，当前作为 fallback 保留）。
+- [x] 编辑器 trigger 检测动态化 — `walkTreeOnce` 接收 `EditorTriggerConfig` 参数，支持自定义 trigger 字符和位置规则。
+- [x] 新增 `EditorTriggerConfig` 类型，导出自 `mentions/index.ts`。
+- [x] `AgentsMentionsEditorProps` 新增 `mentionTrigger` 和 `slashTrigger` 可选 props。
+- [x] `chat-input-area.tsx` 和 `new-chat-form.tsx` 使用 `useRegisteredTriggers` 获取配置并传递给编辑器。
+- [x] 默认 fallback：无配置时使用 `@`（standalone）和 `/`（start-of-line）。
 
-**注**：`agents-provider.ts`、`files-provider.ts`、`agents-mentions-editor.tsx` 中的硬编码 trigger 检测（`@`/`/` 字符匹配）深度集成在 contenteditable 编辑器的树遍历逻辑中（`walkTreeOnce` 函数）。完全动态化需要重构编辑器核心，风险较高。当前阶段保留硬编码检测作为 fallback，后端 trigger 配置作为数据源提供给 dropdown 渲染。
+> **注**：trigger 检测现在从后端注册表动态获取配置。如果后端未返回配置或 agent 未连接，
+> fallback 到硬编码的 `@` 和 `/`。这保证了向后兼容性和无 agent 场景的基本功能。
 
 ### Phase 5：验证
 
-- [ ] 类型检查、lint、相关 tests 通过。
+- [x] 类型检查通过（`tsc --noEmit`：改动文件无新增错误；既有错误均为缺失第三方模块的环境问题）。
+- [ ] lint 通过（当前环境缺少 `typescript-eslint` 及部分依赖，暂未执行）。
+- [x] 相关 tests 通过（后端 `discovery_service` 9/9；前端 `native-triggers` 5/5）。
 - [ ] 手动验证：
   - 有 agent 时：`/` 与 `@` 显示完整数据（Skills + Commands + MCP + Plugins）。
   - 无 agent 时：`/` 与 `@` 显示静态数据（Skills + Plugins）。
@@ -218,4 +225,4 @@ fn cache_key(source: &str, agent_id: &str, cwd: Option<&str>) -> String {
 - [x] 有 agent 的对话可使用完整功能（Skills/Commands/MCP/Plugins）。
 - [x] 静态源缓存跨 agent 复用，减少重复扫描。（Phase 1.2 cache_key 重构）
 - [x] 前端 trigger 配置从后端注册表读取（`useRegisteredTriggers` hook）。（Phase 2.2 完成）
-- [ ] 编辑器按键检测完全动态化（需编辑器核心重构，当前仍保持硬编码检测作为 fallback）。
+- [x] 编辑器 trigger 检测动态化 — `walkTreeOnce` 使用后端配置，fallback 到 `@`/`/`。（Phase 4 完成）

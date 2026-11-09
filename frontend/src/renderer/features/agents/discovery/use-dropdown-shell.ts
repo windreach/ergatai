@@ -16,6 +16,8 @@ interface DropdownShellOptions {
   optionCount: number
   /** Skip non-selectable items (e.g. group headers) during navigation */
   isSelectable?: (index: number) => boolean
+  /** Debounce interval in ms (default 300). Set to 0 to skip debounce (when caller already debounces). */
+  debounceMs?: number
 }
 
 interface DropdownShellResult {
@@ -139,6 +141,7 @@ export function useDropdownShell({
   optionCount,
   searchText,
   isSelectable,
+  debounceMs = 300,
 }: DropdownShellOptions & {
   position: Position
   containerWidth?: number
@@ -149,13 +152,17 @@ export function useDropdownShell({
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [debouncedSearchText, setDebouncedSearchText] = useState(searchText)
 
-  // Debounce search text (300ms)
+  // Debounce search text (configurable interval, 0 = skip debounce)
   useEffect(() => {
+    if (debounceMs <= 0) {
+      setDebouncedSearchText(searchText)
+      return
+    }
     const timer = setTimeout(() => {
       setDebouncedSearchText(searchText)
-    }, 300)
+    }, debounceMs)
     return () => clearTimeout(timer)
-  }, [searchText])
+  }, [searchText, debounceMs])
 
   // Track previous values for smarter selection reset
   const prevIsOpenRef = useRef(isOpen)
