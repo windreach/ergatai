@@ -106,6 +106,188 @@
 
 ---
 
+## Phase 6：Agent 级 Discovery Trigger 扩展（设计）
+
+> **状态**：设计阶段，尚未实现。目标：让 agent 能注册 `/`、`@` 之外的 discovery trigger 符号，并按 agent 能力/配置动态生效。
+
+### 6.1 目标
+
+1. 后端 trigger 注册表从「固定 `/`、`@`」扩展为「默认 `/`、`@` + agent 自定义 trigger」。
+2. agent 可通过 profile/注册表声明自己的 discovery trigger（char、位置规则、可拉取类型、UI 种类）。
+3. 前端编辑器检测支持 N 个 trigger，不再硬编码 `@`/`/` 两个具名变量。
+4. 插入语义按 trigger `kind` 分发（slash 风格 vs mention 风格），并使用 trigger 自身的 char。
+
+### 6.2 后端 Schema 扩展
+
+#### 6.2.1 Agent Profile 新增字段
+
+在 `agent_registrations` 表新增列（类似 `native_triggers_json`）：
+
+```sql
+ALTER TABLE agent_registrations ADD COLUMN discovery_triggers_json TEXT;
+```
+
+JSON 结构：
+
+```json
+[
+  {
+    "char": "$",
+    "position": "start-of-line",
+    "types": ["command"],
+    "kind": "slash"
+  },
+  {
+    "char": "#",
+    "position": "standalone",
+    "types": ["file", "folder"],
+    "kind": "mention"
+  }
+]
+```
+
+字段说明：
+- `char`：单字符 trigger。
+- `position`：`start-of-line` / `standalone` / `anywhere`。
+- `types`：该 trigger 可拉取的 discovery 类型（skill/command/mcp/plugin/agent/file/folder）。
+- `kind`：UI/插入语义分类：
+  - `slash`：类似 `/`，打开命令风格 dropdown，插入 `{char}{name} `。
+  - `mention`：类似 `@`，打开 mention 风格 dropdown，插入 `{char}[{type}:{name}]`。
+
+#### 6.2.2 Trigger 合并逻辑
+
+```rust
+pub fn get_triggers(agent_id: Option<&str>, cwd: Option<&str>) -> Value {
+    // 1. 默认 triggers
+    let mut triggers = vec![
+        Trigger { char: "/", position: "start-of-line", types: [...], kind: "slash" },
+        Trigger { char: "@", position: "standalone", types: [...], kind: "mention" },
+    ];
+
+    // 2. agent 自定义 triggers（如果 agent_id 存在且 profile 有 discovery_triggers_json）
+    if let Some(agent) = lookup_agent(agent_id) {
+        if let Some(custom) = parse_discovery_triggers(agent.discovery_triggers_json) {
+            triggers.extend(custom);
+        }
+    }
+
+    // 3. 无 agent 时：仅返回静态 types（skill/plugin）的默认 triggers
+    if agent_id.is_none() {
+        triggers = triggers.into_iter().map(|t| t.with_static_types()).collect();
+    }
+
+    json!(triggers)
+}
+```
+
+注意：
+- 无 agent 场景（New Chat）不读取 agent profile，只返回默认 `/`、`@` 的静态类型。
+- 自定义 trigger 的 char 必须是单字符，且与 native trigger 体系隔离（discovery trigger 只负责 discovery dropdown，不负责 native trigger hint）。
+- 默认 char（`/`、`@`）不可被自定义覆盖，避免破坏基础能力。
+
+### 6.3 前端通用化
+
+#### 6.3.1 EditorTriggerConfig 扩展
+
+```typescript
+export interface EditorTriggerConfig {
+  char: string
+  position: "standalone" | "start-of-line" | "anywhere"
+  types?: string[]
+  kind: "slash" | "mention"
+}
+```
+
+#### 6.3.2 walkTreeOnce 通用化
+
+当前签名：
+
+```typescript
+walkTreeOnce(root, range, nativeTriggers, mentionTrigger, slashTrigger)
+```
+
+改为：
+
+```typescript
+walkTreeOnce(root, range, nativeTriggers, discoveryTriggers: EditorTriggerConfig[])
+```
+
+内部逻辑：
+- 遍历所有 discoveryTriggers，检测每个 char 的位置规则。
+- 选择「最靠近光标且合法」的 trigger 作为 active trigger。
+- 返回 `{ activeTrigger: EditorTriggerConfig | null, triggerIndex, textAfterTrigger, ... }`。
+
+#### 6.3.3 编辑器状态通用化
+
+将当前的两个独立状态：
+
+```typescript
+const triggerStartIndex = useRef<number | null>(null)        // mention
+const slashTriggerActive = useRef(false)
+const slashTriggerStartIndex = useRef<number | null>(null)  // slash
+```
+
+重构为：
+
+```typescript
+const activeDiscoveryTrigger = useRef<{
+  config: EditorTriggerConfig
+  startIndex: number
+} | null>(null)
+```
+
+插入时根据 `config.kind` 和 `config.char` 决定：
+- `slash`：`clearDiscoveryTrigger()` + `setValue(`${char}${name} `)`
+- `mention`：`insertDiscoveryTrigger(option)`，使用 `char` 替代硬编码 `@`
+
+#### 6.3.4 useEditorTriggerConfigs 调整
+
+```typescript
+export function useEditorTriggerConfigs(agentId, cwd) {
+  const { triggers } = useRegisteredTriggers(agentId, cwd)
+  return triggers.map(t => ({
+    char: t.char,
+    position: t.position ?? "anywhere",
+    types: t.types,
+    kind: t.kind ?? (t.char === "/" ? "slash" : "mention"),
+  }))
+}
+```
+
+#### 6.3.5 Dropdown 映射
+
+- `kind === "slash"` → 使用 `AgentsSlashCommand` 组件（或通用化为 `AgentsDiscoveryDropdown` with `insertStyle="slash"`）。
+- `kind === "mention"` → 使用 `AgentsFileMention` 组件。
+
+建议后续将两个 dropdown 组件合并为一个通用 `AgentsDiscoveryDropdown`，通过 `insertStyle` prop 控制插入语义，减少重复。当前阶段可保留两个组件，由 editor 根据 `activeTrigger.kind` 决定调用 `onSlashTrigger` 还是 `onTrigger`。
+
+### 6.4 迁移与兼容
+
+- 旧 agent（无 `discovery_triggers_json`）：后端返回默认 `/`、`@`，行为与当前完全一致。
+- 前端：`EditorTriggerConfig.kind` 缺失时 fallback：`/` → slash，其余 → mention。
+- `walkTreeOnce` 默认参数：空数组时 fallback 到 `/` 与 `@`，保证无配置场景可用。
+
+### 6.5 风险
+
+| 风险 | 缓解措施 |
+|------|----------|
+| agent 注册了与默认冲突的 char | 后端拒绝覆盖默认 `/`、`@` |
+| 多个 trigger 同时匹配 | 选择最靠近光标的；若等距，按注册顺序优先 |
+| 插入语义分发遗漏新 kind | 默认 fallback 到 mention 风格，日志告警 |
+| agent profile 字段迁移 | DB migration + 默认 NULL，向后兼容 |
+
+### 6.6 建议实施顺序
+
+1. **6.2** 后端 DB migration + profile 字段 + `get_triggers` 合并逻辑（1 天）
+2. **6.3.1-6.3.2** 前端 `EditorTriggerConfig` 扩展 + `walkTreeOnce` 通用化（1 天）
+3. **6.3.3-6.3.4** 编辑器状态重构 + `useEditorTriggerConfigs` 调整（1 天）
+4. **6.3.5** Dropdown 映射 + 插入语义参数化（0.5 天）
+5. **Phase 5 验证**：类型检查、lint、单测、手动验证（0.5 天）
+
+**每阶段独立提交，便于回滚。**
+
+---
+
 ## 已知 Bug：New Chat / 无 agent 场景下 @ 与 / 失效
 
 > **Bug 标注**：新建对话没有 agentId，前端 discovery 查询被禁用，导致 `@` 与 `/` 完全无数据，即使约定文档扫描可用。
