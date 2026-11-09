@@ -340,7 +340,7 @@ export function NewChatForm({
   }, [selectedWorkspace, projectsList, isLoadingProjects])
 
   // Fetch registered triggers from backend (for dynamic trigger detection)
-  const { mentionTrigger, slashTrigger: slashTriggerConfig } = useEditorTriggerConfigs(
+  const { mentionTrigger, slashTrigger: slashTriggerConfig, discoveryTriggers } = useEditorTriggerConfigs(
     backendAgentId ?? undefined,
     validatedProject?.path ?? undefined,
   )
@@ -1881,6 +1881,7 @@ export function NewChatForm({
                       onCloseSlashTrigger={handleCloseSlashTrigger}
                       mentionTrigger={mentionTrigger}
                       slashTrigger={slashTriggerConfig}
+                      discoveryTriggers={discoveryTriggers}
                       onContentChange={handleContentChange}
                       onSubmit={handleSend}
                       onShiftTab={toggleMode}

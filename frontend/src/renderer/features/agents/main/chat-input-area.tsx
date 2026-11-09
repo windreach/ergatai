@@ -457,7 +457,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   const [isDragOver, setIsDragOver] = useState(false)
 
   // Fetch registered triggers from backend (for dynamic trigger detection)
-  const { mentionTrigger, slashTrigger: slashTriggerConfig } = useEditorTriggerConfigs(agentId ?? undefined, projectPath)
+  const { mentionTrigger, slashTrigger: slashTriggerConfig, discoveryTriggers } = useEditorTriggerConfigs(agentId ?? undefined, projectPath)
 
   // Hide focus ring on pointer interaction (mouse/touch), even if previously focused
   useEffect(() => {
@@ -1632,6 +1632,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                   onCloseNativeTrigger={() => setNativeTriggerMatch(null)}
                   mentionTrigger={mentionTrigger}
                   slashTrigger={slashTriggerConfig}
+                  discoveryTriggers={discoveryTriggers}
                   onContentChange={handleContentChange}
                   onSubmit={onSubmitWithQuestionAnswer || handleEditorSubmit}
                   onForceSubmit={onForceSend}

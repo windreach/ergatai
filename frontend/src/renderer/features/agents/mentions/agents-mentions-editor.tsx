@@ -139,6 +139,8 @@ type AgentsMentionsEditorProps = {
   mentionTrigger?: EditorTriggerConfig
   /** Trigger config for slash command dropdown (default: / start-of-line) */
   slashTrigger?: EditorTriggerConfig
+  /** Additional discovery triggers (agent-specific) */
+  discoveryTriggers?: EditorTriggerConfig[]
   onContentChange?: (hasContent: boolean) => void // lightweight callback for send button state
   placeholder?: string
   className?: string
@@ -296,11 +298,10 @@ function buildContentFromSerialized(
 interface TreeWalkResult {
   serialized: string
   textBeforeCursor: string
-  atPosition: { node: Node; offset: number } | null
-  atIndex: number
-  // Slash command trigger info
-  slashPosition: { node: Node; offset: number } | null
-  slashIndex: number
+  // Generic discovery trigger info (replaces atPosition/atIndex/slashPosition/slashIndex)
+  discoveryPosition: { node: Node; offset: number } | null
+  discoveryIndex: number
+  discoveryTrigger: EditorTriggerConfig | null
   nativeTriggerMatches: AgentTriggerMatch[]
 }
 
@@ -331,19 +332,16 @@ function walkTreeOnce(
   root: HTMLElement,
   range: Range | null,
   nativeTriggers: readonly AgentNativeTrigger[] = [],
-  mentionTrigger: EditorTriggerConfig = DEFAULT_MENTION_TRIGGER,
-  slashTrigger: EditorTriggerConfig = DEFAULT_SLASH_TRIGGER,
+  discoveryTriggers: readonly EditorTriggerConfig[] = [DEFAULT_MENTION_TRIGGER, DEFAULT_SLASH_TRIGGER],
 ): TreeWalkResult {
   let serialized = ""
   let textBeforeCursor = ""
   let reachedCursor = false
-  let atPosition: { node: Node; offset: number } | null = null
-  let atIndex = -1
-  let slashPosition: { node: Node; offset: number } | null = null
-  let slashIndex = -1
+  let discoveryPosition: { node: Node; offset: number } | null = null
+  let discoveryIndex = -1
+  let discoveryTrigger: EditorTriggerConfig | null = null
 
   // Handle case where cursor is in root element (not in a text node)
-  // This happens when the editor is empty or cursor is at element boundary
   let cursorInRoot = false
   let cursorRootOffset = 0
   if (range && range.endContainer === root) {
@@ -357,21 +355,41 @@ function walkTreeOnce(
   )
   let node: Node | null = walker.nextNode()
 
+  // Helper to test a trigger candidate at a given global index
+  const considerTrigger = (
+    trig: EditorTriggerConfig,
+    globalIdx: number,
+    nodeRef: Node,
+    localOffset: number,
+    textBeforeInNode: string,
+  ) => {
+    const kind = trig.kind ?? (trig.char === "/" ? "slash" : "mention")
+    const isSlash = kind === "slash"
+    const textUpTo = serialized + textBeforeInNode.slice(0, localOffset)
+    const charBefore = globalIdx > 0 ? textUpTo.charAt(globalIdx - 1) : null
+    if (!matchesTriggerPosition(charBefore, trig.position ?? "anywhere")) return
+    const afterTrigger = textBeforeCursor.slice(globalIdx + 1)
+    const valid = isSlash
+      ? !afterTrigger.includes(" ") && !afterTrigger.includes("\n")
+      : !afterTrigger.includes("\n") && !afterTrigger.includes("  ")
+    if (!valid) return
+    if (globalIdx > discoveryIndex) {
+      discoveryIndex = globalIdx
+      discoveryPosition = { node: nodeRef, offset: localOffset }
+      discoveryTrigger = trig
+    }
+  }
+
   while (node) {
     if (node.nodeType === Node.TEXT_NODE) {
       const text = node.textContent || ""
 
-      // Check if cursor is in this node (direct case)
       const cursorInThisNode = range && !reachedCursor && node === range.endContainer
 
-      // Handle cursor in root element - cursor is positioned between children
-      // cursorRootOffset indicates the child index where cursor is
       let cursorAtRootBoundary = false
       if (cursorInRoot && !reachedCursor && node.parentNode === root) {
         const children = Array.from(root.childNodes)
         const nodeIndex = children.indexOf(node as ChildNode)
-        // If cursor is after this node, include full text
-        // If cursor is at this node's position, we've passed the cursor
         if (nodeIndex >= cursorRootOffset) {
           cursorAtRootBoundary = true
         }
@@ -382,71 +400,34 @@ function walkTreeOnce(
         textBeforeCursor += text.slice(0, cursorOffset)
         reachedCursor = true
 
-        // Find mention trigger char in text before cursor for this node
         const textBeforeInNode = text.slice(0, cursorOffset)
-        const localAtIdx = textBeforeInNode.lastIndexOf(mentionTrigger.char)
-        if (localAtIdx !== -1) {
-          const globalAtIdx = serialized.length + localAtIdx
 
-          // Check character before trigger - must match position rule
-          const textUpToAt = serialized + textBeforeInNode.slice(0, localAtIdx)
-          const charBefore = globalAtIdx > 0 ? textUpToAt.charAt(globalAtIdx - 1) : null
-          const isValidPosition = matchesTriggerPosition(charBefore, mentionTrigger.position)
-
-          // Check if this trigger is the most recent one AND is at valid position
-          if (isValidPosition && globalAtIdx > atIndex) {
-            const afterTrigger = textBeforeCursor.slice(
-              textBeforeCursor.lastIndexOf(mentionTrigger.char) + 1,
-            )
-            // Close on newline or double-space (not single space - allow multi-word search)
-            const hasNewline = afterTrigger.includes("\n")
-            const hasDoubleSpace = afterTrigger.includes("  ")
-            if (!hasNewline && !hasDoubleSpace) {
-              atIndex = globalAtIdx
-              atPosition = { node, offset: localAtIdx }
-            }
-          }
-        }
-
-        // Find slash trigger char (for slash commands)
-        // Check all occurrences in this node
-        for (let i = 0; i < textBeforeInNode.length; i++) {
-          if (textBeforeInNode[i] === slashTrigger.char) {
-            const globalSlashIdx = serialized.length + i
-            // Check position rule
-            const charBefore =
-              globalSlashIdx === 0
-                ? null
-                : (serialized + textBeforeInNode.slice(0, i)).charAt(
-                    globalSlashIdx - 1,
-                  )
-            if (matchesTriggerPosition(charBefore, slashTrigger.position)) {
-              // Check no space between trigger and cursor
-              const afterSlash = textBeforeCursor.slice(globalSlashIdx + 1)
-              if (!afterSlash.includes(" ") && !afterSlash.includes("\n")) {
-                slashIndex = globalSlashIdx
-                slashPosition = { node, offset: i }
-              }
-            }
+        // Check every discovery trigger at every occurrence in this node
+        for (const trig of discoveryTriggers) {
+          for (let i = 0; i < textBeforeInNode.length; i++) {
+            if (textBeforeInNode[i] !== trig.char) continue
+            const globalIdx = serialized.length + i
+            considerTrigger(trig, globalIdx, node, i, textBeforeInNode)
           }
         }
       } else if (cursorAtRootBoundary) {
-        // Cursor is in root element, at or past this node's position
-        // Mark as reached and don't include this text in textBeforeCursor
         reachedCursor = true
       } else if (!reachedCursor) {
         textBeforeCursor += text
-        // Track mention trigger positions as we go (only if at valid position)
-        const localAtIdx = text.lastIndexOf(mentionTrigger.char)
-        if (localAtIdx !== -1) {
-          const globalAtIdx = serialized.length + localAtIdx
-          // Check character before trigger - must match position rule
-          const textUpToAt = serialized + text.slice(0, localAtIdx)
-          const charBefore = globalAtIdx > 0 ? textUpToAt.charAt(globalAtIdx - 1) : null
-
-          if (matchesTriggerPosition(charBefore, mentionTrigger.position)) {
-            atIndex = globalAtIdx
-            atPosition = { node, offset: localAtIdx }
+        // For fully-passed nodes, track mention-style triggers only (slash needs cursor context)
+        for (const trig of discoveryTriggers) {
+          const kind = trig.kind ?? (trig.char === "/" ? "slash" : "mention")
+          if (kind === "slash") continue
+          const localIdx = text.lastIndexOf(trig.char)
+          if (localIdx === -1) continue
+          const globalIdx = serialized.length + localIdx
+          const textUpTo = serialized + text.slice(0, localIdx)
+          const charBefore = globalIdx > 0 ? textUpTo.charAt(globalIdx - 1) : null
+          if (!matchesTriggerPosition(charBefore, trig.position ?? "anywhere")) continue
+          if (globalIdx > discoveryIndex) {
+            discoveryIndex = globalIdx
+            discoveryPosition = { node, offset: localIdx }
+            discoveryTrigger = trig
           }
         }
       }
@@ -456,19 +437,15 @@ function walkTreeOnce(
       continue
     }
 
-    // Element node - check for ultrathink or mention
     if (node.nodeType === Node.ELEMENT_NODE) {
       const el = node as HTMLElement
 
-      // Handle ultrathink styled nodes
       if (el.hasAttribute("data-ultrathink")) {
         const text = el.textContent || ""
         serialized += text
         if (!reachedCursor) {
           textBeforeCursor += text
         }
-
-        // Skip ultrathink subtree
         const next: Node | null = el.nextSibling
         if (next) {
           walker.currentNode = next
@@ -493,8 +470,6 @@ function walkTreeOnce(
         if (!reachedCursor) {
           textBeforeCursor += mentionToken
         }
-
-        // Skip mention subtree
         const next: Node | null = el.nextSibling
         if (next) {
           walker.currentNode = next
@@ -516,33 +491,27 @@ function walkTreeOnce(
     node = walker.nextNode()
   }
 
-  // Validate @ trigger - close on newline or double-space (allow single spaces for multi-word search)
-  if (atIndex !== -1) {
-    const afterAt = textBeforeCursor.slice(atIndex + 1)
-    const hasNewline = afterAt.includes("\n")
-    const hasDoubleSpace = afterAt.includes("  ")
-    if (hasNewline || hasDoubleSpace) {
-      atIndex = -1
-      atPosition = null
-    }
-  }
-
-  // Validate / trigger - check if space/newline after it
-  if (slashIndex !== -1) {
-    const afterSlash = textBeforeCursor.slice(slashIndex + 1)
-    if (afterSlash.includes(" ") || afterSlash.includes("\n")) {
-      slashIndex = -1
-      slashPosition = null
+  // Validate discovery trigger based on kind
+  if (discoveryIndex !== -1 && discoveryTrigger) {
+    const kind = discoveryTrigger.kind ?? (discoveryTrigger.char === "/" ? "slash" : "mention")
+    const isSlash = kind === "slash"
+    const afterTrigger = textBeforeCursor.slice(discoveryIndex + 1)
+    const invalid = isSlash
+      ? afterTrigger.includes(" ") || afterTrigger.includes("\n")
+      : afterTrigger.includes("\n") || afterTrigger.includes("  ")
+    if (invalid) {
+      discoveryIndex = -1
+      discoveryPosition = null
+      discoveryTrigger = null
     }
   }
 
   return {
     serialized,
     textBeforeCursor,
-    atPosition,
-    atIndex,
-    slashPosition,
-    slashIndex,
+    discoveryPosition,
+    discoveryIndex,
+    discoveryTrigger,
     nativeTriggerMatches: matchAgentTriggers(textBeforeCursor, nativeTriggers),
   }
 }
@@ -564,6 +533,7 @@ export const AgentsMentionsEditor = memo(
         onCloseNativeTrigger,
         mentionTrigger,
         slashTrigger,
+        discoveryTriggers,
         onContentChange,
         placeholder,
         className,
@@ -580,9 +550,11 @@ export const AgentsMentionsEditor = memo(
       const editorRef = useRef<HTMLDivElement>(null)
       const triggerActive = useRef(false)
       const triggerStartIndex = useRef<number | null>(null)
+      const triggerCharRef = useRef<string | null>(null)
       // Slash command trigger state
       const slashTriggerActive = useRef(false)
       const slashTriggerStartIndex = useRef<number | null>(null)
+      const slashTriggerCharRef = useRef<string | null>(null)
       // Track if editor has content for placeholder (updated via DOM, no React state)
       const [hasContent, setHasContent] = useState(false)
 
@@ -914,94 +886,92 @@ export const AgentsMentionsEditor = memo(
             return
           }
 
+          // Build combined discovery trigger list from props
+          const allDiscoveryTriggers =
+            (discoveryTriggers && discoveryTriggers.length > 0)
+              ? discoveryTriggers
+              : [mentionTrigger ?? DEFAULT_MENTION_TRIGGER, slashTrigger ?? DEFAULT_SLASH_TRIGGER]
+
           // Single tree walk for trigger detection (configurable via props)
           const {
             textBeforeCursor,
-            atPosition,
-            atIndex,
-            slashPosition,
-            slashIndex,
+            discoveryPosition,
+            discoveryIndex,
+            discoveryTrigger,
             nativeTriggerMatches,
           } = walkTreeOnce(
             editorRef.current,
             range,
             nativeTriggers,
-            mentionTrigger,
-            slashTrigger,
+            allDiscoveryTriggers,
           )
 
-          // Handle @ trigger (takes priority over /)
-          if (atIndex !== -1 && atPosition) {
-            triggerActive.current = true
-            triggerStartIndex.current = atIndex
+          const discoveryKind =
+            discoveryTrigger?.kind ?? (discoveryTrigger?.char === "/" ? "slash" : "mention")
 
-            // Close slash trigger if active
-            if (slashTriggerActive.current) {
+          // Handle discovery trigger
+          if (discoveryIndex !== -1 && discoveryPosition && discoveryTrigger && (discoveryKind === "slash" ? onSlashTrigger : onTrigger)) {
+            const isSlash = discoveryKind === "slash"
+            if (isSlash) {
+              slashTriggerActive.current = true
+              slashTriggerStartIndex.current = discoveryIndex
+              // remember char for insertion
+              slashTriggerCharRef.current = discoveryTrigger.char
+            } else {
+              triggerActive.current = true
+              triggerStartIndex.current = discoveryIndex
+              triggerCharRef.current = discoveryTrigger.char
+            }
+
+            // Close the other trigger if active
+            if (isSlash && triggerActive.current) {
+              triggerActive.current = false
+              triggerStartIndex.current = null
+              onCloseTrigger()
+            }
+            if (!isSlash && slashTriggerActive.current) {
               slashTriggerActive.current = false
               slashTriggerStartIndex.current = null
               onCloseSlashTrigger?.()
             }
 
-            const afterAt = textBeforeCursor.slice(atIndex + 1)
+            const afterTrigger = textBeforeCursor.slice(discoveryIndex + 1)
 
-            // Get position for dropdown
-            // Align the dropdown's left edge with the '@' trigger character,
-            // not with the caret position after the typed query.
-            if (range && editorRef.current && atPosition) {
+            if (range && editorRef.current && discoveryPosition) {
               const tempRange = document.createRange()
-              tempRange.setStart(atPosition.node, atPosition.offset)
-              tempRange.setEnd(atPosition.node, atPosition.offset + 1)
-              const triggerRect = tempRange.getBoundingClientRect()
-
-              const rect = new DOMRect(
-                triggerRect.left,   // Align with '@'
-                triggerRect.top,    // Trigger line top
-                0,
-                triggerRect.height
-              )
-
-              onTrigger({ searchText: afterAt, rect })
-              return
-            }
-          }
-
-          // Close @ trigger if no @ found
-          if (triggerActive.current) {
-            triggerActive.current = false
-            triggerStartIndex.current = null
-            onCloseTrigger()
-          }
-
-          // Handle / trigger (only if @ trigger is not active)
-          if (slashIndex !== -1 && slashPosition && onSlashTrigger) {
-            slashTriggerActive.current = true
-            slashTriggerStartIndex.current = slashIndex
-
-            const afterSlash = textBeforeCursor.slice(slashIndex + 1)
-
-            // Align the dropdown's left edge with the '/' trigger character
-            if (range && editorRef.current && slashPosition) {
-              const tempRange = document.createRange()
-              tempRange.setStart(slashPosition.node, slashPosition.offset)
-              tempRange.setEnd(slashPosition.node, slashPosition.offset + 1)
+              tempRange.setStart(discoveryPosition.node, discoveryPosition.offset)
+              tempRange.setEnd(discoveryPosition.node, discoveryPosition.offset + 1)
               const triggerRect = tempRange.getBoundingClientRect()
 
               const rect = new DOMRect(
                 triggerRect.left,
                 triggerRect.top,
                 0,
-                triggerRect.height
+                triggerRect.height,
               )
 
-              onSlashTrigger({ searchText: afterSlash, rect })
+              if (isSlash && onSlashTrigger) {
+                onSlashTrigger({ searchText: afterTrigger, rect })
+              } else {
+                onTrigger({ searchText: afterTrigger, rect })
+              }
               return
             }
           }
 
-          // Close / trigger if no / found
+          // Close mention trigger if no discovery trigger found
+          if (triggerActive.current) {
+            triggerActive.current = false
+            triggerStartIndex.current = null
+            triggerCharRef.current = null
+            onCloseTrigger()
+          }
+
+          // Close slash trigger if no discovery trigger found
           if (slashTriggerActive.current) {
             slashTriggerActive.current = false
             slashTriggerStartIndex.current = null
+            slashTriggerCharRef.current = null
             onCloseSlashTrigger?.()
           }
 
@@ -1040,6 +1010,7 @@ export const AgentsMentionsEditor = memo(
         nativeTriggers,
         mentionTrigger,
         slashTrigger,
+        discoveryTriggers,
         onContentChange,
         onCloseNativeTrigger,
         onCloseSlashTrigger,

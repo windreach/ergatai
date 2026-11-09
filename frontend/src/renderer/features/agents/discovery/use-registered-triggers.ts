@@ -122,5 +122,16 @@ export function useEditorTriggerConfigs(
     [triggers],
   )
 
-  return { mentionTrigger, slashTrigger }
+  const discoveryTriggers = useMemo(
+    () =>
+      triggers.map((t) => ({
+        char: t.char,
+        position: t.position ?? "anywhere",
+        types: t.types,
+        kind: t.kind ?? (t.char === "/" ? "slash" : "mention"),
+      })),
+    [triggers],
+  )
+
+  return { mentionTrigger, slashTrigger, discoveryTriggers }
 }
