@@ -3,14 +3,14 @@ import { atomWithStorage } from "jotai/utils"
 import { atomFamily } from "jotai/utils"
 import { atomWithWindowStorage } from "../../../lib/window-storage"
 import type { LucideIcon } from "lucide-react"
-import { Box, FileText, Terminal, FileDiff, ListTodo, Activity, Users } from "lucide-react"
+import { FileText, Terminal, FileDiff, ListTodo, Users } from "lucide-react"
 import { OriginalMCPIcon } from "../../../components/ui/icons"
 
 // ============================================================================
 // Widget System Types & Registry
 // ============================================================================
 
-export type WidgetId = "agents" | "info" | "todo" | "plan" | "terminal" | "diff" | "mcp" | "monitoring"
+export type WidgetId = "agents" | "todo" | "plan" | "terminal" | "diff" | "mcp"
 
 export interface WidgetConfig {
   id: WidgetId
@@ -24,11 +24,9 @@ export const WIDGET_REGISTRY: WidgetConfig[] = [
   { id: "agents", label: "Agents", icon: Users, canExpand: false, defaultVisible: true },
   { id: "todo", label: "To-dos", icon: ListTodo, canExpand: false, defaultVisible: true },
   { id: "terminal", label: "Terminal", icon: Terminal, canExpand: true, defaultVisible: true },
-  { id: "info", label: "Workspace", icon: Box, canExpand: false, defaultVisible: false },
   { id: "plan", label: "Plan", icon: FileText, canExpand: true, defaultVisible: false },
   { id: "diff", label: "Changes", icon: FileDiff, canExpand: true, defaultVisible: false },
   { id: "mcp", label: "MCP Servers", icon: OriginalMCPIcon as unknown as LucideIcon, canExpand: false, defaultVisible: false },
-  { id: "monitoring", label: "Monitoring", icon: Activity, canExpand: false, defaultVisible: false },
 ]
 
 // Helper to get default visible widgets
@@ -112,7 +110,7 @@ export const detailsSidebarOpenAtom = atomWithWindowStorage<boolean>(
 // Note: the side chat used to be a tab here; it now lives in its own
 // independent SideChatSidebar. A stale persisted "chat" value is treated
 // as "details" by the sidebar.
-export type DetailsSidebarTab = "details" | "files" | "git"
+export type DetailsSidebarTab = "details" | "files" | "git" | "task-board"
 
 export const detailsSidebarTabAtom = atomWithWindowStorage<DetailsSidebarTab>(
   "overview:sidebarTab",

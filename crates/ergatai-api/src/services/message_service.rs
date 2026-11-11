@@ -135,9 +135,7 @@ impl MessageService {
 mod tests {
     use super::*;
     use crate::services::conversation_service::ConversationService;
-    use crate::user_data_db::{
-        chats, collaboration_sessions, conversations, workspaces, CollaborationSession,
-    };
+    use crate::user_data_db::{chats, collaboration_sessions, workspaces, CollaborationSession};
     use std::sync::Mutex;
 
     static TEST_DB_MUTEX: Mutex<()> = Mutex::new(());

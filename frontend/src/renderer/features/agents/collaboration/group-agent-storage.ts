@@ -34,7 +34,9 @@ function normalizeGroupAgent(value: unknown): CoreAgentOption | null {
   const fallback = getCoreAgentOption(supportedId)
   return {
     id: supportedId,
-    name: typeof agent.name === "string" && agent.name ? agent.name : fallback.name,
+    // Canonical display name: stored entries may predate the unified naming
+    // and carry raw backend ids ("claude-code") as their name.
+    name: fallback.name,
     description:
       typeof agent.description === "string" ? agent.description : fallback.description,
     defaultCommand:

@@ -173,40 +173,14 @@ const AgentActivityCard = memo(function AgentActivityCard({
   )
 })
 
-const TaskCard = memo(function TaskCard({
-  task,
-  onClick,
-}: {
-  task: BoardTask
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex h-40 flex-col rounded-xl border bg-card p-4 text-left shadow-sm transition hover:border-primary/50 hover:shadow-md"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <h2 className="line-clamp-2 text-sm font-semibold">{task.title}</h2>
-        <TaskStatusBadge status={task.status} />
-      </div>
-      <p className="mt-2 truncate text-sm text-muted-foreground">
-        {task.workspaceName}
-      </p>
-      <div className="mt-auto flex items-center justify-between pt-3 text-xs text-muted-foreground">
-        <span>{formatDateTime(task.startedAt)}</span>
-        <span>Execution status</span>
-      </div>
-    </button>
-  )
-})
-
 function TaskActivityBoard({
   taskId,
   onBack,
+  showHeader = true,
 }: {
   taskId: string
   onBack: () => void
+  showHeader?: boolean
 }) {
   const [task, setTask] = useState<BoardTask | null>(null)
   const [activities, setActivities] = useState<AgentActivity[]>([])
@@ -242,20 +216,22 @@ function TaskActivityBoard({
 
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden bg-background">
-      <header className="flex flex-shrink-0 items-center gap-3 border-b px-5 py-4">
-        <Button variant="ghost" size="icon" onClick={onBack} aria-label="Back to Task Board">
-          <ArrowLeft className="h-4 w-4" />
-        </Button>
-        <div className="min-w-0">
-          <h1 className="truncate text-lg font-semibold">{task.title}</h1>
-          <p className="truncate text-sm text-muted-foreground">
-            {task.workspaceName} · Agent activity by status
-          </p>
-        </div>
-        <div className="ml-auto flex-shrink-0">
-          <TaskStatusBadge status={task.status} />
-        </div>
-      </header>
+      {showHeader && (
+        <header className="flex flex-shrink-0 items-center gap-3 border-b px-5 py-4">
+          <Button variant="ghost" size="icon" onClick={onBack} aria-label="Back to Task Board">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <div className="min-w-0">
+            <h1 className="truncate text-lg font-semibold">{task.title}</h1>
+            <p className="truncate text-sm text-muted-foreground">
+              {task.workspaceName} · Agent activity by status
+            </p>
+          </div>
+          <div className="ml-auto flex-shrink-0">
+            <TaskStatusBadge status={task.status} />
+          </div>
+        </header>
+      )}
 
       <main className="min-h-0 flex-1 overflow-hidden p-4">
         <div className="grid h-full grid-cols-2 gap-4 xl:grid-cols-4">
@@ -298,7 +274,6 @@ function TaskActivityBoard({
 
 export function TaskBoardView() {
   const [tasks, setTasks] = useState<BoardTask[]>([])
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isCreating, setIsCreating] = useState(false)
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
@@ -341,22 +316,13 @@ export function TaskBoardView() {
     setValidationResult(result)
   }, [dagDefinition])
 
-  if (selectedTaskId) {
-    return (
-      <TaskActivityBoard
-        taskId={selectedTaskId}
-        onBack={() => setSelectedTaskId(null)}
-      />
-    )
-  }
-
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden bg-background">
       <header className="flex flex-shrink-0 flex-wrap items-center gap-3 border-b px-6 py-4">
         <div className="min-w-0">
           <h1 className="text-lg font-semibold">Task Board</h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            Click a task card below to view details
+            Agent activity by status
           </p>
         </div>
         <Button
@@ -375,20 +341,40 @@ export function TaskBoardView() {
             Loading tasks...
           </div>
         ) : tasks.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            No tasks yet
+          <div className="grid h-full grid-cols-2 gap-4 p-4 xl:grid-cols-4">
+            {BOARD_COLUMNS.map((status) => {
+              const meta = STATUS_META[status]
+              return (
+                <section
+                  key={status}
+                  className={cn(
+                    "flex min-h-0 flex-col rounded-2xl border p-3",
+                    meta.column,
+                  )}
+                >
+                  <header className="flex flex-shrink-0 items-center justify-center gap-2">
+                    <h2 className={cn("text-sm font-semibold", meta.header)}>
+                      {meta.label}
+                    </h2>
+                    <span className="rounded-full bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      0
+                    </span>
+                  </header>
+                  <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+                    <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                      No tasks
+                    </div>
+                  </div>
+                </section>
+              )
+            })}
           </div>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {tasks.map((task) => (
-              <TaskCard
-                key={task.id}
-                task={task}
-                // react-doctor-disable-next-line no-inline-prop-on-memo-component
-                onClick={() => setSelectedTaskId(task.id)}
-              />
-            ))}
-          </div>
+          <TaskActivityBoard
+            taskId={tasks[0].id}
+            onBack={() => {}}
+            showHeader={false}
+          />
         )}
       </main>
 

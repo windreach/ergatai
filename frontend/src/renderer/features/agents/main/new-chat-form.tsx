@@ -508,6 +508,13 @@ export function NewChatForm({
   const fallbackAgent = enabledAgents[0] ?? { id: "claude-code" as CoreAgentId, name: "Claude Code" }
   const [selectedAgent, setSelectedAgent] = useState<CoreAgentOption>(fallbackAgent)
 
+  const selectedAgentKind = useMemo(() => {
+    if (selectedAgent.id === "claude-code") return "claude"
+    if (selectedAgent.id === "codex") return "codex"
+    if (selectedAgent.id === "opencode") return "opencode"
+    return undefined
+  }, [selectedAgent.id])
+
   // Update selectedAgent when coreAgents load or lastSelectedAgentId changes
   useEffect(() => {
     if (enabledAgents.length === 0) return
@@ -2063,6 +2070,7 @@ export function NewChatForm({
                   cwd={validatedProject?.path}
                   mode={agentMode}
                   disabledCommands={["clear"]}
+                  agentKind={selectedAgentKind}
                 />
 
                 {/* Project, Work Mode, and Branch selectors - directly under input */}
@@ -2252,6 +2260,7 @@ export function NewChatForm({
                   showingAgentsList={showingAgentsList}
                   scope={mentionScope}
                   boundAgents={collaborationMode === "group" ? boundGroupAgents : undefined}
+                  agentKind={selectedAgentKind}
                 />
 
               </div>

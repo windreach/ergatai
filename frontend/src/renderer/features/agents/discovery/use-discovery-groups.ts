@@ -36,7 +36,7 @@ export interface DiscoveryTrigger {
   types?: string[]
 }
 
-export function useDiscoveryGroups(agentId: string | undefined, cwd?: string) {
+export function useDiscoveryGroups(agentId: string | undefined, cwd?: string, agentKind?: string) {
   // Full discovery: requires agentId
   const { data: fullData, isLoading: fullLoading } = trpc.discovery.getAgentDiscovery.useQuery(
     { agentId: agentId ?? "", cwd },
@@ -45,7 +45,7 @@ export function useDiscoveryGroups(agentId: string | undefined, cwd?: string) {
 
   // Static fallback: convention_skills + plugins only, no agentId needed
   const { data: staticData, isLoading: staticLoading } = trpc.discovery.getStaticDiscovery.useQuery(
-    { cwd },
+    { cwd, agent: agentKind },
     { enabled: !agentId, staleTime: 5 * 60 * 1000, refetchOnWindowFocus: false },
   )
 

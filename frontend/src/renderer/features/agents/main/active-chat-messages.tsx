@@ -6,8 +6,8 @@ import type { UIMessage } from "@ai-sdk/react"
 import { cn } from "../../../lib/utils"
 import { ChatMessagesRenderer } from "./chat-messages-renderer"
 import { useConversationHistoryImport } from "../hooks/use-conversation-history-import"
-import { ImplicitCollaborationTaskCards } from "../collaboration/implicit-collaboration-task-cards"
-import { CollaborationSessionEventCards } from "../collaboration/collaboration-session-event-cards"
+// import { ImplicitCollaborationTaskCards } from "../collaboration/implicit-collaboration-task-cards"
+// import { CollaborationSessionEventCards } from "../collaboration/collaboration-session-event-cards"
 import type { ImplicitCollaborationTask } from "../collaboration/implicit-collaboration"
 
 type CollaborationSession = ReturnType<
@@ -27,12 +27,15 @@ interface ActiveChatMessagesProps {
   onRetrySetup?: () => void
   stickyTopClass?: string
   chatContainerRef: RefObject<HTMLElement | null>
-  chatContainerObserverRef: RefObject<ResizeObserver | null>
-  contentWrapperRef: RefObject<HTMLDivElement | null>
-  implicitCollaborationTasks: ImplicitCollaborationTask[]
-  collaborationSession: CollaborationSession
+  chatContainerObserverRef?: RefObject<ResizeObserver | null>
+  contentWrapperRef?: RefObject<HTMLDivElement | null>
+  implicitCollaborationTasks?: ImplicitCollaborationTask[]
+  collaborationSession?: CollaborationSession
   handleRollback: (msg: UIMessage<unknown>) => void
   handleForkFromMessage: (messageId: string) => void
+  /** Optional loading/empty states forwarded to the underlying renderer. */
+  loadingState?: React.ReactNode
+  emptyState?: React.ReactNode
 }
 
 export const ActiveChatMessages = memo(function ActiveChatMessages({
@@ -50,10 +53,12 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
   chatContainerRef,
   chatContainerObserverRef,
   contentWrapperRef,
-  implicitCollaborationTasks,
+  implicitCollaborationTasks = [],
   collaborationSession,
   handleRollback,
   handleForkFromMessage,
+  loadingState,
+  emptyState,
 }: ActiveChatMessagesProps) {
 
   const { importBanner } = useConversationHistoryImport({
@@ -74,20 +79,14 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
       sandboxSetupError={sandboxSetupError}
       onRetrySetup={onRetrySetup}
       stickyTopClass={stickyTopClass}
-      emptyState={null}
       containerRef={(el) => {
-        // Cleanup previous observer
-        if (chatContainerObserverRef.current) {
-          chatContainerObserverRef.current.disconnect()
-          chatContainerObserverRef.current = null
-        }
-
         chatContainerRef.current = el
-
-        // Setup ResizeObserver for --chat-container-height/width CSS variables
-        // Variables are set on both the element itself and the parent (relative wrapper)
-        // so siblings like ScrollToBottomButton can also access them
-        if (el) {
+        const observerRef = chatContainerObserverRef
+        if (observerRef?.current) {
+          observerRef.current.disconnect()
+          observerRef.current = null
+        }
+        if (el && observerRef) {
           const parent = el.parentElement
           const observer = new ResizeObserver((entries) => {
             const { height, width } = entries[0]?.contentRect ?? {
@@ -100,7 +99,7 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
             parent?.style.setProperty("--chat-container-width", `${width}px`)
           })
           observer.observe(el)
-          chatContainerObserverRef.current = observer
+          observerRef.current = observer
         }
       }}
       contentWrapperRef={contentWrapperRef}
@@ -109,14 +108,19 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
       header={
         <>
           {importBanner}
-          <ImplicitCollaborationTaskCards
-            tasks={implicitCollaborationTasks}
-          />
-          <CollaborationSessionEventCards
-            events={collaborationSession.events}
-          />
+          {/* Collaboration cards are intentionally not rendered in the chat surface
+              (they belong to the side rail / monitoring view). Kept commented
+              out as legacy wiring. */}
+          {/* {implicitCollaborationTasks.length > 0 && (
+            <ImplicitCollaborationTaskCards tasks={implicitCollaborationTasks} />
+          )}
+          {collaborationSession?.events?.length ? (
+            <CollaborationSessionEventCards events={collaborationSession.events} />
+          ) : null} */}
         </>
       }
+      loadingState={loadingState}
+      emptyState={emptyState === undefined ? null : emptyState}
       onRollback={handleRollback}
       onFork={handleForkFromMessage}
     />

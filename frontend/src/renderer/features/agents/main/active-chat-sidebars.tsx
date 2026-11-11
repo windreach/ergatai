@@ -4,7 +4,7 @@ import { useState, useMemo } from "react"
 import { Button } from "../../../components/ui/button"
 import { ResizableSidebar } from "../../../components/ui/resizable-sidebar"
 import { IconCloseSidebarRight } from "../../../components/ui/icons"
-import { PanelRight, GitCompare, TerminalSquare, Folder, GitBranch } from "lucide-react"
+import { PanelRight, GitCompare, TerminalSquare, Folder, GitBranch, Kanban } from "lucide-react"
 import { DiffCenterPeekDialog } from "../../changes"
 import { DiffFullPageView } from "../../changes"
 import { DetailsSidebar } from "../../details-sidebar"
@@ -482,6 +482,7 @@ export function ChatViewSidebars(props: any) {
             <button
               type="button"
               title="Detail"
+              aria-label="Open details"
               onClick={() => {
                 if (isDetailsSidebarOpen && detailsSidebarTab === "details") setIsDetailsSidebarOpen(false)
                 else {
@@ -541,6 +542,28 @@ export function ChatViewSidebars(props: any) {
               }`}
             >
               <GitBranch className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title="Task Board"
+              aria-label="Open task board"
+              onClick={() => {
+                if (isDetailsSidebarOpen && detailsSidebarTab === "task-board") setIsDetailsSidebarOpen(false)
+                else {
+                  setDetailsSidebarTab("task-board")
+                  setIsDetailsSidebarOpen(true)
+                  setIsSideChatSidebarOpen(false)
+                  setIsTerminalSidebarOpen(false)
+                  setIsDiffSidebarOpen(false)
+                }
+              }}
+              className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
+                isDetailsSidebarOpen && detailsSidebarTab === "task-board"
+                  ? "bg-foreground/10 text-foreground"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              <Kanban className="h-4 w-4" />
             </button>
             <button
               type="button"

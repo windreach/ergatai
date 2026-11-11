@@ -35,9 +35,10 @@ async function fetchAgentDiscovery(agentId: string, cwd?: string, refresh?: bool
  * Static discovery: filesystem-based sources only (convention_skills + plugins).
  * Does not require an agent_id — usable in new-chat / no-agent scenarios.
  */
-async function fetchStaticDiscovery(cwd?: string, refresh?: boolean) {
+async function fetchStaticDiscovery(cwd?: string, refresh?: boolean, agent?: string) {
   const params = new URLSearchParams()
   if (cwd) params.set("cwd", cwd)
+  if (agent) params.set("agent", agent)
   if (refresh) params.set("refresh", "1")
   const query = params.toString()
   const path = `/api/v1/discovery/static${query ? `?${query}` : ""}`
@@ -99,10 +100,11 @@ export const discoveryRouter = router({
       z.object({
         cwd: z.string().optional(),
         refresh: z.boolean().optional(),
+        agent: z.string().optional(),
       })
     )
     .query(async ({ input }) => {
-      return fetchStaticDiscovery(input.cwd, input.refresh)
+      return fetchStaticDiscovery(input.cwd, input.refresh, input.agent)
     }),
 
   /**

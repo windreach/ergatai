@@ -22,19 +22,15 @@ import { trackMessageSent } from "../../../lib/analytics"
 import {
   isDesktopAtom, isFullscreenAtom
 } from "../../../lib/atoms"
-import { usePendingActions } from "../hooks/use-pending-actions"
-import { useQuestionHandling } from "../hooks/use-question-handling"
-import { useQuestionAnswers } from "../hooks/use-question-answers"
+
+
 import { useMessageSending } from "../hooks/use-message-sending"
-import { usePlanApproval } from "../hooks/use-plan-approval"
 import { useQuickComment } from "../hooks/use-quick-comment"
-import { usePrDetection } from "../hooks/use-pr-detection"
-import {useScrollManagement} from "../hooks/use-scroll-management"
-import { useProviderSelection } from "../hooks/use-provider-selection"
+
 import { useCollaborationParticipants } from "../hooks/use-collaboration-participants"
-import { useUnapprovedPlanDetection } from "../hooks/use-unapproved-plan-detection"
-import { useForkConversation } from "../hooks/use-fork-conversation"
-import { useRollback } from "../hooks/use-rollback"
+
+
+
 import { useDraftRecovery } from "../hooks/use-draft-recovery"
 import { useSearchScroll } from "../hooks/use-search-scroll"
 import { useKeyboardStop } from "../hooks/use-keyboard-stop"
@@ -43,6 +39,7 @@ import { useCustomEventListeners } from "../hooks/use-custom-event-listeners"
 import { useScrollToBottomShortcut } from "../hooks/use-scroll-to-bottom-shortcut"
 import { useMessageSync } from "../hooks/use-message-sync"
 import { useMainChatInvocation } from "../hooks/use-main-chat-invocation"
+import { useConversationChatSurface } from "./use-conversation-chat-surface"
 import type { RawMessage } from "../hooks/use-main-chat-invocation"
 import type { MessagePart } from "../stores/message-store"
 
@@ -57,24 +54,23 @@ import { api } from "../../../lib/api-adapter"
 import {
   compactingConversationsAtom,
   loadingConversationsAtom,
-  pendingBuildPlanConversationIdAtom,
   pendingMentionAtom,
   pendingInitialPromptAtomFamily,
   pendingPlanApprovalsAtom
 } from "../atoms"
 import type { TextSelectionSource } from "../context/text-selection-context"
 import { useActiveChatPlan } from "./use-active-chat-plan"
-import { useActiveChatAttachments } from "./use-active-chat-attachments"
 import { useActiveChatQueue } from "./use-active-chat-queue"
 import { useActiveChatCollaboration } from "./use-active-chat-collaboration"
 import { useActiveChatEffects } from "./use-active-chat-effects"
-import { useActiveChatConversationMeta } from "./use-active-chat-conversation-meta"
+import { useConversationLifecycle } from "./use-conversation-lifecycle"
+
 import { trpcClient } from "../../../lib/trpc"
 import type { AgentUserQuestionHandle } from "../ui/agent-user-question"
-import { useChangedFilesTracking } from "../hooks/use-changed-files-tracking"
+
 import { useFocusInputOnEnter } from "../hooks/use-focus-input-on-enter"
 import { useToggleFocusOnCmdEsc } from "../hooks/use-toggle-focus-on-cmd-esc"
-import { usePendingAuthRetry } from "../hooks/use-pending-auth-retry"
+
 import {
   isCollaborationSessionRuntimeEnabled,
   useCollaborationSession,
@@ -106,12 +102,10 @@ import {
 
 
 import {
-  clearRuntimeCachesForConversation,
   CHAT_LAYOUT,
 } from "./active-chat-helpers"
 
-const mountedChatViewInnerCounts = new Map<string, number>()
-const pendingConversationCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
 
  
 // react-doctor-disable-next-line no-high-complexity-react-function
@@ -235,46 +229,92 @@ const conversationForBridge = useMemo(() => ({
     backendConversationId: conversationId,
   }), [conversationId])
 
-const chatInvocation = useMainChatInvocation({
-    conversation: conversationForBridge as unknown as Parameters<typeof useMainChatInvocation>[0]["conversation"],
+const chatSurface = useConversationChatSurface({
+    conversation: conversationForBridge as unknown as Parameters<typeof useConversationChatSurface>[0]["conversation"],
     chatId: parentChatId,
+    chatInstance: chat,
     resolverAgentId: provider,
     stopAgentId: backendAgentId,
     isActive,
-    persistedMessages,
+    persistedMessages: persistedMessages as unknown[],
     persistedMessagesLoading,
-    runtimeMessages: backendRuntimeMessages as unknown as Parameters<typeof useMainChatInvocation>[0]["runtimeMessages"],
-    existingChat: chat, // Pass existing Chat instance to avoid duplicate
+    runtimeMessages: backendRuntimeMessages as unknown as Parameters<typeof useConversationChatSurface>[0]["runtimeMessages"],
     runtimeStatus: conversationRuntime?.status,
+    source: "main",
+    refreshDiff,
+    onProviderChange,
+    existingPrUrl,
   })
+
+  const {
+    images,
+    files,
+    handleAddAttachments,
+    handleAddFolder,
+    removeImage,
+    removeFile,
+    clearAll,
+    isUploading,
+    setImagesFromDraft,
+    setFilesFromDraft,
+  } = chatSurface.upload
+
+  const {
+    textContexts,
+    diffTextContexts,
+    addTextContext: addTextContextOriginal,
+    addDiffTextContext,
+    removeTextContext,
+    removeDiffTextContext,
+    clearTextContexts,
+    clearDiffTextContexts,
+    textContextsRef,
+    diffTextContextsRef,
+    setTextContextsFromDraft,
+    setDiffTextContextsFromDraft,
+  } = chatSurface.textContext
+
+  const {
+    pastedTexts,
+    addPastedText,
+    addChatHistoryFile,
+    removePastedText,
+    clearPastedTexts,
+    pastedTextsRef,
+    setPastedTextsFromDraft,
+  } = chatSurface.pasted
+
+  const fileContentsRef = chatSurface.fileContentsRef
+  const cacheFileContent = chatSurface.cacheFileContent
+  const clearFileContents = () => fileContentsRef.current.clear()
+
+  const shouldAutoScrollRef = chatSurface.shouldAutoScrollRef
+  const isAutoScrollingRef = chatSurface.isAutoScrollingRef
+  const isInitializingScrollRef = chatSurface.isInitializingScrollRef
+  const scrollInitializedRef = chatSurface.scrollInitializedRef
+  const hasUnapprovedPlanRef = chatSurface.hasUnapprovedPlanRef
+  const chatContainerRef = chatSurface.chatContainerRef
+  const chatContainerObserverRef = chatSurface.chatContainerObserverRef
+  const contentWrapperRef = chatSurface.contentWrapperRef
+  const prevScrollTopRef = chatSurface.prevScrollTopRef
+  const saveScrollPosition = chatSurface.saveScrollPosition
+  const isAtBottom = chatSurface.isAtBottom
+  const handleScroll = chatSurface.handleScroll
+  const scrollToBottom = chatSurface.scrollToBottom
+const handlePlanApproval = chatSurface.handlePlanApproval
+const handleApprovePlan = chatSurface.handleApprovePlan
+const handleInputProviderChange = chatSurface.handleInputProviderChange
+const handleContinueWithProvider = chatSurface.handleContinueWithProvider
+const isContinuingRef = chatSurface.isContinuingRef
+const chatInvocation = chatSurface.chatInvocation
 
 const { sessionState, invocationQueue } = chatInvocation
 
-const {
-    shouldAutoScrollRef,
-    isAutoScrollingRef,
-    isInitializingScrollRef,
-    scrollInitializedRef,
-    hasUnapprovedPlanRef,
-    chatContainerRef,
-    chatContainerObserverRef,
-    contentWrapperRef,
-    prevScrollTopRef,
-    saveScrollPosition,
-    isAtBottom,
-    handleScroll,
-    scrollToBottom,
-  } = useScrollManagement({
-    conversationId,
-    isVisiblePane,
-    isVisiblePaneRef,
-  })
-
-const editorRef = useRef<AgentsMentionsEditorHandle>(null)
+const editorRef = chatSurface.editorRef
 
 const fileInputRef = useRef<HTMLInputElement>(null)
 
-const questionRef = useRef<AgentUserQuestionHandle>(null)
+const questionRef = chatSurface.questionRef
 
 const prevChatKeyRef = useRef<string | null>(null)
 
@@ -295,106 +335,17 @@ const [isRollingBack, setIsRollingBack] = useAtom(isRollingBackAtom)
 
 const utils = api.useUtils()
 
-const {
-    conversationName,
-    conversationNameRef,
-    renameConversationMutation,
-    renameConversationMutationRef,
-    handleRenameConversation,
-    conversationMode,
-    setConversationMode,
-    updateConversationModeMutation,
-    handleModeChange,
-  } = useActiveChatConversationMeta({
-    conversationId,
-    parentChatId,
-    utils,
-  })
+const conversationName = chatSurface.conversationName
+const conversationNameRef = chatSurface.conversationNameRef
+const renameConversationMutation = chatSurface.renameConversationMutation
+const renameConversationMutationRef = chatSurface.renameConversationMutationRef
+const handleRenameConversation = chatSurface.handleRenameConversation
+const conversationMode = chatSurface.conversationMode
+const setConversationMode = chatSurface.setConversationMode
+const updateConversationModeMutation = chatSurface.updateConversationModeMutation
+const handleModeChange = chatSurface.handleModeChange
 
-useEffect(() => {
-    const prevCount = mountedChatViewInnerCounts.get(conversationId) ?? 0
-    const nextCount = prevCount + 1
-    mountedChatViewInnerCounts.set(conversationId, nextCount)
-
-    const pendingCleanup = pendingConversationCleanupTimers.get(conversationId)
-    if (pendingCleanup) {
-      clearTimeout(pendingCleanup)
-      pendingConversationCleanupTimers.delete(conversationId)
-    }
-
-    return () => {
-      const currentCount = mountedChatViewInnerCounts.get(conversationId) ?? 0
-      const remainingCount = Math.max(0, currentCount - 1)
-      if (remainingCount === 0) {
-        mountedChatViewInnerCounts.delete(conversationId)
-      } else {
-        mountedChatViewInnerCounts.set(conversationId, remainingCount)
-      }
-
-      if (remainingCount > 0) {
-        return
-      }
-
-      const existingTimeoutId = pendingConversationCleanupTimers.get(conversationId)
-      if (existingTimeoutId) {
-        clearTimeout(existingTimeoutId)
-      }
-
-      const timeoutId = setTimeout(() => {
-        pendingConversationCleanupTimers.delete(conversationId)
-        const mountedCountNow = mountedChatViewInnerCounts.get(conversationId) ?? 0
-
-        if (mountedCountNow > 0) {
-          return
-        }
-
-        const currentConversationState = useAgentConversationStore.getState()
-        if (currentConversationState.activeConversationId === conversationId) return
-        if (useStreamingStatusStore.getState().isStreaming(conversationId)) return
-        if ((useMessageQueueStore.getState().queues[conversationId]?.length ?? 0) > 0) return
-
-        clearRuntimeCachesForConversation(conversationId)
-      }, 100)
-
-      pendingConversationCleanupTimers.set(conversationId, timeoutId)
-    }
-  }, [conversationId])
-
-const {
-    images,
-    files,
-    handleAddAttachments,
-    handleAddFolder,
-    removeImage,
-    removeFile,
-    clearAll,
-    isUploading,
-    setImagesFromDraft,
-    setFilesFromDraft,
-    textContexts,
-    diffTextContexts,
-    addTextContextOriginal,
-    addDiffTextContext,
-    removeTextContext,
-    removeDiffTextContext,
-    clearTextContexts,
-    clearDiffTextContexts,
-    textContextsRef,
-    diffTextContextsRef,
-    setTextContextsFromDraft,
-    setDiffTextContextsFromDraft,
-    pastedTexts,
-    addPastedText,
-    addChatHistoryFile,
-    removePastedText,
-    clearPastedTexts,
-    pastedTextsRef,
-    setPastedTextsFromDraft,
-    fileContentsRef,
-    cacheFileContent,
-    clearFileContents,
-  } = useActiveChatAttachments({ conversationId })
-
+  useConversationLifecycle(conversationId)
 const {
     queueCacheRef,
     queue,
@@ -613,16 +564,6 @@ useActiveChatEffects({
     setLoadingConversations,
   })
 
-const { isCreatingPr, setIsCreatingPr, pendingAuthRetry, setPendingAuthRetry } = usePendingActions({
-    conversationId,
-    isStreaming,
-    sendMessage,
-  })
-
-const [pendingBuildPlanConversationId, setPendingBuildPlanConversationId] = useAtom(
-    pendingBuildPlanConversationIdAtom,
-  )
-
 const {
     pendingQuestions,
     expiredQuestions,
@@ -635,136 +576,27 @@ const {
     setPendingQuestionsMap,
     setExpiredQuestionsMap,
     recentlyStoppedStreamRef,
-  } = useQuestionHandling({
-    conversationId,
-    isStreaming,
-    messages,
-    provider,
-  })
-
-const clearPendingQuestionCallback = useCallback(() => {
-    setPendingQuestionsMap((current) => {
-      if (current.has(conversationId)) {
-        const newMap = new Map(current)
-        newMap.delete(conversationId)
-        return newMap
-      }
-      return current
-    })
-    setExpiredQuestionsMap((current) => {
-      if (current.has(conversationId)) {
-        const newMap = new Map(current)
-        newMap.delete(conversationId)
-        return newMap
-      }
-      return current
-    })
-  }, [conversationId, setPendingQuestionsMap, setExpiredQuestionsMap])
-
-const {
     formatAnswersAsText,
     handleQuestionsAnswer,
     handleQuestionsSkip,
     handleSubmitWithQuestionAnswer,
     submitWithQuestionAnswerCallback,
     isSubmittingQuestionAnswerRef,
-  } = useQuestionAnswers({
-    displayQuestions,
-    isQuestionExpired,
-    conversationId,
-    editorRef,
-    questionRef,
-    clearPendingQuestionCallback: () => {
-      setPendingQuestionsMap((current) => {
-        if (current.has(conversationId)) {
-          const newMap = new Map(current)
-          newMap.delete(conversationId)
-          return newMap
-        }
-        return current
-      })
-    },
-    clearInputAndDraft: () => {
-      editorRef.current?.clear()
-      if (parentChatId) {
-        clearConversationDraft(parentChatId, conversationId)
-      }
-    },
-    sendUserMessage: async (text: string) => {
-      shouldAutoScrollRef.current = true
-      await sendMessageRef.current({
-        role: "user",
-        parts: [{ type: "text", text }],
-      })
-    },
-    isStreamingRef,
-    stopRef,
-    agentChatStore,
-  })
+  } = chatSurface
 
-usePendingAuthRetry({
-    pendingAuthRetry,
-    conversationId,
-    provider,
-    isStreaming,
-    sendMessage,
-    setPendingAuthRetry,
-  })
+const detectedPrUrlRef = chatSurface.detectedPrUrlRef
+const isCreatingPr = chatSurface.isCreatingPr
+const setIsCreatingPr = chatSurface.setIsCreatingPr
+const pendingAuthRetry = chatSurface.pendingAuthRetry
+const setPendingAuthRetry = chatSurface.setPendingAuthRetry
 
-const { handlePlanApproval, handleApprovePlan } = usePlanApproval({
-    conversationId,
-    setConversationMode,
-    scrollToBottom,
-    updateConversationModeMutation,
-    sendMessageRef,
-  })
+const changedFilesForConversation = chatSurface.changedFiles
+const recomputeChangedFiles = chatSurface.recomputeChangedFiles
 
-useEffect(() => {
-    // Only trigger if this is the target conversation and we're active
-    if (pendingBuildPlanConversationId === conversationId && isActive) {
-      setPendingBuildPlanConversationId(null) // Clear immediately to prevent double-trigger
-      handleApprovePlan()
-    }
-  }, [pendingBuildPlanConversationId, conversationId, isActive, setPendingBuildPlanConversationId, handleApprovePlan])
+const handleRollback = chatSurface.handleRollback
 
-const { detectedPrUrlRef } = usePrDetection({
-    messages,
-    isStreaming,
-    parentChatId,
-    existingPrUrl,
-    utils,
-  })
-
-const { changedFiles: changedFilesForConversation, recomputeChangedFiles } = useChangedFilesTracking(
-    messages,
-    conversationId,
-    isStreaming,
-    parentChatId,
-    projectPath,
-  )
-
-const { handleRollback } = useRollback({
-    isRollingBack,
-    setIsRollingBack,
-    isStreaming,
-    messages,
-    setMessages,
-    conversationId,
-    recomputeChangedFiles,
-    refreshDiff,
-    setImagesFromDraft,
-    setTextContextsFromDraft,
-    setDiffTextContextsFromDraft,
-    setPastedTextsFromDraft,
-    editorRef,
-  })
-
-const { handleForkFromMessage, isForkingRef } = useForkConversation({
-    conversationId,
-    parentChatId,
-    isStreaming,
-    messages,
-  })
+const handleForkFromMessage = chatSurface.handleForkFromMessage
+const isForkingRef = { current: false }
 
 useKeyboardStop({
     isActive,
@@ -896,16 +728,7 @@ const copyMessageContent = (msg: { parts?: MessagePart[] }) => {
     }
   }
 
-const { hasUnapprovedPlan } = useUnapprovedPlanDetection({
-    messages,
-    conversationMode,
-    conversationId,
-    parentChatId,
-    isActive,
-    isStreaming,
-    hasUnapprovedPlanRef,
-    handleApprovePlan,
-  })
+const hasUnapprovedPlan = chatSurface.hasUnapprovedPlan
 
 useScrollToBottomShortcut({
     isActive,
@@ -942,20 +765,6 @@ const shouldShowStackedCards =
 
 const [hasPermissionApproval, setHasPermissionApproval] = useState(false)
 
-const {
-    handleInputProviderChange,
-    handleContinueWithProvider,
-    isContinuingRef,
-  } = useProviderSelection({
-    conversationId,
-    parentChatId,
-    conversationMode,
-    isStreaming,
-    messages,
-    onProviderChange,
-    conversationNameRef,
-  })
-
   return {
     groupAgents,
     setGroupAgents,
@@ -973,6 +782,7 @@ const {
     isVisiblePaneRef,
     conversationForBridge,
     chatInvocation,
+    chatSurface,
     sessionState,
     invocationQueue,
     shouldAutoScrollRef,
@@ -1088,8 +898,6 @@ const {
     setIsCreatingPr,
     pendingAuthRetry,
     setPendingAuthRetry,
-    pendingBuildPlanConversationId,
-    setPendingBuildPlanConversationId,
     pendingQuestions,
     expiredQuestions,
     displayQuestions,
@@ -1101,7 +909,6 @@ const {
     setPendingQuestionsMap,
     setExpiredQuestionsMap,
     recentlyStoppedStreamRef,
-    clearPendingQuestionCallback,
     formatAnswersAsText,
     handleQuestionsAnswer,
     handleQuestionsSkip,

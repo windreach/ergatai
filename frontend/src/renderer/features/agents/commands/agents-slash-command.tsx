@@ -25,6 +25,7 @@ interface AgentsSlashCommandProps {
   cwd?: string
   mode?: AgentMode
   disabledCommands?: string[]
+  agentKind?: string
 }
 
 // Memoized to prevent re-renders when parent re-renders
@@ -42,6 +43,7 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
   cwd,
   mode,
   disabledCommands,
+  agentKind,
 }: AgentsSlashCommandProps) {
   // Fetch agent bindings to get the agentId for the current chat
   const { data: bindings } = trpc.ergatai.getAgentBindings.useQuery(
@@ -56,7 +58,7 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
   const agentId = bindings?.[0]?.agentId
 
   // Generic discovery aggregation (shared abstraction for trigger dropdowns).
-  const { groups: discoveryGroups, isLoading: discoveryLoading } = useDiscoveryGroups(isOpen ? agentId : undefined, cwd)
+  const { groups: discoveryGroups, isLoading: discoveryLoading } = useDiscoveryGroups(isOpen ? agentId : undefined, cwd, agentKind)
 
   const agentCommands: SlashCommandOption[] = useMemo(() => {
     return discoveryGroups.flatMap((g) =>

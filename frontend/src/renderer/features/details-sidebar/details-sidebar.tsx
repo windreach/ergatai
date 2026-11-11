@@ -14,6 +14,7 @@ import {
   createPanelLinkScopeKey,
 } from "@/features/panel-link"
 import { FilesTab, type FilesTabHandle } from "./sections/files-tab"
+import { TaskBoardView } from "../task-board"
 import type { ParsedDiffFile } from "./types"
 import { fileViewerOpenAtomFamily, type AgentMode } from "../agents"
 import { DetailsSidebarHeader } from "./components/details-sidebar-header"
@@ -273,6 +274,14 @@ export function DetailsSidebar({
               />
             </>
           ) : null}
+        </div>
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col overflow-hidden",
+            activeTab !== "task-board" && "hidden",
+          )}
+        >
+          <TaskBoardView />
         </div>
       </div>
     </ResizableSidebar>

@@ -137,6 +137,11 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
   // Keep the container mounted so the agent history selector stays persistent.
   // Status details remain conditional below.
 
+  // Hide status box when ready (idle, no uncommitted file changes to show)
+  if (!isBusy && uncommittedFiles.length === 0) {
+    return null
+  }
+
   const handleReview = () => {
     // Set filter to only show files from this conversation
     // Use displayPath (relative path) to match git diff paths
@@ -202,9 +207,7 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
                 </>
               )}
             </span>
-          ) : (
-            <span className="text-xs text-muted-foreground">Ready</span>
-          )}
+          ) : null}
         </div>
 
         {/* Right side: action buttons */}

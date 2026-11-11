@@ -141,15 +141,18 @@ function getAgentLogoText(agentName: string): string {
 export const taskBoardContractApi: TaskBoardContractApi = {
   async listTasks(): Promise<BoardTask[]> {
     try {
-      const dags = await trpcClient.ergatai.listDags.query() as DagInfo[]
+      const dags = (await trpcClient.ergatai.listDags.query() as DagInfo[]) || []
 
-      return dags.map((dag) => {
-        const status = dag.is_complete ? "completed" :
-                      dag.progress > 0 ? "running" : "queued"
+      return dags
+        .filter((dag) => !!dag?.dag_id)
+        .map((dag) => {
+        const dagId = dag.dag_id as string
+        const status = dag?.is_complete ? "completed" :
+                      (dag?.progress ?? 0) > 0 ? "running" : "queued"
 
         return {
-          id: dag.dag_id,
-          title: dag.status_prompt || `DAG ${dag.dag_id.slice(0, 8)}`,
+          id: dagId,
+          title: dag?.status_prompt || `DAG ${dagId.slice(0, 8)}`,
           workspaceName: "default", // DAGs don't have workspace info in current API
           status: mapDagStatusToTaskBoardStatus(status),
           startedAt: new Date().toISOString(), // Backend doesn't provide this
@@ -163,8 +166,8 @@ export const taskBoardContractApi: TaskBoardContractApi = {
 
   async getTask(taskId: string): Promise<BoardTask | null> {
     try {
-      const dags = await trpcClient.ergatai.listDags.query() as DagInfo[]
-      const dag = dags.find(d => d.dag_id === taskId)
+      const dags = (await trpcClient.ergatai.listDags.query() as DagInfo[]) || []
+      const dag = dags.find(d => d?.dag_id === taskId)
 
       if (!dag) return null
 
@@ -173,7 +176,7 @@ export const taskBoardContractApi: TaskBoardContractApi = {
 
       return {
         id: dag.dag_id,
-        title: dag.status_prompt || `DAG ${dag.dag_id.slice(0, 8)}`,
+        title: dag.status_prompt || `DAG ${(dag.dag_id || taskId).slice(0, 8)}`,
         workspaceName: "default",
         status: mapDagStatusToTaskBoardStatus(status),
         startedAt: new Date().toISOString(),

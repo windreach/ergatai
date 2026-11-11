@@ -1,35 +1,15 @@
  
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { useSetAtom } from "jotai"
+import { useCallback, useRef, useState } from "react"
 import { type UIMessage } from "@ai-sdk/react"
-import { ConversationStatusCard } from "../../agents"
-import { useAgentsFileUpload } from "../../agents"
-import { useChatAutoScroll } from "../../agents"
-import { useTextContextSelection } from "../../agents"
-import { usePastedTextFiles } from "../../agents"
-import { useRollback } from "../../agents"
-import { useForkConversation } from "../../agents"
-import { ChatInputArea } from "../../agents"
+import { ActiveChatDock } from "../../agents"
+import { TextSelectionProvider, TextSelectionPopover, QuickCommentInput, useTextContextSelection, useQuickComment, useMessageQueueStore } from "../../agents"
 import type { AgentsMentionsEditorHandle } from "../../agents"
 import type { MessageTokenData } from "../../agents"
 import type { ChatConversation } from "../lib/chat-contract-api"
-import { ChatMessagesRenderer } from "../../agents"
-
-
+import { ActiveChatMessages, useChatInstance } from "../../agents"
 import { useAgentRuntimeAgents } from "../../agents/public"
-import { cn } from "@/lib/utils"
-import { trpc, trpcClient } from "@/lib/trpc"
-import { api } from "@/lib/api-adapter"
-import { useStreamingStatusStore } from "../../agents"
-import { syncMessagesWithStatusAtom } from "../../agents"
-import { clearConversationRuntimeCaches } from "../../agents"
-import { useChatInstance } from "../../agents"
-import { useMainChatInvocation } from "@/features/agents"
-import { useChangedFilesTracking } from "../../agents/hooks/use-changed-files-tracking"
-import { useMessageTokenData } from "../../agents/hooks/use-message-token-data"
-import { PermissionApprovalPanel } from "@/components/dialogs/permission-approval-dialog"
-import { useActiveChatConversationMeta } from "../../agents/main/use-active-chat-conversation-meta"
-import { clearLoading, loadingConversationsAtom, setLoading } from "../../agents"
+import { useConversationChatSurface } from "@/features/agents"
+import { ChatSurfaceShell } from "@/features/agents"
 
 interface SideChatProps {
   conversation: ChatConversation
@@ -82,19 +62,103 @@ export function SideChat({
   const backendConversationId = conversation.backendConversationId
   const runtimeConversationId = backendConversationId ?? conversation.id
 
-  const setLoadingConversations = useSetAtom(loadingConversationsAtom)
+  // Shared rendering abstraction: reuse the same invocation controller as the
+  // main chat. runtimeAgentId is the transport target.
+  const runtimeAgentId = agentId
 
-  const editorRef = useRef<AgentsMentionsEditorHandle>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const fileContentsRef = useRef<Map<string, string>>(new Map())
+  const chatInstance = useChatInstance({
+    conversation,
+    chatId,
+    agentId: runtimeAgentId,
+    isActive,
+  })
 
-  // Rollback state
-  const [isRollingBack, setIsRollingBack] = useState(false)
+  const isRuntimeStreaming = runtimeStatus === "streaming"
 
-  // Permission approval state (mirrors main chat dock)
-  const [hasPermissionApproval, setHasPermissionApproval] = useState(false)
+  const surface = useConversationChatSurface({
+    conversation,
+    chatId,
+    chatInstance,
+    agentId: runtimeAgentId,
+    isActive,
+    persistedMessages: (conversation.messages ?? []) as any,
+    persistedMessagesLoading: isLoadingMessages,
+    runtimeMessages: externalMessages as any,
+    runtimeStatus,
+    projectPath,
+    repository,
+    sandboxId,
+    teamId,
+    source: "side",
+  })
 
-  // File upload
+  const displayMessages = surface.messages
+  const status = surface.status
+  const isStreaming = surface.isStreaming
+  const sessionState = surface.sessionState
+  const invocationQueue = surface.invocationQueue
+  const handleSend = surface.handleSend
+  const handleSendFromQueue = surface.handleSendFromQueue
+  const stop = surface.stop
+  const handleStop = stop
+  const handleForceSend = surface.handleForceSend
+  const handleCompact = surface.handleCompact
+  const sideChangedFiles = surface.changedFiles
+  const recomputeChangedFiles = surface.recomputeChangedFiles
+  const handleRollback = surface.handleRollback
+  const handleForkFromMessage = surface.handleForkFromMessage
+  const containerRef = surface.containerRef
+  const chatContainerObserverRef = surface.chatContainerObserverRef
+  const contentWrapperRef = surface.contentWrapperRef
+  const scrollToBottom = surface.scrollToBottom
+  const editorRef = surface.editorRef
+  const fileInputRef = surface.fileInputRef
+  const upload = surface.upload
+  const textContext = surface.textContext
+  const pasted = surface.pasted
+  const cacheFileContent = surface.cacheFileContent
+  const hasPermissionApproval = surface.hasPermissionApproval
+  const setHasPermissionApproval = surface.setHasPermissionApproval
+  const handleModeChange = surface.handleModeChange
+  const questionRef = surface.questionRef
+  const handleInputProviderChange = surface.handleInputProviderChange
+  const handleContinueWithProvider = surface.handleContinueWithProvider
+  const displayQuestions = surface.displayQuestions
+  const handleQuestionsAnswer = surface.handleQuestionsAnswer
+  const handleQuestionsSkip = surface.handleQuestionsSkip
+  const inputHasContent = surface.inputHasContent
+  const setInputHasContent = surface.setInputHasContent
+  const submitWithQuestionAnswerCallback = surface.submitWithQuestionAnswerCallback
+  const messageTokenData = surface.messageTokenData
+  const provider = surface.provider
+
+  const textContextSelection = useTextContextSelection()
+  const addToQueue = useMessageQueueStore((s) => s.addToQueue)
+  const isStreamingRef = surface.isStreamingRef
+  const sendMessageRef = surface.sendMessageRef
+  const {
+    quickCommentState,
+    handleQuickComment,
+    handleQuickCommentSubmit,
+    handleQuickCommentCancel,
+  } = useQuickComment({
+    conversationId: runtimeConversationId,
+    isStreamingRef,
+    addToQueue,
+    sendMessageRef,
+  })
+
+  const handleFocusInput = useCallback(() => {
+    editorRef.current?.focus()
+  }, [editorRef])
+
+  const addTextContext = useCallback(
+    (text: string, source: any) => {
+      textContextSelection.addTextContext(text, source)
+    },
+    [textContextSelection],
+  )
+
   const {
     images,
     files,
@@ -104,287 +168,29 @@ export function SideChat({
     removeFile,
     clearAll,
     isUploading,
-  } = useAgentsFileUpload()
+  } = upload
 
-  // Text context selection
   const {
     textContexts,
     diffTextContexts,
     removeTextContext,
     removeDiffTextContext,
     clearTextContexts,
-  } = useTextContextSelection()
+  } = textContext
 
-  // Pasted text files
   const {
     pastedTexts,
     addPastedText,
     removePastedText,
-  } = usePastedTextFiles(runtimeConversationId)
-
-  // Shared rendering abstraction: reuse the same invocation controller as the
-  // main chat. runtimeAgentId is the transport target; profileIdForResolver is
-  // the profile-level identity for the invocation service's can-start check.
-  const runtimeAgentId = agentId
-  const profileIdForResolver = conversation.agent?.id ?? runtimeAgentId
-
-  const chatInstance = useChatInstance({
-    conversation,
-    chatId,
-    agentId: runtimeAgentId,
-    isActive,
-  })
-
-  const invocationAgentId = profileIdForResolver
-
-  // Type assertions needed because SideChat uses ChatConversation type which is
-  // structurally compatible with but not nominally identical to the types expected
-  // by useMainChatInvocation. This is a progressive migration artifact.
-  const chatInvocation = useMainChatInvocation({
-    conversation: conversation as any,
-    chatId,
-    resolverAgentId: invocationAgentId,
-    stopAgentId: runtimeAgentId,
-    isActive,
-    persistedMessages: (conversation.messages ?? []) as any,
-    persistedMessagesLoading: isLoadingMessages,
-    runtimeMessages: externalMessages as any,
-    existingChat: chatInstance as any,
-    runtimeStatus,
-  })
-
-  const {
-    messages,
-    handleSend: sendUserMessage,
-    handleSendFromQueue,
-    stop: stopInvocation,
-    sessionState,
-    invocationQueue,
-  } = chatInvocation
-
-  const setMessages = chatInstance.setMessages
-  const stop = stopInvocation
-
-  const utils = api.useUtils()
-  const { handleModeChange } = useActiveChatConversationMeta({
-    conversationId: runtimeConversationId,
-    parentChatId: chatId,
-    utils,
-  })
-
-  const isLocalStreaming =
-    chatInstance.status === "streaming" || chatInstance.status === "submitted"
-  const isBackendStreaming =
-    runtimeStatus === "streaming" || sessionState?.isStreaming === true
-  const isStreaming = isLocalStreaming || isBackendStreaming
-
-  const { changedFiles: sideChangedFiles, recomputeChangedFiles } =
-    useChangedFilesTracking(messages as any, runtimeConversationId, isStreaming, chatId)
-
-  const status = isLocalStreaming
-    ? chatInstance.status
-    : isStreaming
-      ? "streaming"
-      : chatInstance.status
-
-  // `messages` is now the unified RuntimeSessionStore view: persisted history,
-  // the local Chat stream, and externally started agent-to-agent turns.
-  const isRuntimeStreaming = runtimeStatus === "streaming"
-  const displayMessages = messages
-
-  // Propagate the (local or backend) streaming state into the shared store so
-  // isolated message groups / rollback logic see side-chat turns as streaming,
-  // including agent-to-agent turns and turns resumed after reopening.
-  const setStreamingStatus = useStreamingStatusStore((store) => store.setStatus)
-  useEffect(() => {
-    if (status === "streaming" || status === "submitted") {
-      setStreamingStatus(runtimeConversationId, status as "streaming" | "submitted")
-    } else {
-      setStreamingStatus(runtimeConversationId, "ready")
-    }
-  }, [status, runtimeConversationId, setStreamingStatus])
-
-  useEffect(() => {
-    if (!runtimeConversationId) return
-    if (status === "streaming" || status === "submitted") {
-      if (chatId) {
-        setLoading(setLoadingConversations, runtimeConversationId, chatId)
-      }
-      return
-    }
-    if (status === "ready" || status === "error") {
-      clearLoading(setLoadingConversations, runtimeConversationId)
-    }
-  }, [status, runtimeConversationId, chatId, setLoadingConversations])
-
-  // ChatMessagesRenderer reads the optimized per-conversation message store,
-  // not the messages prop. Seed it from backend-generated runtime turns so a
-  // side chat attached mid-turn (or before persistence catches up) is visible.
-  const syncExternalMessages = useSetAtom(syncMessagesWithStatusAtom)
-  const externalRuntimeStatus = isRuntimeStreaming ? "streaming" : "ready"
-  useLayoutEffect(() => {
-    if (displayMessages.length === 0) {
-      return
-    }
-
-    // Keep the per-conversation store in sync with the merged runtime view at
-    // all times (including mid-stream), so ChatMessagesRenderer does not fall
-    // back to the simplified text-only rendering while a turn is streaming.
-    syncExternalMessages({
-      messages: displayMessages,
-      status: externalRuntimeStatus,
-      conversationId: runtimeConversationId,
-      updateGlobal: false,
-    })
-  }, [
-    displayMessages,
-    externalRuntimeStatus,
-    runtimeConversationId,
-    syncExternalMessages,
-  ])
-
-  const { containerRef, contentWrapperRef, scrollToBottom } = useChatAutoScroll({
-    messages: displayMessages,
-    status,
-    isActive,
-  })
-
-  useEffect(() => {
-    return () => {
-      if (runtimeConversationId) {
-        clearLoading(setLoadingConversations, runtimeConversationId)
-      }
-      clearConversationRuntimeCaches(runtimeConversationId)
-    }
-  }, [runtimeConversationId, setLoadingConversations])
-
-  // Rollback handler - unified with main chat
-  // Note: Side chat has simplified functionality - no diff view or draft restoration
-  const { handleRollback } = useRollback({
-    isRollingBack,
-    setIsRollingBack,
-    isStreaming,
-    messages,
-    setMessages,
-    conversationId: runtimeConversationId,
-    recomputeChangedFiles, // Keep side-chat changed files in sync after rollback
-    setImagesFromDraft: () => {}, // No-op: No draft restoration in side chat
-    setTextContextsFromDraft: () => {}, // No-op: No draft restoration in side chat
-    setDiffTextContextsFromDraft: () => {}, // No-op: No draft restoration in side chat
-    setPastedTextsFromDraft: () => {}, // No-op: No draft restoration in side chat
-    editorRef,
-  })
-
-  // Fork handler - unified with main chat
-  const { handleForkFromMessage, isForkingRef: _isForkingRef } = useForkConversation({
-    conversationId: runtimeConversationId,
-    parentChatId: chatId,
-    isStreaming,
-    messages,
-  })
+  } = pasted
 
   // Surface a visible state when the bound agent is not running
-  const agentRuntimeStatus = useAgentRuntimeAgents(Boolean(agentId) && isActive)
-  const boundAgent = agentId
-    ? agentRuntimeStatus.agents.find((agent) => agent.id === agentId)
+  const agentRuntimeStatus = useAgentRuntimeAgents(Boolean(runtimeAgentId) && isActive)
+  const boundAgent = runtimeAgentId
+    ? agentRuntimeStatus.agents.find((agent) => agent.id === runtimeAgentId)
     : undefined
-  const isBoundAgentAlive = agentId ? (boundAgent?.isAlive ?? true) : true
+  const isBoundAgentAlive = runtimeAgentId ? (boundAgent?.isAlive ?? true) : true
   const isBoundAgentSuspended = boundAgent?.status === "suspended"
-
-  // Send handler
-  const handleSend = useCallback(() => {
-    const inputValue = editorRef.current?.getValue() || ""
-    if (!inputValue.trim() && images.length === 0 && files.length === 0) return
-
-    const parts: UIMessage["parts"] = [
-      { type: "text" as const, text: inputValue },
-      ...images.map((image) => ({
-        type: "data-image" as const,
-        data: {
-          filename: image.filename,
-          url: image.url,
-          base64Data: image.base64Data,
-          mediaType: image.mediaType,
-        },
-      })),
-      ...files.map((file) => ({
-        type: "data-file" as const,
-        data: {
-          filename: file.filename,
-          url: file.url,
-          size: file.size,
-          mediaType: file.type,
-        },
-      })),
-    ]
-
-    if (runtimeConversationId && chatId) {
-      setLoading(setLoadingConversations, runtimeConversationId, chatId)
-    }
-
-    // Type assertion needed because UIMessage parts format differs slightly from
-    // the internal MessagePart type during the progressive migration.
-    sendUserMessage(parts as any)
-
-    editorRef.current?.clear()
-    clearAll()
-    clearTextContexts()
-    scrollToBottom()
-  }, [
-    images,
-    files,
-    clearAll,
-    clearTextContexts,
-    scrollToBottom,
-    sendUserMessage,
-    runtimeConversationId,
-    chatId,
-    setLoadingConversations,
-  ])
-
-  const handleForceSend = useCallback(async () => {
-    if (runtimeConversationId && chatId) {
-      clearLoading(setLoadingConversations, runtimeConversationId)
-      setLoading(setLoadingConversations, runtimeConversationId, chatId)
-    }
-    await stop()
-    handleSend()
-  }, [stop, handleSend, runtimeConversationId, chatId, setLoadingConversations])
-
-  const handleStop = useCallback(async () => {
-    if (runtimeConversationId) {
-      clearLoading(setLoadingConversations, runtimeConversationId)
-    }
-    // Always cancel the bound backend agent on stop; otherwise it keeps
-    // producing output even after the UI stops.
-    if (agentId) {
-      await trpcClient.ergatai.cancelPrompt
-        .mutate({ agentId })
-        .catch((error) => {
-          console.warn("[SideChat] Failed to cancel backend prompt:", error)
-        })
-    }
-    await stop()
-  }, [stop, runtimeConversationId, setLoadingConversations, agentId])
-
-  const handleCompact = useCallback(() => {
-    if (isStreaming) return
-    sendUserMessage([{ type: "text", text: "/compact" }] as any)
-  }, [isStreaming, sendUserMessage])
-
-  const provider =
-    conversation.agent.id === "codex"
-      ? "codex"
-      : conversation.agent.id === "claude-code"
-        ? "claude-code"
-        : "opencode"
-
-  // Message token data (shared with main chat)
-  const messageTokenData = useMessageTokenData(messages as any, provider, sessionState as any)
-
-  const cacheFileContent = useCallback((mentionId: string, content: string) => {
-    fileContentsRef.current.set(mentionId, content)
-  }, [])
 
   const sideChatLoadingState =
     (isLoadingMessages || isStreaming) && displayMessages.length === 0 ? (
@@ -415,125 +221,122 @@ export function SideChat({
   )
 
   return (
+    <TextSelectionProvider>
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
-        {/* Debug banners hidden - was used for streaming status verification
-        {runtimeConnectionStatus === "reconnecting" && (
-          <div className="px-3 pt-2">
-            <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-              Reconnecting to the live agent stream…
-            </div>
-          </div>
-        )}
-        {runtimeConnectionStatus !== "reconnecting" && runtimeStatus === "streaming" && (
-          <div className="px-3 pt-2">
-            <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-600 dark:text-emerald-400">
-              Live streaming side-chat updates…
-            </div>
-          </div>
-        )}
-        */}
-        <ChatMessagesRenderer
-          // Type assertion needed because ChatMessagesRenderer expects a slightly different
-          // message type during the progressive migration to the new conversation runtime.
-          messages={displayMessages as any}
-          status={status}
-          conversationId={runtimeConversationId}
-          chatId={chatId}
-          isActive={isActive}
-          containerRef={containerRef}
-          contentWrapperRef={contentWrapperRef}
-          className="w-full flex-1 overflow-x-hidden overflow-y-auto px-3 pt-3 select-text"
-          contentClassName={cn(
-            displayMessages.length === 0
-              ? "flex h-full items-center justify-center"
-              : "space-y-4 pb-4",
-          )}
-          loadingState={sideChatLoadingState}
-          emptyState={sideChatEmptyState}
-          onRollback={handleRollback}
-          onFork={handleForkFromMessage}
+      {isActive && (
+        <TextSelectionPopover
+          onAddToContext={addTextContext as any}
+          onQuickComment={handleQuickComment as any}
+          onFocusInput={handleFocusInput}
         />
-
-        <div className="w-full flex-shrink-0 px-3 pt-2">
-          <PermissionApprovalPanel
-            chatId={chatId}
+      )}
+      {quickCommentState && (
+        <QuickCommentInput
+          selectedText={quickCommentState.selectedText}
+          source={quickCommentState.source}
+          rect={quickCommentState.rect}
+          onSubmit={handleQuickCommentSubmit}
+          onCancel={handleQuickCommentCancel}
+        />
+      )}
+      <ChatSurfaceShell
+        messagesSlot={
+          <ActiveChatMessages
+            messages={displayMessages as any}
+            status={status}
             conversationId={runtimeConversationId}
-            onHasPendingChange={setHasPermissionApproval}
+            agentId={agentId}
+            chatId={chatId}
+            isActive={isActive}
+            chatContainerRef={containerRef}
+            chatContainerObserverRef={chatContainerObserverRef}
+            contentWrapperRef={contentWrapperRef}
+            implicitCollaborationTasks={[]}
+            handleRollback={handleRollback}
+            handleForkFromMessage={handleForkFromMessage}
+            loadingState={sideChatLoadingState}
+            emptyState={sideChatEmptyState}
           />
-        </div>
-
-        <div className="w-full flex-shrink-0">
-          {!hasPermissionApproval && (
-            <div className="px-3 -mb-6 relative z-10 shadow-sm shadow-background">
-              <div className="mx-auto w-full max-w-full min-w-0">
-                <ConversationStatusCard
-                  agentId={agentId}
-                  chatId={chatId}
-                  conversationId={runtimeConversationId}
-                  isStreaming={isStreaming}
-                  changedFiles={sideChangedFiles}
-                  onStop={handleStop}
-                />
-              </div>
-            </div>
-          )}
-
-          {!isBoundAgentAlive && !isStreaming && !isBoundAgentSuspended && (
-            <div className="px-3 -mb-6 relative z-10 shadow-sm shadow-background">
-              <div className="mx-auto w-full max-w-full min-w-0">
-                <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-                  The bound agent is not running. New messages are queued but
-                  won't be answered until the agent starts.
+        }
+        afterMessagesSlot={null}
+        footerSlot={
+          <div className="w-full flex-shrink-0">
+            {!isBoundAgentAlive && !isStreaming && !isBoundAgentSuspended && (
+              <div className="px-3 -mb-6 relative z-10 shadow-sm shadow-background">
+                <div className="mx-auto w-full max-w-full min-w-0">
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+                    The bound agent is not running. New messages are queued but
+                    won't be answered until the agent starts.
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
+            )}
 
-          <ChatInputArea
-            editorRef={editorRef}
-            fileInputRef={fileInputRef}
-            onSend={handleSend}
-            onForceSend={handleForceSend}
-            onStop={handleStop}
-            onCompact={handleCompact}
-            isStreaming={isStreaming}
-            isCompacting={false}
-            images={images}
-            files={files}
-            onAddAttachments={handleAddAttachments}
-            onAddFolder={handleAddFolder}
-            onRemoveImage={removeImage}
-            onRemoveFile={removeFile}
-            isUploading={isUploading}
-            onModeChange={handleModeChange}
-            projectPath={projectPath ?? undefined}
-            repository={repository}
-            sandboxId={sandboxId}
-            teamId={teamId}
-            textContexts={textContexts}
-            onRemoveTextContext={removeTextContext}
-            diffTextContexts={diffTextContexts}
-            onRemoveDiffTextContext={removeDiffTextContext}
-            pastedTexts={pastedTexts}
-            onAddPastedText={addPastedText}
-            onRemovePastedText={removePastedText}
-            onCacheFileContent={cacheFileContent}
-            messageTokenData={messageTokenData}
-            conversationId={runtimeConversationId}
-            parentChatId={chatId}
-            provider={provider as "claude-code" | "codex" | "opencode"}
-            agentId={agentId}
-            changedFiles={sideChangedFiles}
-            isMobile={false}
-            queueLength={invocationQueue.length}
-            onSendFromQueue={handleSendFromQueue}
-            firstQueueItemId={invocationQueue[0]?.id}
-            isActive={isActive}
-            isGroupMode={false}
-          />
-        </div>
-      </div>
+            <ActiveChatDock
+              isVisiblePane={isActive}
+              parentChatId={chatId}
+              conversationId={runtimeConversationId}
+              setHasPermissionApproval={setHasPermissionApproval}
+              hasPermissionApproval={hasPermissionApproval}
+              displayQuestions={displayQuestions}
+              questionRef={questionRef}
+              handleQuestionsAnswer={handleQuestionsAnswer}
+              handleQuestionsSkip={handleQuestionsSkip}
+              inputHasContent={inputHasContent}
+              queue={invocationQueue}
+              handleRemoveFromQueue={() => {}}
+              handleSendFromQueue={handleSendFromQueue}
+              shouldShowStatusCard={isStreaming || sideChangedFiles.length > 0}
+              shouldShowStackedCards={invocationQueue.length > 0 || isStreaming || sideChangedFiles.length > 0}
+              isStreaming={isStreaming}
+              isCompacting={false}
+              changedFilesForConversation={sideChangedFiles}
+              projectPath={projectPath ?? null}
+              handleStop={handleStop}
+              editorRef={editorRef}
+              fileInputRef={fileInputRef}
+              handleSend={handleSend}
+              handleForceSend={handleForceSend}
+              handleCompact={handleCompact}
+              onCreateNewConversation={undefined}
+              handleModeChange={handleModeChange}
+              images={images}
+              files={files}
+              handleAddAttachments={handleAddAttachments}
+              handleAddFolder={handleAddFolder}
+              removeImage={removeImage}
+              removeFile={removeFile}
+              isUploading={isUploading}
+              textContexts={textContexts}
+              removeTextContext={removeTextContext}
+              diffTextContexts={diffTextContexts}
+              removeDiffTextContext={removeDiffTextContext}
+              pastedTexts={pastedTexts}
+              addPastedText={addPastedText}
+              removePastedText={removePastedText}
+              cacheFileContent={cacheFileContent}
+              messageTokenData={messageTokenData}
+              provider={provider as any}
+              backendAgentId={agentId}
+              teamId={teamId}
+              repository={repository}
+              sandboxId={sandboxId}
+              isMobile={false}
+              setInputHasContent={setInputHasContent}
+              submitWithQuestionAnswerCallback={submitWithQuestionAnswerCallback}
+              handleInputProviderChange={handleInputProviderChange}
+              handleContinueWithProvider={handleContinueWithProvider}
+              isActive={isActive}
+              isGroupMode={false}
+              handleGroupAgentsChange={undefined}
+              chatContainerRef={containerRef}
+              scrollToBottom={scrollToBottom}
+              isSplitPane={false}
+            />
+          </div>
+        }
+      />
     </div>
+    </TextSelectionProvider>
   )
 }

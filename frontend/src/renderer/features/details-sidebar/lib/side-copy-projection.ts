@@ -1,4 +1,4 @@
-import { isErgataiSendMessagePart } from "@/features/agents/lib/ergatai-mcp-detection"
+import { isErgataiSendMessagePart } from "@/features/agents/public"
 
 export type PersistedSideCopyMessage = {
   id: string

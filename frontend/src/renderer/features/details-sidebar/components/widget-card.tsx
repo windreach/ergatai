@@ -1,7 +1,6 @@
 import {
   ArrowUpRight,
   TerminalSquare,
-  Box,
   ListTodo,
   Users,
 } from "lucide-react"
@@ -23,8 +22,6 @@ function getWidgetIcon(widgetId: WidgetId) {
   switch (widgetId) {
     case "agents":
       return Users
-    case "info":
-      return Box
     case "todo":
       return ListTodo
     case "plan":
@@ -36,7 +33,7 @@ function getWidgetIcon(widgetId: WidgetId) {
     case "mcp":
       return OriginalMCPIcon
     default:
-      return Box
+      return Users
   }
 }
 

@@ -20,6 +20,7 @@ import { useConversationInvocation, useSessionState } from "../../conversation"
 import { useRuntimeSessionMessageProjection } from "../../conversation"
 import { getAdapterRegistry, type AdapterState } from "../../conversation"
 import type { ConversationStatus } from "../../conversation"
+import type { ConversationSource } from "../../conversation"
 import { useRuntimeSessionSources } from "../../conversation"
 import { getConversationProjectionService } from "../../conversation"
 import { getMessageCorrelationService } from "../../conversation"
@@ -83,6 +84,7 @@ export function useMainChatInvocation({
   runtimeMessages = [],
   existingChat,
   runtimeStatus,
+  source,
 }: {
   conversation: ChatConversation & { messages?: RawMessage[] }
   chatId: string
@@ -100,9 +102,12 @@ export function useMainChatInvocation({
   existingChat?: ChatInstanceAPI
   /** Backend runtime status for turns started outside the local Chat transport. */
   runtimeStatus?: string
+  /** Source pane type for invocation context. Defaults to "main". */
+  source?: ConversationSource
 }) {
   const backendConversationId = conversation.backendConversationId
   const runtimeConversationId = backendConversationId ?? conversation.id
+  const invocationSource = source ?? "main"
 
   // Use new invocation service for queue management
   const invocation = useConversationInvocation()
@@ -323,7 +328,7 @@ export function useMainChatInvocation({
             conversationId: runtimeConversationId,
             backendConversationId: conversation.backendConversationId,
             agentId: resolverAgentId,
-            source: "main",
+            source: invocationSource,
           },
           role: "user",
           parts,
@@ -360,7 +365,7 @@ export function useMainChatInvocation({
           conversationId: runtimeConversationId,
           backendConversationId: conversation.backendConversationId,
           agentId: resolverAgentId,
-          source: "main",
+          source: invocationSource,
         },
         role: "user",
         parts,
@@ -456,7 +461,7 @@ export function useMainChatInvocation({
           conversationId: runtimeConversationId,
           backendConversationId: conversation.backendConversationId,
           agentId: resolverAgentId,
-          source: "main",
+          source: invocationSource,
         },
         role: "user",
         parts,

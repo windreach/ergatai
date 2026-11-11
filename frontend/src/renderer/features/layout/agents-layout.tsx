@@ -18,9 +18,9 @@ import {
   betaKanbanEnabledAtom,
 } from "../../lib/atoms"
 import { selectedAgentChatIdAtom, selectedWorkspaceAtom, selectedDraftIdAtom, showNewChatFormAtom, desktopViewAtom, fileSearchDialogOpenAtom } from "../agents"
-import { detailsSidebarOpenAtom, detailsSidebarTabAtom, sideChatSidebarOpenAtom } from "../details-sidebar/atoms"
-import { terminalSidebarOpenAtomFamily } from "../terminal/atoms"
-import { diffSidebarOpenAtomFamily } from "../agents/atoms"
+import { detailsSidebarOpenAtom, detailsSidebarTabAtom, sideChatSidebarOpenAtom } from "../details-sidebar"
+import { terminalSidebarOpenAtomFamily } from "../terminal"
+import { diffSidebarOpenAtomFamily } from "../agents"
 import { trpc } from "../../lib/trpc"
 import { useAgentsHotkeys } from "../agents"
 import { toggleSearchAtom } from "../agents"

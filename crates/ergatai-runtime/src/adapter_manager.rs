@@ -60,6 +60,10 @@ const CURRENT_POINTER: &str = "current";
 const STAGING_DIR: &str = "staging";
 const MANIFEST_FILE: &str = "manifest.json";
 
+/// Placeholder "release id" for managed profiles that have no active release.
+/// Must never collide with a real release id (real ids are timestamp-based).
+const PENDING_RELEASE_ID: &str = "pending";
+
 /// Staging older than this is reclaimed (crashed updater), even though the
 /// directory exists.
 const STAGING_TTL: Duration = Duration::from_secs(60 * 60);
@@ -102,6 +106,23 @@ pub fn managed_adapter_command_for_profile(release_dir: &Path, profile_id: &str)
     managed_adapter(profile_id)
         .and_then(|adapter| managed_adapter_bin_path(release_dir, adapter))
         .map(|bin_path| bin_path.display().to_string())
+}
+
+/// Placeholder command for a managed adapter profile with no active release.
+///
+/// The path sits under `releases/pending` (never a real release id), so:
+/// - binary detection reports "not installed" and the UI offers Install;
+/// - `command_matches_managed_pattern` recognizes it, letting
+///   `refresh_profile_rows` take the row over once a release is activated.
+pub fn pending_profile_command(managed: &Path, adapter: &ManagedAdapter) -> String {
+    managed
+        .join(RELEASES_DIR)
+        .join(PENDING_RELEASE_ID)
+        .join("node_modules")
+        .join(".bin")
+        .join(adapter.bin_name)
+        .display()
+        .to_string()
 }
 
 /// Run one update cycle and return the active release directory.
@@ -166,7 +187,10 @@ async fn run_startup_check(db_path: String, managed: PathBuf) {
     // One-time update check: build new version in background if available.
     // No periodic polling — next check happens on next app startup.
     if let Err(error) = update_cycle(Path::new(&db_path), &managed).await {
-        debug!(error = %error, "Adapter update cycle did not activate a new release");
+        // warn, not debug: a failed first install is user-visible (managed
+        // profiles stay pending in Manage Agents) and must be diagnosable
+        // from default INFO-level logs.
+        warn!(error = %error, "Adapter update cycle failed; managed profiles stay pending");
     }
 }
 
@@ -359,11 +383,46 @@ pub fn refresh_profile_rows(db_path: &Path, release_dir: &Path) -> Result<(), Er
         .map_err(|e| ErgataiError::internal(format!("Failed to commit profile refresh: {}", e)))
 }
 
+/// Deactivate a managed adapter profile: point its command back at the
+/// pending placeholder so binary detection reports "not installed" and the
+/// UI offers Install again.
+///
+/// The shared release directory stays on disk — one release bundles every
+/// managed adapter, so removing files could break other active profiles.
+/// Because the placeholder matches the managed command pattern, the next
+/// `refresh_profile_rows` (install or startup) takes the row back over.
+pub fn deactivate_managed_profile(
+    db_path: &Path,
+    managed: &Path,
+    profile_id: &str,
+) -> Result<(), ErgataiError> {
+    let adapter = managed_adapter(profile_id).ok_or_else(|| {
+        ErgataiError::internal(format!("Unknown managed adapter profile: {profile_id}"))
+    })?;
+    let command = pending_profile_command(managed, adapter);
+    let conn = Connection::open(db_path).map_err(|e| {
+        ErgataiError::internal(format!("Failed to open profile registry database: {e}"))
+    })?;
+    let updated = conn
+        .execute(
+            "UPDATE agent_registrations SET command = ?1 WHERE id = ?2 AND is_managed = 1",
+            params![command, profile_id],
+        )
+        .map_err(|e| ErgataiError::internal(format!("Failed to deactivate profile: {e}")))?;
+    if updated == 0 {
+        return Err(ErgataiError::internal(format!(
+            "Managed profile '{profile_id}' not found or is not a managed adapter"
+        )));
+    }
+    info!(profile = %profile_id, command = %command, "Deactivated managed adapter profile");
+    Ok(())
+}
+
 /// Commands the manager may take over: the historical `npx -y
 /// @agentclientprotocol/...` defaults, `node` paths into the managed
-/// releases directory. Anything else is treated as user-customized and
-/// never overwritten.
-fn command_matches_managed_pattern(command: &str) -> bool {
+/// releases directory, and the pending placeholder. Anything else is treated
+/// as user-customized and never overwritten.
+pub fn command_matches_managed_pattern(command: &str) -> bool {
     command.contains("npx -y @")
         || command.contains("/managed/releases/")
         || (command.starts_with("node ") && command.contains("/adapters/"))
@@ -453,6 +512,19 @@ fn retire_old_releases(managed: &Path) -> Result<(), ErgataiError> {
 }
 
 fn acquire_staging(staging: &Path) -> Result<(), ErgataiError> {
+    // Ensure the parent (`managed/`) exists first. `create_dir` does not
+    // create parents, and on a fresh install the missing parent previously
+    // surfaced as the misleading "another process is building adapters"
+    // error, permanently blocking the first adapter bootstrap.
+    if let Some(parent) = staging.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            ErgataiError::internal(format!(
+                "Failed to create managed adapters dir {}: {}",
+                parent.display(),
+                e
+            ))
+        })?;
+    }
     // Create staging directory. If it already exists and is not stale, another process
     // is building adapters concurrently — skip this cycle to avoid conflicts.
     // The `created` flag tracks whether we need to initialize package.json.
@@ -669,7 +741,12 @@ async fn npm_install_package(
     let mut cmd = Command::new("npm");
     cmd.args([
         "install",
-        "--prefer-offline", // Use cached packages when available
+        // NOTE: no `--prefer-offline`. It trusts cached registry metadata
+        // without revalidation, so a packument cached before a dependency
+        // version was published makes npm fail with ETARGET ("No matching
+        // version found") even though the registry serves that version. The
+        // default mode revalidates stale packuments (cheap 304s) and still
+        // reuses cached tarballs.
         "--no-audit",
         "--no-fund",
         "--loglevel=error",
@@ -1009,6 +1086,120 @@ mod tests {
     fn managed_adapter_command_for_profile_none_when_missing() {
         let tmp = tempfile::TempDir::new().unwrap();
         assert!(managed_adapter_command_for_profile(tmp.path(), "codex").is_none());
+    }
+
+    #[test]
+    fn pending_profile_command_is_not_installed_but_takeover_able() {
+        let temp = TempDir::new().unwrap();
+        let managed = temp.path().join("managed");
+        let adapter = managed_adapter("claude-code").unwrap();
+
+        let command = pending_profile_command(&managed, adapter);
+        assert!(
+            command.contains("/managed/releases/pending"),
+            "placeholder: {command}"
+        );
+        assert!(command.ends_with(adapter.bin_name));
+
+        // The manager may take the row over once a release is activated.
+        assert!(command_matches_managed_pattern(&command));
+
+        // `releases/pending` is never a real release dir, so the placeholder
+        // must not be reported as an installed binary.
+        assert!(
+            !std::path::Path::new(command.as_str()).exists(),
+            "placeholder must not exist on disk: {command}"
+        );
+    }
+
+    #[test]
+    fn deactivate_managed_profile_resets_to_pending() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("profiles.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE agent_registrations (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                command TEXT NOT NULL,
+                agent_type TEXT NOT NULL,
+                is_managed INTEGER NOT NULL DEFAULT 0,
+                package_name TEXT,
+                avatar_url TEXT,
+                created_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO agent_registrations (id, name, command, agent_type, is_managed, created_at)
+             VALUES ('claude-code', 'claude-code', '/tmp/managed/releases/r1/node_modules/.bin/claude-agent-acp', 'acp', 1, 'x')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let managed = temp.path().join("managed");
+        deactivate_managed_profile(&db_path, &managed, "claude-code").unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        let command: String = conn
+            .query_row(
+                "SELECT command FROM agent_registrations WHERE id = 'claude-code'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let expected = pending_profile_command(&managed, managed_adapter("claude-code").unwrap());
+        assert_eq!(command, expected);
+        assert!(command_matches_managed_pattern(&command));
+    }
+
+    #[test]
+    fn deactivate_managed_profile_rejects_unknown_or_custom_profiles() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("profiles.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE agent_registrations (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                command TEXT NOT NULL,
+                agent_type TEXT NOT NULL,
+                is_managed INTEGER NOT NULL DEFAULT 0,
+                package_name TEXT,
+                avatar_url TEXT,
+                created_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        // Non-managed row: not the adapter manager's business.
+        conn.execute(
+            "INSERT INTO agent_registrations (id, name, command, agent_type, is_managed, created_at)
+             VALUES ('claude-code', 'claude-code', 'claude', 'acp', 0, 'x')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let managed = temp.path().join("managed");
+        let error = deactivate_managed_profile(&db_path, &managed, "claude-code")
+            .expect_err("non-managed row must not be deactivated");
+        assert!(
+            error
+                .to_string()
+                .contains("not found or is not a managed adapter"),
+            "unexpected error: {error}"
+        );
+
+        // Unknown profile id.
+        let error = deactivate_managed_profile(&db_path, &managed, "does-not-exist")
+            .expect_err("unknown profile must error");
+        assert!(
+            error
+                .to_string()
+                .contains("Unknown managed adapter profile"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

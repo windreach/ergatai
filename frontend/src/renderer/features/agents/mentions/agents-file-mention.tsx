@@ -42,6 +42,7 @@ interface AgentsFileMentionProps {
   projectPath?: string // For fetching files from local project directory (desktop)
   changedFiles?: ChangedFile[] // Files changed in current conversation (shown at top)
   agentId?: string // Agent ID for discovery endpoint (skills, commands, MCP)
+  agentKind?: string
   // Subpage navigation state
   showingFilesList?: boolean
   showingAgentsList?: boolean
@@ -169,6 +170,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   // react-doctor-disable-next-line rerender-memo-with-default-value
   changedFiles = [],
   agentId,
+  agentKind,
   showingFilesList = false,
   showingAgentsList = false,
   scope = "all",
@@ -187,7 +189,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   }, [searchText])
 
   // Generic discovery aggregation (shared abstraction for trigger dropdowns).
-  const { groups: discoveryGroups, isLoading: discoveryLoading } = useDiscoveryGroups(isOpen ? agentId : undefined, projectPath)
+  const { groups: discoveryGroups, isLoading: discoveryLoading } = useDiscoveryGroups(isOpen ? agentId : undefined, projectPath, agentKind)
 
   // Fetch custom agents from filesystem (cached for 5 minutes)
   const { data: customAgents = [] } = trpc.agents.listEnabled.useQuery(

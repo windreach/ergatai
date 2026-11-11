@@ -12,6 +12,7 @@ import {
   type AgentProfileWithStatus,
   type AgentRegistration,
   type CoreAgentId,
+  getCoreAgentDisplayName,
   isSupportedCoreAgentProfile,
 } from "../lib/agent-contract-api"
 import { registeredAgentsAtom } from "../atoms"
@@ -81,23 +82,40 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
         .filter((p: AgentProfileWithStatus) => !existingIds.has(p.id))
         .map((p: AgentProfileWithStatus) => ({
           id: p.id,  // Use backend's stable ID
-          name: p.name,
+          // Unified friendly display name ("Claude Code"), not the raw
+          // backend profile id ("claude-code"). Backend ids stay untouched.
+          name: getCoreAgentDisplayName(p.name) ?? p.name,
           runtimeId: p.name as CoreAgentId, // backend profile names are a superset of CoreAgentId
           startupCommand: p.command,
           avatarUrl: p.avatar_url || undefined,  // Sync avatar from backend
         }))
 
-      // Update existing agents with avatar_url from backend
+      // Update existing agents with avatar_url and the unified display name
+      // from the backend (older registrations may still store raw ids like
+      // "claude-code" as their name). Custom profile names are preserved.
+      let mutated = false
       const updated = cleaned.map((agent) => {
         const backendProfile = installed.find((p) => p.id === agent.id)
-        if (backendProfile && backendProfile.avatar_url && !agent.avatarUrl) {
-          return { ...agent, avatarUrl: backendProfile.avatar_url }
+        if (!backendProfile) return agent
+        const displayName =
+          isSupportedCoreAgentProfile(backendProfile.name)
+            ? (getCoreAgentDisplayName(backendProfile.name) ?? agent.name)
+            : agent.name
+        const needsAvatar = Boolean(backendProfile.avatar_url) && !agent.avatarUrl
+        const needsRename = displayName !== agent.name
+        if (needsAvatar || needsRename) {
+          mutated = true
+          return {
+            ...agent,
+            avatarUrl: agent.avatarUrl ?? backendProfile.avatar_url ?? undefined,
+            name: displayName,
+          }
         }
         return agent
       })
 
       const merged = [...updated, ...toAdd]
-      return merged.length !== current.length || toAdd.length > 0 ? merged : current
+      return mutated || toAdd.length > 0 || merged.length !== current.length ? merged : current
     })
   }, [profilesQuery.data, setRegisteredAgents])
 
@@ -203,7 +221,7 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
                     </div>
                     <div className="flex items-center gap-1">
                       <Badge variant="outline" className="text-[10px] font-medium">
-                        {agent.runtimeId}
+                        {getCoreAgentDisplayName(agent.runtimeId) ?? agent.runtimeId}
                       </Badge>
                       <Button
                         variant="ghost"
@@ -284,7 +302,7 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
                       </div>
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium text-foreground">
-                          {profile.name}
+                          {getCoreAgentDisplayName(profile.name) ?? profile.name}
                         </p>
                         <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
                           {profile.command}

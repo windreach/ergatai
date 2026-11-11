@@ -404,7 +404,9 @@ export const agentContractApi: AgentContractApi = {
 
         const option: CoreAgentOption = {
           id,
-          name: profile.name === "claude" ? "Claude Code" : profile.name,
+          // Unified friendly display name ("Claude Code"); the raw backend
+          // profile name stays the stable key (profileName/install targets).
+          name: getCoreAgentDisplayName(id) ?? profile.name,
           description: `Installed (${profile.agent_type})`,
           defaultCommand: profile.command,
           profileName: profile.name,

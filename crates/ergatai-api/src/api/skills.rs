@@ -8,7 +8,7 @@ pub struct ListSkillsQuery {
 }
 
 pub async fn list_skills(Query(q): Query<ListSkillsQuery>) -> Json<serde_json::Value> {
-    let skills = crate::services::skills_service::list_skills(q.cwd.as_deref());
+    let skills = crate::services::skills_service::list_skills(q.cwd.as_deref(), None);
     Json(serde_json::json!({ "skills": skills }))
 }
 
@@ -28,6 +28,7 @@ pub async fn list_plugins() -> Json<serde_json::Value> {
 #[derive(Debug, Deserialize)]
 pub struct StaticDiscoveryQuery {
     pub cwd: Option<String>,
+    pub agent: Option<String>,
     pub refresh: Option<String>,
 }
 
@@ -35,8 +36,12 @@ pub async fn get_static_discovery(
     Query(q): Query<StaticDiscoveryQuery>,
 ) -> Json<serde_json::Value> {
     let refresh = q.refresh.as_deref() == Some("1") || q.refresh.as_deref() == Some("true");
-    let result =
-        crate::services::discovery_service::discover_static(q.cwd.as_deref(), refresh).await;
+    let result = crate::services::discovery_service::discover_static(
+        q.cwd.as_deref(),
+        q.agent.as_deref(),
+        refresh,
+    )
+    .await;
     Json(result)
 }
 

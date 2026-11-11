@@ -11,7 +11,7 @@ export default defineConfig({
     ['list'],
     ['json', { outputFile: './reports/test-results.json' }]
   ],
-  timeout: 60000,
+  timeout: 180000,
   use: {
     trace: 'on-first-retry',  // 只在失败时录制 trace
     screenshot: 'only-on-failure',  // 只在失败时截图

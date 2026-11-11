@@ -32,9 +32,9 @@ import {
   AgentIcon,
   QuestionIcon,
 } from "../../components/ui/icons"
-import { getCoreAgentIcon } from "../agents/components/core-agent-selector"
-import { chatAgentLogosAtom, type ChatAgentLogo } from "../agents/atoms"
-import type { CoreAgentId } from "../agents/lib/agent-contract-api"
+import { getCoreAgentIcon } from "../agents"
+import { chatAgentLogosAtom, type ChatAgentLogo } from "../agents"
+import type { CoreAgentId } from "../agents/public"
 import { AlignJustify } from "lucide-react"
 import {
   Tooltip,

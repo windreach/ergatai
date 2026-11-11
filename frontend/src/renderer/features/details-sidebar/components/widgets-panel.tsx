@@ -3,14 +3,12 @@ import { useAtomValue } from "jotai"
 import { widgetVisibilityAtomFamily, widgetOrderAtomFamily } from "../atoms"
 import { WidgetCard } from "./widget-card"
 import { AgentsWidget } from "../sections/agents-widget"
-import { InfoSection } from "../sections/info-section"
 import { TodoWidget } from "../sections/todo-widget"
 import { PlanWidget } from "../sections/plan-widget"
 import { TerminalWidget } from "../sections/terminal-widget"
 import { ChangesWidget } from "../sections/changes-widget"
 // Temporarily disabled: MCP widget is session-scoped and too limited for multi-agent use.
 // import { McpWidget } from "../sections/mcp-widget"
-import { MonitoringPanel } from "../../agents"
 import type { ParsedDiffFile } from "../types"
 import type { AgentMode } from "../../agents"
 import { getTerminalScopeKey } from "../../terminal"
@@ -119,15 +117,7 @@ export function WidgetsPanel({
             )
 
           case "info":
-            return (
-              <WidgetCard key="info" widgetId="info" title="Workspace">
-                <InfoSection
-                  chatId={chatId}
-                  worktreePath={worktreePath}
-                  remoteInfo={remoteInfo}
-                />
-              </WidgetCard>
-            )
+            return null
 
           case "todo":
             return (
@@ -205,11 +195,7 @@ export function WidgetsPanel({
             return null
 
           case "monitoring":
-            return (
-              <WidgetCard key="monitoring" widgetId="monitoring" title="Monitoring">
-                <MonitoringPanel />
-              </WidgetCard>
-            )
+            return null
 
           default:
             return null

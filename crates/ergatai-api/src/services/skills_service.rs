@@ -77,56 +77,64 @@ fn scan_marketplaces(home: &Path, out: &mut Vec<SkillInfo>) {
     }
 }
 
-pub fn list_skills(cwd: Option<&str>) -> Vec<SkillInfo> {
+pub fn list_skills(cwd: Option<&str>, agent_kind: Option<&str>) -> Vec<SkillInfo> {
     let mut out = Vec::new();
     let home = std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/"));
 
+    // When agent_kind is None (or unknown), keep the legacy behaviour: scan all.
+    let scan_claude = agent_kind.map(|k| k == "claude").unwrap_or(true);
+    let scan_codex = agent_kind.map(|k| k == "codex").unwrap_or(true);
+    let scan_opencode = agent_kind.map(|k| k == "opencode").unwrap_or(true);
+
     // Claude
-    scan_dir(&home.join(".claude").join("skills"), "user", &mut out);
-    if let Some(cwd) = cwd {
-        scan_dir(
-            &Path::new(cwd).join(".claude").join("skills"),
-            "project",
-            &mut out,
-        );
+    if scan_claude {
+        scan_dir(&home.join(".claude").join("skills"), "user", &mut out);
+        if let Some(cwd) = cwd {
+            scan_dir(
+                &Path::new(cwd).join(".claude").join("skills"),
+                "project",
+                &mut out,
+            );
+        }
+        // Claude plugins / marketplaces
+        scan_marketplaces(&home, &mut out);
     }
 
     // Codex
-    scan_dir(&home.join(".codex").join("skills"), "user", &mut out);
-    // Codex system skills (nested under .system)
-    scan_dir(
-        &home.join(".codex").join("skills").join(".system"),
-        "user",
-        &mut out,
-    );
-    if let Some(cwd) = cwd {
+    if scan_codex {
+        scan_dir(&home.join(".codex").join("skills"), "user", &mut out);
+        // Codex system skills (nested under .system)
         scan_dir(
-            &Path::new(cwd).join(".codex").join("skills"),
-            "project",
+            &home.join(".codex").join("skills").join(".system"),
+            "user",
             &mut out,
         );
+        if let Some(cwd) = cwd {
+            scan_dir(
+                &Path::new(cwd).join(".codex").join("skills"),
+                "project",
+                &mut out,
+            );
+        }
     }
 
     // OpenCode
-    scan_dir(
-        &home.join(".config").join("opencode").join("skills"),
-        "user",
-        &mut out,
-    );
-    if let Some(cwd) = cwd {
+    if scan_opencode {
         scan_dir(
-            &Path::new(cwd).join(".opencode").join("skills"),
-            "project",
+            &home.join(".config").join("opencode").join("skills"),
+            "user",
             &mut out,
         );
+        if let Some(cwd) = cwd {
+            scan_dir(
+                &Path::new(cwd).join(".opencode").join("skills"),
+                "project",
+                &mut out,
+            );
+        }
     }
-    // OpenCode does not define a stable filesystem skills directory.
-    // Keep discovery limited to official convention paths above.
-
-    // Claude plugins
-    scan_marketplaces(&home, &mut out);
 
     out
 }
@@ -170,7 +178,7 @@ mod tests {
         // Point HOME at temp dir
         let prev = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
-        let skills = list_skills(None);
+        let skills = list_skills(None, None);
         if let Some(p) = prev {
             std::env::set_var("HOME", p);
         }

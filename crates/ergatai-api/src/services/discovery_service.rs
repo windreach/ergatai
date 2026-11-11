@@ -82,10 +82,13 @@ fn is_static_source(source: &str) -> bool {
 /// Cache key generation:
 /// - Static sources (convention_skills, plugins): `{source}::{cwd}` — shared across agents.
 /// - Runtime sources (sdk_bundle, acp_commands): `{source}::{agent_id}::{cwd}` — per-agent.
-fn cache_key(source: &str, agent_id: &str, cwd: Option<&str>) -> String {
+fn cache_key(source: &str, agent_id: &str, cwd: Option<&str>, agent_kind: Option<&str>) -> String {
     let cwd_str = cwd.unwrap_or("");
     if is_static_source(source) {
-        format!("{}::{}", source, cwd_str)
+        match agent_kind {
+            Some(k) if !k.is_empty() => format!("{}::{}::{}", source, k, cwd_str),
+            _ => format!("{}::{}", source, cwd_str),
+        }
     } else {
         format!("{}::{}::{}", source, agent_id, cwd_str)
     }
@@ -171,7 +174,7 @@ fn invalidate_agent(agent_id: &str, cwd: Option<&str>) {
 
             if is_static_source(source) {
                 // Static key: `{source}::{cwd}` — second is cwd
-                !(second == cwd_str)
+                second != cwd_str
             } else {
                 // Runtime key: `{source}::{agent_id}::{cwd}` — second is agent_id, third is cwd
                 !(second == agent_id && third == cwd_str)
@@ -185,7 +188,7 @@ fn invalidate_agent(agent_id: &str, cwd: Option<&str>) {
             let third = parts.next().unwrap_or("");
 
             if is_static_source(source) {
-                !(second == cwd_str)
+                second != cwd_str
             } else {
                 !(second == agent_id && third == cwd_str)
             }
@@ -304,10 +307,14 @@ async fn resolve_context(
 // Source fetchers
 // ---------------------------------------------------------------------------
 
-async fn fetch_convention_skills(cwd: Option<&str>) -> Value {
+async fn fetch_convention_skills(cwd: Option<&str>, agent_kind: Option<&str>) -> Value {
     let cwd_owned = cwd.map(|s| s.to_string());
+    let agent_kind_owned = agent_kind.map(|s| s.to_string());
     let skills = tokio::task::spawn_blocking(move || {
-        crate::services::skills_service::list_skills(cwd_owned.as_deref())
+        crate::services::skills_service::list_skills(
+            cwd_owned.as_deref(),
+            agent_kind_owned.as_deref(),
+        )
     })
     .await
     .unwrap_or_default();
@@ -360,12 +367,27 @@ async fn fetch_plugins() -> Value {
 }
 
 /// Fetch a source by name. Pure function dispatching to the right fetcher.
-async fn fetch_source(source: &str, kind: &str, agent_id: &str, cwd: Option<&str>) -> Value {
+async fn fetch_source(
+    source: &str,
+    kind: &str,
+    agent_id: &str,
+    cwd: Option<&str>,
+    agent_kind: Option<&str>,
+) -> Value {
     match source {
-        SRC_CONVENTION_SKILLS => fetch_convention_skills(cwd).await,
+        SRC_CONVENTION_SKILLS => fetch_convention_skills(cwd, agent_kind).await,
         SRC_ACP_COMMANDS => fetch_acp_commands(agent_id).await,
         SRC_SDK_BUNDLE => fetch_sdk_bundle(kind, cwd).await,
-        SRC_PLUGINS => fetch_plugins().await,
+        SRC_PLUGINS => {
+            // Plugins source is a Claude marketplace scan; only surface it for
+            // claude (or the agent-agnostic / all case).
+            if let Some(k) = agent_kind {
+                if k != "claude" {
+                    return json!([]);
+                }
+            }
+            fetch_plugins().await
+        }
         _ => json!([]),
     }
 }
@@ -374,8 +396,14 @@ async fn fetch_source(source: &str, kind: &str, agent_id: &str, cwd: Option<&str
 /// this key, wait for it instead of starting a duplicate fetch.
 ///
 /// Uses RAII `InFlightGuard` to ensure cleanup even on panic/cancellation.
-async fn fetch_source_dedup(source: &str, kind: &str, agent_id: &str, cwd: Option<&str>) -> Value {
-    let key = cache_key(source, agent_id, cwd);
+async fn fetch_source_dedup(
+    source: &str,
+    kind: &str,
+    agent_id: &str,
+    cwd: Option<&str>,
+    agent_kind: Option<&str>,
+) -> Value {
+    let key = cache_key(source, agent_id, cwd, agent_kind);
     let in_flight = get_in_flight(&key);
 
     // Hold the per-key lock across the fetch so concurrent callers for the same
@@ -388,7 +416,7 @@ async fn fetch_source_dedup(source: &str, kind: &str, agent_id: &str, cwd: Optio
         return result.clone();
     }
 
-    let value = fetch_source(source, kind, agent_id, cwd).await;
+    let value = fetch_source(source, kind, agent_id, cwd, agent_kind).await;
 
     // Store in dedup handle (so concurrent waiters observe the result) but only
     // persist successful results in the TTL cache — error results are retried
@@ -718,7 +746,7 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
     let mut miss_sources: Vec<&str> = Vec::new();
 
     for &source in ALL_SOURCES {
-        let key = cache_key(source, agent_id, cwd_opt);
+        let key = cache_key(source, agent_id, cwd_opt, None);
         match check_cache(&key) {
             CacheStatus::Fresh(v) => {
                 fresh_values.insert(source, v);
@@ -735,7 +763,7 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
 
     // Synchronous fetch for miss sources.
     for &source in &miss_sources {
-        let value = fetch_source_dedup(source, kind, agent_id, cwd_opt).await;
+        let value = fetch_source_dedup(source, kind, agent_id, cwd_opt, None).await;
         fresh_values.insert(source, value);
     }
 
@@ -833,9 +861,14 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
         let cwd_owned = resolved_cwd.clone();
         tokio::spawn(async move {
             for source in stale {
-                let _ =
-                    fetch_source_dedup(source, &kind_owned, &agent_id_owned, cwd_owned.as_deref())
-                        .await;
+                let _ = fetch_source_dedup(
+                    source,
+                    &kind_owned,
+                    &agent_id_owned,
+                    cwd_owned.as_deref(),
+                    None,
+                )
+                .await;
             }
         });
     }
@@ -856,22 +889,57 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
 /// Does not require an agent_id — usable in new-chat / no-agent scenarios.
 ///
 /// Cache keys for static sources use `{source}::{cwd}` format, shared across agents.
-pub async fn discover_static(cwd: Option<&str>, refresh: bool) -> Value {
+pub async fn discover_static(cwd: Option<&str>, agent_kind: Option<&str>, refresh: bool) -> Value {
     let started = Instant::now();
     let cwd_opt = cwd;
+    let agent_kind_opt = agent_kind;
 
     if refresh {
-        // Invalidate static entries for this cwd (agent_id is irrelevant for static).
+        // Invalidate static entries for this cwd + agent_kind.
         with_cache(|cache| {
             cache.results.retain(|k, _| {
-                let mut parts = k.splitn(2, "::");
-                let source = parts.next().unwrap_or("");
-                let key_cwd = parts.next().unwrap_or("");
-                if is_static_source(source) {
-                    key_cwd != cwd_opt.unwrap_or("")
-                } else {
-                    true // keep runtime entries
+                let parts: Vec<&str> = k.splitn(3, "::").collect();
+                let source = parts.first().copied().unwrap_or("");
+                if !is_static_source(source) {
+                    return true; // keep runtime entries
                 }
+                let (entry_kind, entry_cwd) = if parts.len() == 2 {
+                    (None, parts[1])
+                } else if parts.len() == 3 {
+                    (Some(parts[1]), parts[2])
+                } else {
+                    return true;
+                };
+                if entry_cwd != cwd_opt.unwrap_or("") {
+                    return true; // keep other cwd
+                }
+                // target None => invalidate all agent kinds for this cwd
+                if agent_kind_opt.is_none() {
+                    return false;
+                }
+                // otherwise invalidate only matching kind
+                entry_kind != agent_kind_opt
+            });
+            cache.in_flight.retain(|k, _| {
+                let parts: Vec<&str> = k.splitn(3, "::").collect();
+                let source = parts.first().copied().unwrap_or("");
+                if !is_static_source(source) {
+                    return true;
+                }
+                let (entry_kind, entry_cwd) = if parts.len() == 2 {
+                    (None, parts[1])
+                } else if parts.len() == 3 {
+                    (Some(parts[1]), parts[2])
+                } else {
+                    return true;
+                };
+                if entry_cwd != cwd_opt.unwrap_or("") {
+                    return true;
+                }
+                if agent_kind_opt.is_none() {
+                    return false;
+                }
+                entry_kind != agent_kind_opt
             });
         });
     }
@@ -880,13 +948,13 @@ pub async fn discover_static(cwd: Option<&str>, refresh: bool) -> Value {
     let mut fresh_values: HashMap<&str, Value> = HashMap::new();
 
     for &source in &static_sources {
-        let key = cache_key(source, "", cwd_opt); // agent_id ignored for static
+        let key = cache_key(source, "", cwd_opt, agent_kind_opt);
         match check_cache(&key) {
             CacheStatus::Fresh(v) | CacheStatus::Stale(v) => {
                 fresh_values.insert(source, v);
             }
             CacheStatus::Miss => {
-                let value = fetch_source(source, "", "", cwd_opt).await;
+                let value = fetch_source(source, "", "", cwd_opt, agent_kind_opt).await;
                 if value.get("error").and_then(|v| v.as_str()).is_none() {
                     cache_set(&key, value.clone());
                 }
@@ -1078,25 +1146,30 @@ mod tests {
     #[test]
     fn test_cache_key_generation() {
         // Runtime sources include agent_id
-        let key = cache_key("sdk_bundle", "agent-123", Some("/path/to/work"));
+        let key = cache_key("sdk_bundle", "agent-123", Some("/path/to/work"), None);
         assert_eq!(key, "sdk_bundle::agent-123::/path/to/work");
 
-        let key_acp = cache_key("acp_commands", "agent-123", Some("/path"));
+        let key_acp = cache_key("acp_commands", "agent-123", Some("/path"), None);
         assert_eq!(key_acp, "acp_commands::agent-123::/path");
 
         // Static sources omit agent_id (shared across agents)
-        let key_static = cache_key("convention_skills", "agent-123", Some("/path/to/work"));
+        let key_static = cache_key(
+            "convention_skills",
+            "agent-123",
+            Some("/path/to/work"),
+            None,
+        );
         assert_eq!(key_static, "convention_skills::/path/to/work");
 
-        let key_plugins = cache_key("plugins", "agent-456", Some("/path"));
+        let key_plugins = cache_key("plugins", "agent-456", Some("/path"), None);
         assert_eq!(key_plugins, "plugins::/path");
 
         // Static without cwd
-        let key_no_cwd = cache_key("plugins", "agent-456", None);
+        let key_no_cwd = cache_key("plugins", "agent-456", None, None);
         assert_eq!(key_no_cwd, "plugins::");
 
         // Runtime without cwd
-        let key_runtime_no_cwd = cache_key("sdk_bundle", "agent-789", None);
+        let key_runtime_no_cwd = cache_key("sdk_bundle", "agent-789", None, None);
         assert_eq!(key_runtime_no_cwd, "sdk_bundle::agent-789::");
     }
 
@@ -1253,8 +1326,8 @@ mod tests {
     #[tokio::test]
     async fn test_static_cache_shared_across_agents() {
         // Two agents at the same cwd should share static cache entries
-        let key_a = cache_key("convention_skills", "agent-a", Some("/workspace"));
-        let key_b = cache_key("convention_skills", "agent-b", Some("/workspace"));
+        let key_a = cache_key("convention_skills", "agent-a", Some("/workspace"), None);
+        let key_b = cache_key("convention_skills", "agent-b", Some("/workspace"), None);
         assert_eq!(key_a, key_b); // Both produce "convention_skills::/workspace"
 
         cache_set(&key_a, json!([{"name": "shared-skill"}]));

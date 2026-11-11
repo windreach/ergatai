@@ -973,51 +973,15 @@ impl ProfileRegistry {
 
             self.register_all_default_profiles(&claude_cmd, &codex_cmd)
         } else {
-            // No managed release yet - spawn async download task
-            info!("No managed adapter release found; spawning async download task...");
-            let db_path = self.db_path.clone();
-            tokio::spawn(async move {
-                // Use new_inner(..., false) to skip default registration (avoid recursive spawn).
-                let registry = Self::new_inner(db_path, false).expect("Failed to open registry");
-                match registry
-                    .download_and_install_adapters_async(managed_base)
-                    .await
-                {
-                    Ok(release_dir) => {
-                        let (claude_cmd, codex_cmd) = match (
-                            crate::adapter_manager::managed_adapter_command_for_profile(
-                                &release_dir,
-                                "claude-code",
-                            ),
-                            crate::adapter_manager::managed_adapter_command_for_profile(
-                                &release_dir,
-                                "codex",
-                            ),
-                        ) {
-                            (Some(claude_cmd), Some(codex_cmd)) => (claude_cmd, codex_cmd),
-                            _ => {
-                                warn!(
-                                    release = %release_dir.display(),
-                                    "Managed release is missing a required adapter command"
-                                );
-                                return;
-                            }
-                        };
-                        if let Err(e) =
-                            registry.register_all_default_profiles(&claude_cmd, &codex_cmd)
-                        {
-                            warn!(error = %e, "Failed to register managed adapter profiles");
-                        } else {
-                            info!("Managed adapter profiles registered after download");
-                        }
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Failed to download adapters asynchronously");
-                    }
-                }
-            });
-            // Register non-managed profiles immediately
-            self.register_non_managed_default_profiles()
+            // No managed release yet. Register the FULL supported set
+            // immediately: Claude/Codex point at a pending placeholder so they
+            // show up in Manage Agents with an Install button. The startup
+            // adapter check (`spawn_adapter_manager`, the single install path)
+            // or an explicit install activates the release, and
+            // `refresh_profile_rows` rewrites the placeholder to the real
+            // command.
+            info!("No managed adapter release found; registering profiles with pending managed adapters");
+            self.register_pending_default_profiles()
         }
     }
 
@@ -1387,10 +1351,18 @@ impl ProfileRegistry {
         crate::dirs::adapters_base_dir()
     }
 
-    /// Register default profiles that are NOT managed adapters.
-    /// Called when no managed release exists yet (first startup).
-    fn register_non_managed_default_profiles(&self) -> ErgataiResult<()> {
-        let defaults = vec![
+    /// Register default profiles when no managed adapter release exists yet.
+    ///
+    /// OpenCode runs from the user's own binary. Claude Code and Codex are
+    /// managed adapters without an active release: they are registered with a
+    /// pending placeholder command (reported as not installed) so users can
+    /// trigger the install from Manage Agents. Triggers are attached here
+    /// because `refresh_profile_rows` only rewrites command/package_name and
+    /// never touches trigger metadata.
+    fn register_pending_default_profiles(&self) -> ErgataiResult<()> {
+        let managed = crate::adapter_manager::resolve_managed_base(&Self::resolve_adapters_base());
+
+        let mut defaults = vec![
             // OpenCode (已验证 - https://opencode.ai/docs/acp/)
             {
                 let mut registration = AgentRegistration::with_id_and_transport(
@@ -1406,9 +1378,24 @@ impl ProfileRegistry {
             },
         ];
 
+        for adapter in crate::adapter_manager::MANAGED_ADAPTERS {
+            let mut registration = AgentRegistration::with_managed(
+                adapter.profile_id.to_string(),
+                adapter.profile_id.to_string(),
+                crate::adapter_manager::pending_profile_command(&managed, adapter),
+                "acp".to_string(),
+                Some(adapter.npm_package.to_string()),
+            );
+            registration.native_triggers_json = match adapter.profile_id {
+                "claude-code" => default_claude_native_triggers_json()?,
+                _ => default_codex_native_triggers_json()?,
+            };
+            defaults.push(registration);
+        }
+
         info!(
             count = defaults.len(),
-            "Registering non-managed default agent profiles"
+            "Registering default agent profiles (pending managed adapters use placeholder commands)"
         );
         for profile in defaults {
             self.register_sync(profile)?;
@@ -1478,18 +1465,6 @@ impl ProfileRegistry {
             }
         }
         Ok(())
-    }
-
-    /// Asynchronously ensure a verified managed release exists.
-    ///
-    /// All installation, activation, pointer writing, and profile updates are
-    /// delegated to `adapter_manager` so callers cannot create an unverified
-    /// release or bypass the A/B update policy.
-    async fn download_and_install_adapters_async(
-        &self,
-        managed_base: std::path::PathBuf,
-    ) -> ErgataiResult<std::path::PathBuf> {
-        crate::adapter_manager::ensure_latest_release(Path::new(&self.db_path), &managed_base).await
     }
 
     /// Find the current managed adapter release directory.
@@ -1686,11 +1661,15 @@ impl ProfileRegistry {
 
     /// Install an agent by its profile ID.
     ///
-    /// Looks up the profile, extracts the `package_name`, and runs
-    /// `npm install -g`. Returns the npm stdout on success.
+    /// Managed adapters build/activate the shared A/B release
+    /// (`ensure_latest_release`) and point the profile row at it via
+    /// `refresh_profile_rows`; this is the same path the startup check uses,
+    /// exposed so users can (re)install from Manage Agents after a failed
+    /// bootstrap. Non-managed profiles fall back to `npm install -g`.
     ///
     /// # Errors
     /// - Profile not found
+    /// - Managed release build fails (npm/network errors are surfaced)
     /// - Profile has no `package_name` (not npm-installable)
     /// - npm install fails
     pub async fn install(&self, id: &str) -> ErgataiResult<String> {
@@ -1698,6 +1677,10 @@ impl ProfileRegistry {
             .get(id)
             .await?
             .ok_or_else(|| ErgataiError::InvalidArgument(format!("Profile '{}' not found", id)))?;
+
+        if profile.is_managed {
+            return self.install_managed_adapter().await;
+        }
 
         let package_name = profile.package_name.ok_or_else(|| {
             ErgataiError::InvalidArgument(format!(
@@ -1709,15 +1692,53 @@ impl ProfileRegistry {
         agent_installer::install_and_verify(&profile.command, &package_name).await
     }
 
+    /// Build or reuse the managed adapter release and point every managed
+    /// profile row at it.
+    ///
+    /// `refresh_profile_rows` runs even when the release was already
+    /// up-to-date (`update_cycle` skips row refresh on the early-return
+    /// path), so a pending placeholder command always lands on the active
+    /// release after an explicit install.
+    async fn install_managed_adapter(&self) -> ErgataiResult<String> {
+        let adapters_base = Self::resolve_adapters_base();
+        let managed = crate::adapter_manager::resolve_managed_base(&adapters_base);
+        let release_dir =
+            crate::adapter_manager::ensure_latest_release(Path::new(&self.db_path), &managed)
+                .await?;
+        crate::adapter_manager::refresh_profile_rows(Path::new(&self.db_path), &release_dir)?;
+        let message = format!(
+            "Managed adapter release activated: {}",
+            release_dir.display()
+        );
+        info!(release = %release_dir.display(), "Managed adapter install completed");
+        Ok(message)
+    }
+
     /// Uninstall an agent by its profile ID.
     ///
-    /// Looks up the profile, extracts the `package_name`, and runs
-    /// `npm uninstall -g`. Returns the npm stdout on success.
+    /// Managed adapters are deactivated: the profile command is reset to the
+    /// pending placeholder (so it reports "not installed" again) while the
+    /// shared release stays on disk for other adapters. Non-managed profiles
+    /// run `npm uninstall -g`.
     pub async fn uninstall(&self, id: &str) -> ErgataiResult<String> {
         let profile = self
             .get(id)
             .await?
             .ok_or_else(|| ErgataiError::InvalidArgument(format!("Profile '{}' not found", id)))?;
+
+        if profile.is_managed {
+            let adapters_base = Self::resolve_adapters_base();
+            let managed = crate::adapter_manager::resolve_managed_base(&adapters_base);
+            crate::adapter_manager::deactivate_managed_profile(
+                Path::new(&self.db_path),
+                &managed,
+                &profile.id,
+            )?;
+            return Ok(format!(
+                "Managed adapter profile '{}' deactivated; the release remains installed",
+                profile.id
+            ));
+        }
 
         let package_name = profile.package_name.ok_or_else(|| {
             ErgataiError::InvalidArgument(format!(
@@ -1948,6 +1969,52 @@ mod tests {
             );
         }
         assert!(profiles.len() >= 2);
+    }
+
+    #[tokio::test]
+    async fn test_fresh_registry_exposes_all_core_profiles() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let registry = ProfileRegistry::new(temp_file.path()).unwrap();
+
+        let profiles = registry.list().await.unwrap();
+        let by_id: std::collections::HashMap<&str, &AgentRegistration> =
+            profiles.iter().map(|p| (p.id.as_str(), p)).collect();
+
+        // v0.1.0 bundles Claude Code, Codex and OpenCode. The supported set is
+        // fixed: all three profiles must exist even when no managed release is
+        // installed yet, otherwise Manage Agents cannot offer Install.
+        for id in ["claude-code", "codex", "opencode"] {
+            let profile = by_id
+                .get(id)
+                .copied()
+                .unwrap_or_else(|| panic!("core profile '{id}' missing in fresh registry"));
+            assert!(
+                profile.package_name.is_some(),
+                "core profile '{id}' must be npm-installable"
+            );
+        }
+
+        for id in ["claude-code", "codex"] {
+            let profile = by_id.get(id).copied().unwrap();
+            assert!(profile.is_managed, "{id} must be a managed adapter");
+            assert!(
+                crate::adapter_manager::command_matches_managed_pattern(&profile.command),
+                "{id} command must be takeover-able: {}",
+                profile.command
+            );
+            // Pending placeholder (no active release yet) must report as not
+            // installed so the UI offers Install instead of Uninstall.
+            if profile.command.contains("/pending") {
+                assert!(
+                    !binary_detection::is_installed(&profile.command),
+                    "pending {id} placeholder must not be reported installed"
+                );
+            }
+        }
+
+        let opencode = by_id.get("opencode").copied().unwrap();
+        assert!(!opencode.is_managed);
+        assert_eq!(opencode.command, "opencode acp");
     }
 
     #[tokio::test]

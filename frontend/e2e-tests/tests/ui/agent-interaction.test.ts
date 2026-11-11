@@ -56,7 +56,7 @@ import * as path from 'path'
 import * as os from 'os'
 
 describe('E2E: Agent 交互流程（严格 UI 按钮驱动）', () => {
-  const ctx = createTestContext()
+  const ctx = createTestContext({ perTest: true })
   const testWorkspacePath = '/tmp/ergatai-e2e-agent-interaction'
   const testAgentName = 'test-e2e-interaction-agent'
 
@@ -104,8 +104,18 @@ You are a helpful test assistant. Always respond with "Agent response:" followed
   test('应该能够看到聊天输入区域（选择 workspace 后）', async () => {
     await ctx.page.waitForLoadState('networkidle')
 
+    await ctx.page.evaluate(() => {
+      window.localStorage.clear()
+      sessionStorage.clear()
+    })
+    await ctx.page.reload()
+    await ctx.page.waitForLoadState('networkidle').catch(() => {})
+    await ctx.page.waitForTimeout(2000)
+
     // Step 2: 点击 [Select workspace] 按钮
     const selectButton = ctx.page.locator('button:has-text("Select workspace")').first()
+    const sbVisible = await selectButton.isVisible().catch(() => false)
+    console.log('selectButton visible:', sbVisible)
     await selectButton.waitFor({ state: 'visible', timeout: 10000 })
     await selectButton.click()
 
@@ -115,6 +125,7 @@ You are a helpful test assistant. Always respond with "Agent response:" followed
 
     // Step 3: 点击 [Default Workspace] 列表项
     await defaultWorkspace.click()
+    await ctx.page.waitForTimeout(5000)
 
     // Step 4: 等待 Chat 界面加载
     // 验证聊天输入框存在（textarea 或 contenteditable DIV 或 mentions editor）
@@ -129,8 +140,11 @@ You are a helpful test assistant. Always respond with "Agent response:" followed
   test('聊天输入应该能够接收文本', async () => {
     await ctx.page.waitForLoadState('networkidle')
 
+    const btns = await ctx.page.$$eval('button', els => els.map(e=>e.textContent?.trim()).filter(Boolean).slice(0,20))
+    console.log('DEBUG buttons:', btns)
+
     // Step 2: 点击 [Select workspace] 按钮
-    const selectButton = ctx.page.locator('button:has-text("Select workspace")').first()
+    const selectButton = ctx.page.getByRole('button', { name: 'Select workspace' }).first()
     await selectButton.waitFor({ state: 'visible', timeout: 10000 })
     await selectButton.click()
 
@@ -138,6 +152,7 @@ You are a helpful test assistant. Always respond with "Agent response:" followed
     const defaultWorkspace = ctx.page.locator('text=Default Workspace').first()
     await defaultWorkspace.waitFor({ state: 'visible', timeout: 5000 })
     await defaultWorkspace.click()
+    await ctx.page.waitForTimeout(5000)
 
     // Step 4: 等待 Chat 界面加载
     // 等待 placeholder 出现，表明输入框已加载
@@ -155,7 +170,7 @@ You are a helpful test assistant. Always respond with "Agent response:" followed
       await chatInput.fill(testMessage)
     } else {
       await chatInput.click()
-      await chatInput.pressSequentially(testMessage, { delay: 50 })
+      await chatInput.fill(testMessage)
     }
 
     // Step 6: 验证文本已输入

@@ -33,7 +33,7 @@
     "check:api-boundaries": "node scripts/check-api-boundaries.mjs",
     "check:frontend-ids": "node scripts/check-frontend-ids.mjs",
     "ts:check": "tsc --noEmit",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test --config=e2e-tests/playwright.config.ts",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:debug": "playwright test --debug",
     "postinstall": "node -e \"if(!process.env.VERCEL){require('child_process').execSync('electron-rebuild -f -w node-pty',{stdio:'inherit'})}\" && node ../scripts/patch-electron-dev.mjs"

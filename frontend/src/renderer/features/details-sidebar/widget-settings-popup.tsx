@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react"
 import { useAtom } from "jotai"
-import { GripVertical, Box, TerminalSquare, ListTodo, Users } from "lucide-react"
+import { GripVertical, TerminalSquare, ListTodo, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Popover,
@@ -30,8 +30,6 @@ function getWidgetIcon(widgetId: WidgetId) {
   switch (widgetId) {
     case "agents":
       return Users
-    case "info":
-      return Box
     case "todo":
       return ListTodo
     case "plan":
@@ -43,7 +41,7 @@ function getWidgetIcon(widgetId: WidgetId) {
     case "mcp":
       return OriginalMCPIcon
     default:
-      return Box
+      return Users
   }
 }
 

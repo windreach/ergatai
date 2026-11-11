@@ -171,6 +171,7 @@ import { SplitViewContainer } from "../ui/split-view-container"
 import { TextSelectionPopover } from "../ui/text-selection-popover"
 import { ActiveChatDock } from "./active-chat-dock"
 import { ActiveChatMessages } from "./active-chat-messages"
+import { ChatSurfaceShell } from "./chat-surface-shell"
 const clearConversationSelectionAtom = atom(null, () => {})
 const isConversationMultiSelectModeAtom = atom(false)
 const selectedConversationIdsAtom = atom(new Set<string>())
@@ -263,6 +264,7 @@ const ChatViewInner = memo(function ChatViewInner(props: {
     } = props
 
     const controller = useActiveChatController(props)
+    const chatSurface = controller.chatSurface
     const {
       groupAgents: _groupAgents,
       setGroupAgents: _setGroupAgents,
@@ -314,14 +316,14 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       setConversationMode: _setConversationMode,
       updateConversationModeMutation: _updateConversationModeMutation,
       handleModeChange,
-      images,
-      files,
-      handleAddAttachments,
-      handleAddFolder,
-      removeImage,
-      removeFile,
+      images: _images,
+      files: _files,
+      handleAddAttachments: _handleAddAttachments,
+      handleAddFolder: _handleAddFolder,
+      removeImage: _removeImage,
+      removeFile: _removeFile,
       clearAll: _clearAll,
-      isUploading,
+      isUploading: _isUploading,
       setImagesFromDraft: _setImagesFromDraft,
       setFilesFromDraft: _setFilesFromDraft,
       textContexts,
@@ -356,17 +358,17 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       chatRef: _chatRef,
       chatMessages: _chatMessages,
       sendMessage: _sendMessage,
-      status,
+      status: _status,
       stop: _stop,
       setMessages: _setMessages,
-      messages,
+      messages: _messages,
       sendMessageRef: _sendMessageRef,
       stopRef: _stopRef,
       isLocalStreaming: _isLocalStreaming,
       isInitialPromptBusy: _isInitialPromptBusy,
       isBackendStreaming: _isBackendStreaming,
       isRuntimeStreaming: _isRuntimeStreaming,
-      isStreaming,
+      isStreaming: _isStreaming,
       streamingStatus: _streamingStatus,
       isStreamingRef: _isStreamingRef,
       currentPlanPathAtom: _currentPlanPathAtom,
@@ -395,8 +397,6 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       setIsCreatingPr: _setIsCreatingPr,
       pendingAuthRetry: _pendingAuthRetry,
       setPendingAuthRetry: _setPendingAuthRetry,
-      pendingBuildPlanConversationId: _pendingBuildPlanConversationId,
-      setPendingBuildPlanConversationId: _setPendingBuildPlanConversationId,
       pendingQuestions: _pendingQuestions,
       expiredQuestions: _expiredQuestions,
       displayQuestions,
@@ -408,7 +408,6 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       setPendingQuestionsMap: _setPendingQuestionsMap,
       setExpiredQuestionsMap: _setExpiredQuestionsMap,
       recentlyStoppedStreamRef: _recentlyStoppedStreamRef,
-      clearPendingQuestionCallback: _clearPendingQuestionCallback,
       formatAnswersAsText: _formatAnswersAsText,
       handleQuestionsAnswer,
       handleQuestionsSkip,
@@ -420,8 +419,8 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       detectedPrUrlRef: _detectedPrUrlRef,
       changedFilesForConversation,
       recomputeChangedFiles: _recomputeChangedFiles,
-      handleRollback,
-      handleForkFromMessage,
+      handleRollback: _handleRollback,
+      handleForkFromMessage: _handleForkFromMessage,
       isForkingRef: _isForkingRef,
       handleSend,
       handleSendFromQueue,
@@ -441,6 +440,7 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       handleContinueWithProvider,
       isContinuingRef: _isContinuingRef
     } = controller
+  const { images, files, handleAddAttachments, handleAddFolder, removeImage, removeFile, isUploading } = chatSurface.upload
   // Subscribe to backend-owned turns (such as new-chat initial prompts) so
   // they remain visible even though no local Chat transport started them.
   // Keep isActive in ref for use in callbacks (avoid stale closures)
@@ -568,57 +568,59 @@ const ChatViewInner = memo(function ChatViewInner(props: {
         )}
 
         {/* Chat search bar */}
-        <ChatSearchBar messages={messages} topOffset={searchBarTopOffset} />
+        <ChatSearchBar messages={chatSurface.messages} topOffset={searchBarTopOffset} />
 
-        {/* Chat title - flex above scroll area (desktop only) */}
-        {!isMobile && (
-        <div
-          className={cn(
-            "flex-shrink-0 pb-2",
-            isConversationsSidebarOpen ? "pt-[52px]" : "pt-2",
-          )}
-        >
-          <ChatTitleEditor
-            name={conversationName}
-            placeholder="New Chat"
-            onSave={handleRenameConversation}
-            isMobile={false}
-            entityId={conversationId}
-            hasMessages={true} /* Always show "New Chat" placeholder when name is empty */
-          />
-          {/* Workspace subtitle: repo • branch */}
-          {(workspaceRepoName || workspaceBranch) && (
-            <div className="max-w-2xl mx-auto px-4">
-              <span className="text-xs text-muted-foreground/50 truncate block">
-                {[workspaceRepoName, workspaceBranch].filter(Boolean).join(" • ")}
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Messages - shared with side chat; main owns scroll policy and main-only features */}
-      <ActiveChatMessages
-        messages={messages}
-        status={status}
-        conversationId={conversationId}
-        agentId={backendAgentId}
-        chatId={parentChatId}
-        isActive={isVisiblePane}
-        isMobile={isMobile}
-        sandboxSetupStatus={sandboxSetupStatus}
-        sandboxSetupError={sandboxSetupError}
-        onRetrySetup={onRetrySetup}
-        stickyTopClass={stickyTopClass}
-        chatContainerRef={chatContainerRef}
-        chatContainerObserverRef={chatContainerObserverRef}
-        contentWrapperRef={contentWrapperRef}
-        implicitCollaborationTasks={implicitCollaborationTasks}
-        collaborationSession={collaborationSession}
-        handleRollback={handleRollback}
-        handleForkFromMessage={handleForkFromMessage}
-      />
-
+        {/* Chat title + messages via shared shell (Phase B slots) */}
+        <ChatSurfaceShell
+          titleSlot={
+            !isMobile ? (
+              <div
+                className={cn(
+                  "flex-shrink-0 pb-2",
+                  isConversationsSidebarOpen ? "pt-[52px]" : "pt-2",
+                )}
+              >
+                <ChatTitleEditor
+                  name={conversationName}
+                  placeholder="New Chat"
+                  onSave={handleRenameConversation}
+                  isMobile={false}
+                  entityId={conversationId}
+                  hasMessages={true}
+                />
+                {(workspaceRepoName || workspaceBranch) && (
+                  <div className="max-w-2xl mx-auto px-4">
+                    <span className="text-xs text-muted-foreground/50 truncate block">
+                      {[workspaceRepoName, workspaceBranch].filter(Boolean).join(" • ")}
+                    </span>
+                  </div>
+                )}
+              </div>
+            ) : null
+          }
+          messagesSlot={
+            <ActiveChatMessages
+              messages={chatSurface.messages as any}
+              status={chatSurface.status}
+              conversationId={conversationId}
+              agentId={backendAgentId}
+              chatId={parentChatId}
+              isActive={isVisiblePane}
+              isMobile={isMobile}
+              sandboxSetupStatus={sandboxSetupStatus}
+              sandboxSetupError={sandboxSetupError}
+              onRetrySetup={onRetrySetup}
+              stickyTopClass={stickyTopClass}
+              chatContainerRef={chatContainerRef}
+              chatContainerObserverRef={chatContainerObserverRef}
+              contentWrapperRef={contentWrapperRef}
+              implicitCollaborationTasks={implicitCollaborationTasks}
+              collaborationSession={collaborationSession}
+              handleRollback={chatSurface.handleRollback}
+              handleForkFromMessage={chatSurface.handleForkFromMessage}
+            />
+          }
+        footerSlot={
       <ActiveChatDock
         isVisiblePane={isVisiblePane}
         parentChatId={parentChatId}
@@ -635,7 +637,7 @@ const ChatViewInner = memo(function ChatViewInner(props: {
         handleSendFromQueue={handleSendFromQueue}
         shouldShowStatusCard={shouldShowStatusCard}
         shouldShowStackedCards={shouldShowStackedCards}
-        isStreaming={isStreaming}
+        isStreaming={chatSurface.isStreaming}
         isCompacting={isCompacting}
         changedFilesForConversation={changedFilesForConversation}
         projectPath={projectPath}
@@ -679,6 +681,8 @@ const ChatViewInner = memo(function ChatViewInner(props: {
         chatContainerRef={chatContainerRef}
         scrollToBottom={scrollToBottom}
         isSplitPane={isSplitPane}
+      />
+        }
       />
       </div>
       </SearchHighlightProvider>

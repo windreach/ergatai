@@ -9,6 +9,7 @@
 
 const { _electron: electron } = require('playwright');
 const path = require('path');
+const os = require('os');
 const { spawn } = require('child_process');
 
 // 默认配置
@@ -24,6 +25,9 @@ const DEFAULT_CONFIG = {
 
   // 是否使用 headless 模式（默认 true）
   useHeadless: process.env.USE_HEADLESS !== 'false',
+
+  // 每次启动使用独立的 userData 目录，避免测试间 localStorage/窗口状态污染
+  userDataDir: path.join(os.tmpdir(), 'ergatai-e2e-userdata-' + Date.now()),
 
   // 额外的启动参数
   extraArgs: [],
@@ -75,8 +79,22 @@ function startXvfb() {
 async function launchElectron(config = {}) {
   const mergedConfig = { ...DEFAULT_CONFIG, ...config };
 
+  // Isolate Electron user data per launch so persisted UI state cannot pollute tests.
+  const isolatedUserDataDir = path.join(os.tmpdir(), 'ergatai-e2e-data-' + Date.now());
+  let apiToken = process.env.ERGATAI_API_TOKEN
+  if (!apiToken) {
+    try {
+      apiToken = require('fs').readFileSync(path.join(os.homedir(), '.local', 'share', 'ergatai', '.api-token'), 'utf-8').trim()
+    } catch (e) {}
+  }
+
   let xvfbProcess = null;
-  let env = { ...process.env, ...mergedConfig.extraEnv };
+  let env = {
+    ...process.env,
+    ERGATAI_USER_DATA_DIR: isolatedUserDataDir,
+    ...(apiToken ? { ERGATAI_API_TOKEN: apiToken } : {}),
+    ...mergedConfig.extraEnv,
+  };
 
   // 如果使用 xvfb，先启动 Xvfb
   if (mergedConfig.useXvfb) {
@@ -95,6 +113,7 @@ async function launchElectron(config = {}) {
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-gpu',
+    `--user-data-dir=${mergedConfig.userDataDir}`,
     ...(mergedConfig.useHeadless ? ['--headless'] : []),
     ...mergedConfig.extraArgs,
   ];

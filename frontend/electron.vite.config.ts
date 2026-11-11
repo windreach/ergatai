@@ -72,7 +72,6 @@ export default defineConfig({
         rolldown: true,  // Use Rolldown (Rust-based, highly memory efficient)
       },
       rollupOptions: {
-        external: ['monaco-editor', 'monaco-editor/esm/vs/editor/editor.worker', 'monaco-editor/esm/vs/editor/editor.worker?worker', 'monaco-editor/esm/vs/language/json/json.worker?worker', 'monaco-editor/esm/vs/language/css/css.worker?worker', 'monaco-editor/esm/vs/language/html/html.worker?worker', 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'],
         treeshake: {
           moduleSideEffects: false,
         },

@@ -111,11 +111,12 @@ import {
 } from "../agents"
 import { useHotkeys } from "react-hotkeys-hook"
 import { useHaptic } from "./hooks/use-haptic"
-import {
-  COLLABORATION_MODES,
-  getCollaborationModeConfig,
-  type CollaborationMode,
-} from "../agents"
+// TEMP: collaboration mode switching entry disabled
+// import {
+//   COLLABORATION_MODES,
+//   getCollaborationModeConfig,
+// } from "../agents"
+import type { CollaborationMode } from "../agents"
 import {
   filterChatsByCollaborationMode,
   findChatOutsideCollaborationMode,
@@ -777,7 +778,8 @@ export function AgentsSidebar({
   const chatClickLockRef = useRef(false)
   const {
     mode: collaborationMode,
-    setMode: setCollaborationMode,
+    // TEMP: collaboration mode switching entry disabled
+    // setMode: setCollaborationMode,
     config: collaborationModeConfig,
   } = useCollaborationMode()
   const previousChatId = useAtomValue(previousAgentChatIdAtom)
@@ -1687,17 +1689,18 @@ export function AgentsSidebar({
     setDesktopView,
   ])
 
-  const handleCollaborationModeChange = (mode: CollaborationMode) => {
-    triggerHaptic("light")
-    setCollaborationMode(mode)
-    setSelectedChatId(null)
-    setSelectedDraftId(null)
-    setShowNewChatForm(false)
-    setDesktopView(null)
-    if (isMobileFullscreen && onChatSelect) {
-      onChatSelect()
-    }
-  }
+  // TEMP: collaboration mode switching entry disabled, globally forced to supervisor
+  // const handleCollaborationModeChange = (mode: CollaborationMode) => {
+  //   triggerHaptic("light")
+  //   setCollaborationMode(mode)
+  //   setSelectedChatId(null)
+  //   setSelectedDraftId(null)
+  //   setShowNewChatForm(false)
+  //   setDesktopView(null)
+  //   if (isMobileFullscreen && onChatSelect) {
+  //     onChatSelect()
+  //   }
+  // }
 
   const handleChatClick = useCallback(async (
     chatId: string,
@@ -2230,8 +2233,9 @@ export function AgentsSidebar({
               )}
             />
           </div>
+          {/* TEMP: collaboration mode switching entry disabled, globally forced to supervisor */}
           {/* Supervisor / Group collaboration mode */}
-          <div
+          {/* <div
             className={cn(
               "relative flex w-full items-center rounded-lg border bg-muted p-0.5",
               isMobileFullscreen ? "h-10" : "h-8",
@@ -2269,7 +2273,7 @@ export function AgentsSidebar({
                 </button>
               )
             })}
-          </div>
+          </div> */}
           {/* New Workspace Button */}
           <Tooltip delayDuration={500}>
             <TooltipTrigger asChild>
@@ -2297,19 +2301,7 @@ export function AgentsSidebar({
               )}
             </TooltipContent>
           </Tooltip>
-          {/* Task Board placeholder */}
-          <ButtonCustom
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setDesktopView("task-board")}
-            className={cn(
-              "px-2 w-full hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground rounded-lg",
-              isMobileFullscreen ? "h-10" : "h-7",
-            )}
-          >
-            <span className="text-sm font-medium">Task Board</span>
-          </ButtonCustom>
+
           {/* Manage Agents button */}
           <ButtonCustom
             type="button"
@@ -2428,7 +2420,7 @@ export function AgentsSidebar({
                 <Tooltip delayDuration={500}>
                   <TooltipTrigger asChild>
                     <button
-                      aria-label="SettingsIcon"
+                      aria-label="Settings"
                       type="button"
                       onClick={() => {
                         setSettingsActiveTab("preferences")

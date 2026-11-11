@@ -22,11 +22,13 @@ export function getNextMode(current: AgentMode): AgentMode {
   return AGENT_MODES[(idx + 1) % AGENT_MODES.length]
 }
 
-export const collaborationModeAtom = atomWithWindowStorage<CollaborationMode>(
-  "agents:collaborationMode",
-  "supervisor",
-  { getOnInit: true },
-)
+// TEMP: globally force supervisor mode, group mode entry disabled
+export const collaborationModeAtom = atom<CollaborationMode>("supervisor")
+// export const collaborationModeAtom = atomWithWindowStorage<CollaborationMode>(
+//   "agents:collaborationMode",
+//   "supervisor",
+//   { getOnInit: true },
+// )
 
 export const registeredAgentsAtom = atomWithStorage<AgentRegistration[]>(
   "agents:registered-agents",

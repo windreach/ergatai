@@ -34,7 +34,7 @@
  * ```
  */
 
-import { test, describe, beforeAll, afterAll, beforeEach } from '@playwright/test'
+import { test, describe, beforeAll, afterAll, beforeEach, afterEach } from '@playwright/test'
 import { launchElectron } from './electron-launcher'
 
 interface TestContext {
@@ -47,6 +47,8 @@ interface TestContext {
 interface TestContextOptions {
   /** Skip the automatic beforeEach cleanup (for tests that manage their own state) */
   skipAutoCleanup?: boolean
+  /** Launch a fresh Electron instance for every test instead of once per describe */
+  perTest?: boolean
   /** Extra environment variables to pass to Electron */
   extraEnv?: Record<string, string>
 }
@@ -109,9 +111,13 @@ export function createTestContext(options: TestContextOptions = {}) {
   if (!options.skipAutoCleanup) {
     beforeEach(async () => {
       if (ctx.page) {
+        await ctx.page.waitForLoadState('domcontentloaded').catch(() => {})
         await ctx.page.evaluate(async () => {
-          await (window as any).trpc.test.helpers.cleanup.mutate()
-        })
+          const trpc = (window as any).trpc
+          if (trpc?.test?.helpers?.cleanup?.mutate) {
+            await trpc.test.helpers.cleanup.mutate()
+          }
+        }).catch(() => {})
       }
     })
   }

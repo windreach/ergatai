@@ -4,7 +4,7 @@
  */
 
 // Unified mention prefixes (single source of truth).
-import { MENTION_PREFIXES } from "../../mentions/types/core"
+import { MENTION_PREFIXES } from "@/features/mentions"
 export { MENTION_PREFIXES }
 
 

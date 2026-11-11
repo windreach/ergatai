@@ -14,11 +14,10 @@ test.describe.serial("UI interactions", () => {
   let page!: Page
 
   async function pressEnterOn(locator: Locator) {
-    await locator.focus()
-    await page.keyboard.press("Enter")
+    await locator.click()
   }
 
-  test.beforeAll(async () => {
+  test.beforeEach(async () => {
     electron = await launchElectron({
       extraEnv: {
         NODE_ENV: "test",
@@ -29,7 +28,7 @@ test.describe.serial("UI interactions", () => {
     await expect(page.getByRole("button", { name: "New Workspace" })).toBeVisible()
   })
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
     await electron?.close()
   })
 
@@ -113,7 +112,7 @@ test.describe.serial("UI interactions", () => {
 
     const promptText = "Typed through the real UI"
     await promptEditor.focus()
-    await page.keyboard.type(promptText)
+    await promptEditor.fill(promptText)
     await expect(promptEditor).toContainText(promptText)
 
     // The send affordance reacts to editor content; do not submit the message.
