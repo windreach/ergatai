@@ -200,14 +200,6 @@ export const AgentsWidget = memo(function AgentsWidget({ chatId, activeConversat
         command: agent.profileName || agent.id,
       })
       const spawnedAgentId = spawnResult?.agent_id
-      if (spawnedAgentId) {
-        await trpcClient.ergatai.promptAgent.mutate({
-          agentId: spawnedAgentId,
-          message: `Hello`,
-          conversationId: newConversationId,
-          waitForStream: false,
-        })
-      }
       await utils.ergatai.getAgentBindings.invalidate({ chatId })
       const result = await bindingsQuery.refetch()
       const binding = result.data?.find(
@@ -300,7 +292,7 @@ export const AgentsWidget = memo(function AgentsWidget({ chatId, activeConversat
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <div className="px-1.5 py-1.5">
+      <div className="px-1.5 pb-1.5 pt-2.5">
         {visibleParticipants.length > 0 &&
           visibleParticipants.map((participant) => {
             const Icon = getCoreAgentIcon(
@@ -309,59 +301,59 @@ export const AgentsWidget = memo(function AgentsWidget({ chatId, activeConversat
             const clickable = Boolean(participant.conversationId)
             const displayName = resolveDisplayName(participant, profiles)
             return (
-              <button
-                key={participant.key}
-                type="button"
-                disabled={!clickable}
-                onClick={() =>
-                  openAgentChat(
-                    participant.agentId,
-                    participant.coreAgentId,
-                    participant.conversationId,
-                  )
-                }
-                className={cn(
-                  "group flex w-full items-center gap-2 rounded-md px-1 py-1.5 text-left transition-colors",
-                  clickable ? "hover:bg-muted/50" : "cursor-default",
-                )}
-                title={participant.activity || undefined}
-              >
-                <div className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md bg-muted">
-                  <Icon className="h-3 w-3 text-muted-foreground" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-xs font-medium text-foreground">
-                    {displayName}
-                  </div>
-                  {participant.activity && (
-                    <div className="truncate text-[10px] text-muted-foreground/60">
-                      {participant.activity}
-                    </div>
+              <div key={participant.key} className="group relative">
+                <button
+                  type="button"
+                  disabled={!clickable}
+                  onClick={() =>
+                    openAgentChat(
+                      participant.agentId,
+                      participant.coreAgentId,
+                      participant.conversationId,
+                    )
+                  }
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md px-1 py-1.5 pr-6 text-left transition-colors",
+                    clickable ? "hover:bg-muted/50" : "cursor-default",
                   )}
-                </div>
-                <span className="relative flex h-4 w-4 flex-shrink-0 items-center justify-center">
-                  <span
-                    className={cn(
-                      "h-1.5 w-1.5 rounded-full transition-opacity group-hover:opacity-0",
-                      STATUS_DOT_CLASS[participant.status] ??
-                        "bg-muted-foreground/30",
+                  title={participant.activity || undefined}
+                >
+                  <div className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md bg-muted">
+                    <Icon className="h-3 w-3 text-muted-foreground" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-medium text-foreground">
+                      {displayName}
+                    </div>
+                    {participant.activity && (
+                      <div className="truncate text-[10px] text-muted-foreground/60">
+                        {participant.activity}
+                      </div>
                     )}
-                  />
-	                  {/* react-doctor-disable-next-line html-no-nested-interactive */}
-	                  <button
-	                    type="button"
-	                    aria-label="Permanently delete agent"
-	                    title="Permanently delete agent and its conversation"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      void handleCloseAgent(participant)
-                    }}
-                    className="absolute inset-0 flex items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </span>
-              </button>
+                  </div>
+                  <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center">
+                    <span
+                      className={cn(
+                        "h-1.5 w-1.5 rounded-full transition-opacity group-hover:opacity-0",
+                        STATUS_DOT_CLASS[participant.status] ??
+                          "bg-muted-foreground/30",
+                      )}
+                    />
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  aria-label="Permanently delete agent"
+                  title="Permanently delete agent and its conversation"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    void handleCloseAgent(participant)
+                  }}
+                  className="absolute right-1 top-1/2 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
             )
           })}
       </div>

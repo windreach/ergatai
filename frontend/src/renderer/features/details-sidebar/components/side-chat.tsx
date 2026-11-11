@@ -256,6 +256,7 @@ export function SideChat({
             handleForkFromMessage={handleForkFromMessage}
             loadingState={sideChatLoadingState}
             emptyState={sideChatEmptyState}
+            contentClassName="pt-4"
           />
         }
         afterMessagesSlot={null}

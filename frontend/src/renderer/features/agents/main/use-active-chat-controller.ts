@@ -1,6 +1,4 @@
-import {
-  stripEmojis
-} from "../../../components/chat-markdown-renderer"
+
 
 
 
@@ -724,7 +722,7 @@ const getMessageTextContent = (msg: { parts?: MessagePart[] }): string => {
 const copyMessageContent = (msg: { parts?: MessagePart[] }) => {
     const textContent = getMessageTextContent(msg)
     if (textContent) {
-      navigator.clipboard.writeText(stripEmojis(textContent))
+      navigator.clipboard.writeText(textContent)
     }
   }
 

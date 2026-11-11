@@ -36,6 +36,8 @@ interface ActiveChatMessagesProps {
   /** Optional loading/empty states forwarded to the underlying renderer. */
   loadingState?: React.ReactNode
   emptyState?: React.ReactNode
+  /** Extra class names merged into the message content wrapper. */
+  contentClassName?: string
 }
 
 export const ActiveChatMessages = memo(function ActiveChatMessages({
@@ -59,6 +61,7 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
   handleForkFromMessage,
   loadingState,
   emptyState,
+  contentClassName,
 }: ActiveChatMessagesProps) {
 
   const { importBanner } = useConversationHistoryImport({
@@ -104,7 +107,7 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
       }}
       contentWrapperRef={contentWrapperRef}
       className="flex-1 overflow-y-auto w-full relative allow-text-selection outline-none"
-      contentClassName={cn("px-2 mx-auto -mb-4 max-w-2xl pb-8")}
+      contentClassName={cn("px-2 mx-auto -mb-4 max-w-2xl pb-8", contentClassName)}
       header={
         <>
           {importBanner}
