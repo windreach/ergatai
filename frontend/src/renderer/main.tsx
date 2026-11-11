@@ -68,7 +68,7 @@ window.addEventListener("touchstart", () => setFocusMethod("pointer"), true)
 window.addEventListener(
   "keydown",
   (e) => {
-    if (e.key === "Tab" || e.key.startsWith("Arrow") || e.key === "Home" || e.key === "End") {
+    if (e.key === "Tab") {
       setFocusMethod("keyboard")
     }
   },

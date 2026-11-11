@@ -108,7 +108,7 @@
 
 ## Phase 6：Agent 级 Discovery Trigger 扩展（设计）
 
-> **状态**：部分实现（后端数据层 + 前端 N-trigger 检测 + 插入/序列化参数化已完成；clearSlashCommand 已按 index 工作；手动验证待执行）。目标：让 agent 能注册 `/`、`@` 之外的 discovery trigger 符号，并按 agent 能力/配置动态生效。
+> **状态**：实现完成（后端数据层 + 前端 N-trigger 检测 + 插入/序列化参数化 + 编辑器状态统一已完成；clearSlashCommand 已按 index 工作；手动验证待执行）。目标：让 agent 能注册 `/`、`@` 之外的 discovery trigger 符号，并按 agent 能力/配置动态生效。
 
 ### 6.1 目标
 

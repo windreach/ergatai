@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, memo, forwardRef, useImperativeHandle } from "react"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { atom } from "jotai"
-import { HiChevronRight } from "react-icons/hi2"
+import { ChevronRightIcon as HiChevronRight } from "@radix-ui/react-icons"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { trpc } from "@/lib/trpc"

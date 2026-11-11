@@ -142,14 +142,15 @@ fn query_snapshot_hash(path: &str) -> Option<String> {
     // Tolerate whitespace around ':' and after ',' (e.g. pretty-printed JSON).
     // Strip all whitespace to normalize before matching.
     let normalized = response.replace([' ', '\t', '\n', '\r'], "");
+    parse_lock_response_normalized(&normalized)
+}
+
+/// Pure helper: parse an already-normalized `check_lock` IPC response.
+fn parse_lock_response_normalized(normalized: &str) -> Option<String> {
     if !normalized.contains(r#""is_locked":true"#) {
         return None;
     }
 
-    // Extract snapshot_hash value from the NORMALIZED response (not the original).
-    // Previously, extraction ran on the raw response, which would fail silently if
-    // the server inserted whitespace around ':' (e.g., `"snapshot_hash": "abc"`).
-    // Using the normalized response ensures consistency with the is_locked check.
     let key = r#""snapshot_hash":""#;
     let start = normalized.find(key)? + key.len();
     let rest = &normalized[start..];
@@ -161,6 +162,13 @@ fn query_snapshot_hash(path: &str) -> Option<String> {
     } else {
         Some(hash.to_string())
     }
+}
+
+/// Pure helper exposed for tests: parse a raw `check_lock` IPC response.
+#[cfg(test)]
+fn parse_lock_response(response: &str) -> Option<String> {
+    let normalized = response.replace([' ', '\t', '\n', '\r'], "");
+    parse_lock_response_normalized(&normalized)
 }
 
 /// Query snapshot content via Unix socket IPC.
@@ -301,6 +309,75 @@ fn redirect_to_snapshot_fallback(content: &[u8]) -> c_int {
     let _ = std::fs::remove_file(&tmp_path);
 
     fd
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_write_flags_read_only() {
+        assert!(!is_write_flags(libc::O_RDONLY));
+    }
+
+    #[test]
+    fn is_write_flags_write_modes() {
+        assert!(is_write_flags(libc::O_WRONLY));
+        assert!(is_write_flags(libc::O_RDWR));
+        assert!(is_write_flags(libc::O_CREAT));
+        assert!(is_write_flags(libc::O_TRUNC));
+        assert!(is_write_flags(libc::O_APPEND));
+        assert!(is_write_flags(libc::O_WRONLY | libc::O_CREAT));
+    }
+
+    #[test]
+    fn control_char_path_fails_open() {
+        // Path with a newline must be rejected before any IPC attempt.
+        assert!(query_snapshot_hash("foo\nbar").is_none());
+        assert!(query_snapshot_hash("foo\tbar").is_none());
+    }
+
+    #[test]
+    fn parse_lock_response_locked_with_hash() {
+        let resp = r#"{"is_locked":true,"snapshot_hash":"abc123"}"#;
+        assert_eq!(parse_lock_response(resp), Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn parse_lock_response_unlocked() {
+        let resp = r#"{"is_locked":false}"#;
+        assert!(parse_lock_response(resp).is_none());
+    }
+
+    #[test]
+    fn parse_lock_response_pretty_printed() {
+        let resp = "{\n  \"is_locked\" : true ,\n  \"snapshot_hash\" : \"deadbeef\" \n}";
+        // After normalization spaces around ':' remain? Normalization strips all whitespace.
+        assert_eq!(parse_lock_response(resp), Some("deadbeef".to_string()));
+    }
+
+    #[test]
+    fn parse_lock_response_empty_hash() {
+        let resp = r#"{"is_locked":true,"snapshot_hash":""}"#;
+        assert!(parse_lock_response(resp).is_none());
+    }
+
+    #[test]
+    fn parse_lock_response_malformed() {
+        assert!(parse_lock_response("not json").is_none());
+        assert!(parse_lock_response("").is_none());
+        assert!(parse_lock_response(r#"{"is_locked":true}"#).is_none());
+    }
+
+    #[test]
+    fn query_snapshot_hash_no_socket_fails_open() {
+        // Point at a socket that does not exist; must return None (fail-open).
+        // Note: socket_path() is cached via OnceCell; this test only verifies
+        // the no-socket path when the cache is still unset. It is best-effort.
+        std::env::set_var("ERGATAI_LOCK_SOCKET", "/tmp/ergatai-nonexistent.sock");
+        // Cannot reset OnceCell; call only if cache unset. We just ensure no panic.
+        let _ = query_snapshot_hash("/some/file.rs");
+    }
 }
 
 /// Intercepted `open()`.

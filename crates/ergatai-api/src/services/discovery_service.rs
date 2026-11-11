@@ -942,7 +942,9 @@ async fn resolve_agent_discovery_triggers(agent_id: &str) -> Option<String> {
 /// Schema: `char`, `position`, `types` — `allowSpaces`/`maxLength` removed (not needed).
 pub async fn get_triggers(agent_id: Option<&str>, _cwd: Option<&str>) -> Value {
     // Default triggers (always present).
-    let full_types = vec!["skill", "command", "mcp", "plugin", "agent", "file", "folder"];
+    let full_types = vec![
+        "skill", "command", "mcp", "plugin", "agent", "file", "folder",
+    ];
     let static_types = vec!["skill", "plugin"];
 
     let (base_types, is_static) = if agent_id.is_some() {
@@ -1109,6 +1111,23 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_agent_kind() {
+        assert_eq!(resolve_agent_kind(Some("opencode"), None), "opencode");
+        assert_eq!(resolve_agent_kind(None, Some("/usr/bin/codex")), "codex");
+        assert_eq!(resolve_agent_kind(Some("Claude Code"), None), "claude");
+        assert_eq!(resolve_agent_kind(None, None), "");
+        assert_eq!(resolve_agent_kind(Some("foo"), Some("bar")), "");
+    }
+
+    #[test]
+    fn test_is_static_source() {
+        assert!(is_static_source(SRC_CONVENTION_SKILLS));
+        assert!(is_static_source(SRC_PLUGINS));
+        assert!(!is_static_source(SRC_SDK_BUNDLE));
+        assert!(!is_static_source(SRC_ACP_COMMANDS));
+    }
+
+    #[test]
     fn test_dedup_by_name() {
         let mut items = vec![
             json!({"name": "skill-a", "description": "first"}),
@@ -1135,7 +1154,13 @@ mod tests {
             "error": "SDK connection failed"
         });
 
-        let result = merge_sources("test-agent", &json!([]), &sdk_with_error, &json!([]), &json!([]));
+        let result = merge_sources(
+            "test-agent",
+            &json!([]),
+            &sdk_with_error,
+            &json!([]),
+            &json!([]),
+        );
 
         assert!(result.get("errors").is_some());
         let errors = result["errors"].as_array().unwrap();
@@ -1152,7 +1177,13 @@ mod tests {
             "mcp": [],
         });
 
-        let result = merge_sources("test-agent", &json!([]), &sdk_success, &json!([]), &json!([]));
+        let result = merge_sources(
+            "test-agent",
+            &json!([]),
+            &sdk_success,
+            &json!([]),
+            &json!([]),
+        );
 
         assert!(result.get("errors").is_some());
         let errors = result["errors"].as_array().unwrap();
@@ -1216,10 +1247,7 @@ mod tests {
         ));
 
         // Static entry at /path1 is invalidated (cwd match)
-        assert!(matches!(
-            check_cache("plugins::/path1"),
-            CacheStatus::Miss
-        ));
+        assert!(matches!(check_cache("plugins::/path1"), CacheStatus::Miss));
     }
 
     #[tokio::test]

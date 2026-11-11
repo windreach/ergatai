@@ -14,6 +14,7 @@
 //! consistent behavior across all entry points.
 
 pub mod admission;
+pub mod mailbox;
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};

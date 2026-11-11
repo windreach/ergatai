@@ -42,6 +42,9 @@ futures.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
 
+# Sync primitives
+parking_lot.workspace = true
+
 # Serialization
 serde.workspace = true
 serde_json.workspace = true

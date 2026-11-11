@@ -8,7 +8,8 @@ import { TodoWidget } from "../sections/todo-widget"
 import { PlanWidget } from "../sections/plan-widget"
 import { TerminalWidget } from "../sections/terminal-widget"
 import { ChangesWidget } from "../sections/changes-widget"
-import { McpWidget } from "../sections/mcp-widget"
+// Temporarily disabled: MCP widget is session-scoped and too limited for multi-agent use.
+// import { McpWidget } from "../sections/mcp-widget"
 import { MonitoringPanel } from "../../agents"
 import type { ParsedDiffFile } from "../types"
 import type { AgentMode } from "../../agents"
@@ -188,17 +189,20 @@ export function WidgetsPanel({
               />
             )
 
+          // Temporarily disabled: MCP widget is session-scoped and too limited for multi-agent use.
+          // case "mcp":
+          //   return (
+          //     <WidgetCard
+          //       key="mcp"
+          //       widgetId="mcp"
+          //       title="MCP Servers"
+          //       hideExpand
+          //     >
+          //       <McpWidget />
+          //     </WidgetCard>
+          //   )
           case "mcp":
-            return (
-              <WidgetCard
-                key="mcp"
-                widgetId="mcp"
-                title="MCP Servers"
-                hideExpand
-              >
-                <McpWidget />
-              </WidgetCard>
-            )
+            return null
 
           case "monitoring":
             return (

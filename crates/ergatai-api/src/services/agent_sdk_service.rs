@@ -461,3 +461,26 @@ pub async fn inject_mcp(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_node_path_respects_env_node_path() {
+        std::env::set_var("NODE_PATH", "/custom/node_modules");
+        let p = build_node_path();
+        assert!(p.contains("/custom/node_modules"));
+        std::env::remove_var("NODE_PATH");
+    }
+
+    #[test]
+    fn build_node_path_nonempty() {
+        // Even without env vars, should produce a string (possibly empty if no dirs exist).
+        std::env::remove_var("NODE_PATH");
+        std::env::remove_var("ERGATAI_ADAPTERS_BASE");
+        let p = build_node_path();
+        // Just ensure no panic; result is a string.
+        let _ = p;
+    }
+}

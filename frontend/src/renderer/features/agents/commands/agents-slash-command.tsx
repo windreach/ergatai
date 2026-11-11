@@ -56,7 +56,7 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
   const agentId = bindings?.[0]?.agentId
 
   // Generic discovery aggregation (shared abstraction for trigger dropdowns).
-  const { groups: discoveryGroups } = useDiscoveryGroups(isOpen ? agentId : undefined, cwd)
+  const { groups: discoveryGroups, isLoading: discoveryLoading } = useDiscoveryGroups(isOpen ? agentId : undefined, cwd)
 
   const agentCommands: SlashCommandOption[] = useMemo(() => {
     return discoveryGroups.flatMap((g) =>
@@ -144,6 +144,16 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
     return () =>
       window.removeEventListener("keydown", handleSelect_key, { capture: true })
   }, [isOpen, displayOptions, selectedIndex, onSelect])
+
+  // Do not keep an empty dropdown open when there is no search text and no available items.
+  useEffect(() => {
+    if (!isOpen) return
+    if (debouncedSearchText) return
+    if (discoveryLoading) return
+    if (filteredOptions.length === 0) {
+      onClose()
+    }
+  }, [isOpen, debouncedSearchText, discoveryLoading, filteredOptions.length, onClose])
 
   if (!isOpen) return null
 

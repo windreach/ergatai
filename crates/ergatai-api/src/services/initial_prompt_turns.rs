@@ -677,3 +677,125 @@ pub fn spawn_worker(cancellation_token: CancellationToken) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ergatai_error::{ChatId, ConversationId, MessageId, WorkspaceId};
+    use std::sync::Mutex;
+
+    static TEST_DB_MUTEX: Mutex<()> = Mutex::new(());
+    static TEST_DB_DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+    fn lock_db() -> std::sync::MutexGuard<'static, ()> {
+        let guard = TEST_DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        TEST_DB_DATA_DIR.get_or_init(|| {
+            let data_dir = std::env::temp_dir()
+                .join("ergatai-ipt-tests")
+                .join(std::process::id().to_string());
+            let _ = std::fs::remove_dir_all(&data_dir);
+            std::fs::create_dir_all(&data_dir).unwrap();
+            std::env::set_var("ERGATAI_DATA_DIR", &data_dir);
+            data_dir
+        });
+        let _ = crate::user_data_db::get_user_data_db();
+        guard
+    }
+
+    fn setup_conversation() -> (ConversationId, ChatId, WorkspaceId) {
+        use crate::user_data_db;
+        let workspace_id = WorkspaceId::new(3001);
+        let chat_id = ChatId::new(3002);
+        let _ = user_data_db::workspaces::create(user_data_db::Workspace {
+            workspace_id,
+            name: "w".to_string(),
+            work_dir: "/tmp/w".to_string(),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            config: "{}".to_string(),
+            collaboration_mode: "none".to_string(),
+            status: "active".to_string(),
+            default_project_id: None,
+            created_at: 0,
+            updated_at: 0,
+        });
+        let _ = user_data_db::chats::create(user_data_db::Chat {
+            chat_id,
+            workspace_id,
+            name: Some("c".to_string()),
+            collaboration_mode: Some("supervisor".to_string()),
+            worktree_path: None,
+            branch: None,
+            base_branch: None,
+            pr_url: None,
+            pr_number: None,
+            created_at: 0,
+            updated_at: 0,
+            archived_at: None,
+        });
+        let collab_id = ergatai_error::CollaborationSessionId::generate();
+        let _ = user_data_db::collaboration_sessions::create(user_data_db::CollaborationSession {
+            collaboration_session_id: collab_id,
+            chat_id,
+            workspace_id,
+            mode: "supervisor".to_string(),
+            state: "idle".to_string(),
+            goal: None,
+            active_plan_revision: None,
+            created_at: 0,
+            updated_at: 0,
+        });
+        let conversation_id = ConversationId::generate();
+        let _ = user_data_db::conversations::create(user_data_db::Conversation {
+            conversation_id,
+            collaboration_session_id: collab_id,
+            chat_id,
+            parent_id: None,
+            name: Some("conv".to_string()),
+            mode: "agent".to_string(),
+            participant_role: "peer".to_string(),
+            status: "ready".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            context_used: 0,
+            context_window: 0,
+            context_updated_at: 0,
+        });
+        (conversation_id, chat_id, workspace_id)
+    }
+
+    #[test]
+    fn test_enqueue_idempotent() {
+        let _g = lock_db();
+        let (conversation_id, chat_id, workspace_id) = setup_conversation();
+        let message_id = MessageId::generate();
+        // ensure message row? message_id FK not enforced (only conversation_id FK). ok.
+        let t1 = enqueue(InitialPromptInput {
+            conversation_id,
+            chat_id,
+            workspace_id,
+            message_id,
+            client_request_id: "req-1".to_string(),
+            agent_command: "echo hi".to_string(),
+            prompt: "hello".to_string(),
+            images: vec![],
+        })
+        .unwrap();
+        let t2 = enqueue(InitialPromptInput {
+            conversation_id,
+            chat_id,
+            workspace_id,
+            message_id,
+            client_request_id: "req-1".to_string(),
+            agent_command: "echo hi".to_string(),
+            prompt: "hello".to_string(),
+            images: vec![],
+        })
+        .unwrap();
+        assert_eq!(t1.turn_id, t2.turn_id);
+        assert_eq!(t1.status, InitialPromptStatus::Pending);
+
+        let fetched = get_by_conversation(conversation_id).unwrap().unwrap();
+        assert_eq!(fetched.turn_id, t1.turn_id);
+    }
+}

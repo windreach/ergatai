@@ -83,7 +83,7 @@ export function useRegisteredTriggers(
 /**
  * Extract trigger config for a specific character from registered triggers.
  */
-function extractTriggerConfig(
+export function extractTriggerConfig(
   triggers: RegisteredTrigger[],
   char: string,
   defaultPosition: "standalone" | "start-of-line" | "anywhere",

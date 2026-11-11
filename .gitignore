@@ -123,3 +123,10 @@ frontend/FRONTEND_FIXES_SUMMARY.md
 frontend/STREAM_RESUMPTION_TESTS.md
 frontend/TEST_QUALITY_IMPROVEMENT.md
 frontend/UI_COMPONENT_TESTS.md
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/

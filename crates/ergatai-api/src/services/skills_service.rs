@@ -130,3 +130,51 @@ pub fn list_skills(cwd: Option<&str>) -> Vec<SkillInfo> {
 
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_parse_frontmatter_valid() {
+        let content = "---\nname: my-skill\ndescription: does things\n---\n# body";
+        let (name, desc) = parse_frontmatter(content).unwrap();
+        assert_eq!(name, "my-skill");
+        assert_eq!(desc, "does things");
+    }
+
+    #[test]
+    fn test_parse_frontmatter_missing_name() {
+        let content = "---\ndescription: x\n---\n";
+        assert!(parse_frontmatter(content).is_none());
+    }
+
+    #[test]
+    fn test_parse_frontmatter_no_frontmatter() {
+        assert!(parse_frontmatter("# hello").is_none());
+    }
+
+    #[test]
+    fn test_list_skills_with_temp_home() {
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path().join(".claude").join("skills").join("s1");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: s1\ndescription: d1\n---\n",
+        )
+        .unwrap();
+
+        // Point HOME at temp dir
+        let prev = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+        let skills = list_skills(None);
+        if let Some(p) = prev {
+            std::env::set_var("HOME", p);
+        }
+
+        assert!(skills.iter().any(|s| s.name == "s1"));
+    }
+}

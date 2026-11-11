@@ -625,4 +625,78 @@ mod tests {
         };
         assert_eq!(info.task_id, Some("task-42".to_string()));
     }
+
+    #[test]
+    fn test_agent_image_validate_ok() {
+        let img = AgentImage {
+            base64_data: "AAAA".to_string(),
+            media_type: "image/png".to_string(),
+            filename: None,
+        };
+        assert!(img.validate().is_ok());
+    }
+
+    #[test]
+    fn test_agent_image_validate_too_large() {
+        let img = AgentImage {
+            base64_data: "a".repeat(AgentImage::MAX_BASE64_SIZE + 1),
+            media_type: "image/png".to_string(),
+            filename: None,
+        };
+        assert!(img.validate().is_err());
+    }
+
+    #[test]
+    fn test_agent_image_validate_bad_type() {
+        let img = AgentImage {
+            base64_data: "AAAA".to_string(),
+            media_type: "image/bmp".to_string(),
+            filename: None,
+        };
+        assert!(img.validate().is_err());
+    }
+
+    #[test]
+    fn test_agent_file_validate_ok() {
+        let f = AgentFile {
+            base64_data: "AAAA".to_string(),
+            media_type: None,
+            filename: "a.txt".to_string(),
+            size: None,
+        };
+        assert!(f.validate().is_ok());
+    }
+
+    #[test]
+    fn test_agent_file_validate_empty_data() {
+        let f = AgentFile {
+            base64_data: "".to_string(),
+            media_type: None,
+            filename: "a.txt".to_string(),
+            size: None,
+        };
+        assert!(f.validate().is_err());
+    }
+
+    #[test]
+    fn test_agent_file_validate_empty_filename() {
+        let f = AgentFile {
+            base64_data: "AAAA".to_string(),
+            media_type: None,
+            filename: "   ".to_string(),
+            size: None,
+        };
+        assert!(f.validate().is_err());
+    }
+
+    #[test]
+    fn test_agent_file_validate_too_large() {
+        let f = AgentFile {
+            base64_data: "a".repeat(AgentFile::MAX_BASE64_SIZE + 1),
+            media_type: None,
+            filename: "a.txt".to_string(),
+            size: None,
+        };
+        assert!(f.validate().is_err());
+    }
 }

@@ -133,7 +133,8 @@ async function launchElectron(config = {}) {
 
   // 监听错误（诊断用）
   page.on('pageerror', (error) => {
-    console.error('❌ Page error:', error.message.substring(0, 80));
+    console.error('❌ PAGEERROR_FULL:', error.message);
+    console.error('❌ PAGEERROR_STACK:', error.stack);
   });
 
   page.on('close', () => {

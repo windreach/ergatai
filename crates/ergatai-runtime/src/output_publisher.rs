@@ -114,3 +114,25 @@ impl OutputPublisher for NoOpOutputPublisher {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backends::acp::AgentOutputEvent;
+
+    #[tokio::test]
+    async fn noop_publisher_ok() {
+        let p = NoOpOutputPublisher;
+        let event = AgentOutputEvent::Text {
+            role: "assistant".to_string(),
+            delta: "hi".to_string(),
+        };
+        let res = p.publish("conv-1", event).await;
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn global_get_does_not_panic() {
+        let _ = get_global_output_publisher();
+    }
+}

@@ -152,6 +152,7 @@ function sortFilesByRelevance<T extends { label: string; path?: string }>(
 
 // Memoized to prevent re-renders when parent re-renders
 // react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export const AgentsFileMention = memo(function AgentsFileMention({
   isOpen,
   onClose,
@@ -186,7 +187,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   }, [searchText])
 
   // Generic discovery aggregation (shared abstraction for trigger dropdowns).
-  const { groups: discoveryGroups } = useDiscoveryGroups(isOpen ? agentId : undefined, projectPath)
+  const { groups: discoveryGroups, isLoading: discoveryLoading } = useDiscoveryGroups(isOpen ? agentId : undefined, projectPath)
 
   // Fetch custom agents from filesystem (cached for 5 minutes)
   const { data: customAgents = [] } = trpc.agents.listEnabled.useQuery(
@@ -210,6 +211,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   const {
     data: fileResults = [],
     error,
+    isFetching: filesFetching,
   } = api.github.searchFiles.useQuery(
     {
       teamId: teamId!,
@@ -543,6 +545,16 @@ export const AgentsFileMention = memo(function AgentsFileMention({
     return () =>
       window.removeEventListener("keydown", handleSelectKey, { capture: true })
   }, [isOpen, options, selectedIndex, onSelect])
+
+  // Do not keep an empty dropdown open when there is no search text and no available items.
+  useEffect(() => {
+    if (!isOpen) return
+    if (debouncedSearchText) return
+    if (discoveryLoading || filesFetching) return
+    if (options.length === 0) {
+      onClose()
+    }
+  }, [isOpen, debouncedSearchText, discoveryLoading, filesFetching, options.length, onClose])
 
   if (!isOpen) return null
 

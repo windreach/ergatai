@@ -576,7 +576,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   const [showSlashDropdown, setShowSlashDropdown] = useState(false)
   const [slashSearchText, setSlashSearchText] = useState("")
   const [slashPosition, setSlashPosition] = useState({ top: 0, left: 0 })
-  const [slashTriggerChar, setSlashTriggerChar] = useState("/")
+  const slashTriggerCharRef = useRef("/")  // Slash command dropdown state
 
   const [nativeTriggerMatch, setNativeTriggerMatch] = useState<NativeTriggerHintPayload | null>(null)
 
@@ -593,7 +593,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   // Avoid stale model selections leaking across agents/conversations.
   useEffect(() => {
     setSelectedConversationModelId("")
-  }, [agentId, provider])
+  }, [agentId, provider, setSelectedConversationModelId])
   const conversationCodexModelIdAtom = useMemo(
     () => conversationCodexModelIdAtomFamily(conversationId),
     [conversationId],
@@ -1252,7 +1252,7 @@ export const ChatInputArea = memo(function ChatInputArea({
     ({ searchText, rect, triggerChar }: { searchText: string; rect: DOMRect; triggerChar?: string }) => {
       setSlashSearchText(searchText)
       setSlashPosition({ top: rect.top, left: rect.left })
-      setSlashTriggerChar(triggerChar || "/")
+      slashTriggerCharRef.current = triggerChar || "/"
       setShowSlashDropdown(true)
     },
     [],
@@ -1266,9 +1266,9 @@ export const ChatInputArea = memo(function ChatInputArea({
     (command: SlashCommandOption) => {
       editorRef.current?.clearSlashCommand()
       setShowSlashDropdown(false)
-      editorRef.current?.setValue(`${slashTriggerChar}${command.name} `)
+      editorRef.current?.setValue(`${slashTriggerCharRef.current}${command.name} `)
     },
-    [editorRef, slashTriggerChar],
+    [editorRef],
   )
 
   // Paste handler for images, plain text, and large text (saved as files)

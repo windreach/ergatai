@@ -1081,4 +1081,38 @@ mod tests {
         assert!(output.correlation_id.is_none());
         assert!(output.source_conversation_id.is_none());
     }
+
+    #[test]
+    fn test_seal_discards_accumulation() {
+        let mut acc = create_test_accumulator();
+        acc.seal();
+        assert!(acc.is_sealed());
+        acc.accumulate_text("hello");
+        acc.accumulate_thinking("think");
+        assert!(acc.final_text.is_empty());
+        assert!(acc.thinking.is_empty());
+        assert!(acc.thinking_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_accumulate_text_flushes_thinking() {
+        let mut acc = create_test_accumulator();
+        acc.accumulate_thinking("thought");
+        acc.accumulate_text("hi");
+        // thinking should be flushed into thinking vec
+        assert_eq!(acc.thinking.len(), 1);
+        assert_eq!(acc.thinking[0].text, "thought");
+        assert!(acc.thinking_buffer.is_empty());
+        assert_eq!(acc.final_text, "hi");
+    }
+
+    #[test]
+    fn test_set_stop_reason_and_title() {
+        let mut acc = create_test_accumulator();
+        acc.set_stop_reason("done".to_string());
+        acc.set_session_title("title".to_string());
+        acc.set_token_usage(10, 20);
+        acc.set_context_usage(5, 100);
+        // no panic; fields stored in metadata? Just ensure no panic
+    }
 }

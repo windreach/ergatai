@@ -1,113 +1,64 @@
-/**
- * E2E UI 测试 - Workspace 创建流程
- * 测试核心的 Workspace 交互：创建、选择
- */
+// spec: specs/ergatai-electron-ui-test-plan.md
+// scenarios: UI-WS-001, UI-WS-002
 
-import { test, expect, describe, beforeAll, afterAll } from '@playwright/test'
-import { createTestContext } from '../../fixtures/test-context'
-import * as fs from 'fs/promises'
+import { test, expect, type Page } from "@playwright/test"
+import { launchElectron } from "../../fixtures/electron-launcher"
 
-describe('E2E: Workspace 创建流程', () => {
-  const ctx = createTestContext()
-  const testWorkspacePath = '/tmp/ergatai-e2e-workspace-ui-test'
+test.describe.serial("Workspace UI (Ergatai Electron UI)", () => {
+  let electron!: Awaited<ReturnType<typeof launchElectron>>
+  let page!: Page
 
-  beforeAll(async () => {
-    await fs.mkdir(testWorkspacePath, { recursive: true })
+  test.beforeAll(async () => {
+    electron = await launchElectron({
+      extraEnv: { NODE_ENV: "test", ELECTRON_TEST_MODE: "true" },
+    })
+    page = electron.page
   })
 
-  afterAll(async () => {
-    await fs.rm(testWorkspacePath, { recursive: true, force: true }).catch(() => {})
+  test.afterAll(async () => {
+    await electron?.close()
   })
 
-  test('应该能够通过 UI 创建新 workspace', async () => {
-    await ctx.page.waitForLoadState('networkidle')
-
-    // 使用 JavaScript 点击避免遮挡问题
-    await ctx.page.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll('button'))
-      const createButton = buttons.find(b => b.textContent?.includes('New Workspace'))
-      if (createButton) createButton.click()
-    })
-
-    // 等待对话框/表单出现
-    await ctx.page.waitForTimeout(1000)
-
-    // 验证对话框出现（查找表单相关元素）
-    const hasDialog = await ctx.page.$('[role="dialog"], .modal, input[placeholder*="name" i], input[placeholder*="path" i]')
-    expect(hasDialog).toBeDefined()
-
-    // 查找名称输入框
-    const nameInput = await ctx.page.$('input[placeholder*="name" i], input[name="name"]')
-    if (nameInput) {
-      await nameInput.fill('test-e2e-workspace')
-    }
-
-    // 查找路径输入框
-    const pathInput = await ctx.page.$('input[placeholder*="path" i], input[name="path"]')
-    if (pathInput) {
-      await pathInput.fill(testWorkspacePath)
-    }
-
-    // 使用 JavaScript 点击提交按钮
-    const submitClicked = await ctx.page.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll('button'))
-      const submitButton = buttons.find(b =>
-        b.textContent?.includes('Create') ||
-        b.textContent?.includes('创建') ||
-        b.getAttribute('type') === 'submit'
-      )
-      if (submitButton) {
-        submitButton.click()
-        return true
-      }
-      return false
-    })
-
-    if (submitClicked) {
-      await ctx.page.waitForTimeout(1000)
-    }
-
-    // 验证结果（workspace 应该被创建）
-    const pageContent = await ctx.page.evaluate(() => document.body.textContent)
-    expect(pageContent).toBeDefined()
+  test.beforeEach(async () => {
+    await page.waitForLoadState("networkidle").catch(() => {})
   })
 
-  test('表单验证应该阻止空名称', async () => {
-    await ctx.page.waitForLoadState('networkidle')
+  async function clickNewWorkspace() {
+    const btn = page.getByRole("button", { name: "New Workspace" }).first()
+    await expect(btn).toBeVisible({ timeout: 10_000 })
+    await btn.focus()
+    await page.keyboard.press("Enter")
+  }
 
-    // 使用 JavaScript 点击创建按钮
-    await ctx.page.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll('button'))
-      const createButton = buttons.find(b => b.textContent?.includes('New Workspace'))
-      if (createButton) createButton.click()
-    })
-    await ctx.page.waitForTimeout(1000)
-
-    // 使用 JavaScript 点击提交按钮（不填写任何内容）
-    await ctx.page.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll('button'))
-      const submitButton = buttons.find(b =>
-        b.textContent?.includes('Create') ||
-        b.textContent?.includes('创建') ||
-        b.getAttribute('type') === 'submit'
-      )
-      if (submitButton) submitButton.click()
-    })
-    await ctx.page.waitForTimeout(500)
-
-    // 验证对话框仍然显示（表单未提交成功）
-    const stillHasDialog = await ctx.page.$('input[placeholder*="name" i], input[placeholder*="path" i]')
-    expect(stillHasDialog).toBeDefined()
+  test("UI-WS-001 Default view shows workspace chooser @smoke @ui", async () => {
+    await clickNewWorkspace()
+    await expect(
+      page.getByText("Choose a workspace to start multi-agent collaboration").first(),
+    ).toBeVisible({ timeout: 10_000 })
+    await expect(
+      page.getByRole("button", { name: "Select workspace" }).first(),
+    ).toBeVisible()
   })
 
-  test('应该能够在 workspace 列表中看到已创建的 workspace', async () => {
-    await ctx.page.waitForLoadState('networkidle')
+  test("UI-WS-002 Select Default Workspace @smoke @ui", async () => {
+    const selectButton = page.getByRole("button", { name: "Select workspace" }).first()
+    await expect(selectButton).toBeVisible({ timeout: 10_000 })
+    await selectButton.click()
 
-    // 查找 workspace 列表
-    const hasWorkspacesSection = await ctx.page.$('text=Workspaces')
-    const hasDefaultWorkspace = await ctx.page.$('text=Default Workspace')
+    const defaultWorkspace = page
+      .getByRole("button", { name: "Default Workspace" })
+      .or(page.getByText("Default Workspace"))
+      .first()
+    await expect(defaultWorkspace).toBeVisible({ timeout: 5_000 })
+    await defaultWorkspace.click()
 
-    // 至少应该有 workspace 相关的元素
-    expect(hasWorkspacesSection || hasDefaultWorkspace).toBeDefined()
+    const chatInput = page.locator('textarea, [contenteditable="true"]').first()
+    await expect(chatInput).toBeVisible({ timeout: 15_000 })
+
+    const sendButton = page
+      .locator('[data-testid="send-button"]')
+      .or(page.getByRole("button", { name: /send/i }))
+      .first()
+    await expect(sendButton).toBeVisible({ timeout: 10_000 })
   })
 })

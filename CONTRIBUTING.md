@@ -160,7 +160,6 @@ cargo run -p simple-agent -- --port 8080 --agent-id my-agent --ergatai http://lo
 ergatai/
 ├── crates/
 │   ├── ergatai-api/       # MCP server + REST API (binary: ergatai-server)
-│   ├── ergatai-cli/       # CLI tool (binaries: ergatai, ega)
 │   ├── ergatai-runtime/   # Agent runtime (discovery, injection, lifecycle)
 │   ├── ergatai-nats/      # Embedded NATS server + JetStream streams
 │   ├── ergatai-collab/    # Multi-agent collaboration (DAG scheduling)

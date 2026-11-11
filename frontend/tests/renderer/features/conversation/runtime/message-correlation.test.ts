@@ -1,37 +1,55 @@
-import { describe, expect, it } from "vitest"
-
+import { describe, it, expect } from "vitest"
 import {
-  LOCAL_TRANSPORT_STREAM_SOURCE,
   createMessageCorrelation,
+  createLocalTransportMessageMetadata,
   createOptimisticMessage,
+  LOCAL_TRANSPORT_STREAM_SOURCE,
 } from "@/features/conversation/runtime/message-correlation"
 
-describe("message correlation primitives", () => {
-  it("creates the same correlation identity for transport and optimistic metadata", () => {
-    const correlation = createMessageCorrelation("msg_1000_000_0001")
-
-    expect(correlation.transportOverrides).toEqual({
-      externalMessageId: "msg_1000_000_0001",
-    })
-    expect(correlation.metadata).toEqual({
-      externalMessageId: "msg_1000_000_0001",
-      streamSource: LOCAL_TRANSPORT_STREAM_SOURCE,
-    })
+describe("createLocalTransportMessageMetadata", () => {
+  it("includes streamSource", () => {
+    const m = createLocalTransportMessageMetadata()
+    expect(m.streamSource).toBe(LOCAL_TRANSPORT_STREAM_SOURCE)
   })
+  it("includes externalMessageId when provided", () => {
+    const m = createLocalTransportMessageMetadata({ externalMessageId: "e1" })
+    expect(m.externalMessageId).toBe("e1")
+  })
+  it("omits externalMessageId when not provided", () => {
+    const m = createLocalTransportMessageMetadata()
+    expect(m.externalMessageId).toBeUndefined()
+  })
+  it("merges metadata", () => {
+    const m = createLocalTransportMessageMetadata({ metadata: { foo: 1 } })
+    expect((m as any).foo).toBe(1)
+  })
+})
 
-  it("builds an optimistic local-transport message", () => {
-    const message = createOptimisticMessage({
-      role: "agent",
-      parts: [{ type: "text", text: "hello" }],
-      externalMessageId: "msg_1000_000_0002",
-      metadata: { correlationId: "corr-1" },
-    })
+describe("createMessageCorrelation", () => {
+  it("sets externalMessageId", () => {
+    const c = createMessageCorrelation("e1")
+    expect(c.externalMessageId).toBe("e1")
+    expect(c.transportOverrides.externalMessageId).toBe("e1")
+    expect(c.metadata.externalMessageId).toBe("e1")
+  })
+  it("undefined", () => {
+    const c = createMessageCorrelation()
+    expect(c.externalMessageId).toBeUndefined()
+    expect(c.metadata.externalMessageId).toBeUndefined()
+  })
+})
 
-    expect(message.id).toBe("msg_1000_000_0002")
-    expect(message.metadata).toEqual({
-      correlationId: "corr-1",
-      externalMessageId: "msg_1000_000_0002",
-      streamSource: LOCAL_TRANSPORT_STREAM_SOURCE,
-    })
+describe("createOptimisticMessage", () => {
+  it("creates message", () => {
+    const msg = createOptimisticMessage({ role: "user", parts: [{ type: "text", text: "hi" } as any], externalMessageId: "e1" })
+    expect(msg.id).toBe("e1")
+    expect(msg.role).toBe("user")
+    expect(msg.parts).toHaveLength(1)
+    expect(msg.metadata.externalMessageId).toBe("e1")
+  })
+  it("without externalMessageId", () => {
+    const msg = createOptimisticMessage({ role: "assistant", parts: [] })
+    expect(msg.id).toBeUndefined()
+    expect(msg.metadata.streamSource).toBe(LOCAL_TRANSPORT_STREAM_SOURCE)
   })
 })

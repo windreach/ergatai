@@ -426,18 +426,19 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/agents/{id}/sessions",
             get(api::agents::list_agent_sessions),
         )
-        .route(
-            "/api/v1/agents/{id}/migration-progress",
-            get(api::agents::get_agent_migration_progress),
-        )
-        .route(
-            "/api/v1/migration-progress",
-            get(api::agents::get_migration_progress),
-        )
-        .route(
-            "/api/v1/migration/run",
-            post(api::agents::run_migration),
-        )
+        // Temporarily disabled migration APIs in v0.1.0.
+        // .route(
+        //     "/api/v1/agents/{id}/migration-progress",
+        //     get(api::agents::get_agent_migration_progress),
+        // )
+        // .route(
+        //     "/api/v1/migration-progress",
+        //     get(api::agents::get_migration_progress),
+        // )
+        // .route(
+        //     "/api/v1/migration/run",
+        //     post(api::agents::run_migration),
+        // )
         .route(
             "/api/v1/agents/{id}/sessions",
             post(api::agents::create_agent_session),

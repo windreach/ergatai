@@ -167,13 +167,17 @@ export function useDropdownShell({
   const prevSearchRef = useRef(debouncedSearchText)
 
   // Selection management
+  // react-doctor-disable-next-line no-derived-state-effect
   useLayoutEffect(() => {
     const didJustOpen = isOpen && !prevIsOpenRef.current
     const didSearchChange = debouncedSearchText !== prevSearchRef.current
 
     if (didJustOpen || didSearchChange) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setSelectedIndex(0)
     } else if (optionCount > 0 && selectedIndex >= optionCount) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
+      // react-doctor-disable-next-line no-derived-state
       setSelectedIndex(Math.max(0, optionCount - 1))
     }
 

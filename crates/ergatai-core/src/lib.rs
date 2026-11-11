@@ -22,7 +22,7 @@
 //! - Agent configuration and discovery
 //! - PTY-based agent message injection
 //!
-//! The library is used by both the CLI (ergatai-cli) and API server (ergatai-api).
+//! The library is used by the API server (ergatai-api).
 
 // ── Business logic modules ──
 pub mod agent_registry;

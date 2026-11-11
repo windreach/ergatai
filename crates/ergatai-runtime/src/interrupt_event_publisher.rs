@@ -107,3 +107,26 @@ impl InterruptEventPublisher for NoOpInterruptEventPublisher {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn noop_publisher_ok() {
+        let p = NoOpInterruptEventPublisher;
+        let payload = AgentMessageInsertedPayload {
+            agent_id: "a".to_string(),
+            message_id: "m".to_string(),
+            inserted_at: 1,
+            conversation_id: None,
+            client_request_id: None,
+        };
+        assert!(p.publish_message_inserted(payload).is_ok());
+    }
+
+    #[test]
+    fn global_get_does_not_panic() {
+        let _ = get_global_interrupt_event_publisher();
+    }
+}

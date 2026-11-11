@@ -1,0 +1,24 @@
+{
+  "name": "ergatai",
+  "version": "1.0.0",
+  "description": "> 多 Agent 协作工作台 — Organize independent AI coding assistants into a collaborative team.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/windreach/ergatai.git"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/windreach/ergatai/issues"
+  },
+  "homepage": "https://github.com/windreach/ergatai#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "@types/node": "^26.6.6"
+  }
+}

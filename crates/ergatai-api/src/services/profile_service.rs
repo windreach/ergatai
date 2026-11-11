@@ -241,8 +241,8 @@ pub async fn register_profile(
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Discovery triggers use a looser schema (char, position, types, kind) — store as raw JSON.
-    registration.discovery_triggers_json = discovery_triggers
-        .map(|triggers| serde_json::to_string(&triggers).unwrap_or_default());
+    registration.discovery_triggers_json =
+        discovery_triggers.map(|triggers| serde_json::to_string(&triggers).unwrap_or_default());
 
     registry
         .register(registration)

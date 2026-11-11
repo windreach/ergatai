@@ -18,7 +18,8 @@ import {
   type ConversationFileChange,
 } from "../atoms"
 import { getFileIconByExtension } from "../mentions/file-icon-utils"
-import { AgentHistorySelector } from "./agent-history-selector"
+// Removed Resume/history selector; restore status display in the status card header.
+// import { AgentHistorySelector } from "./agent-history-selector"
 
 // Animated dots component that cycles through ., .., ...
 function AnimatedDots() {
@@ -163,9 +164,6 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
         )}
       >
         <div className="flex items-center gap-2 text-xs min-w-0">
-          {/* Shared agent history selector */}
-          <AgentHistorySelector agentId={agentId} conversationId={conversationId} />
-
           {/* Expand/Collapse chevron - only show when there are files to expand */}
           {hasExpandableContent && (
             <button
@@ -183,19 +181,13 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
               />
             </button>
           )}
-        </div>
 
-        {/* Right side: status moved right + buttons */}
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {/* Streaming indicator */}
-          {isBusy && (
+          {/* Status display (restored from original layout) */}
+          {isBusy ? (
             <span className="text-xs text-muted-foreground">
               {isCompacting ? "Compacting" : "Generating"}<AnimatedDots />
             </span>
-          )}
-
-          {/* File count and stats - only show when not streaming and there are changed files */}
-          {!isBusy && totals.fileCount > 0 && (
+          ) : totals.fileCount > 0 ? (
             <span className="text-xs text-muted-foreground">
               {totals.fileCount} {totals.fileCount === 1 ? "file" : "files"}
               {(totals.additions > 0 || totals.deletions > 0) && (
@@ -210,8 +202,13 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
                 </>
               )}
             </span>
+          ) : (
+            <span className="text-xs text-muted-foreground">Ready</span>
           )}
+        </div>
 
+        {/* Right side: action buttons */}
+        <div className="flex items-center gap-2 flex-shrink-0">
           {/* Stop button */}
           {isBusy && onStop && (
             <Button

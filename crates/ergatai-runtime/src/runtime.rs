@@ -2789,4 +2789,34 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
+
+    #[test]
+    fn test_read_api_token_from_env_extra() {
+        let _guard = env_mutex().lock().unwrap();
+        let original = std::env::var("ERGATAI_API_TOKEN").ok();
+        std::env::set_var("ERGATAI_API_TOKEN", "  secret-token  ");
+        let token = read_api_token();
+        assert_eq!(token, Some("secret-token".to_string()));
+        match original {
+            Some(val) => std::env::set_var("ERGATAI_API_TOKEN", val),
+            None => std::env::remove_var("ERGATAI_API_TOKEN"),
+        }
+    }
+
+    #[test]
+    fn test_read_api_token_empty_env() {
+        let _guard = env_mutex().lock().unwrap();
+        std::env::set_var("ERGATAI_API_TOKEN", "   ");
+        // remove file influence by ensuring no token file? env empty falls through to file; just ensure no panic
+        let _ = read_api_token();
+        std::env::remove_var("ERGATAI_API_TOKEN");
+    }
+
+    #[test]
+    fn test_read_api_token_no_env_no_file() {
+        let _guard = env_mutex().lock().unwrap();
+        std::env::remove_var("ERGATAI_API_TOKEN");
+        // Should not panic even if file missing
+        let _ = read_api_token();
+    }
 }

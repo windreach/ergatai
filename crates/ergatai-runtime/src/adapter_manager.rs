@@ -980,4 +980,42 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn resolve_managed_base_appends_managed() {
+        let p = std::path::Path::new("/tmp/adapters");
+        assert_eq!(
+            resolve_managed_base(p),
+            std::path::PathBuf::from("/tmp/adapters/managed")
+        );
+    }
+
+    #[test]
+    fn managed_adapter_known() {
+        let a = managed_adapter("claude-code").unwrap();
+        assert_eq!(a.bin_name, "claude-agent-acp");
+        assert!(managed_adapter("nope").is_none());
+    }
+
+    #[test]
+    fn managed_adapter_bin_path_requires_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let adapter = managed_adapter("codex").unwrap();
+        // no file -> None
+        assert!(managed_adapter_bin_path(tmp.path(), adapter).is_none());
+    }
+
+    #[test]
+    fn managed_adapter_command_for_profile_none_when_missing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert!(managed_adapter_command_for_profile(tmp.path(), "codex").is_none());
+    }
+
+    #[test]
+    fn current_release_dir_none_when_no_pointer() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let managed = tmp.path().join("managed");
+        std::fs::create_dir_all(&managed).unwrap();
+        assert!(current_release_dir(&managed).is_none());
+    }
 }

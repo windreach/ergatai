@@ -932,4 +932,95 @@ mod tests {
             "State should be removed when session is marked busy"
         );
     }
+
+    #[test]
+    fn watchdog_config_default_values() {
+        let cfg = WatchdogConfig::default();
+        assert_eq!(cfg.check_interval_secs, 10);
+        assert_eq!(cfg.timeout_multiplier, 3);
+        assert_eq!(cfg.grace_period_1_secs, 30);
+        assert_eq!(cfg.grace_period_2_secs, 60);
+        assert!(cfg.task_aware);
+    }
+
+    #[tokio::test]
+    async fn watchdog_start_twice_errors() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("locks.db");
+        let lm = Arc::new(FileLockManager::new(&db_path, tmp.path().to_path_buf()).unwrap());
+        let mut wd = Watchdog::new(lm, WatchdogConfig::default());
+        wd.start().unwrap();
+        assert!(wd.start().is_err());
+        let _ = wd.stop();
+    }
+
+    #[tokio::test]
+    async fn handle_acp_disconnect_empty_session() {
+        let (_temp_dir, lock_manager) = create_test_lock_manager();
+        let config = WatchdogConfig::default();
+        let watchdog = Watchdog::new(lock_manager, config);
+
+        // No tokens/locks for this session; should succeed without panic.
+        let result = watchdog.handle_acp_disconnect("nonexistent-session").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn handle_acp_disconnect_clears_busy() {
+        let (_temp_dir, lock_manager) = create_test_lock_manager();
+        let config = WatchdogConfig::default();
+        let watchdog = Watchdog::new(lock_manager, config);
+
+        watchdog.mark_busy("session-x", 300).await.unwrap();
+        let result = watchdog.handle_acp_disconnect("session-x").await;
+        assert!(result.is_ok());
+
+        // Marking busy again should still work (cleared).
+        watchdog.mark_busy("session-x", 100).await.unwrap();
+        watchdog.clear_busy("session-x").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn handle_acp_disconnect_reclaims_locks_and_tokens() {
+        let (temp_dir, lock_manager) = create_test_lock_manager();
+        let db_path = temp_dir.path().join("test_locks.db");
+
+        // Seed a system token + file lock for the session via a separate connection.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            let later = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+            let project_root = temp_dir.path().canonicalize().unwrap();
+            conn.execute(
+                "INSERT INTO system_tokens (id, agent_id, session_id, project_root, issued_at, expires_at, heartbeat_interval_secs, heartbeat_at, status)
+                 VALUES (1, 'agent-1', 'session-r', ?3, ?1, ?2, 5, ?1, 'ACTIVE')",
+                rusqlite::params![now, later, project_root.to_string_lossy()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO file_locks (id, file_path, agent_id, session_id, mode, scope, token_id, approved_by, created_at, expires_at, heartbeat_interval_secs, heartbeat_at, status)
+                 VALUES (1, 'foo.rs', 'agent-1', 'session-r', 'WRITE', '*', 1, 'test', ?1, ?2, 5, ?1, 'ACTIVE')",
+                rusqlite::params![now, later],
+            )
+            .unwrap();
+        }
+
+        let config = WatchdogConfig::default();
+        let watchdog = Watchdog::new(lock_manager.clone(), config);
+
+        let result = watchdog.handle_acp_disconnect("session-r").await;
+        assert!(result.is_ok());
+
+        // Locks should be reclaimed (no active locks for session).
+        let locks = lock_manager.get_locks_by_session("session-r").unwrap();
+        assert!(
+            locks.is_empty(),
+            "expected no active locks after disconnect"
+        );
+
+        // System token should be expired.
+        let tokens = lock_manager.get_tokens_by_session("session-r").unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].status, crate::TokenStatus::Expired);
+    }
 }

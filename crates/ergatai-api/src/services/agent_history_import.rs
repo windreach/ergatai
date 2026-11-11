@@ -1023,3 +1023,57 @@ fn walkdir_with_depth(
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn native_cache_key_combines_session_and_cwd() {
+        assert_eq!(native_cache_key("s1", "/tmp/wd"), "s1|/tmp/wd");
+    }
+
+    #[test]
+    fn file_mtime_missing_returns_none() {
+        let p = std::path::Path::new("/definitely/not/a/file/xyz");
+        assert!(file_mtime(p).is_none());
+    }
+
+    #[test]
+    fn file_mtime_existing_returns_some() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("f.txt");
+        std::fs::write(&p, b"hi").unwrap();
+        assert!(file_mtime(&p).is_some());
+    }
+
+    #[test]
+    fn walkdir_collects_files() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"").unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("b.txt"), b"").unwrap();
+
+        let files = walkdir(dir.path());
+        assert!(files.iter().any(|p| p.ends_with("a.txt")));
+        assert!(files.iter().any(|p| p.ends_with("b.txt")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walkdir_skips_symlinks() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"").unwrap();
+        let _ = std::os::unix::fs::symlink(dir.path().join("a.txt"), dir.path().join("link.txt"));
+
+        let files = walkdir(dir.path());
+        assert!(!files.iter().any(|p| p.ends_with("link.txt")));
+    }
+
+    #[test]
+    fn has_native_capture_false_for_missing() {
+        assert!(!has_native_capture("no-such-session", "/no/such/cwd"));
+    }
+}

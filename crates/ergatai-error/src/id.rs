@@ -855,4 +855,33 @@ mod tests {
         let id = generate();
         assert!(id > 0, "generation must succeed after rebuild");
     }
+
+    #[test]
+    fn test_extract_components_invalid_id() {
+        // 0 is not a valid snowflake (epoch issue) but functions should not panic
+        let _ = extract_timestamp(0);
+        let _ = extract_instance(0);
+        let _ = extract_sequence(0);
+        // Negative id cast to u64; should not panic
+        let _ = extract_timestamp(-1);
+        let _ = extract_instance(-1);
+        let _ = extract_sequence(-1);
+    }
+
+    #[test]
+    fn test_is_valid_formatted_id_invalid() {
+        assert!(!is_valid_formatted_id(""));
+        assert!(!is_valid_formatted_id("invalid"));
+        assert!(!is_valid_formatted_id("msg_123"));
+        assert!(!is_valid_formatted_id("msg_123_001"));
+    }
+
+    #[test]
+    fn test_parse_to_i64_with_type_mismatch() {
+        init(1);
+        let id = generate();
+        let formatted = format(id, IdType::Workspace);
+        assert!(parse_to_i64_with_type(&formatted, IdType::Message).is_none());
+        assert!(parse_to_i64_with_type("invalid", IdType::Workspace).is_none());
+    }
 }

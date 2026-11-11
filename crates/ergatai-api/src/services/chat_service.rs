@@ -102,3 +102,83 @@ impl ChatService {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::user_data_db::workspaces;
+    use std::sync::Mutex;
+
+    static TEST_DB_MUTEX: Mutex<()> = Mutex::new(());
+    static TEST_DB_DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+    fn lock_db() -> std::sync::MutexGuard<'static, ()> {
+        let guard = TEST_DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        TEST_DB_DATA_DIR.get_or_init(|| {
+            let data_dir = std::env::temp_dir()
+                .join("ergatai-chat-tests")
+                .join(std::process::id().to_string());
+            let _ = std::fs::remove_dir_all(&data_dir);
+            std::fs::create_dir_all(&data_dir).unwrap();
+            std::env::set_var("ERGATAI_DATA_DIR", &data_dir);
+            data_dir
+        });
+        let _ = crate::user_data_db::get_user_data_db();
+        guard
+    }
+
+    fn make_workspace() -> ergatai_error::WorkspaceId {
+        let ws = workspaces::create(crate::user_data_db::Workspace {
+            workspace_id: ergatai_error::WorkspaceId::generate(),
+            name: "w".to_string(),
+            work_dir: "/tmp/w".to_string(),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            config: "{}".to_string(),
+            collaboration_mode: "none".to_string(),
+            status: "active".to_string(),
+            default_project_id: None,
+            created_at: 0,
+            updated_at: 0,
+        })
+        .unwrap();
+        ws.workspace_id
+    }
+
+    #[test]
+    fn test_create_and_get_chat() {
+        let _g = lock_db();
+        let ws = make_workspace();
+        let chat = ChatService::create_chat(ws, Some("c1".to_string())).unwrap();
+        let fetched = ChatService::get_chat(chat.chat_id).unwrap().unwrap();
+        assert_eq!(fetched.name, Some("c1".to_string()));
+    }
+
+    #[test]
+    fn test_list_chats_by_workspace() {
+        let _g = lock_db();
+        let ws = make_workspace();
+        let _ = ChatService::create_chat(ws, Some("a".to_string())).unwrap();
+        let _ = ChatService::create_chat(ws, Some("b".to_string())).unwrap();
+        let list = ChatService::list_chats_by_workspace(ws).unwrap();
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn test_archive_unarchive() {
+        let _g = lock_db();
+        let ws = make_workspace();
+        let chat = ChatService::create_chat(ws, None).unwrap();
+        ChatService::archive_chat(chat.chat_id).unwrap();
+        ChatService::unarchive_chat(chat.chat_id).unwrap();
+    }
+
+    #[test]
+    fn test_delete_chat() {
+        let _g = lock_db();
+        let ws = make_workspace();
+        let chat = ChatService::create_chat(ws, None).unwrap();
+        ChatService::delete_chat(chat.chat_id).unwrap();
+        assert!(ChatService::get_chat(chat.chat_id).unwrap().is_none());
+    }
+}

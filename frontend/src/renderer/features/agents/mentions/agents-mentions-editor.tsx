@@ -552,13 +552,12 @@ export const AgentsMentionsEditor = memo(
       ref,
     ) {
       const editorRef = useRef<HTMLDivElement>(null)
-      const triggerActive = useRef(false)
-      const triggerStartIndex = useRef<number | null>(null)
-      const triggerCharRef = useRef<string | null>(null)
-      // Slash command trigger state
-      const slashTriggerActive = useRef(false)
-      const slashTriggerStartIndex = useRef<number | null>(null)
-      const slashTriggerCharRef = useRef<string | null>(null)
+      // Unified discovery trigger state (replaces separate mention/slash trigger refs).
+      const activeDiscoveryTrigger = useRef<{
+        kind: "slash" | "mention"
+        startIndex: number
+        char: string
+      } | null>(null)
       // Track if editor has content for placeholder (updated via DOM, no React state)
       const [hasContent, setHasContent] = useState(false)
 
@@ -847,14 +846,12 @@ export const AgentsMentionsEditor = memo(
         // This prevents UI freeze when pasting large content
         if (content.length > LARGE_TEXT_THRESHOLD) {
           // Close unknown open triggers since we can't detect them
-          if (triggerActive.current) {
-            triggerActive.current = false
-            triggerStartIndex.current = null
+          if (activeDiscoveryTrigger.current?.kind === "mention") {
+            activeDiscoveryTrigger.current = null
             onCloseTrigger()
           }
-          if (slashTriggerActive.current) {
-            slashTriggerActive.current = false
-            slashTriggerStartIndex.current = null
+          if (activeDiscoveryTrigger.current?.kind === "slash") {
+            activeDiscoveryTrigger.current = null
             onCloseSlashTrigger?.()
           }
           return
@@ -876,14 +873,12 @@ export const AgentsMentionsEditor = memo(
 
           // Handle non-collapsed selection (close triggers)
           if (range && !range.collapsed) {
-            if (triggerActive.current) {
-              triggerActive.current = false
-              triggerStartIndex.current = null
+            if (activeDiscoveryTrigger.current?.kind === "mention") {
+              activeDiscoveryTrigger.current = null
               onCloseTrigger()
             }
-            if (slashTriggerActive.current) {
-              slashTriggerActive.current = false
-              slashTriggerStartIndex.current = null
+            if (activeDiscoveryTrigger.current?.kind === "slash") {
+              activeDiscoveryTrigger.current = null
               onCloseSlashTrigger?.()
             }
             onCloseNativeTrigger?.()
@@ -916,27 +911,25 @@ export const AgentsMentionsEditor = memo(
           // Handle discovery trigger
           if (discoveryIndex !== -1 && discoveryPosition && discoveryTrigger && (discoveryKind === "slash" ? onSlashTrigger : onTrigger)) {
             const isSlash = discoveryKind === "slash"
+            const previousKind = activeDiscoveryTrigger.current?.kind
             if (isSlash) {
-              slashTriggerActive.current = true
-              slashTriggerStartIndex.current = discoveryIndex
-              // remember char for insertion
-              slashTriggerCharRef.current = discoveryTrigger.char
+              if (previousKind === "mention") {
+                onCloseTrigger()
+              }
+              activeDiscoveryTrigger.current = {
+                kind: "slash",
+                startIndex: discoveryIndex,
+                char: discoveryTrigger.char,
+              }
             } else {
-              triggerActive.current = true
-              triggerStartIndex.current = discoveryIndex
-              triggerCharRef.current = discoveryTrigger.char
-            }
-
-            // Close the other trigger if active
-            if (isSlash && triggerActive.current) {
-              triggerActive.current = false
-              triggerStartIndex.current = null
-              onCloseTrigger()
-            }
-            if (!isSlash && slashTriggerActive.current) {
-              slashTriggerActive.current = false
-              slashTriggerStartIndex.current = null
-              onCloseSlashTrigger?.()
+              if (previousKind === "slash") {
+                onCloseSlashTrigger?.()
+              }
+              activeDiscoveryTrigger.current = {
+                kind: "mention",
+                startIndex: discoveryIndex,
+                char: discoveryTrigger.char,
+              }
             }
 
             const afterTrigger = textBeforeCursor.slice(discoveryIndex + 1)
@@ -963,19 +956,12 @@ export const AgentsMentionsEditor = memo(
             }
           }
 
-          // Close mention trigger if no discovery trigger found
-          if (triggerActive.current) {
-            triggerActive.current = false
-            triggerStartIndex.current = null
-            triggerCharRef.current = null
+          // Close discovery trigger if no discovery trigger found
+          if (activeDiscoveryTrigger.current?.kind === "mention") {
+            activeDiscoveryTrigger.current = null
             onCloseTrigger()
-          }
-
-          // Close slash trigger if no discovery trigger found
-          if (slashTriggerActive.current) {
-            slashTriggerActive.current = false
-            slashTriggerStartIndex.current = null
-            slashTriggerCharRef.current = null
+          } else if (activeDiscoveryTrigger.current?.kind === "slash") {
+            activeDiscoveryTrigger.current = null
             onCloseSlashTrigger?.()
           }
 
@@ -1095,7 +1081,7 @@ export const AgentsMentionsEditor = memo(
 
           // Prevent submission during IME composition (e.g., Chinese/Japanese/Korean input)
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-            if (triggerActive.current || slashTriggerActive.current) {
+            if (activeDiscoveryTrigger.current !== null) {
               // Let dropdown handle Enter
               return
             }
@@ -1109,18 +1095,16 @@ export const AgentsMentionsEditor = memo(
           }
           if (e.key === "Escape") {
             // Close mention dropdown
-            if (triggerActive.current) {
+            if (activeDiscoveryTrigger.current?.kind === "mention") {
               e.preventDefault()
-              triggerActive.current = false
-              triggerStartIndex.current = null
+              activeDiscoveryTrigger.current = null
               onCloseTrigger()
               return
             }
             // Close command dropdown
-            if (slashTriggerActive.current) {
+            if (activeDiscoveryTrigger.current?.kind === "slash") {
               e.preventDefault()
-              slashTriggerActive.current = false
-              slashTriggerStartIndex.current = null
+              activeDiscoveryTrigger.current = null
               onCloseSlashTrigger?.()
               return
             }
@@ -1190,15 +1174,12 @@ export const AgentsMentionsEditor = memo(
             editorRef.current.innerHTML = ""
             setHasContent(false)
             onContentChange?.(false)
-            triggerActive.current = false
-            triggerStartIndex.current = null
-            slashTriggerActive.current = false
-            slashTriggerStartIndex.current = null
+            activeDiscoveryTrigger.current = null
           },
 
           // Clear slash command text after selection (removes /command from input)
           clearSlashCommand: () => {
-            if (!editorRef.current || slashTriggerStartIndex.current === null)
+            if (!editorRef.current || activeDiscoveryTrigger.current?.kind !== "slash" || activeDiscoveryTrigger.current.startIndex === null)
               return
 
             const sel = window.getSelection()
@@ -1207,8 +1188,7 @@ export const AgentsMentionsEditor = memo(
               editorRef.current.innerHTML = ""
               setHasContent(false)
               onContentChange?.(false)
-              slashTriggerActive.current = false
-              slashTriggerStartIndex.current = null
+              activeDiscoveryTrigger.current = null
               onCloseSlashTrigger?.()
               return
             }
@@ -1231,7 +1211,7 @@ export const AgentsMentionsEditor = memo(
               while (walkNode) {
                 if (walkNode === node) {
                   localSlashPosition =
-                    slashTriggerStartIndex.current! - serializedCharCount
+                    activeDiscoveryTrigger.current!.startIndex - serializedCharCount
                   break
                 }
 
@@ -1260,8 +1240,7 @@ export const AgentsMentionsEditor = memo(
               // Only proceed if we found the slash position
               if (localSlashPosition === null || localSlashPosition < 0) {
                 // Node not found in tree walk - just close the trigger without modifying text
-                slashTriggerActive.current = false
-                slashTriggerStartIndex.current = null
+                activeDiscoveryTrigger.current = null
                 onCloseSlashTrigger?.()
                 return
               }
@@ -1285,8 +1264,7 @@ export const AgentsMentionsEditor = memo(
             }
 
             // Close trigger
-            slashTriggerActive.current = false
-            slashTriggerStartIndex.current = null
+            activeDiscoveryTrigger.current = null
             onCloseSlashTrigger?.()
           },
 
@@ -1303,7 +1281,7 @@ export const AgentsMentionsEditor = memo(
             if (
               range &&
               range.startContainer.nodeType === Node.TEXT_NODE &&
-              triggerStartIndex.current !== null
+              activeDiscoveryTrigger.current?.kind === "mention"
             ) {
               const node = range.startContainer
               const text = node.textContent || ""
@@ -1321,7 +1299,7 @@ export const AgentsMentionsEditor = memo(
               while (walkNode) {
                 if (walkNode === node) {
                   localAtPosition =
-                    triggerStartIndex.current - serializedCharCount
+                    activeDiscoveryTrigger.current!.startIndex - serializedCharCount
                   break
                 }
 
@@ -1352,7 +1330,7 @@ export const AgentsMentionsEditor = memo(
               node.textContent = beforeAt + afterCursor
 
               // Insert mention node
-              const mentionNode = createMentionNode(option, triggerCharRef.current || "@")
+              const mentionNode = createMentionNode(option, (activeDiscoveryTrigger.current?.kind === "mention" ? activeDiscoveryTrigger.current.char : null) || "@")
               const newRange = document.createRange()
               newRange.setStart(node, localAtPosition)
               newRange.collapse(true)
@@ -1370,8 +1348,7 @@ export const AgentsMentionsEditor = memo(
               setHasContent(true)
 
               // Close trigger
-              triggerActive.current = false
-              triggerStartIndex.current = null
+              activeDiscoveryTrigger.current = null
               onCloseTrigger()
             }
             // Case 2: Direct insertion (e.g., from sidebar widget, drag & drop)

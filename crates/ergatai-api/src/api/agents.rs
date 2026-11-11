@@ -2596,7 +2596,7 @@ pub async fn list_agent_sessions(
                                 groups.sort();
                                 groups.dedup();
                                 for cwd in groups.clone() {
-                                    let group_total =
+                                    let _group_total =
                                         sessions.iter().filter(|s| s.cwd == cwd).count() as i64;
                                     let group_chat_id = match &cwd {
                                         Some(path) => {
@@ -2615,28 +2615,28 @@ pub async fn list_agent_sessions(
                                         None => chat_id_i64,
                                     };
 
-                                    // Track migration progress for this (agent, chat, cwd) group.
-                                    let _ = tokio::task::spawn_blocking({
-                                        let agent_id = id.clone();
-                                        let cwd_clone = cwd.clone();
-                                        move || {
-                                            let _ = crate::user_data_db::agent_history_migrations::upsert(
-                                                crate::user_data_db::agent_history_migrations::AgentHistoryMigration {
-                                                    migration_id: 0,
-                                                    agent_id,
-                                                    agent_name: None,
-                                                    chat_id: group_chat_id,
-                                                    cwd: cwd_clone,
-                                                    total_sessions: group_total,
-                                                    status: "running".to_string(),
-                                                    last_error: None,
-                                                    created_at: 0,
-                                                    updated_at: 0,
-                                                },
-                                            );
-                                        }
-                                    })
-                                    .await;
+                                    // Temporarily disabled migration progress tracking in v0.1.0.
+                                    // let _ = tokio::task::spawn_blocking({
+                                    //     let agent_id = id.clone();
+                                    //     let cwd_clone = cwd.clone();
+                                    //     move || {
+                                    //         let _ = crate::user_data_db::agent_history_migrations::upsert(
+                                    //             crate::user_data_db::agent_history_migrations::AgentHistoryMigration {
+                                    //                 migration_id: 0,
+                                    //                 agent_id,
+                                    //                 agent_name: None,
+                                    //                 chat_id: group_chat_id,
+                                    //                 cwd: cwd_clone,
+                                    //                 total_sessions: group_total,
+                                    //                 status: "running".to_string(),
+                                    //                 last_error: None,
+                                    //                 created_at: 0,
+                                    //                 updated_at: 0,
+                                    //             },
+                                    //         );
+                                    //     }
+                                    // })
+                                    // .await;
 
                                     let payload = serde_json::json!({
                                         "chat_id": group_chat_id,

@@ -2442,8 +2442,9 @@ export function AgentsSidebar({
                   <TooltipContent>Settings{settingsHotkey && <> <Kbd>{settingsHotkey}</Kbd></>}</TooltipContent>
                 </Tooltip>
 
-                <HelpGuideWidget />
-                <MigrationProgressWidget inline />
+                {/* Temporarily disabled migration UI due to bugs in v0.1.0. */}
+                {/* <HelpGuideWidget /> */}
+                {/* <MigrationProgressWidget inline /> */}
               </div>
 
               <div className="flex-1" />

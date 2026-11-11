@@ -154,7 +154,8 @@ impl MailboxState {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        recent.retain(|msg| now.saturating_sub(msg.delivered_at) < MAX_RECENT_MESSAGE_AGE.as_secs());
+        recent
+            .retain(|msg| now.saturating_sub(msg.delivered_at) < MAX_RECENT_MESSAGE_AGE.as_secs());
 
         // Update last activity
         *self.last_activity_at.write() = Some(
@@ -369,4 +370,57 @@ pub fn init_mailbox_manager() -> Arc<MailboxManager> {
 /// Get the global mailbox manager
 pub fn get_mailbox_manager() -> Option<Arc<MailboxManager>> {
     MAILBOX_MANAGER.get().cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_increment_and_decrement_pending() {
+        let mgr = MailboxManager::new();
+        mgr.increment_pending("a", 100);
+        let mb = mgr.get_mailbox("a").unwrap();
+        assert_eq!(mb.pending_count, 1);
+        assert!(mb.oldest_pending_age_secs.is_some());
+        mgr.decrement_pending("a");
+        let mb = mgr.get_mailbox("a").unwrap();
+        assert_eq!(mb.pending_count, 0);
+    }
+
+    #[test]
+    fn test_record_delivery_decrements_pending() {
+        let mgr = MailboxManager::new();
+        mgr.increment_pending("a", 100);
+        mgr.record_delivery("a", "m1".into(), "sender".into(), "request".into(), 5);
+        let mb = mgr.get_mailbox("a").unwrap();
+        assert_eq!(mb.pending_count, 0);
+        assert_eq!(mb.total_delivered, 1);
+        assert_eq!(mb.recent_messages.len(), 1);
+    }
+
+    #[test]
+    fn test_summary_and_remove() {
+        let mgr = MailboxManager::new();
+        mgr.increment_pending("a", 100);
+        mgr.increment_pending("b", 200);
+        let s = mgr.get_summary();
+        assert_eq!(s.total_agents, 2);
+        assert_eq!(s.total_pending, 2);
+        mgr.remove_mailbox("a");
+        assert!(mgr.get_mailbox("a").is_none());
+        assert_eq!(mgr.get_summary().total_agents, 1);
+    }
+
+    #[test]
+    fn test_clear_mailbox() {
+        let mgr = MailboxManager::new();
+        mgr.increment_pending("a", 100);
+        mgr.record_delivery("a", "m1".into(), "s".into(), "r".into(), 1);
+        mgr.clear_mailbox("a");
+        let mb = mgr.get_mailbox("a").unwrap();
+        assert_eq!(mb.pending_count, 0);
+        assert_eq!(mb.total_delivered, 0);
+        assert!(mb.recent_messages.is_empty());
+    }
 }

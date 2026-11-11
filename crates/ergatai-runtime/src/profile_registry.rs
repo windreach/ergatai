@@ -779,9 +779,9 @@ impl ProfileRegistry {
         }
 
         // Add discovery_triggers_json for agent-level discovery trigger declarations.
-        if let Err(e) = conn
-            .execute_batch("ALTER TABLE agent_registrations ADD COLUMN discovery_triggers_json TEXT")
-        {
+        if let Err(e) = conn.execute_batch(
+            "ALTER TABLE agent_registrations ADD COLUMN discovery_triggers_json TEXT",
+        ) {
             if !e.to_string().contains("duplicate column name") {
                 warn!(error = %e, "Failed to add discovery_triggers_json column");
             }
@@ -1883,6 +1883,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_register_and_parse_discovery_triggers() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let registry = ProfileRegistry::new(temp_file.path()).unwrap();
+        let mut registration = AgentRegistration::new(
+            "disc-agent".to_string(),
+            "agent acp".to_string(),
+            "acp".to_string(),
+        );
+        registration.discovery_triggers_json = Some(
+            serde_json::to_string(&serde_json::json!([
+                {"char": "/", "kind": "slash", "source": "agent"},
+                {"char": "@", "kind": "mention", "source": "agent"}
+            ]))
+            .unwrap(),
+        );
+
+        registry.register(registration).await.unwrap();
+        let stored = registry.get_by_name("disc-agent").await.unwrap().unwrap();
+        assert!(stored.discovery_triggers_json.is_some());
+        let parsed: serde_json::Value =
+            serde_json::from_str(stored.discovery_triggers_json.as_deref().unwrap()).unwrap();
+        assert_eq!(parsed.as_array().unwrap().len(), 2);
+        assert_eq!(parsed[0]["char"], "/");
+    }
+
+    #[tokio::test]
     async fn test_list_registrations() {
         let temp_file = NamedTempFile::new().unwrap();
         let registry = ProfileRegistry::new(temp_file.path()).unwrap();
@@ -2204,5 +2230,65 @@ mod tests {
         let long_cmd = "python3 ".to_string() + &"a".repeat(1000);
         let reg = AgentRegistration::new("test".to_string(), long_cmd, "acp".to_string());
         assert!(reg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_parse_agent_triggers_json_none() {
+        let res = parse_agent_triggers_json(None).unwrap();
+        assert!(res.is_empty());
+    }
+
+    #[test]
+    fn test_parse_agent_triggers_json_valid() {
+        let json =
+            r#"[{"id":"t1","char":"@","kind":"command","pattern":"a$","execution":"passthrough"}]"#;
+        let res = parse_agent_triggers_json(Some(json)).unwrap();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].id, "t1");
+    }
+
+    #[test]
+    fn test_parse_agent_triggers_json_invalid_json() {
+        let res = parse_agent_triggers_json(Some("{not json"));
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_parse_agent_triggers_json_invalid_char() {
+        let json = r#"[{"id":"t1","char":"@@","kind":"command","pattern":"a$","execution":"passthrough"}]"#;
+        let res = parse_agent_triggers_json(Some(json));
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_agent_triggers_json_none() {
+        let res = agent_triggers_json(None).unwrap();
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn test_agent_triggers_json_empty() {
+        let res = agent_triggers_json(Some(vec![])).unwrap();
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn test_agent_triggers_json_roundtrip() {
+        use crate::profile_registry::AgentTriggerSpec;
+        // AgentTriggerSpec fields: id, char, kind, pattern, execution, source, agent_id, description
+        let t = AgentTriggerSpec {
+            id: "t1".to_string(),
+            agent_id: None,
+            char: "@".to_string(),
+            kind: crate::profile_registry::AgentTriggerKind::Command,
+            pattern: "a$".to_string(),
+            execution: crate::profile_registry::AgentTriggerExecution::Passthrough,
+            source: crate::profile_registry::AgentTriggerSource::Manual,
+            description: None,
+        };
+        let json = agent_triggers_json(Some(vec![t.clone()])).unwrap().unwrap();
+        let parsed = parse_agent_triggers_json(Some(&json)).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].id, t.id);
     }
 }

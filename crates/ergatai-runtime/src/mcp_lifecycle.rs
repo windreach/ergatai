@@ -55,4 +55,10 @@ mod tests {
         close_agent_mcp_sessions("agent-test").await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
+
+    #[tokio::test]
+    async fn close_does_not_panic() {
+        // Should not panic whether or not a closer is installed.
+        close_agent_mcp_sessions("agent-noop").await;
+    }
 }

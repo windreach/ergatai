@@ -49,3 +49,36 @@ pub fn enqueue_conversation_cleanup(
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ergatai_error::ConversationId;
+    use std::sync::Mutex;
+
+    static TEST_DB_MUTEX: Mutex<()> = Mutex::new(());
+    static TEST_DB_DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+    fn lock_db() -> std::sync::MutexGuard<'static, ()> {
+        let guard = TEST_DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        TEST_DB_DATA_DIR.get_or_init(|| {
+            let data_dir = std::env::temp_dir()
+                .join("ergatai-deletion-tests")
+                .join(std::process::id().to_string());
+            let _ = std::fs::remove_dir_all(&data_dir);
+            std::fs::create_dir_all(&data_dir).unwrap();
+            std::env::set_var("ERGATAI_DATA_DIR", &data_dir);
+            data_dir
+        });
+        let _ = crate::user_data_db::get_user_data_db();
+        guard
+    }
+
+    #[test]
+    fn test_enqueue_does_not_panic() {
+        let _g = lock_db();
+        let ids = vec![ConversationId::new(1), ConversationId::new(2)];
+        // Should not panic even if enqueue_deletion fails (no parent rows)
+        enqueue_conversation_cleanup("chat", "123", "cleanup_chat", ids);
+    }
+}

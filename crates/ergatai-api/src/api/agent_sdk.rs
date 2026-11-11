@@ -139,7 +139,11 @@ pub async fn switch_model(
         }
     }
 
-    let result = crate::services::agent_sdk_service::switch_model(
+    // Priority: SDK first (Claude/OpenCode), then ACP fallback for agents
+    // whose SDK does not support runtime model switching (e.g. Codex) or
+    // when the SDK call fails. This keeps OpenCode's HTTP SDK path preferred
+    // while still allowing ACP-native switching.
+    let sdk_result = crate::services::agent_sdk_service::switch_model(
         &kind,
         &body.model,
         cwd.as_deref(),
@@ -147,10 +151,34 @@ pub async fn switch_model(
     )
     .await;
 
+    let mut result = sdk_result.clone();
+    if !result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        // Fallback to ACP (session/set_model, then /model).
+        match crate::services::agent_service::set_agent_model(&agent_id, &body.model).await {
+            Ok(_) => {
+                result = serde_json::json!({
+                    "ok": true,
+                    "via": "acp_fallback",
+                    "sdk_error": sdk_result.get("error").cloned().unwrap_or(serde_json::Value::Null),
+                });
+            }
+            Err(e) => {
+                // Preserve the original SDK error for diagnostics.
+                if result.get("error").is_none() {
+                    result = serde_json::json!({
+                        "ok": false,
+                        "error": format!("SDK and ACP model switch failed: {}", e),
+                    });
+                }
+            }
+        }
+    }
+
     // On success, refresh the profile model catalog via SDK so future
     // `get_profile_models` reads see the full SDK-reported list with
     // source=agent_sdk. Fall back to recording the single model if SDK
-    // refresh returns empty (e.g. codex has no model list API).
+    // refresh returns empty (e.g. codex has no model list API) or when
+    // switching succeeded through ACP fallback.
     if result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         if let Some(pn) = profile_name.as_deref() {
             if kind.is_empty() {

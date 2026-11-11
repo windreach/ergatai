@@ -756,7 +756,24 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
       if (part.type === "text" && "text" in part) {
         const textPart = part as TextPart
         if (textPart.text) {
-          textParts.push(textPart.text)
+          // Ergatai mention tokens (e.g. @[file:...], @[agent:...]) are a UI
+          // serialization format. Unwrap them before sending so the agent only
+          // sees clean text; referenced content is attached separately below.
+          // Content-bearing mentions (quote/diff/pasted/chatHistory) are kept
+          // because their payload is the content carrier.
+          const cleaned = textPart.text
+            .replace(/@\[file:[^\]]*\]/g, "")
+            .replace(/@\[folder:[^\]]*\]/g, "")
+            .replace(/@\[agent:([^\]]+)\]/g, "@$1")
+            .replace(/@\[skill:([^\]]+)\]/g, "/$1")
+            .replace(/@\[command:([^\]]+)\]/g, "/$1")
+            .replace(/@\[tool:[^\]]*\]/g, "")
+            .replace(/@\[plugin:[^\]]*\]/g, "")
+            .replace(/\s{2,}/g, " ")
+            .trim()
+          if (cleaned) {
+            textParts.push(cleaned)
+          }
         }
       } else if (part.type === "file-content" && "content" in part) {
         const filePart = part as FileContentPart

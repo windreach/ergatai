@@ -137,3 +137,158 @@ impl ConversationService {
         Ok(child)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::user_data_db::{chats, collaboration_sessions, workspaces, CollaborationSession};
+    use std::sync::Mutex;
+
+    static TEST_DB_MUTEX: Mutex<()> = Mutex::new(());
+    static TEST_DB_DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+    fn lock_db() -> std::sync::MutexGuard<'static, ()> {
+        let guard = TEST_DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        TEST_DB_DATA_DIR.get_or_init(|| {
+            let data_dir = std::env::temp_dir()
+                .join("ergatai-conv-tests")
+                .join(std::process::id().to_string());
+            let _ = std::fs::remove_dir_all(&data_dir);
+            std::fs::create_dir_all(&data_dir).unwrap();
+            std::env::set_var("ERGATAI_DATA_DIR", &data_dir);
+            data_dir
+        });
+        let _ = crate::user_data_db::get_user_data_db();
+        guard
+    }
+
+    fn setup() -> (ergatai_error::CollaborationSessionId, ergatai_error::ChatId) {
+        let ws = workspaces::create(crate::user_data_db::Workspace {
+            workspace_id: ergatai_error::WorkspaceId::generate(),
+            name: "w".to_string(),
+            work_dir: "/tmp/w".to_string(),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            config: "{}".to_string(),
+            collaboration_mode: "none".to_string(),
+            status: "active".to_string(),
+            default_project_id: None,
+            created_at: 0,
+            updated_at: 0,
+        })
+        .unwrap();
+        let chat = chats::create(crate::user_data_db::Chat {
+            chat_id: ergatai_error::ChatId::generate(),
+            workspace_id: ws.workspace_id,
+            name: Some("c".to_string()),
+            collaboration_mode: Some("supervisor".to_string()),
+            worktree_path: None,
+            branch: None,
+            base_branch: None,
+            pr_url: None,
+            pr_number: None,
+            created_at: 0,
+            updated_at: 0,
+            archived_at: None,
+        })
+        .unwrap();
+        let collab = CollaborationSession {
+            collaboration_session_id: ergatai_error::CollaborationSessionId::generate(),
+            chat_id: chat.chat_id,
+            workspace_id: ws.workspace_id,
+            mode: "supervisor".to_string(),
+            state: "idle".to_string(),
+            goal: None,
+            active_plan_revision: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+        collaboration_sessions::create(collab.clone()).unwrap();
+        (collab.collaboration_session_id, chat.chat_id)
+    }
+
+    #[test]
+    fn test_invalid_participant_role() {
+        let _g = lock_db();
+        let (collab, chat) = setup();
+        let res = ConversationService::create_conversation(
+            collab,
+            chat,
+            None,
+            "agent".to_string(),
+            "invalid".to_string(),
+        );
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_create_and_get() {
+        let _g = lock_db();
+        let (collab, chat) = setup();
+        let conv = ConversationService::create_conversation(
+            collab,
+            chat,
+            Some("conv1".to_string()),
+            "agent".to_string(),
+            "peer".to_string(),
+        )
+        .unwrap();
+        let fetched = ConversationService::get_conversation(conv.conversation_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.name, Some("conv1".to_string()));
+    }
+
+    #[test]
+    fn test_list_by_chat() {
+        let _g = lock_db();
+        let (collab, chat) = setup();
+        let _ = ConversationService::create_conversation(
+            collab,
+            chat,
+            None,
+            "agent".to_string(),
+            "peer".to_string(),
+        )
+        .unwrap();
+        let list = ConversationService::list_conversations_by_chat(chat).unwrap();
+        assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn test_update_status() {
+        let _g = lock_db();
+        let (collab, chat) = setup();
+        let conv = ConversationService::create_conversation(
+            collab,
+            chat,
+            None,
+            "agent".to_string(),
+            "peer".to_string(),
+        )
+        .unwrap();
+        assert!(ConversationService::update_status(conv.conversation_id, "done").unwrap());
+        let fetched = ConversationService::get_conversation(conv.conversation_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.status, "done");
+    }
+
+    #[test]
+    fn test_delete_conversation() {
+        let _g = lock_db();
+        let (collab, chat) = setup();
+        let conv = ConversationService::create_conversation(
+            collab,
+            chat,
+            None,
+            "agent".to_string(),
+            "peer".to_string(),
+        )
+        .unwrap();
+        ConversationService::delete_conversation(conv.conversation_id).unwrap();
+        assert!(ConversationService::get_conversation(conv.conversation_id)
+            .unwrap()
+            .is_none());
+    }
+}

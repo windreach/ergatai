@@ -130,3 +130,119 @@ impl MessageService {
         Ok(serialized)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::conversation_service::ConversationService;
+    use crate::user_data_db::{
+        chats, collaboration_sessions, conversations, workspaces, CollaborationSession,
+    };
+    use std::sync::Mutex;
+
+    static TEST_DB_MUTEX: Mutex<()> = Mutex::new(());
+    static TEST_DB_DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+    fn lock_db() -> std::sync::MutexGuard<'static, ()> {
+        let guard = TEST_DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        TEST_DB_DATA_DIR.get_or_init(|| {
+            let data_dir = std::env::temp_dir()
+                .join("ergatai-msg-tests")
+                .join(std::process::id().to_string());
+            let _ = std::fs::remove_dir_all(&data_dir);
+            std::fs::create_dir_all(&data_dir).unwrap();
+            std::env::set_var("ERGATAI_DATA_DIR", &data_dir);
+            data_dir
+        });
+        let _ = crate::user_data_db::get_user_data_db();
+        guard
+    }
+
+    fn setup_conv() -> (
+        ergatai_error::ConversationId,
+        ergatai_error::CollaborationSessionId,
+    ) {
+        let ws = workspaces::create(crate::user_data_db::Workspace {
+            workspace_id: ergatai_error::WorkspaceId::generate(),
+            name: "w".to_string(),
+            work_dir: "/tmp/w".to_string(),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            config: "{}".to_string(),
+            collaboration_mode: "none".to_string(),
+            status: "active".to_string(),
+            default_project_id: None,
+            created_at: 0,
+            updated_at: 0,
+        })
+        .unwrap();
+        let chat = chats::create(crate::user_data_db::Chat {
+            chat_id: ergatai_error::ChatId::generate(),
+            workspace_id: ws.workspace_id,
+            name: Some("c".to_string()),
+            collaboration_mode: Some("supervisor".to_string()),
+            worktree_path: None,
+            branch: None,
+            base_branch: None,
+            pr_url: None,
+            pr_number: None,
+            created_at: 0,
+            updated_at: 0,
+            archived_at: None,
+        })
+        .unwrap();
+        let collab = CollaborationSession {
+            collaboration_session_id: ergatai_error::CollaborationSessionId::generate(),
+            chat_id: chat.chat_id,
+            workspace_id: ws.workspace_id,
+            mode: "supervisor".to_string(),
+            state: "idle".to_string(),
+            goal: None,
+            active_plan_revision: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+        collaboration_sessions::create(collab.clone()).unwrap();
+        let conv = ConversationService::create_conversation(
+            collab.collaboration_session_id,
+            chat.chat_id,
+            None,
+            "agent".to_string(),
+            "peer".to_string(),
+        )
+        .unwrap();
+        (conv.conversation_id, collab.collaboration_session_id)
+    }
+
+    #[test]
+    fn test_create_and_list_messages() {
+        let _g = lock_db();
+        let (conv_id, _) = setup_conv();
+        let m1 = MessageService::create_message(conv_id, "user", "hello", None).unwrap();
+        let m2 = MessageService::create_message(conv_id, "assistant", "hi", None).unwrap();
+        let list = MessageService::list_messages_by_conversation(conv_id).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].message_id, m1.message_id);
+        assert_eq!(list[1].message_id, m2.message_id);
+    }
+
+    #[test]
+    fn test_get_last_message() {
+        let _g = lock_db();
+        let (conv_id, _) = setup_conv();
+        MessageService::create_message(conv_id, "user", "first", None).unwrap();
+        let last = MessageService::create_message(conv_id, "assistant", "second", None).unwrap();
+        let fetched = MessageService::get_last_message(conv_id).unwrap().unwrap();
+        assert_eq!(fetched.message_id, last.message_id);
+    }
+
+    #[test]
+    fn test_list_after_sequence() {
+        let _g = lock_db();
+        let (conv_id, _) = setup_conv();
+        let m1 = MessageService::create_message(conv_id, "user", "first", None).unwrap();
+        MessageService::create_message(conv_id, "assistant", "second", None).unwrap();
+        let after = MessageService::list_messages_after_sequence(conv_id, m1.sequence).unwrap();
+        assert_eq!(after.len(), 1);
+    }
+}

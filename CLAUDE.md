@@ -179,7 +179,6 @@ crates/
 │       └── lib.rs
 ├── ergatai-agent/         Agent 配置和发现 (占位)
 ├── ergatai-binary/        二进制资源 (nats-server 查找/下载)
-└── ergatai-cli/           CLI 工具 (ergatai 命令)
     └── src/
         ├── main.rs              clap CLI (start/workspace/agent/status)
         ├── commands/              子命令实现
@@ -201,7 +200,6 @@ frontend/                  Web 前端 (React + Vite + TypeScript, monorepo)
 # 构建
 cargo build --workspace
 cargo build -p ergatai-api
-cargo build -p ergatai-cli
 
 # 测试
 cargo test --workspace

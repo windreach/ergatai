@@ -2070,7 +2070,7 @@ impl FileLockManager {
             .prepare(
                 "SELECT id, file_path, agent_id, session_id, mode, scope, token_id,
                         reason, approved_by, created_at, expires_at, heartbeat_interval_secs,
-                        heartbeat_at, status
+                        heartbeat_at, status, current_hash, version, violation_count
                  FROM file_locks
                  WHERE token_id = ?1 AND status = 'ACTIVE'",
             )
@@ -2097,7 +2097,7 @@ impl FileLockManager {
             .prepare(
                 "SELECT id, file_path, agent_id, session_id, mode, scope, token_id,
                         reason, approved_by, created_at, expires_at, heartbeat_interval_secs,
-                        heartbeat_at, status
+                        heartbeat_at, status, current_hash, version, violation_count
                  FROM file_locks
                  WHERE session_id = ?1 AND status = 'ACTIVE'",
             )
@@ -2196,7 +2196,7 @@ impl FileLockManager {
             .prepare(
                 "SELECT id, file_path, agent_id, session_id, mode, scope, token_id,
                         reason, approved_by, created_at, expires_at, heartbeat_interval_secs,
-                        heartbeat_at, status
+                        heartbeat_at, status, current_hash, version, violation_count
                  FROM file_locks
                  WHERE status = 'ACTIVE'",
             )

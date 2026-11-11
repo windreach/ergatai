@@ -122,3 +122,129 @@ impl WorkspaceService {
         Ok(updated)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static TEST_DB_MUTEX: Mutex<()> = Mutex::new(());
+    static TEST_DB_DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+    fn lock_db() -> std::sync::MutexGuard<'static, ()> {
+        let guard = TEST_DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        TEST_DB_DATA_DIR.get_or_init(|| {
+            let data_dir = std::env::temp_dir()
+                .join("ergatai-ws-tests")
+                .join(std::process::id().to_string());
+            let _ = std::fs::remove_dir_all(&data_dir);
+            std::fs::create_dir_all(&data_dir).unwrap();
+            std::env::set_var("ERGATAI_DATA_DIR", &data_dir);
+            data_dir
+        });
+        let _ = crate::user_data_db::get_user_data_db();
+        guard
+    }
+
+    #[test]
+    fn test_create_and_get() {
+        let _g = lock_db();
+        let ws = WorkspaceService::create_workspace(
+            "ws1".to_string(),
+            "/tmp/w".to_string(),
+            None,
+            None,
+            None,
+            "none".to_string(),
+        )
+        .unwrap();
+        let fetched = WorkspaceService::get_workspace(ws.workspace_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.name, "ws1");
+    }
+
+    #[test]
+    fn test_update_validation_empty_name() {
+        let _g = lock_db();
+        let ws = WorkspaceService::create_workspace(
+            "ws2".to_string(),
+            "/tmp/w2".to_string(),
+            None,
+            None,
+            None,
+            "none".to_string(),
+        )
+        .unwrap();
+        let mut bad = ws.clone();
+        bad.name = "   ".to_string();
+        assert!(WorkspaceService::update_workspace(bad).is_err());
+    }
+
+    #[test]
+    fn test_update_validation_long_name() {
+        let _g = lock_db();
+        let ws = WorkspaceService::create_workspace(
+            "ws3".to_string(),
+            "/tmp/w3".to_string(),
+            None,
+            None,
+            None,
+            "none".to_string(),
+        )
+        .unwrap();
+        let mut bad = ws.clone();
+        bad.name = "a".repeat(256);
+        assert!(WorkspaceService::update_workspace(bad).is_err());
+    }
+
+    #[test]
+    fn test_update_validation_empty_work_dir() {
+        let _g = lock_db();
+        let ws = WorkspaceService::create_workspace(
+            "ws4".to_string(),
+            "/tmp/w4".to_string(),
+            None,
+            None,
+            None,
+            "none".to_string(),
+        )
+        .unwrap();
+        let mut bad = ws.clone();
+        bad.work_dir = "".to_string();
+        assert!(WorkspaceService::update_workspace(bad).is_err());
+    }
+
+    #[test]
+    fn test_delete_workspace() {
+        let _g = lock_db();
+        let ws = WorkspaceService::create_workspace(
+            "ws5".to_string(),
+            "/tmp/w5".to_string(),
+            None,
+            None,
+            None,
+            "none".to_string(),
+        )
+        .unwrap();
+        assert!(WorkspaceService::delete_workspace(ws.workspace_id).unwrap());
+        assert!(WorkspaceService::get_workspace(ws.workspace_id)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn test_set_status() {
+        let _g = lock_db();
+        let ws = WorkspaceService::create_workspace(
+            "ws6".to_string(),
+            "/tmp/w6".to_string(),
+            None,
+            None,
+            None,
+            "none".to_string(),
+        )
+        .unwrap();
+        assert!(WorkspaceService::set_status(ws.workspace_id, "inactive").unwrap());
+    }
+}

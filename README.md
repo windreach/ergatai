@@ -43,7 +43,6 @@ crates/
   ergatai-lock       File access control (zero-trust tokens, Git COW)
   ergatai-core       Facade: unified registry, cross-crate integration
   ergatai-error      Shared error types
-  ergatai-cli        `ergatai` CLI (clap + ratatui TUI)
   ergatai-agent      Agent configuration & discovery
   ergatai-binary     Locates / downloads embedded nats-server
   ergatai-preload    Preload hooks
@@ -66,9 +65,6 @@ cargo build --workspace
 
 # Just the API server
 cargo build -p ergatai-api
-
-# Just the CLI
-cargo build -p ergatai-cli
 
 # Desktop app (frontend + Electron shell)
 cd frontend && npm install && npm run electron:dev

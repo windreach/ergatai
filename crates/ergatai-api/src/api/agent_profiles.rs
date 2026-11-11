@@ -1100,4 +1100,39 @@ mod tests {
         assert_eq!(resp.command, reg.command);
         assert_eq!(resp.agent_type, reg.agent_type);
     }
+
+    #[test]
+    fn test_profile_response_discovery_triggers_roundtrip() {
+        let triggers = serde_json::json!([
+            {"char": "/", "kind": "slash"},
+            {"char": "@", "kind": "mention"}
+        ]);
+        let resp = ProfileResponse {
+            id: "p1".to_string(),
+            name: "a".to_string(),
+            command: "cmd".to_string(),
+            agent_type: "acp".to_string(),
+            package_name: None,
+            avatar_url: None,
+            native_triggers: None,
+            discovery_triggers: Some(triggers.clone()),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["discovery_triggers"], triggers);
+    }
+
+    #[test]
+    fn test_profile_response_from_registration_with_discovery_triggers() {
+        let mut reg =
+            AgentRegistration::new("disc".to_string(), "cmd".to_string(), "acp".to_string());
+        reg.discovery_triggers_json = Some(
+            serde_json::to_string(&serde_json::json!([{"char": "/", "kind": "slash"}])).unwrap(),
+        );
+        let resp = ProfileResponse::from(reg);
+        assert!(resp.discovery_triggers.is_some());
+        let arr = resp.discovery_triggers.unwrap();
+        assert_eq!(arr.as_array().unwrap().len(), 1);
+        assert_eq!(arr[0]["char"], "/");
+    }
 }
