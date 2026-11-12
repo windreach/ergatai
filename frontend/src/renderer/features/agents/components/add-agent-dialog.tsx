@@ -33,6 +33,7 @@ import {
 } from "../lib/agent-contract-api"
 import { agentContractApi } from "../lib/agent-contract-api"
 import { getCoreAgentIcon } from "./core-agent-selector"
+import { AgentConnectionsSection } from "./agent-connections-section"
 
 interface AddAgentDialogProps {
   open: boolean
@@ -178,7 +179,7 @@ export function AddAgentDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[440px] gap-5 rounded-2xl p-5 sm:max-w-[440px]">
+      <DialogContent className="flex h-[min(600px,92vh)] w-[780px] max-w-[94vw] flex-col gap-4 overflow-hidden rounded-2xl p-5 sm:max-w-[94vw]">
         <DialogHeader className="space-y-1.5">
           <DialogTitle className="text-base font-semibold">
             Add a custom agent
@@ -189,162 +190,184 @@ export function AddAgentDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <form id="create-agent-form" onSubmit={handleSubmit} className="space-y-5">
-          <div className="flex items-start gap-4">
-            <label
-              className="relative flex h-16 w-16 flex-shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-dashed bg-muted/30 text-muted-foreground transition-colors hover:border-primary/40 hover:bg-accent/40 hover:text-foreground"
-              title="Accepts PNG, JPG, WebP or SVG up to 2MB"
-              aria-label="Upload agent avatar"
-            >
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                className="sr-only"
-                onChange={handleAvatarChange}
-              />
-              {avatarUrl ? (
-                <img
-                  src={avatarUrl}
-                  alt=""
-                  className="h-full w-full object-cover"
-                  width={40}
-                  height={40}
-                />
-              ) : (
-                <span className="flex flex-col items-center gap-1">
-                  <Upload className="h-4 w-4" />
-                  <span className="text-[10px] leading-none">Image</span>
-                </span>
-              )}
-            </label>
-
-            <div className="min-w-0 flex-1 space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
+        <form
+          id="create-agent-form"
+          onSubmit={handleSubmit}
+          className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden"
+        >
+          {/*
+            Both columns share the dialog's remaining height so opening the
+            provider form never changes the dialog size. Each column scrolls
+            on its own, keeping the preview/footer pinned in place.
+          */}
+          <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto md:grid-cols-2 md:grid-rows-[minmax(0,1fr)] md:overflow-hidden">
+            {/* Left column: agent identity */}
+            <div className="space-y-4 md:min-h-0 md:overflow-y-auto md:pr-1">
+              <div className="flex items-start gap-4">
                 <label
-                  htmlFor="agent-name"
-                  className="text-sm font-medium text-foreground"
+                  className="relative flex h-16 w-16 flex-shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-dashed bg-muted/30 text-muted-foreground transition-colors hover:border-primary/40 hover:bg-accent/40 hover:text-foreground"
+                  title="Accepts PNG, JPG, WebP or SVG up to 2MB"
+                  aria-label="Upload agent avatar"
                 >
-                  Agent name
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                    className="sr-only"
+                    onChange={handleAvatarChange}
+                  />
+                  {avatarUrl ? (
+                    <img
+                      src={avatarUrl}
+                      alt=""
+                      className="h-full w-full object-cover"
+                      width={40}
+                      height={40}
+                    />
+                  ) : (
+                    <span className="flex flex-col items-center gap-1">
+                      <Upload className="h-4 w-4" />
+                      <span className="text-[10px] leading-none">Image</span>
+                    </span>
+                  )}
                 </label>
-                <Badge variant="secondary" className="text-[10px]">
-                  Optional
-                </Badge>
-              </div>
-              <Input
-                id="agent-name"
-                placeholder={selectedAgent.name}
-                value={agentName}
-                onChange={(event) => setAgentName(event.target.value)}
-                maxLength={40}
-              />
-              <p className="text-xs text-muted-foreground">
-                Defaults to the runtime name when left empty.
-              </p>
-            </div>
-          </div>
 
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <label
-                htmlFor="startup-command"
-                className="text-sm font-medium text-foreground"
-              >
-                Startup command
-              </label>
-              <Badge variant="secondary" className="text-[10px]">
-                Required
-              </Badge>
-            </div>
-            <Input
-              id="startup-command"
-              placeholder="Enter the executable command"
-              value={startupCommand}
-              onChange={(event) => {
-                const value = event.target.value
-                setStartupCommand(value)
-                // 如果用户手动编辑，同时更新完整命令
-                if (!autoFillCommand) {
-                  setFullCommand(value)
-                }
-                setAutoFillCommand(false)
-                setStartupError(false)
-              }}
-              className={cn(
-                "font-mono text-[13px]",
-                startupError && "border-destructive focus-visible:border-destructive focus-visible:ring-destructive/20",
-              )}
-              aria-invalid={startupError}
-            />
-            {startupError ? (
-              <p className="flex items-center gap-1 text-xs text-destructive">
-                <CircleAlert className="h-3 w-3" />
-                A startup command is required.
-              </p>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                The command is pre-filled and changes as you switch runtimes.
-              </p>
-            )}
-          </div>
-
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-sm font-medium text-foreground">
-                Agent runtime
-              </span>
-              <Badge variant="secondary" className="text-[10px]">
-                Required
-              </Badge>
-            </div>
-            <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  className="flex h-9 w-full items-center justify-between rounded-lg border border-input bg-background px-3 text-sm transition-shadow hover:bg-accent/50 focus-visible:border-primary focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-primary/20"
-                >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <SelectedIcon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-                    <span className="truncate">{selectedAgent.name}</span>
-                  </span>
-                  <ChevronDown className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-                </button>
-              </PopoverTrigger>
-              <PopoverContent align="start" className="w-80 p-1">
-                {agentOptions.map((agent) => {
-                  const Icon = getCoreAgentIcon(agent.id)
-                  const defaultCommand = agent.defaultCommand ?? ""
-                  const isSelected = agent.id === selectedAgentId
-
-                  return (
-                    <button
-                      key={agent.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedAgentId(agent.id)
-                        setPopoverOpen(false)
-                      }}
-                      className={cn(
-                        "flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent/50",
-                        isSelected && "bg-accent/30",
-                      )}
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <label
+                      htmlFor="agent-name"
+                      className="text-sm font-medium text-foreground"
                     >
-                      <Icon className="mt-0.5 h-4 w-4 flex-shrink-0 text-muted-foreground" />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">
-                          {agent.name}
-                        </span>
-                        <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground" title={defaultCommand}>
-                          {defaultCommand.includes("/") ? defaultCommand.split("/").pop() : defaultCommand}
-                        </span>
+                      Agent name
+                    </label>
+                    <Badge variant="secondary" className="text-[10px]">
+                      Optional
+                    </Badge>
+                  </div>
+                  <Input
+                    id="agent-name"
+                    placeholder={selectedAgent.name}
+                    value={agentName}
+                    onChange={(event) => setAgentName(event.target.value)}
+                    maxLength={40}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Defaults to the runtime name when left empty.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label
+                    htmlFor="startup-command"
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Startup command
+                  </label>
+                  <Badge variant="secondary" className="text-[10px]">
+                    Required
+                  </Badge>
+                </div>
+                <Input
+                  id="startup-command"
+                  placeholder="Enter the executable command"
+                  value={startupCommand}
+                  onChange={(event) => {
+                    const value = event.target.value
+                    setStartupCommand(value)
+                    // 如果用户手动编辑，同时更新完整命令
+                    if (!autoFillCommand) {
+                      setFullCommand(value)
+                    }
+                    setAutoFillCommand(false)
+                    setStartupError(false)
+                  }}
+                  className={cn(
+                    "font-mono text-[13px]",
+                    startupError && "border-destructive focus-visible:border-destructive focus-visible:ring-destructive/20",
+                  )}
+                  aria-invalid={startupError}
+                />
+                {startupError ? (
+                  <p className="flex items-center gap-1 text-xs text-destructive">
+                    <CircleAlert className="h-3 w-3" />
+                    A startup command is required.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    The command is pre-filled and changes as you switch runtimes.
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-foreground">
+                    Agent runtime
+                  </span>
+                  <Badge variant="secondary" className="text-[10px]">
+                    Required
+                  </Badge>
+                </div>
+                <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex h-9 w-full items-center justify-between rounded-lg border border-input bg-background px-3 text-sm transition-shadow hover:bg-accent/50 focus-visible:border-primary focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-primary/20"
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <SelectedIcon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                        <span className="truncate">{selectedAgent.name}</span>
                       </span>
-                      {isSelected && (
-                        <CheckIcon className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
-                      )}
+                      <ChevronDown className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
                     </button>
-                  )
-                })}
-              </PopoverContent>
-            </Popover>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-80 p-1">
+                    {agentOptions.map((agent) => {
+                      const Icon = getCoreAgentIcon(agent.id)
+                      const defaultCommand = agent.defaultCommand ?? ""
+                      const isSelected = agent.id === selectedAgentId
+
+                      return (
+                        <button
+                          key={agent.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedAgentId(agent.id)
+                            setPopoverOpen(false)
+                          }}
+                          className={cn(
+                            "flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent/50",
+                            isSelected && "bg-accent/30",
+                          )}
+                        >
+                          <Icon className="mt-0.5 h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium">
+                              {agent.name}
+                            </span>
+                            <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground" title={defaultCommand}>
+                              {defaultCommand.includes("/") ? defaultCommand.split("/").pop() : defaultCommand}
+                            </span>
+                          </span>
+                          {isSelected && (
+                            <CheckIcon className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                          )}
+                        </button>
+                      )
+                    })}
+                  </PopoverContent>
+                </Popover>
+              </div>
+            </div>
+
+            {/* Right column: connections owned by this agent */}
+            <div className="rounded-xl border border-border/60 p-3 md:min-h-0 md:overflow-y-auto">
+              <AgentConnectionsSection
+                agentId={selectedAgentId}
+                agentDisplayName={selectedAgent.name}
+              />
+            </div>
           </div>
 
           <div className="rounded-xl border bg-muted/25 p-3">

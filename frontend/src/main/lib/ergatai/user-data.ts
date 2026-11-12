@@ -522,6 +522,8 @@ export async function createInitialPromptTurn(
     messageId: string
     clientRequestId: string
     agentCommand: string
+    providerConnectionId?: string | null
+    model?: string | null
     prompt: string
     images: Array<{
       base64Data: string

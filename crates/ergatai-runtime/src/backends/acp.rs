@@ -35,8 +35,8 @@ use agent_client_protocol::schema::v1::{
     ElicitationAction, EnvVariable, HttpHeader, ImageContent, InitializeRequest,
     ListSessionsRequest, LoadSessionRequest, McpServer, McpServerHttp, McpServerStdio,
     NewSessionRequest, Plan, PromptRequest, RequestPermissionRequest, RequestPermissionResponse,
-    SessionNotification, SessionUpdate, TextContent, ToolCall as AcpToolCall, ToolCallLocation,
-    ToolCallStatus, ToolCallUpdate, ToolKind,
+    SessionNotification, SessionUpdate, TextContent, ToolCall as AcpToolCall, ToolCallContent,
+    ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{
@@ -1372,6 +1372,11 @@ impl OutputBuffer {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentOutputEvent {
+    /// A status/error line captured from the agent (e.g. stderr retries).
+    Status {
+        /// Status message text.
+        message: String,
+    },
     /// Incremental text content from the agent.
     Text {
         /// Message role: "assistant" for local agent, "agent" for inter-agent
@@ -1556,6 +1561,23 @@ struct ToolCallTracker {
     max_entries: usize,
 }
 
+/// Extract plain text from ACP tool call content blocks (used by agents such as
+/// OpenCode that return command output via `content` instead of `raw_output`).
+fn extract_text_from_tool_call_content(content: &[ToolCallContent]) -> String {
+    let mut out = String::new();
+    for item in content {
+        if let ToolCallContent::Content(block) = item {
+            if let ContentBlock::Text(text) = &block.content {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&text.text);
+            }
+        }
+    }
+    out
+}
+
 impl ToolCallTracker {
     fn new(max_entries: usize) -> Self {
         Self {
@@ -1586,7 +1608,14 @@ impl ToolCallTracker {
             last_updated: now,
             locations: tc.locations.clone(),
             raw_input: tc.raw_input.clone(),
-            raw_output: tc.raw_output.clone(),
+            raw_output: tc.raw_output.clone().or_else(|| {
+                let text = extract_text_from_tool_call_content(&tc.content);
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::json!({ "stdout": text }))
+                }
+            }),
         };
         let mut calls = self.calls.write();
         let mut order = self.order.write();
@@ -1633,6 +1662,21 @@ impl ToolCallTracker {
             if update.fields.raw_output.is_some() {
                 existing.raw_output = update.fields.raw_output.clone();
             }
+            if let Some(content) = &update.fields.content {
+                let text = extract_text_from_tool_call_content(content);
+                if !text.is_empty() {
+                    let mut output = existing
+                        .raw_output
+                        .clone()
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    if let Some(object) = output.as_object_mut() {
+                        object.insert("stdout".to_string(), serde_json::json!(text));
+                    } else {
+                        output = serde_json::json!({ "stdout": text });
+                    }
+                    existing.raw_output = Some(output);
+                }
+            }
             existing.last_updated = now;
         } else {
             // Unknown id — create a minimal record from the update.
@@ -1645,7 +1689,23 @@ impl ToolCallTracker {
                 last_updated: now,
                 locations: update.fields.locations.clone().unwrap_or_default(),
                 raw_input: update.fields.raw_input.clone(),
-                raw_output: update.fields.raw_output.clone(),
+                raw_output: {
+                    let mut output = update.fields.raw_output.clone();
+                    if let Some(content) = &update.fields.content {
+                        let text = extract_text_from_tool_call_content(content);
+                        if !text.is_empty() {
+                            let mut merged =
+                                output.clone().unwrap_or_else(|| serde_json::json!({}));
+                            if let Some(object) = merged.as_object_mut() {
+                                object.insert("stdout".to_string(), serde_json::json!(text));
+                            } else {
+                                merged = serde_json::json!({ "stdout": text });
+                            }
+                            output = Some(merged);
+                        }
+                    }
+                    output
+                },
             };
             // Evict oldest if at capacity.
             evict_oldest_entries(&mut order, &mut calls, self.max_entries);
@@ -3543,18 +3603,42 @@ impl AcpBackendInterface for AcpBackend {
             cleanup_agent_pids.write().remove(&cleanup_agent_id);
         });
 
-        // Drain stderr in the background (simplified - just log and discard).
-        // Note: async_process uses futures_io::AsyncRead.
+        // Drain stderr in the background. Lines matching known error/retry patterns are
+        // published as agent status events so the UI can surface them; other lines are
+        // only logged at debug level.
         let mut child_stderr = child_stderr;
+        let stderr_conversation_id = task_conversation_id.clone();
         tokio::spawn(async move {
             use futures::io::BufReader;
             use futures::AsyncBufReadExt;
             use futures::StreamExt;
+            // The global output publisher is configured during startup. Agent
+            // processes may be spawned before that completes, so wait briefly
+            // for it to become available before forwarding stderr lines.
+            for _ in 0..50 {
+                if crate::output_publisher::get_global_output_publisher().is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
             let reader = BufReader::new(&mut child_stderr);
             let mut lines = reader.lines();
             while let Some(line) = lines.next().await {
                 match line {
-                    Ok(line) => debug!(line = %line, "ACP agent stderr"),
+                    Ok(line) => {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            tracing::info!(line = %trimmed, conversation_id = %stderr_conversation_id, "ACP agent stderr (forwarding as Status)");
+                            send_output_event_internal(
+                                None,
+                                Some(&stderr_conversation_id),
+                                AgentOutputEvent::Status {
+                                    message: trimmed.to_string(),
+                                },
+                            )
+                            .await;
+                        }
+                    }
                     Err(e) => {
                         debug!(error = %e, "Failed to read stderr line");
                         break;
@@ -3822,7 +3906,7 @@ impl AcpBackendInterface for AcpBackend {
                         connection: &connection,
                         init_response: init_response_arc.clone(),
                     };
-                    RetryExecutor::execute_with_retry(&init_phase, &task_agent_id_label)
+                    RetryExecutor::execute_with_retry(&init_phase, &task_agent_id_label, Some(&task_conversation_id))
                         .await
                         .map_err(|e| {
                             agent_client_protocol::Error::new(
@@ -3966,7 +4050,7 @@ impl AcpBackendInterface for AcpBackend {
                         session_id: session_id_arc.clone(),
                         config_options: task_config_options.clone(),
                     };
-                    RetryExecutor::execute_with_retry(&session_phase, &task_agent_id_label)
+                    RetryExecutor::execute_with_retry(&session_phase, &task_agent_id_label, Some(&task_conversation_id))
                         .await
                         .map_err(|e| {
                             agent_client_protocol::Error::new(
@@ -4209,6 +4293,18 @@ impl AcpBackendInterface for AcpBackend {
                                     }
                                     Err(e) => {
                                         warn!(error = %e, message_id = %message_id, "Interrupt prompt failed");
+                                        // Surface the concrete failure (including 401/retry details)
+                                        // to the conversation stream before the terminal Done event.
+                                        if let Some(ref token) = turn_token {
+                                            send_output_event(
+                                                token,
+                                                AgentOutputEvent::Error {
+                                                    role: "assistant".to_string(),
+                                                    message: e.to_string(),
+                                                },
+                                            )
+                                            .await;
+                                        }
                                         // End turn lifecycle with error: Done(error) + flush + clear token
                                         end_turn_lifecycle(
                                             &turn_token,
@@ -4254,6 +4350,19 @@ impl AcpBackendInterface for AcpBackend {
                                     ));
 
                                 let result = request.block_task().await;
+                                // Slash commands intentionally have no turn token, but
+                                // notifications such as ContextUsage can still reach the
+                                // runtime store. Emit a terminal event so the control-plane
+                                // command cannot leave the conversation marked streaming.
+                                send_output_event_internal(
+                                    None,
+                                    Some(&connection_conversation_id),
+                                    AgentOutputEvent::Done {
+                                        role: "assistant".to_string(),
+                                        stop_reason: "slash_command".to_string(),
+                                    },
+                                )
+                                .await;
                                 match result {
                                     Ok(response) => {
                                         let sr = serde_json::to_string(&response.stop_reason)
@@ -4356,6 +4465,18 @@ impl AcpBackendInterface for AcpBackend {
                                     }
                                     Err(e) => {
                                         warn!(error = %e, "ACP queued prompt failed");
+                                        // Surface the concrete failure (including 401/retry details)
+                                        // to the conversation stream before the terminal Done event.
+                                        if let Some(ref token) = turn_token {
+                                            send_output_event(
+                                                token,
+                                                AgentOutputEvent::Error {
+                                                    role: "assistant".to_string(),
+                                                    message: e.to_string(),
+                                                },
+                                            )
+                                            .await;
+                                        }
                                         // End turn lifecycle with error: Done(error) + flush + clear token
                                         end_turn_lifecycle(
                                             &turn_token,

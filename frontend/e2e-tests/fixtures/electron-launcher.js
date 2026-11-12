@@ -120,6 +120,7 @@ async function launchElectron(config = {}) {
 
   console.log(`\n启动 Electron (${mergedConfig.useHeadless ? 'Headless' : mergedConfig.useXvfb ? `xvfb ${env.DISPLAY}` : '原生'} 模式)...`);
   console.log('Args:', args.slice(0, 4).join(' '), '...');
+  console.log('DEBUG env ERGATAI_USER_DATA_DIR:', env.ERGATAI_USER_DATA_DIR);
 
   // 启动 Electron
   const app = await electron.launch({

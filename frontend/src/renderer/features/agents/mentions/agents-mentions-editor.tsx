@@ -116,6 +116,7 @@ const DEFAULT_SLASH_TRIGGER: EditorTriggerConfig = { char: "/", position: "start
 export type AgentsMentionsEditorHandle = {
   focus: () => void
   blur: () => void
+  triggerDetection: () => void
   insertMention: (option: FileMentionOption) => void
   getValue: () => string
   setValue: (value: string) => void
@@ -1268,6 +1269,9 @@ export const AgentsMentionsEditor = memo(
             onCloseSlashTrigger?.()
           },
 
+          triggerDetection: () => {
+            handleInput()
+          },
           insertMention: (option: FileMentionOption) => {
             if (!editorRef.current) return
 
@@ -1329,18 +1333,30 @@ export const AgentsMentionsEditor = memo(
               const afterCursor = text.slice(range.startOffset)
               node.textContent = beforeAt + afterCursor
 
-              // Insert mention node
-              const mentionNode = createMentionNode(option, (activeDiscoveryTrigger.current?.kind === "mention" ? activeDiscoveryTrigger.current.char : null) || "@")
+              // Insert the directory path as plain text, keeping the leading @ so the
+              // directory stays addressable (and browsable) instead of being eaten.
+              const isFolder = option.type === "folder"
+              const insertedNode = isFolder
+                ? document.createTextNode(`@${option.path}/`)
+                : createMentionNode(option, (activeDiscoveryTrigger.current?.kind === "mention" ? activeDiscoveryTrigger.current.char : null) || "@")
               const newRange = document.createRange()
               newRange.setStart(node, localAtPosition)
               newRange.collapse(true)
-              newRange.insertNode(mentionNode)
+              newRange.insertNode(insertedNode)
 
-              // Add space after and move cursor
-              const space = document.createTextNode(" ")
-              mentionNode.after(space)
-              newRange.setStartAfter(space)
-              newRange.collapse(true)
+              // Directories are inserted without a trailing space so the @ trigger
+              // search text stays clean (e.g. "path/") and filtering works.
+              if (option.type === "folder") {
+                // Place cursor inside the folder text node so trigger detection can
+                // reliably see the cursor position and continue directory browsing.
+                newRange.setStart(insertedNode, (insertedNode.textContent || "").length)
+                newRange.collapse(true)
+              } else {
+                const space = document.createTextNode(" ")
+                insertedNode.after(space)
+                newRange.setStartAfter(space)
+                newRange.collapse(true)
+              }
               sel!.removeAllRanges()
               sel!.addRange(newRange)
 
@@ -1353,8 +1369,11 @@ export const AgentsMentionsEditor = memo(
             }
             // Case 2: Direct insertion (e.g., from sidebar widget, drag & drop)
             else {
-              const mentionNode = createMentionNode(option)
-              const space = document.createTextNode(" ")
+              const isFolder = option.type === "folder"
+              const mentionNode = isFolder
+                ? document.createTextNode(`@${option.path}/`)
+                : createMentionNode(option)
+              const space = isFolder ? null : document.createTextNode(" ")
 
               // Try to insert at current cursor position if it's inside the editor
               const editorEl = editorRef.current
@@ -1362,7 +1381,7 @@ export const AgentsMentionsEditor = memo(
 
               if (range && editorEl.contains(range.startContainer)) {
                 range.collapse(false)
-                range.insertNode(space)
+                if (space) range.insertNode(space)
                 range.insertNode(mentionNode)
                 inserted = true
               }
@@ -1377,12 +1396,19 @@ export const AgentsMentionsEditor = memo(
                   target = el
                 }
                 target.appendChild(mentionNode)
-                target.appendChild(space)
+                if (space) target.appendChild(space)
               }
 
-              // Move cursor after the space
+              // Move cursor after the inserted node (and trailing space if any)
               const newRange = document.createRange()
-              newRange.setStartAfter(space)
+              if (space) {
+                newRange.setStartAfter(space)
+              } else if (isFolder && mentionNode.nodeType === Node.TEXT_NODE) {
+                // Keep cursor inside folder text so trigger detection can continue browsing.
+                newRange.setStart(mentionNode, (mentionNode.textContent || "").length)
+              } else {
+                newRange.setStartAfter(mentionNode)
+              }
               newRange.collapse(true)
 
               if (sel) {
@@ -1400,7 +1426,7 @@ export const AgentsMentionsEditor = memo(
             return editorRef.current != null && editorRef.current.contains(node)
           },
         }),
-        [onCloseTrigger, onCloseSlashTrigger, resolveMention, onContentChange, immediateSaveUndoState],
+        [onCloseTrigger, onCloseSlashTrigger, resolveMention, onContentChange, immediateSaveUndoState, handleInput],
       )
 
       return (

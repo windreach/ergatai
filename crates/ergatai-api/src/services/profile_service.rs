@@ -40,6 +40,8 @@ pub enum ProfileModelSource {
     /// Detected via the agent's proprietary SDK (Claude `supportedModels()`,
     /// OpenCode provider config, etc.). Takes precedence over ACP detection.
     AgentSdk,
+    /// Detected by reading the agent's config files directly (fast path).
+    ConfigFile,
     /// No models detected yet.
     None,
 }
@@ -475,67 +477,275 @@ pub async fn refresh_profile_models_via_sdk(
         }
     }
 
-    // Codex has no SDK model list; use the model configured in ~/.codex/config.toml
-    // so detection at least reflects the user's configured default model.
+    // Codex has no SDK model list. Read ~/.codex/config.toml (honouring CODEX_HOME)
+    // plus the configured model_catalog_json so the available models can be
+    // enumerated instead of only the single configured default.
     if agent_kind == "codex" {
-        if let Some(home) = dirs::home_dir() {
-            let config_path = home.join(".codex").join("config.toml");
-            if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
-                // Match: model = "some-model"
-                let configured = content.lines().find_map(|line| {
-                    let trimmed = line.trim();
-                    if !trimmed.starts_with("model") {
-                        return None;
-                    }
-                    let mut parts = trimmed.splitn(2, '=');
-                    let key = parts.next()?.trim();
-                    if key != "model" {
-                        return None;
-                    }
-                    let value = parts.next()?.trim().trim_matches('"').to_string();
-                    if value.is_empty() {
-                        None
-                    } else {
-                        Some(value)
-                    }
-                });
-                // Parse model_provider for grouping.
-                let configured_provider = content
-                    .lines()
-                    .find_map(|line| {
-                        let trimmed = line.trim();
-                        if !trimmed.starts_with("model_provider") {
-                            return None;
-                        }
-                        let mut parts = trimmed.splitn(2, '=');
-                        let key = parts.next()?.trim();
-                        if key != "model_provider" {
-                            return None;
-                        }
-                        let value = parts.next()?.trim().trim_matches('"').to_string();
-                        if value.is_empty() {
-                            None
-                        } else {
-                            Some(value)
-                        }
-                    })
-                    .unwrap_or_else(|| "Codex".to_string());
+        let codex_home = std::env::var("CODEX_HOME")
+            .ok()
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_dir())
+            .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
+            .unwrap_or_default();
 
-                if let Some(current) = configured {
-                    if !details.iter().any(|d| d.id == current) {
+        let config_path = codex_home.join("config.toml");
+        if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
+            // Parse top-level keys and [profiles.*] sections.
+            let mut top_model: Option<String> = None;
+            let mut top_provider = "Codex".to_string();
+            let mut catalog_path: Option<std::path::PathBuf> = None;
+            let mut profile_models: Vec<(String, String)> = Vec::new();
+            let mut current_section: Option<String> = None;
+
+            for raw in content.lines() {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                    current_section = Some(
+                        trimmed
+                            .trim_start_matches('[')
+                            .trim_end_matches(']')
+                            .trim()
+                            .to_string(),
+                    );
+                    continue;
+                }
+                let Some(eq) = trimmed.find('=') else {
+                    continue;
+                };
+                let key = trimmed[..eq].trim();
+                let mut val = trimmed[eq + 1..].trim().to_string();
+                // Strip inline comments and surrounding quotes.
+                if let Some(hash) = val.find('#') {
+                    val = val[..hash].trim().to_string();
+                }
+                val = val.trim_matches('"').trim_matches('\'').trim().to_string();
+                if val.is_empty() {
+                    continue;
+                }
+
+                match current_section.as_deref() {
+                    None => {
+                        if key == "model" {
+                            top_model = Some(val);
+                        } else if key == "model_provider" {
+                            top_provider = val;
+                        } else if key == "model_catalog_json" {
+                            catalog_path = Some(std::path::PathBuf::from(val));
+                        }
+                    }
+                    Some(sec) if sec.starts_with("profiles.") && key == "model" => {
+                        profile_models.push((sec.trim_start_matches("profiles.").to_string(), val));
+                    }
+                    _ => {}
+                }
+            }
+
+            // 1. Enumerate from model_catalog_json (if present / readable).
+            let cat_path = catalog_path.unwrap_or_else(|| codex_home.join("config.models.json"));
+            if let Ok(cat_content) = tokio::fs::read_to_string(&cat_path).await {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&cat_content) {
+                    if let Some(arr) = json.get("models").and_then(|v| v.as_array()) {
+                        for m in arr {
+                            let id = m
+                                .get("slug")
+                                .or_else(|| m.get("id"))
+                                .or_else(|| m.get("model"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if id.is_empty() || details.iter().any(|d| d.id == id) {
+                                continue;
+                            }
+                            let name = m
+                                .get("display_name")
+                                .or_else(|| m.get("name"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(id)
+                                .to_string();
+                            let description = m
+                                .get("description")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            details.push(ProfileModelDetail {
+                                id: id.to_string(),
+                                name,
+                                description,
+                                provider: top_provider.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 2. Configured default model (prioritised first).
+            if let Some(current) = top_model {
+                if !details.iter().any(|d| d.id == current) {
+                    details.insert(
+                        0,
+                        ProfileModelDetail {
+                            id: current.clone(),
+                            name: current.clone(),
+                            description: "Configured model".to_string(),
+                            provider: top_provider.clone(),
+                        },
+                    );
+                } else if let Some(pos) = details.iter().position(|d| d.id == current) {
+                    if pos != 0 {
+                        let item = details.remove(pos);
+                        details.insert(0, item);
+                    }
+                }
+            }
+
+            // 3. Models configured via profiles (kept as additional selectable entries).
+            for (prof, model) in profile_models {
+                if model.is_empty() || details.iter().any(|d| d.id == model) {
+                    continue;
+                }
+                details.push(ProfileModelDetail {
+                    id: model.clone(),
+                    name: model.clone(),
+                    description: format!("Configured via profile '{}'", prof),
+                    provider: top_provider.clone(),
+                });
+            }
+        }
+    }
+
+    // OpenCode: supplement from ~/.config/opencode/opencode.{json,jsonc} when the
+    // running server/SDK is unavailable (degraded stage), so models are still
+    // enumerated before the agent starts.
+    if agent_kind == "opencode" {
+        let mut config_paths: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(p) = std::env::var("OPENCODE_CONFIG") {
+            config_paths.push(std::path::PathBuf::from(p));
+        }
+        if let Some(home) = dirs::home_dir() {
+            let base = home.join(".config").join("opencode");
+            config_paths.push(base.join("opencode.json"));
+            config_paths.push(base.join("opencode.jsonc"));
+        }
+
+        for config_path in config_paths {
+            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+                continue;
+            };
+            let stripped = strip_json_comments(&content);
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&stripped) else {
+                continue;
+            };
+
+            // Providers -> models.
+            if let Some(providers) = json.get("provider").and_then(|v| v.as_object()) {
+                for (pname, pval) in providers {
+                    let provider_name = pval
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(pname)
+                        .to_string();
+                    if let Some(models) = pval.get("models").and_then(|v| v.as_object()) {
+                        for mkey in models.keys() {
+                            if details.iter().any(|d| d.id == *mkey) {
+                                continue;
+                            }
+                            details.push(ProfileModelDetail {
+                                id: mkey.clone(),
+                                name: mkey.clone(),
+                                description: String::new(),
+                                provider: provider_name.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Default model (form "provider/model" -> model id).
+            if let Some(dm) = json.get("model").and_then(|v| v.as_str()) {
+                let id = dm.rsplit('/').next().unwrap_or(dm).to_string();
+                if !id.is_empty() {
+                    if !details.iter().any(|d| d.id == id) {
                         details.insert(
                             0,
                             ProfileModelDetail {
-                                id: current.clone(),
-                                name: current,
+                                id: id.clone(),
+                                name: id.clone(),
                                 description: "Configured model".to_string(),
-                                provider: configured_provider.clone(),
+                                provider: "Configured".to_string(),
                             },
                         );
-                    } else if let Some(pos) = details.iter().position(|d| d.id == current) {
+                    } else if let Some(pos) = details.iter().position(|d| d.id == id) {
                         if pos != 0 {
                             let item = details.remove(pos);
                             details.insert(0, item);
+                        }
+                    }
+                }
+            }
+            break; // use first readable config
+        }
+    }
+
+    // Claude: supplement from ~/.claude/settings.json when the CLI/SDK is
+    // unavailable (degraded stage), reflecting configured model slots.
+    if agent_kind == "claude" {
+        if let Some(home) = dirs::home_dir() {
+            let settings_path = home.join(".claude").join("settings.json");
+            if let Ok(content) = tokio::fs::read_to_string(&settings_path).await {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let env = json.get("env");
+                    let get_env = |key: &str| -> Option<String> {
+                        env.and_then(|e| e.get(key))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .filter(|s| !s.is_empty())
+                    };
+
+                    // Configured model slots.
+                    let slots = [
+                        ("ANTHROPIC_DEFAULT_OPUS_MODEL", "opus"),
+                        ("ANTHROPIC_DEFAULT_SONNET_MODEL", "sonnet"),
+                        ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "haiku"),
+                    ];
+                    for (env_key, slot) in slots {
+                        if let Some(m) = get_env(env_key) {
+                            if !details.iter().any(|d| d.id == m) {
+                                details.push(ProfileModelDetail {
+                                    id: m.clone(),
+                                    name: m,
+                                    description: format!("Configured {}", slot),
+                                    provider: "Configured".to_string(),
+                                });
+                            }
+                        }
+                    }
+                    // Default model (top-level "model" or ANTHROPIC_MODEL).
+                    let mut default_model = json
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty());
+                    if default_model.is_none() {
+                        default_model = get_env("ANTHROPIC_MODEL");
+                    }
+                    if let Some(m) = default_model {
+                        if !details.iter().any(|d| d.id == m) {
+                            details.insert(
+                                0,
+                                ProfileModelDetail {
+                                    id: m.clone(),
+                                    name: m.clone(),
+                                    description: "Configured model".to_string(),
+                                    provider: "Configured".to_string(),
+                                },
+                            );
+                        } else if let Some(pos) = details.iter().position(|d| d.id == m) {
+                            if pos != 0 {
+                                let item = details.remove(pos);
+                                details.insert(0, item);
+                            }
                         }
                     }
                 }
@@ -567,6 +777,60 @@ pub async fn refresh_profile_models_via_sdk(
         .map_err(|e| anyhow::anyhow!("Failed to save SDK-detected models: {}", e))?;
 
     Ok(details)
+}
+
+/// Persist a detected model list to the profile cache.
+async fn persist_profile_models(
+    profile_name: &str,
+    details: &[ProfileModelDetail],
+    source: ProfileModelSource,
+) -> Result<()> {
+    if details.is_empty() {
+        return Ok(());
+    }
+    let models: Vec<String> = details.iter().map(|d| d.id.clone()).collect();
+    let registry = get_profile_registry()?;
+    let json = serde_json::json!({
+        "status": ProfileModelStatus::Available,
+        "source": source,
+        "models": models,
+        "model_details": details,
+        "last_known_models": models,
+        "option_id": Option::<String>::None,
+        "verified_at": chrono::Utc::now().timestamp_millis(),
+    })
+    .to_string();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    registry
+        .update_models_by_name(profile_name, &json, now_ms)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to save models: {}", e))?;
+    Ok(())
+}
+
+/// Fast model enumeration via direct config-file reads.
+///
+/// Primary path: reads the agent's own config files (milliseconds, no
+/// subprocess). Falls back to the SDK only when `ERGATAI_MODEL_USE_SDK=1`
+/// is set and file reading yielded nothing. Returns the persisted details.
+pub async fn refresh_profile_models(
+    agent_kind: &str,
+    profile_name: &str,
+    cwd: Option<&str>,
+) -> Result<Vec<ProfileModelDetail>> {
+    let details = crate::services::model_file_reader::read_models(agent_kind, cwd);
+    if !details.is_empty() {
+        persist_profile_models(profile_name, &details, ProfileModelSource::ConfigFile).await?;
+        return Ok(details);
+    }
+
+    // Degraded fallback: file reading yielded nothing, try the SDK path
+    // (slower, may require a running agent server) before giving up.
+    match refresh_profile_models_via_sdk(agent_kind, profile_name, cwd).await {
+        Ok(sdk_details) if !sdk_details.is_empty() => Ok(sdk_details),
+        Ok(_) => Ok(details),
+        Err(_) => Ok(details),
+    }
 }
 
 /// 获取指定 profile 的模型目录（按 profile ID 查询）。
@@ -620,6 +884,53 @@ pub async fn mark_profile_models_unavailable_by_name(name: &str) -> Result<()> {
         .update_models_by_name(name, &json, now_ms)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to save profile models: {}", e))
+}
+
+/// Strip `//` and `/* */` comments from a JSON-with-comments (JSONC) string so
+/// it can be parsed by `serde_json`.
+fn strip_json_comments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if in_string {
+            out.push(c);
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        // line comment
+        if c == '/' && i + 1 < bytes.len() && bytes[i + 1] as char == '/' {
+            while i < bytes.len() && bytes[i] as char != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // block comment
+        if c == '/' && i + 1 < bytes.len() && bytes[i + 1] as char == '*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] as char == '*' && bytes[i + 1] as char == '/') {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 #[cfg(test)]

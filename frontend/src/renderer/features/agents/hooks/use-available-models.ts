@@ -35,7 +35,7 @@ interface UseAvailableModelsReturn {
   currentModelId: string | null
   lastKnownModels: ModelItem[]
   status: "available" | "unsupported" | "not_detected"
-  source: "acp_config_options" | "none"
+  source: "acp_config_options" | "config_file" | "agent_sdk" | "none"
   verifiedAt: number | null
   ollamaModels: string[]
   recommendedModel: string | undefined
@@ -185,7 +185,7 @@ export function extractRuntimeModelFromConfigOptions(
 // ── Hook ──
 
 // react-doctor-disable-next-line no-high-complexity-react-function
-export function useAvailableModels(agentId?: string | null): UseAvailableModelsReturn {
+export function useAvailableModels(agentId?: string | null, profileHint?: string | null): UseAvailableModelsReturn {
   const showOfflineFeatures = useAtomValue(showOfflineModeFeaturesAtom)
   const globalAgentId = useAtomValue(ergataiActiveAgentIdAtom)
 
@@ -202,17 +202,48 @@ export function useAvailableModels(agentId?: string | null): UseAvailableModelsR
     if (!effectiveAgentId || !agents) return null
     return agents.find((a) => a.agent_id === effectiveAgentId) ?? null
   }, [effectiveAgentId, agents])
-  const canRefreshModels = activeAgent?.is_alive === true
+  // Allow refresh even without a running agent when a profile hint is given:
+  // the backend can still enumerate models from config files (degraded stage).
+  const canRefreshModels = activeAgent?.is_alive === true || !!profileHint
 
   // The profile registry is the only authoritative model-cache key. Static
   // model lists remain a UI fallback when no runtime agent has been resolved.
-  const profileName = activeAgent?.profile ?? null
+  // Fall back to a profile hint (e.g. the agent provider name) so models can
+  // still be enumerated from config files even before an agent is running.
+  const profileName = activeAgent?.profile ?? profileHint ?? null
 
   // Query cached models from backend by profile name
+  // Synchronously hydrate from a local cache so the selector renders models
+  // immediately on chat open, while the network query refreshes in background.
+  const placeholderData = useMemo(() => {
+    if (!profileName) return undefined
+    try {
+      const raw = localStorage.getItem(`ergatai:available-models:${profileName}`)
+      if (!raw) return undefined
+      const parsed = JSON.parse(raw)
+      if (parsed && Array.isArray(parsed.models)) return parsed
+    } catch {}
+    return undefined
+  }, [profileName])
+
   const { data: modelData, refetch, isLoading: _isLoading } = trpc.ergatai.getAgentProfileModels.useQuery(
     { profileName: profileName ?? "" },
-    { enabled: !!profileName, refetchOnWindowFocus: false },
+    {
+      enabled: !!profileName,
+      refetchOnWindowFocus: false,
+      staleTime: 5 * 60 * 1000,
+      gcTime: 30 * 60 * 1000,
+      placeholderData,
+    },
   )
+
+  // Persist the latest result for instant hydration next time.
+  useEffect(() => {
+    if (!profileName || !modelData || !Array.isArray(modelData.models) || modelData.models.length === 0) return
+    try {
+      localStorage.setItem(`ergatai:available-models:${profileName}`, JSON.stringify(modelData))
+    } catch {}
+  }, [profileName, modelData])
 
   // The runtime selected model is derived from the same agent snapshot that
   // carries ACP config options. This keeps `current` per-session and lets it

@@ -30,6 +30,8 @@ pub struct InitialPromptTurn {
     pub message_id: String,
     pub client_request_id: String,
     pub agent_command: String,
+    pub provider_connection_id: Option<String>,
+    pub model: Option<String>,
     pub prompt: String,
     pub images: Vec<AgentImage>,
     pub status: InitialPromptStatus,
@@ -81,17 +83,19 @@ pub struct InitialPromptInput {
     pub message_id: MessageId,
     pub client_request_id: String,
     pub agent_command: String,
+    pub provider_connection_id: Option<String>,
+    pub model: Option<String>,
     pub prompt: String,
     pub images: Vec<AgentImage>,
 }
 
 const SELECT_COLUMNS: &str = "turn_id, conversation_id, chat_id, workspace_id, message_id, \
-    client_request_id, agent_command, prompt, images, status, attempt, error, created_at, \
+    client_request_id, agent_command, provider_connection_id, model, prompt, images, status, attempt, error, created_at, \
     updated_at, dispatched_at, completed_at";
 
 fn row_to_turn(row: &rusqlite::Row<'_>) -> rusqlite::Result<InitialPromptTurn> {
-    let status: String = row.get(9)?;
-    let images_json: String = row.get(8)?;
+    let status: String = row.get(11)?;
+    let images_json: String = row.get(10)?;
     let images = match serde_json::from_str::<Vec<AgentImage>>(&images_json) {
         Ok(imgs) => imgs,
         Err(error) => {
@@ -112,15 +116,17 @@ fn row_to_turn(row: &rusqlite::Row<'_>) -> rusqlite::Result<InitialPromptTurn> {
         message_id: MessageId::new(row.get(4)?).encode(),
         client_request_id: row.get(5)?,
         agent_command: row.get(6)?,
-        prompt: row.get(7)?,
+        provider_connection_id: row.get(7)?,
+        model: row.get(8)?,
+        prompt: row.get(9)?,
         images,
         status: InitialPromptStatus::from_str(&status),
-        attempt: row.get(10)?,
-        error: row.get(11)?,
-        created_at: row.get(12)?,
-        updated_at: row.get(13)?,
-        dispatched_at: row.get(14)?,
-        completed_at: row.get(15)?,
+        attempt: row.get(12)?,
+        error: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+        dispatched_at: row.get(16)?,
+        completed_at: row.get(17)?,
     })
 }
 
@@ -148,9 +154,9 @@ pub fn enqueue(input: InitialPromptInput) -> Result<InitialPromptTurn> {
         r#"
         INSERT INTO initial_prompt_turns (
             turn_id, conversation_id, chat_id, workspace_id, message_id,
-            client_request_id, agent_command, prompt, images,
+            client_request_id, agent_command, provider_connection_id, model, prompt, images,
             status, attempt, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', 0, ?10, ?10)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', 0, ?12, ?12)
         ON CONFLICT(conversation_id) DO NOTHING
         "#,
         params![
@@ -161,6 +167,8 @@ pub fn enqueue(input: InitialPromptInput) -> Result<InitialPromptTurn> {
             input.message_id.as_i64(),
             input.client_request_id,
             input.agent_command,
+            input.provider_connection_id,
+            input.model,
             input.prompt,
             serde_json::to_string(&input.images)?,
             now,
@@ -321,7 +329,23 @@ fn finish_error_impl(
 }
 
 fn turn_error(error: impl std::fmt::Display) -> String {
-    crate::sanitize_error(&error, "initial_prompt_turn")
+    // Surface the actionable details (incl. 401 / retry messages) instead of
+    // redacting them to a generic "Internal error (...)" string.  The full
+    // error is still logged server-side for debugging.
+    let message = error.to_string();
+    tracing::error!(
+        error = %message,
+        error_context = "initial_prompt_turn",
+        "Internal error (details surfaced to conversation for diagnosis)"
+    );
+    // Keep the logged error readable: trim excessive whitespace and cap the
+    // length so a runaway error cannot flood the logs.
+    let trimmed = message.trim();
+    if trimmed.len() > 500 {
+        format!("{}…", &trimmed[..500])
+    } else {
+        trimmed.to_string()
+    }
 }
 
 async fn ensure_agent(turn: &InitialPromptTurn) -> Result<String> {
@@ -387,8 +411,19 @@ async fn ensure_agent(turn: &InitialPromptTurn) -> Result<String> {
         .unwrap_or_else(|| workspace.work_dir.clone());
     let work_dir = crate::validate_cwd(&work_dir)
         .map_err(|error| anyhow::anyhow!("Invalid work directory: {}", error))?;
-    let env: std::collections::HashMap<String, String> =
+    let mut env: std::collections::HashMap<String, String> =
         serde_json::from_str(&workspace.env).unwrap_or_default();
+    let mut model = turn.model.clone();
+    let provider_connection_id = turn.provider_connection_id.as_deref();
+    if let Some(connection) = crate::services::provider_connection_service::resolve(
+        provider_connection_id,
+        Some(turn.agent_command.as_str()),
+    )? {
+        env.extend(crate::services::provider_connection_service::env_for_connection(&connection)?);
+        if model.is_none() {
+            model = connection.default_model.clone();
+        }
+    }
     let resources: ergatai_runtime::ResourceLimits =
         serde_json::from_str(&workspace.resources).unwrap_or_default();
 
@@ -427,6 +462,12 @@ async fn ensure_agent(turn: &InitialPromptTurn) -> Result<String> {
         )
         .await
         .map_err(|error| anyhow::anyhow!("Failed to launch agent: {}", error))?;
+
+    if let Some(model) = model.as_deref().filter(|model| !model.trim().is_empty()) {
+        crate::services::agent_service::set_agent_model(&agent_id, model.trim())
+            .await
+            .map_err(|error| anyhow::anyhow!("Failed to set agent model: {}", error))?;
+    }
 
     upsert_agent_binding(&agent_id, &profile, turn).await?;
 
@@ -562,6 +603,9 @@ async fn dispatch_turn(mut turn: InitialPromptTurn) -> Result<()> {
                             "Failed to persist initial prompt failure"
                         ),
                     }
+                    // Do not persist/render the failure into the chat stream.
+                    // The error details are already captured in the server logs
+                    // (see turn_error) and in the initial_prompt_turns row.
                     if matches!(state_result, Ok(InitialPromptStatus::Failed)) {
                         update_message_delivery_status(
                             conversation_id_typed,
@@ -602,6 +646,7 @@ async fn dispatch_turn(mut turn: InitialPromptTurn) -> Result<()> {
                     "Failed to persist initial prompt prepare failure"
                 ),
             }
+            // Do not persist/render the failure into the chat stream; log only.
             if matches!(state_result, Ok(InitialPromptStatus::Failed)) {
                 update_message_delivery_status(conversation_id_typed, &turn.message_id, "failed");
             }
@@ -777,6 +822,8 @@ mod tests {
             message_id,
             client_request_id: "req-1".to_string(),
             agent_command: "echo hi".to_string(),
+            provider_connection_id: None,
+            model: None,
             prompt: "hello".to_string(),
             images: vec![],
         })
@@ -788,6 +835,8 @@ mod tests {
             message_id,
             client_request_id: "req-1".to_string(),
             agent_command: "echo hi".to_string(),
+            provider_connection_id: None,
+            model: None,
             prompt: "hello".to_string(),
             images: vec![],
         })

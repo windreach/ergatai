@@ -91,6 +91,8 @@ export const agentsRouter = router({
         instruction: z.string().optional(),
         workDir: z.string().optional(),
         env: z.record(z.string(), z.string()).optional(),
+        providerConnectionId: z.string().optional(),
+        model: z.string().optional(),
       }),
     )
     .mutation(async ({ input }) => {
@@ -119,6 +121,8 @@ export const agentsRouter = router({
             instruction: input.instruction,
             work_dir: workDir,
             env: input.env,
+            provider_connection_id: input.providerConnectionId,
+            model: input.model,
           }),
         })
         console.log("[tRPC spawnAgent] Backend response:", JSON.stringify(response))
@@ -130,7 +134,7 @@ export const agentsRouter = router({
         return { agent_id: agentId }
       } catch (error) {
         console.error("[tRPC spawnAgent] Error:", error)
-        throw error
+      throw error
       }
     }),
 

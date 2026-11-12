@@ -79,6 +79,36 @@ async function claude() {
       homepage: null,
       tags: [],
     }));
+    // Degraded fallback: read ~/.claude/settings.json when the SDK is unavailable.
+    if (modelList.length === 0) {
+      try {
+        const fs = await import("node:fs");
+        const os = await import("node:os");
+        const path = await import("node:path");
+        const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
+        const content = fs.readFileSync(settingsPath, "utf8");
+        const cfg = JSON.parse(content);
+        const env = (cfg && cfg.env && typeof cfg.env === "object") ? cfg.env : {};
+        const slots = [
+          [env.ANTHROPIC_DEFAULT_OPUS_MODEL, "opus"],
+          [env.ANTHROPIC_DEFAULT_SONNET_MODEL, "sonnet"],
+          [env.ANTHROPIC_DEFAULT_HAIKU_MODEL, "haiku"],
+        ];
+        for (const [m, slot] of slots) {
+          if (typeof m === "string" && m && !modelList.some((x) => x.id === m)) {
+            modelList.push({ id: m, name: m, description: `Configured ${slot}`, provider: "Configured" });
+          }
+        }
+        const dm = cfg?.model || env.ANTHROPIC_MODEL;
+        if (typeof dm === "string" && dm && !modelList.some((x) => x.id === dm)) {
+          modelList.unshift({ id: dm, name: dm, description: "Configured model", provider: "Configured" });
+        } else if (typeof dm === "string" && dm) {
+          const idx = modelList.findIndex((x) => x.id === dm);
+          if (idx > 0) { const [it] = modelList.splice(idx, 1); modelList.unshift(it); }
+        }
+      } catch {}
+    }
+
     return { skills, commands: cmds, models: modelList, mcp: mcpList, agents: agentList, plugins: pluginList };
   } finally {
     try { await q.close?.(); } catch {}
@@ -199,11 +229,116 @@ async function opencode() {
     modelList.push({ id: (mm.providerID || "") + "/" + (mm.model || ""), name: mm.model || "", description: "" });
   }
 
+  // Degraded fallback: read opencode config file when the server is unavailable.
+  if (modelList.length === 0) {
+    try {
+      const fs = await import("node:fs");
+      const os = await import("node:os");
+      const path = await import("node:path");
+      const candidates = [];
+      if (process.env.OPENCODE_CONFIG) candidates.push(process.env.OPENCODE_CONFIG);
+      candidates.push(path.join(os.homedir(), ".config", "opencode", "opencode.json"));
+      candidates.push(path.join(os.homedir(), ".config", "opencode", "opencode.jsonc"));
+      for (const cp of candidates) {
+        let content = "";
+        try { content = fs.readFileSync(cp, "utf8"); } catch { continue; }
+        // strip comments
+        content = content.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+        let cfg = null;
+        try { cfg = JSON.parse(content); } catch { continue; }
+        const providers = cfg?.provider && typeof cfg.provider === "object" ? cfg.provider : {};
+        for (const [pname, pval] of Object.entries(providers)) {
+          const pnameStr = (pval && pval.name) || pname;
+          const models = (pval && pval.models && typeof pval.models === "object") ? pval.models : {};
+          for (const mkey of Object.keys(models)) {
+            if (modelList.some((m) => m.id === mkey)) continue;
+            modelList.push({ id: mkey, name: mkey, description: "", provider: pnameStr });
+          }
+        }
+        const dm = cfg?.model;
+        if (typeof dm === "string" && dm) {
+          const id = dm.includes("/") ? dm.split("/").pop() : dm;
+          if (id && !modelList.some((m) => m.id === id)) {
+            modelList.unshift({ id, name: id, description: "Configured model", provider: "Configured" });
+          } else if (id) {
+            const idx = modelList.findIndex((m) => m.id === id);
+            if (idx > 0) { const [it] = modelList.splice(idx, 1); modelList.unshift(it); }
+          }
+        }
+        if (modelList.length > 0) break;
+      }
+    } catch {}
+  }
+
   return { skills: skillList, commands: cmdList, models: modelList, mcp: mcpList, plugins: [] };
 }
 
 async function codex() {
-  return { skills: [], commands: [], models: [], mcp: [], plugins: [] };
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+  const models = [];
+  const seen = new Set();
+  const add = (id, name, description, provider) => {
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    models.push({ id, name: name || id, description: description || "", provider: provider || "Codex" });
+  };
+
+  let topModel = null;
+  let topProvider = "Codex";
+  let catalogPath = null;
+  const profileModels = [];
+  try {
+    const content = fs.readFileSync(path.join(codexHome, "config.toml"), "utf8");
+    let current = null;
+    for (const raw of content.split(/\r?\n/)) {
+      const t = raw.trim();
+      if (!t || t.startsWith("#")) continue;
+      const secM = t.match(/^\[([^\]]+)\]$/);
+      if (secM) { current = secM[1].trim(); continue; }
+      const eq = t.indexOf("=");
+      if (eq === -1) continue;
+      const key = t.slice(0, eq).trim();
+      let val = t.slice(eq + 1).trim();
+      const hash = val.indexOf("#");
+      if (hash !== -1) val = val.slice(0, hash).trim();
+      val = val.replace(/^["']|["']$/g, "");
+      if (!val) continue;
+      if (current === null) {
+        if (key === "model") topModel = val;
+        else if (key === "model_provider") topProvider = val;
+        else if (key === "model_catalog_json") catalogPath = val;
+      } else if (current.startsWith("profiles.")) {
+        if (key === "model") profileModels.push([current.slice("profiles.".length), val]);
+      }
+    }
+  } catch {}
+
+  const cp = catalogPath || path.join(codexHome, "config.models.json");
+  try {
+    const cat = JSON.parse(fs.readFileSync(cp, "utf8"));
+    const arr = Array.isArray(cat.models) ? cat.models : [];
+    for (const m of arr) {
+      const id = m.slug || m.id || m.model || "";
+      if (!id) continue;
+      add(id, m.display_name || m.name || id, m.description || "", topProvider);
+    }
+  } catch {}
+
+  if (topModel) add(topModel, topModel, "Configured model", topProvider);
+  for (const [prof, model] of profileModels) {
+    add(model, model, `Configured via profile '${prof}'`, topProvider);
+  }
+  if (topModel) {
+    const idx = models.findIndex((m) => m.id === topModel);
+    if (idx > 0) {
+      const [it] = models.splice(idx, 1);
+      models.unshift(it);
+    }
+  }
+  return { skills: [], commands: [], models, mcp: [], plugins: [] };
 }
 
 const fn = { claude, opencode, codex }[agent] || (async () => ({ skills: [], commands: [], models: [], mcp: [], plugins: [] }));

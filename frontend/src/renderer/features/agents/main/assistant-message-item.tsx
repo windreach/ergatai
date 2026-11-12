@@ -740,7 +740,8 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
       )
     }
 
-    if (part.type === "tool-Bash") return <AgentBashTool key={`${message.id}-${idx}`} part={part} messageId={message.id} partIndex={idx} chatStatus={status} />
+    if (part.type === "tool-Bash" || part.type === "tool-shell")
+      return <AgentBashTool key={`${message.id}-${idx}`} part={part} messageId={message.id} partIndex={idx} chatStatus={status} />
     if (part.type === "tool-Grep") return <AgentGrepTool key={`${message.id}-${idx}`} part={part} messageId={message.id} partIndex={idx} chatStatus={status} />
     if (part.type === "reasoning" || part.type === "tool-Thinking") {
       return (

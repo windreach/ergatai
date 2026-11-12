@@ -376,6 +376,7 @@ export const workspacesRouter = router({
 
       // If projectId is provided, register it in the workspace and set as default
       let didUpdateDefaultProject = false
+      let resolvedProjectId = input.projectId
       if (input.projectId) {
         // First, check if project already belongs to this workspace by listing projects
         const existingProjects = await ergataiFetch<BackendWorkspaceProject[]>(
@@ -393,8 +394,9 @@ export const workspacesRouter = router({
             { method: "GET" },
           )
 
-          // Register the project in the new workspace
-          await ergataiFetch<BackendWorkspaceProject>(
+          // Register the project in the new workspace (idempotent: reuses existing
+          // project row when the path is already registered elsewhere)
+          const registeredProject = await ergataiFetch<BackendWorkspaceProject>(
             `/api/v1/workspaces/managed/${encodeURIComponent(workspace.workspace_id)}/projects`,
             {
               method: "POST",
@@ -410,6 +412,7 @@ export const workspacesRouter = router({
               }),
             },
           )
+          resolvedProjectId = registeredProject.project_id || input.projectId
         }
 
         // Now set as default project

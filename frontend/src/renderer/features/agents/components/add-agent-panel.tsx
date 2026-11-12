@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { useAtom } from "jotai"
-import { Download, Loader2, Plus, Trash2 } from "lucide-react"
+import { Download, KeyRound, Loader2, Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -18,6 +18,13 @@ import {
 import { registeredAgentsAtom } from "../atoms"
 import { getCoreAgentIcon } from "./core-agent-selector"
 import { AddAgentDialog } from "./add-agent-dialog"
+import { AgentConnectionsSection } from "./agent-connections-section"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { useCachedRemoteImage } from "@/lib/hooks/use-cached-remote-image"
 import { CORE_AGENT_LOGO_URLS } from "../lib/agent-logo-urls"
 
@@ -53,6 +60,8 @@ function AgentAvatar({
 
 export function AddAgentPanel({ className }: AddAgentPanelProps) {
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [connectionsAgent, setConnectionsAgent] =
+    useState<AgentRegistration | null>(null)
   const [registeredAgents, setRegisteredAgents] = useAtom(registeredAgentsAtom)
   const utils = trpc.useUtils()
 
@@ -226,6 +235,16 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
                       <Button
                         variant="ghost"
                         size="icon"
+                        className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                        onClick={() => setConnectionsAgent(agent)}
+                        title="Manage providers"
+                        aria-label={`Manage providers for ${agent.name}`}
+                      >
+                        <KeyRound className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
                         className="h-6 w-6 text-muted-foreground hover:text-destructive"
                         onClick={() => handleDeleteRegistration(agent)}
                         title="Delete registration only; the runtime binary remains installed"
@@ -362,6 +381,27 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
         onOpenChange={setDialogOpen}
         onCreateAgent={handleCreateAgent}
       />
+
+      <Dialog
+        open={connectionsAgent !== null}
+        onOpenChange={(open) => {
+          if (!open) setConnectionsAgent(null)
+        }}
+      >
+        <DialogContent className="w-[440px] gap-5 rounded-2xl p-5 sm:max-w-[440px]">
+          <DialogHeader className="space-y-1.5">
+            <DialogTitle className="text-base font-semibold">
+              Providers · {connectionsAgent?.name}
+            </DialogTitle>
+          </DialogHeader>
+          {connectionsAgent && (
+            <AgentConnectionsSection
+              agentId={connectionsAgent.runtimeId}
+              agentDisplayName={connectionsAgent.name}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

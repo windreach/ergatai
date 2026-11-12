@@ -18,7 +18,10 @@ import { trpcClient } from "../../../lib/trpc"
 import { useAgentConversationStore } from "../stores/conversation-store"
 import { getRuntimeSessionStore } from "../../conversation"
 import type { AgentOutputEvent } from "../../../../main/lib/ergatai/sse-client"
+import { appStore } from "../../../lib/jotai-store"
+import { agentStatusLineAtom } from "../atoms"
 import { isPersistedMessageId } from "../../../../shared/id"
+import { promptToTitle, mentionsToReadableText } from "../../../../shared/mention-title"
 
 // ── Rust backend event types (snake_case JSON) ──
 
@@ -157,6 +160,9 @@ function transformEvent(
     case "text":
       return [{ type: "text-delta", id: textBlockId, delta: event.delta }]
 
+    case "status":
+      return [{ type: "text-delta", id: textBlockId, delta: event.message + "\n" }]
+
     case "thinking":
       return [
         {
@@ -278,6 +284,13 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
       .reverse()
       .find((m) => m.role === "user" || (m.role as string) === "agent")
     const prompt = this.extractPrompt(lastUser)
+    // Conversation titles are generated from the raw text (before mention
+    // tokens are unwrapped) so they stay human-readable.
+    const titleSource =
+      lastUser?.parts
+        ?.filter((part): part is TextPart => part.type === "text" && "text" in part)
+        .map((part) => part.text)
+        .join("\n") ?? ""
     const images = this.extractImages(lastUser)
     const files = this.extractFiles(lastUser)
 
@@ -476,18 +489,22 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                   const titleChanged = lastSessionTitle !== event.title
                   if (titleChanged) {
                     lastSessionTitle = event.title
+                    // Agents can echo the first prompt as the session title;
+                    // strip any serialized mention tokens before persisting it.
+                    const readableTitle =
+                      mentionsToReadableText(event.title) || event.title
 
                     // Update conversation title in backend only when it changes
                     trpcClient.ergatai.updateConversation
                       .mutate({
                         conversationId,
-                        title: event.title,
+                        title: readableTitle,
                       })
                       .then(() => {
                         // Also update in-memory store so UI reflects the change immediately
                         useAgentConversationStore.getState().updateConversationName(
                           conversationId,
-                          event.title,
+                          readableTitle,
                         )
                       })
                       .catch(() => {
@@ -495,6 +512,12 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                       })
                   }
                   return
+                }
+
+                if (event.type === "status") {
+                  console.log("[ErgataiChatTransport] received status event:", event.message)
+                  // Render agent stderr/status lines directly in the chat stream.
+                  appStore.set(agentStatusLineAtom, event.message)
                 }
 
                 if (event.type === "done" || event.type === "error") {
@@ -510,7 +533,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                     activeBlock = "reasoning"
                   }
 
-                  if (event.type === "text" && activeBlock !== "text") {
+                  if ((event.type === "text" || event.type === "status") && activeBlock !== "text") {
                     if (activeBlock === "reasoning") {
                       controller.enqueue({ type: "reasoning-end", id: getReasoningBlockId() })
                     }
@@ -604,7 +627,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                     // Create new conversation
                     const conversation = await trpcClient.ergatai.createConversation.mutate({
                       chatId: this.config.chatId,
-                      title: prompt?.slice(0, 50) || "New Conversation",
+                      title: promptToTitle(titleSource) || "New Conversation",
                       mode: this.config.mode,
                     })
                     return conversation.id
@@ -762,6 +785,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
           // Content-bearing mentions (quote/diff/pasted/chatHistory) are kept
           // because their payload is the content carrier.
           const cleaned = textPart.text
+            .replace(/@\[(file|folder):(local|external):([^\]]+)\]/g, "@$3")
             .replace(/@\[file:[^\]]*\]/g, "")
             .replace(/@\[folder:[^\]]*\]/g, "")
             .replace(/@\[agent:([^\]]+)\]/g, "@$1")

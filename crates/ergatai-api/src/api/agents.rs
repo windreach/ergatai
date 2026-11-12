@@ -260,6 +260,10 @@ pub struct SpawnAgentRequest {
     pub work_dir: Option<String>,
     /// Environment variables to set for the agent process.
     pub env: Option<HashMap<String, String>>,
+    /// Optional shared provider connection used to inject credentials/model routing.
+    pub provider_connection_id: Option<String>,
+    /// Optional model to apply after launch (overrides connection default).
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -980,7 +984,60 @@ pub async fn spawn_agent(
     }
 
     let runtime = crate::context::get_app_context().agent_runtime.clone();
-    let env = env.unwrap_or_default();
+    let mut env = env.unwrap_or_default();
+    let requested_provider_connection_id = req
+        .provider_connection_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    // Connections are owned by a single agent profile; scoping by the spawned
+    // profile name prevents cross-agent credential reuse.
+    let spawn_profile_name = profile_name.clone();
+    let provider_connection = match tokio::task::spawn_blocking(move || {
+        crate::services::provider_connection_service::resolve(
+            requested_provider_connection_id.as_deref(),
+            spawn_profile_name.as_deref(),
+        )
+        .and_then(|connection| {
+            connection
+                .map(|connection| {
+                    crate::services::provider_connection_service::env_for_connection(&connection)
+                        .map(|env| (connection, env))
+                })
+                .transpose()
+        })
+    })
+    .await
+    {
+        Ok(Ok(provider)) => provider,
+        Ok(Err(error)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: crate::sanitize_error(&error, "resolve_provider_connection"),
+                }),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: crate::sanitize_error(&error, "resolve_provider_connection_join"),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let mut requested_model = req.model.clone();
+    if let Some((connection, provider_env)) = provider_connection {
+        env.extend(provider_env);
+        if requested_model.is_none() {
+            requested_model = connection.default_model.clone();
+        }
+    }
 
     // SECURITY (P1 #13): validate and canonicalize the work_dir.
     // Rejects path traversal, non-existent dirs, and (optionally) paths outside
@@ -1042,7 +1099,29 @@ pub async fn spawn_agent(
                 spawn_model_detection(agent_id.clone(), profile_name.clone());
             }
 
-            (StatusCode::CREATED, Json(SpawnAgentResponse { agent_id })).into_response()
+            let model_result = if let Some(model) = requested_model
+                .as_deref()
+                .filter(|model| !model.trim().is_empty())
+            {
+                crate::services::agent_service::set_agent_model(&agent_id, model.trim())
+                    .await
+                    .map(|_| ())
+            } else {
+                Ok(())
+            };
+
+            match model_result {
+                Ok(()) => {
+                    (StatusCode::CREATED, Json(SpawnAgentResponse { agent_id })).into_response()
+                }
+                Err(error) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: crate::sanitize_error(&error, "set_agent_model"),
+                    }),
+                )
+                    .into_response(),
+            }
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -4430,26 +4509,22 @@ pub(crate) fn spawn_model_detection(agent_id: String, profile_name: String) {
             return;
         }
 
-        // Primary: agent SDK (Claude supportedModels / OpenCode providers).
-        match crate::services::profile_service::refresh_profile_models_via_sdk(
-            kind,
-            &profile_name,
-            None,
-        )
-        .await
+        // Primary: config-file read (fast, no subprocess).
+        match crate::services::profile_service::refresh_profile_models(kind, &profile_name, None)
+            .await
         {
             Ok(details) if !details.is_empty() => {
                 tracing::info!(
                     models_count = details.len(),
                     profile = %profile_name,
-                    "Model detection: models detected via SDK"
+                    "Model detection: models detected via config file"
                 );
                 return;
             }
             Ok(_) => {
                 tracing::debug!(
                     profile = %profile_name,
-                    "Model detection: SDK returned no models"
+                    "Model detection: config file returned no models"
                 );
             }
             Err(e) => {

@@ -73,6 +73,7 @@ import {
   saveConversationDraftWithAttachments,
 } from "../lib/drafts"
 import {
+  ALL_THINKING_LEVELS,
   CODEX_MODELS,
   type CodexThinkingLevel,
 } from "../lib/models"
@@ -482,6 +483,12 @@ export const ChatInputArea = memo(function ChatInputArea({
 
   // Mention dropdown state
   const [showMentionDropdown, setShowMentionDropdown] = useState(false)
+  const [browseRoot, setBrowseRoot] = useState<string | null>(null)
+
+  // Clear browse root when the input is emptied.
+  useEffect(() => {
+    if (!hasContent) setBrowseRoot(null)
+  }, [hasContent])
   const [mentionSearchText, setMentionSearchText] = useState("")
   const [mentionPosition, setMentionPosition] = useState({ top: 0, left: 0 })
   const [inputContainerWidth, setInputContainerWidth] = useState(0)
@@ -794,11 +801,30 @@ export const ChatInputArea = memo(function ChatInputArea({
     trpc.claudeCode.getIntegration.useQuery()
   const codexUiModels = useMemo(
     () => {
-      const models = CODEX_MODELS
-      // react-doctor-disable-next-line js-set-map-lookups
-      return models.filter((model) => !hiddenModels.includes(model.id))
+      const hiddenModelSet = new Set(hiddenModels)
+      const backend = availableModels.models ?? []
+      // Prefer the backend-enumerated Codex models (config.toml + catalog) so the
+      // selector reflects the user's actual configured models; fall back to the
+      // built-in list when nothing has been detected yet.
+      const fromBackend: { id: string; name: string; thinkings: CodexThinkingLevel[] }[] =
+        backend
+          .filter((m) => !hiddenModelSet.has(m.id))
+          .map((m) => ({
+            id: m.id,
+            name: m.name || m.id,
+            thinkings:
+              m.id.includes("codex") || m.id.startsWith("gpt-5")
+                ? ALL_THINKING_LEVELS
+                : (["medium", "high"] as CodexThinkingLevel[]),
+          }))
+      const backendIds = new Set(fromBackend.map((m) => m.id))
+      const extra = CODEX_MODELS.filter(
+        (m) => !backendIds.has(m.id) && !hiddenModelSet.has(m.id),
+      )
+      const merged = fromBackend.length > 0 ? [...fromBackend, ...extra] : [...CODEX_MODELS.filter((m) => !hiddenModelSet.has(m.id))]
+      return merged
     },
-    [hiddenModels],
+    [availableModels.models, hiddenModels],
   )
   const selectedCodexModel = useMemo(
     () =>
@@ -1239,12 +1265,34 @@ export const ChatInputArea = memo(function ChatInputArea({
       }
     }
 
+    // @目录：切换浏览根，并作为普通文本插入（由 insertMention 处理触发词移除）
+    const isFolder = mention.type === "folder"
+
     // Otherwise: insert mention as normal
     editorRef.current?.insertMention(mention)
-    setShowMentionDropdown(false)
-    // Reset subpage state
-    setShowingFilesList(false)
-    setShowingAgentsList(false)
+
+    if (isFolder) {
+      // Keep the dropdown open and scoped to the newly selected directory.
+      // insertMention() closes the trigger; schedule reopen after that so we can
+      // continue browsing/selecting inside the directory without retyping @.
+      const nextBrowseRoot = mention.path
+      const nextSearchText = `${mention.path}/`
+      setBrowseRoot(nextBrowseRoot)
+      setMentionScope("agents")
+      setMentionSearchText(nextSearchText)
+      setShowingFilesList(true)
+      setShowingAgentsList(false)
+      setShowMentionDropdown(true)
+      requestAnimationFrame(() => {
+        editorRef.current?.focus()
+        editorRef.current?.triggerDetection?.()
+      })
+    } else {
+      // Reset subpage state and close
+      setShowingFilesList(false)
+      setShowingAgentsList(false)
+      setShowMentionDropdown(false)
+    }
   }, [editorRef])
 
   // Slash command handlers
@@ -1655,7 +1703,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                 <div className="flex items-center gap-0.5 flex-1 min-w-0">
 	                    {/* Mode toggle (Agent/Plan) */}
 
-	                    <div className="group/model-controls flex items-center gap-0.5">
+	                    <div className="group/model-controls flex items-center gap-0.5 min-w-0">
 	                    {!isGroupMode && (
 	                      isRuntimeModelProvider ? (
 	                        <button
@@ -1686,7 +1734,7 @@ export const ChatInputArea = memo(function ChatInputArea({
 	                        selectedModelLabel={selectedModelLabel}
 	                        claude={{
 	                          // react-doctor-disable-next-line js-set-map-lookups
-	                          models: availableModels.models.filter((m) => !hiddenModels.includes(m.id)),
+	                          models: availableModels.models.filter((m) => !new Set(hiddenModels).has(m.id)),
 	                          selectedModelId: selectedModel?.id,
 	                          onSelectModel: (modelId) => {
 	                            const model =
@@ -1881,6 +1929,8 @@ export const ChatInputArea = memo(function ChatInputArea({
         repository={repository}
         sandboxId={sandboxId}
         projectPath={projectPath}
+        browseRoot={browseRoot}
+        onBrowseRootChange={setBrowseRoot}
         changedFiles={changedFiles}
         // Subpage navigation state
         showingFilesList={showingFilesList}

@@ -756,6 +756,19 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
                 stale_sources.push(source);
             }
             CacheStatus::Miss => {
+                // Skills-first: when the SDK bundle is a miss but we have a
+                // persisted (last-known-good) result, serve it immediately and
+                // refresh in the background instead of blocking the first render
+                // on the SDK subprocess. Commands/MCP may be stale until refresh.
+                if source == SRC_SDK_BUNDLE {
+                    if let Some(cached) =
+                        load_persistent(agent_id, profile_name.as_deref(), cwd_opt)
+                    {
+                        fresh_values.insert(source, cached);
+                        stale_sources.push(source);
+                        continue;
+                    }
+                }
                 miss_sources.push(source);
             }
         }

@@ -1,6 +1,6 @@
 "use client"
 
-import { useAtom, useSetAtom } from "jotai"
+import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { ChevronDown } from "lucide-react"
 // react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
@@ -11,6 +11,7 @@ import { trpc } from "../../../lib/trpc"
 import { cn } from "../../../lib/utils"
 import {
   agentsFocusedDiffFileAtom,
+  agentStatusLineAtom,
   diffSidebarOpenAtomFamily,
   filteredDiffFilesAtom,
   filteredConversationIdAtom,
@@ -64,6 +65,7 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
   hasAgentRailAbove = false,
 }: ConversationStatusCardProps) {
   const isBusy = isStreaming || isCompacting
+  const agentStatusLine = useAtomValue(agentStatusLineAtom)
   const [isExpanded, setIsExpanded] = useState(false)
   // Use per-chat atom family instead of legacy global atom
   const diffSidebarAtom = useMemo(
@@ -208,6 +210,11 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
               )}
             </span>
           ) : null}
+          {agentStatusLine && (
+            <span className="text-xs text-muted-foreground truncate ml-2">
+              {agentStatusLine}
+            </span>
+          )}
         </div>
 
         {/* Right side: action buttons */}

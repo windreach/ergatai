@@ -318,6 +318,15 @@ pub async fn update_managed_workspace_project(
     }
 }
 
+pub async fn get_project(Path(project_id): Path<String>) -> impl IntoResponse {
+    let project_id_owned = project_id;
+    match tokio::task::spawn_blocking(move || manager::get_project(&project_id_owned)).await {
+        Ok(Ok(project)) => (StatusCode::OK, Json(project)).into_response(),
+        Ok(Err(error)) => managed_error(error, "get_project"),
+        Err(e) => crate::http_error::internal(e, "get_project_join").into_response(),
+    }
+}
+
 #[utoipa::path(
     delete,
     path = "/api/v1/workspaces/managed/{id}/projects/{project_id}",

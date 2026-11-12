@@ -11,6 +11,7 @@ pub mod locks;
 pub mod mcp_servers;
 pub mod openapi;
 pub mod permissions;
+pub mod provider_connections;
 pub mod skills;
 pub mod status;
 pub mod terminal_sessions;

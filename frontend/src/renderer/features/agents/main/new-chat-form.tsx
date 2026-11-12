@@ -36,6 +36,7 @@ import {
   lastSelectedBranchesAtom,
   lastSelectedModelIdAtom,
   lastSelectedWorkModeAtom,
+  type WorkMode,
   pendingInitialPromptAtomFamily,
   selectedAgentChatIdAtom,
   selectedDraftIdAtom,
@@ -87,6 +88,7 @@ import {
   type FileMentionOption,
 } from "../mentions"
 import { buildPastedMentionToken } from "../mentions/mentions-utils"
+import { promptToTitle } from "../../../../shared/mention-title"
 import { useEditorTriggerConfigs } from "../discovery/use-registered-triggers"
 import { AgentFileItem } from "../ui/agent-file-item"
 import { AgentImageItem } from "../ui/agent-image-item"
@@ -130,6 +132,7 @@ import {
   type GroupAgentRuntimeStatuses,
 } from "../collaboration/group-agent-runtime"
 import { CoreAgentSelector } from "../components/core-agent-selector"
+import { AgentModelSelector } from "../components/agent-model-selector"
 import {
   agentContractApi,
   getCoreAgentProfileName,
@@ -147,6 +150,7 @@ import {
   markDraftVisible,
 } from "../lib/drafts"
 import {
+  ALL_THINKING_LEVELS,
   CODEX_MODELS,
   type CodexThinkingLevel,
 } from "../lib/models"
@@ -433,6 +437,7 @@ export function NewChatForm({
     { enabled: !!validatedProject?.path },
   )
   const isGitRepository = gitRepositoryQuery.data === true
+  const initRepositoryMutation = trpc.changes.initRepository.useMutation()
   // A persisted "worktree" preference must not leak into plain folders. The
   // effective mode is used by the UI and creation payload.
   const effectiveWorkMode = isGitRepository ? workMode : "local"
@@ -558,7 +563,7 @@ export function NewChatForm({
   ])
 
   // Get available models (with offline support)
-  const availableModels = useAvailableModels(backendAgentId)
+  const availableModels = useAvailableModels(backendAgentId, selectedAgent?.id ?? null)
   const [selectedOllamaModel, _setSelectedOllamaModel] = useAtom(selectedOllamaModelAtom)
   const [lastSelectedCodexModelId, _setLastSelectedCodexModelId] = useAtom(
     lastSelectedCodexModelIdAtom,
@@ -566,12 +571,14 @@ export function NewChatForm({
   const [lastSelectedCodexThinking, setLastSelectedCodexThinking] = useAtom(
     lastSelectedCodexThinkingAtom,
   )
-  const [_thinkingEnabled, _setThinkingEnabled] = useAtom(
+  const [thinkingEnabled, setThinkingEnabled] = useAtom(
     extendedThinkingEnabledAtom,
   )
 
   // react-doctor-disable-next-line rerender-state-only-in-handlers
-  const [selectedModel, setSelectedModel] = useState(
+  const [selectedModel, setSelectedModel] = useState<
+    (typeof availableModels.models)[number] | undefined
+  >(
     () => {
       // Priority: backend current model > last selected > first available
       const backendCurrent = availableModels.currentModelId
@@ -589,10 +596,13 @@ export function NewChatForm({
       const backendCurrent = availableModels.currentModelId
         ? availableModels.models.find((m) => m.id === availableModels.currentModelId)
         : null
-      const lastSelected = availableModels.models.find((m) => m.id === lastSelectedModelId)
+      const lastSelected =
+        selectedAgent.id === "claude-code"
+          ? availableModels.models.find((m) => m.id === lastSelectedModelId)
+          : null
       setSelectedModel(backendCurrent || lastSelected || availableModels.models[0])
     }
-  }, [selectedModel, availableModels.models, availableModels.currentModelId, lastSelectedModelId])
+  }, [selectedModel, availableModels.models, availableModels.currentModelId, lastSelectedModelId, selectedAgent.id])
 
   // Sync selectedModel when backend current model or atom value changes
   // react-doctor-disable-next-line no-effect-chain
@@ -612,20 +622,47 @@ export function NewChatForm({
         return
       }
     }
-    const model = availableModels.models.find((m) => m.id === lastSelectedModelId)
-    if (model && model.id !== selectedModel.id) {
-      setSelectedModel(model)
+    if (selectedAgent.id === "claude-code") {
+      const model = availableModels.models.find((m) => m.id === lastSelectedModelId)
+      if (model && model.id !== selectedModel.id) {
+        setSelectedModel(model)
+      }
     }
-  }, [availableModels.models, availableModels.currentModelId, lastSelectedModelId, selectedModel])
+  }, [availableModels.models, availableModels.currentModelId, lastSelectedModelId, selectedModel, selectedAgent.id])
+
+  // Avoid stale model selections leaking across agents (e.g. Claude Code -> opencode).
+  // react-doctor-disable-next-line no-effect-chain
+  useEffect(() => {
+    setSelectedModel(undefined)
+  }, [selectedAgent.id])
 
   const hiddenModels = useAtomValue(hiddenModelsAtom)
   const codexUiModels = useMemo(
     () => {
-      const models = CODEX_MODELS
-      // react-doctor-disable-next-line js-set-map-lookups
-      return models.filter((model) => !hiddenModels.includes(model.id))
+      const hiddenModelSet = new Set(hiddenModels)
+      const backend = availableModels.models ?? []
+      const fromBackend: { id: string; name: string; thinkings: CodexThinkingLevel[] }[] =
+        backend
+          .filter((m) => !hiddenModelSet.has(m.id))
+          .map((m) => ({
+            id: m.id,
+            name: m.name || m.id,
+            thinkings:
+              m.id.includes("codex") || m.id.startsWith("gpt-5")
+                ? ALL_THINKING_LEVELS
+                : (["medium", "high"] as CodexThinkingLevel[]),
+          }))
+      const backendIds = new Set(fromBackend.map((m) => m.id))
+      const extra = CODEX_MODELS.filter(
+        (m) => !backendIds.has(m.id) && !hiddenModelSet.has(m.id),
+      )
+      const merged =
+        fromBackend.length > 0
+          ? [...fromBackend, ...extra]
+          : [...CODEX_MODELS.filter((m) => !hiddenModelSet.has(m.id))]
+      return merged
     },
-    [hiddenModels],
+    [availableModels.models, hiddenModels],
   )
   const selectedCodexModel = useMemo(
     () =>
@@ -714,6 +751,7 @@ export function NewChatForm({
   ])
   const [_repoPopoverOpen, _setRepoPopoverOpen] = useState(false)
   const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
+  const [modelPopoverOpen, setModelPopoverOpen] = useState(false)
   const [lastSelectedBranches, setLastSelectedBranches] = useAtom(
     lastSelectedBranchesAtom,
   )
@@ -740,6 +778,7 @@ export function NewChatForm({
   )
   const branchListRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<AgentsMentionsEditorHandle>(null)
+  const inputContainerRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
 
@@ -787,7 +826,9 @@ export function NewChatForm({
   const [showMentionDropdown, setShowMentionDropdown] = useState(false)
   const [mentionSearchText, setMentionSearchText] = useState("")
   const [mentionPosition, setMentionPosition] = useState({ top: 0, left: 0 })
+  const [inputContainerWidth, setInputContainerWidth] = useState(0)
   const [mentionScope, setMentionScope] = useState<"agents" | "resources" | "all">("agents")
+  const [browseRoot, setBrowseRoot] = useState<string | null>(null)
 
   // Mention subpage navigation state
   const [showingFilesList, setShowingFilesList] = useState(false)
@@ -973,6 +1014,49 @@ export function NewChatForm({
   const handleRefreshBranchesRef = useRef(handleRefreshBranches)
   // react-doctor-disable-next-line no-ref-current-in-render
   handleRefreshBranchesRef.current = handleRefreshBranches
+
+  // Handle work mode changes, auto-initializing git when needed
+  const handleWorkModeChange = useCallback(
+    (mode: WorkMode) => {
+      if (
+        mode === "worktree" &&
+        !isGitRepository &&
+        validatedProject?.path
+      ) {
+        initRepositoryMutation.mutate(
+          { path: validatedProject.path },
+          {
+            onSuccess: async () => {
+              await gitRepositoryQuery.refetch()
+              await branchesQuery.refetch()
+              setWorkMode("worktree")
+              // Blur the currently focused element to avoid aria-hidden/focus
+              // accessibility warnings when the dialog opens.
+              if (document.activeElement instanceof HTMLElement) {
+                document.activeElement.blur()
+              }
+              setCreateBranchDialogOpen(true)
+            },
+            onError: (error) => {
+              toast.error(
+                error.message || "Failed to initialize git repository",
+              )
+            },
+          },
+        )
+        return
+      }
+      setWorkMode(mode)
+    },
+    [
+      isGitRepository,
+      validatedProject?.path,
+      initRepositoryMutation,
+      gitRepositoryQuery,
+      branchesQuery,
+      setWorkMode,
+    ],
+  )
 
   // Transform branch data to match web app format
   const branches = useMemo(() => {
@@ -1238,14 +1322,14 @@ export function NewChatForm({
       validatedProject ? (
         <WorkModeSelector
           value={effectiveWorkMode}
-          onChange={setWorkMode}
+          onChange={handleWorkModeChange}
           worktreeAvailable={isGitRepository}
           disabled={createChatMutation.isPending}
         />
       ) : null,
     [
       createChatMutation.isPending,
-      setWorkMode,
+      handleWorkModeChange,
       validatedProject,
       effectiveWorkMode,
       isGitRepository,
@@ -1334,7 +1418,9 @@ export function NewChatForm({
     createChatMutation.mutate({
       projectId: selectedWorkspace.id,
       workspaceId: selectedWorkspaceId || undefined,
-      name: message.trim().slice(0, 50), // Use first 50 chars as chat name
+      // Use a readable slice of the prompt as the chat name. Mention tokens are
+      // internal serialization and must not leak into titles.
+      name: promptToTitle(message) || undefined,
       model: selectedChatModel || undefined, // Only send model if explicitly selected
       initialMessageParts: parts.length > 0 ? parts : undefined,
       baseBranch:
@@ -1376,8 +1462,29 @@ export function NewChatForm({
       }
     }
 
+    const isFolder = mention.type === "folder"
+
     // Otherwise: insert mention as normal
     editorRef.current?.insertMention(mention)
+
+    if (isFolder) {
+      // Keep the dropdown open and scoped to the newly selected directory so the
+      // user can continuously browse/select inside it without retyping @.
+      const nextBrowseRoot = mention.path
+      const nextSearchText = `${mention.path}/`
+      setBrowseRoot(nextBrowseRoot)
+      setMentionScope("agents")
+      setMentionSearchText(nextSearchText)
+      setShowingFilesList(true)
+      setShowingAgentsList(false)
+      setShowMentionDropdown(true)
+      requestAnimationFrame(() => {
+        editorRef.current?.focus()
+        editorRef.current?.triggerDetection?.()
+      })
+      return
+    }
+
     setShowMentionDropdown(false)
     // Reset subpage state
     setShowingFilesList(false)
@@ -1443,6 +1550,7 @@ export function NewChatForm({
         setMentionScope("agents")
         setMentionSearchText(searchText)
         setMentionPosition({ top: rect.top, left: rect.left })
+        setInputContainerWidth(inputContainerRef.current?.getBoundingClientRect().width ?? 0)
         // Reset subpage state when opening dropdown
         setShowingFilesList(false)
         setShowingAgentsList(false)
@@ -1880,7 +1988,7 @@ export function NewChatForm({
                   contextItems={contextItems}
                 >
                   <PromptInputContextItems />
-                  <div className="relative">
+                  <div className="relative" ref={inputContainerRef}>
                     <AgentsMentionsEditor
                       ref={editorRef}
                       onTrigger={handleMentionTrigger}
@@ -1910,7 +2018,7 @@ export function NewChatForm({
                     <div className="flex items-center gap-0.5 flex-1 min-w-0">
                       {/* Mode toggle (Agent/Plan) */}
 
-                      <div className="group/model-controls flex items-center gap-0.5">
+                      <div className="group/model-controls flex items-center gap-0.5 min-w-0">
                         <CoreAgentSelector
                           value={selectedAgent.id as "claude-code" | "codex"}
                           compact={collaborationMode === "group"}
@@ -1937,7 +2045,63 @@ export function NewChatForm({
                           }}
                         />
                       </div>
-                      <PermissionModeSelector />
+                      {/* Model selector next to agent selector */}
+                        {(selectedAgent.id === "codex" ? codexUiModels.length > 0 : availableModels.models.length > 0) && (
+                          <AgentModelSelector
+                            open={modelPopoverOpen}
+                            onOpenChange={setModelPopoverOpen}
+                            selectedAgentId={selectedAgent.id === "codex" ? "codex" : "claude-code"}
+                            onSelectedAgentIdChange={(next) => {
+                              if (next === "codex") {
+                                setSelectedAgent(enabledAgents.find((a) => a.id === "codex") || fallbackAgent)
+                              } else {
+                                setSelectedAgent(claudeAgent)
+                              }
+                              setLastSelectedAgentId(next)
+                            }}
+                            allowProviderSwitch={false}
+                            selectedModelLabel={_selectedModelLabel}
+                            claude={{
+                              models: availableModels.models.filter((m) => !new Set(hiddenModels).has(m.id)),
+                              selectedModelId: selectedModel?.id,
+                              onSelectModel: (modelId) => {
+                                const m =
+                                  availableModels.models.find((item) => item.id === modelId) ||
+                                  availableModels.models[0]
+                                if (!m) return
+                                setSelectedModel(m)
+                                if (selectedAgent.id === "claude-code") {
+                                  _setLastSelectedModelId(m.id)
+                                }
+                              },
+                              hasCustomModelConfig: hasCustomClaudeConfig,
+                              isOffline: availableModels.isOffline && availableModels.hasOllama,
+                              ollamaModels: availableModels.ollamaModels,
+                              selectedOllamaModel: currentOllamaModel,
+                              recommendedOllamaModel: availableModels.recommendedModel,
+                              onSelectOllamaModel: _setSelectedOllamaModel,
+                              isConnected: _isClaudeConnected,
+                              thinkingEnabled,
+                              onThinkingChange: setThinkingEnabled,
+                            }}
+                            codex={{
+                              models: codexUiModels,
+                              selectedModelId: selectedCodexModel.id,
+                              onSelectModel: (modelId) => {
+                                const m = codexUiModels.find((item) => item.id === modelId)
+                                if (!m) return
+                                _setLastSelectedCodexModelId(m.id)
+                              },
+                              selectedThinking: selectedCodexThinking,
+                              onSelectThinking: (thinking) => {
+                                setLastSelectedCodexThinking(thinking)
+                              },
+                              isConnected: false,
+                            }}
+                          />
+                        )}
+
+                       <PermissionModeSelector />
                     </div>
 
                     <div className="flex items-center gap-0.5 ml-auto flex-shrink-0">
@@ -2066,6 +2230,8 @@ export function NewChatForm({
                   onSelect={handleSlashSelect}
                   searchText={slashSearchText}
                   position={slashPosition}
+                  containerWidth={inputContainerWidth || undefined}
+                  containerLeft={mentionPosition.left}
                   chatId={selectedChatId ?? undefined}
                   cwd={validatedProject?.path}
                   mode={agentMode}
@@ -2256,6 +2422,9 @@ export function NewChatForm({
                   searchText={mentionSearchText}
                   position={mentionPosition}
                   projectPath={validatedProject?.path}
+                  containerWidth={inputContainerWidth || undefined}
+                  browseRoot={browseRoot}
+                  onBrowseRootChange={setBrowseRoot}
                   showingFilesList={showingFilesList}
                   showingAgentsList={showingAgentsList}
                   scope={mentionScope}

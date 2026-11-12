@@ -572,6 +572,8 @@ export const api = {
           sandboxId?: string
           branch?: string
           projectPath?: string
+          collapseChains?: boolean
+          collapseRoot?: string
         },
         opts?: AnyObj,
       ) => {
@@ -581,6 +583,8 @@ export const api = {
             projectPath: args?.projectPath || "",
             query: args?.query || "",
             limit: args?.limit || 50,
+            collapseChains: args?.collapseChains ?? false,
+            collapseRoot: args?.collapseRoot,
           },
           {
             enabled: !!args?.projectPath && opts?.enabled !== false,

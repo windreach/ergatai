@@ -83,6 +83,9 @@ percent-encoding = "2.3"
 # HTTP client (rustls backend for TLS support)
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
 
+# OS credential stores for provider API keys
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
 # Low-level / syscalls (fanotify, etc.)
 libc = "0.2"
 

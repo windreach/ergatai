@@ -69,6 +69,7 @@ type ConversationState = {
 type StreamDeltaEvent = {
   type: string
   delta?: string
+  message?: string
   id?: string
   name?: string
   input?: unknown
@@ -408,6 +409,22 @@ class ConversationPipeline {
 
           if (type === "text") {
             this.handleTextDelta(deltaEvent.delta ?? "")
+            this.consecutiveStreamErrors = 0
+            return
+          }
+
+          if (type === "status") {
+            console.log("[ConversationPipeline] received status event:", deltaEvent.message)
+            // Surface agent retry / 401 / stderr status lines in the live stream
+            // instead of dropping them (they are not carried by `text` deltas).
+            this.handleTextDelta(`${deltaEvent.message ?? ""}\n`)
+            this.consecutiveStreamErrors = 0
+            return
+          }
+
+          if (type === "error") {
+            this.state = { ...this.state, error: new Error(deltaEvent.message ?? "Agent error") }
+            this.notify()
             this.consecutiveStreamErrors = 0
             return
           }

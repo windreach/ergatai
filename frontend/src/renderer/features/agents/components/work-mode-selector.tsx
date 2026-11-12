@@ -67,7 +67,7 @@ export function WorkModeSelector({
         {workModeOptions.map((option) => {
           const OptionIcon = option.icon
           const isSelected = value === option.id
-          const isDisabled = option.id === "worktree" && !worktreeAvailable
+          const isDisabled = false
           const isSoon = false
           return (
             <button

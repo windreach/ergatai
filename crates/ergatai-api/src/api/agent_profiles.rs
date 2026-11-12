@@ -639,9 +639,7 @@ pub async fn refresh_profile_models(Path(name): Path<String>) -> axum::response:
             }
         };
         if !kind.is_empty() {
-            if let Ok(details) =
-                profile_service::refresh_profile_models_via_sdk(kind, &name, None).await
-            {
+            if let Ok(details) = profile_service::refresh_profile_models(kind, &name, None).await {
                 if !details.is_empty() {
                     let models: Vec<String> = details.iter().map(|d| d.id.clone()).collect();
                     return (

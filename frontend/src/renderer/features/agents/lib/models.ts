@@ -6,7 +6,7 @@ export const CLAUDE_MODELS = [
 
 export type CodexThinkingLevel = "low" | "medium" | "high" | "xhigh"
 
-const ALL_THINKING_LEVELS: CodexThinkingLevel[] = ["low", "medium", "high", "xhigh"]
+export const ALL_THINKING_LEVELS: CodexThinkingLevel[] = ["low", "medium", "high", "xhigh"]
 
 interface CodexModel {
   id: string

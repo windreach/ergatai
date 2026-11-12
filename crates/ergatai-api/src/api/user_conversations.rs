@@ -53,6 +53,8 @@ pub struct CreateInitialPromptRequest {
     pub message_id: String,
     pub client_request_id: String,
     pub agent_command: String,
+    pub provider_connection_id: Option<String>,
+    pub model: Option<String>,
     #[serde(default)]
     pub prompt: String,
     #[serde(default)]
@@ -1158,6 +1160,8 @@ pub async fn create_initial_prompt(
         message_id,
         client_request_id: request.client_request_id,
         agent_command: request.agent_command,
+        provider_connection_id: request.provider_connection_id,
+        model: request.model,
         prompt: request.prompt,
         images: request.images,
     };

@@ -295,6 +295,8 @@ async function getEntryList(projectPath: string): Promise<FileEntry[]> {
   const now = Date.now()
 
   if (cached && now - cached.timestamp < CACHE_TTL) {
+    // Refresh timestamp so the LRU eviction treats this as recently used.
+    fileListCache.set(projectPath, { entries: cached.entries, timestamp: now })
     return cached.entries
   }
 
@@ -316,6 +318,89 @@ async function getEntryList(projectPath: string): Promise<FileEntry[]> {
   fileListCache.set(projectPath, { entries, timestamp: now })
   ensureProjectWatcher(projectPath)
   return entries
+}
+
+/**
+ * Compute the parent directory of a relative path ("" for top-level entries).
+ */
+function getParentPath(relativePath: string): string {
+  const idx = relativePath.lastIndexOf("/")
+  if (idx === -1) return ""
+  return relativePath.slice(0, idx)
+}
+
+/**
+ * Collapse directory chains for a browsable @-mention view.
+ *
+ * Rules:
+ * - Direct files of a directory are always shown.
+ * - A subdirectory with more than one direct file is shown as a folder
+ *   (drill-down), hiding its contents.
+ * - A subdirectory with a single direct file (and no subdirs) is collapsed
+ *   to "dir/file".
+ * - A subdirectory containing only subdirectories is traversed recursively.
+ * - A subdirectory with one file plus subdirectories shows that file and
+ *   keeps traversing the subdirectories.
+ */
+function collapseEntries(entries: FileEntry[], rootPrefix: string = ""): FileEntry[] {
+  const prefix = rootPrefix ? `${rootPrefix}/` : ""
+
+  // Scope to the requested root (if any) and strip the prefix so the
+  // collapse algorithm can treat the root as "".
+  const scoped = rootPrefix
+    ? entries.filter(
+        (e) => e.path !== rootPrefix && e.path.startsWith(prefix),
+      )
+    : entries
+  const stripped = scoped.map((e) => ({
+    ...e,
+    path: rootPrefix ? e.path.slice(prefix.length) : e.path,
+  }))
+
+  const byParent = new Map<string, FileEntry[]>()
+  for (const entry of stripped) {
+    const parent = getParentPath(entry.path)
+    if (!byParent.has(parent)) byParent.set(parent, [])
+    byParent.get(parent)!.push(entry)
+  }
+
+  const result: FileEntry[] = []
+
+  function process(dirPrefix: string): void {
+    const direct = byParent.get(dirPrefix) ?? []
+    const directFiles = direct.filter((e) => e.type === "file")
+    const directDirs = direct.filter((e) => e.type === "folder")
+
+    // Direct files are always shown.
+    for (const file of directFiles) {
+      result.push(file)
+    }
+
+    for (const dir of directDirs) {
+      const childDirect = byParent.get(dir.path) ?? []
+      const childFiles = childDirect.filter((e) => e.type === "file")
+      const childDirs = childDirect.filter((e) => e.type === "folder")
+
+      if (childDirect.length === 0) {
+        // Empty directory: keep it as a drill-down target.
+        result.push(dir)
+      } else if (childFiles.length > 1) {
+        // Multiple files: show the directory itself, do not expand.
+        result.push(dir)
+      } else {
+        // 0 or 1 direct file: expand / collapse recursively.
+        process(dir.path)
+      }
+    }
+  }
+
+  process("")
+
+  // Re-apply the root prefix to the collapsed results.
+  return result.map((e) => ({
+    ...e,
+    path: rootPrefix ? `${rootPrefix}/${e.path}` : e.path,
+  }))
 }
 
 /**
@@ -403,10 +488,12 @@ export const filesRouter = router({
         query: z.string().default(""),
         limit: z.number().min(1).max(5000).default(50),
         typeFilter: z.enum(["file", "folder"]).optional(),
+        collapseChains: z.boolean().default(false),
+        collapseRoot: z.string().optional(),
       })
     )
     .query(async ({ input }) => {
-      const { projectPath, query, limit, typeFilter } = input
+      const { projectPath, query, limit, typeFilter, collapseChains, collapseRoot } = input
 
       if (!projectPath) {
         return []
@@ -421,7 +508,21 @@ export const filesRouter = router({
         }
 
         // Get entry list (cached or fresh scan)
-        const entries = await getEntryList(projectPath)
+        const rawEntries = await getEntryList(projectPath)
+
+        // Optionally collapse directory chains for browsable @-mention views.
+        // Collapse is only applied when browsing (no query); searching keeps
+        // the full flat list so any file can be found.
+        const entries =
+          collapseChains && !query
+            ? collapseEntries(rawEntries, collapseRoot || "")
+            : collapseRoot
+              ? rawEntries.filter(
+                  (e) =>
+                    e.path !== collapseRoot &&
+                    e.path.startsWith(`${collapseRoot}/`),
+                )
+              : rawEntries
 
         // Filter and sort by query
         return filterEntries(entries, query, limit, typeFilter)

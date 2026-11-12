@@ -184,7 +184,7 @@ pub async fn switch_model(
             if kind.is_empty() {
                 tracing::debug!(agent_id = %agent_id, "Skipping SDK model refresh: unknown agent kind");
             } else {
-                match crate::services::profile_service::refresh_profile_models_via_sdk(
+                match crate::services::profile_service::refresh_profile_models(
                     &kind,
                     pn,
                     cwd.as_deref(),
@@ -223,12 +223,19 @@ pub async fn switch_model(
 ///
 /// Fetch supported models for an agent kind via the SDK helper.
 pub async fn models(Query(q): Query<DiscoverQuery>) -> Json<serde_json::Value> {
-    let sdk = crate::services::agent_sdk_service::discover(&q.agent, q.cwd.as_deref()).await;
-    let models = sdk
-        .get("models")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!([]));
-    Json(models)
+    let details = crate::services::model_file_reader::read_models(&q.agent, q.cwd.as_deref());
+    let models: Vec<serde_json::Value> = details
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "id": d.id,
+                "name": d.name,
+                "description": d.description,
+                "provider": d.provider,
+            })
+        })
+        .collect();
+    Json(serde_json::json!(models))
 }
 
 #[derive(Debug, serde::Deserialize)]

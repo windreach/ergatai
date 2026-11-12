@@ -1281,6 +1281,9 @@ export const fileViewerBracketPairsAtom = atomWithStorage<boolean>(
 // File search dialog open state (Cmd+P)
 export const fileSearchDialogOpenAtom = atom<boolean>(false)
 
+/** Latest agent status line (e.g. stderr retries) to show in the status card. */
+export const agentStatusLineAtom = atom<string | null>(null)
+
 // File viewer open state - stores the currently open file path per chatId
 const fileViewerOpenStorageAtom = atom<Record<string, string | null>>({})
 

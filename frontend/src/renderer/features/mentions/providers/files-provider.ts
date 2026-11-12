@@ -77,6 +77,7 @@ export const filesProvider = createMentionProvider<FileData>({
         projectPath: context.projectPath,
         query: context.query,
         limit: context.limit,
+        collapseChains: !context.query,
       })
 
       // Map to MentionItem format

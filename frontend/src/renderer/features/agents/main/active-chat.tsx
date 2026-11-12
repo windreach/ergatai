@@ -706,6 +706,7 @@ export function ChatView({
   onOpenDiff,
   onOpenTerminal,
   hideHeader = false,
+  projectPath,
 }: {
   chatId: string
   isSidebarOpen: boolean
@@ -718,6 +719,7 @@ export function ChatView({
   onOpenDiff?: () => void
   onOpenTerminal?: () => void
   hideHeader?: boolean
+  projectPath?: string
 }) {
   const [selectedTeamId] = useAtom(selectedTeamIdAtom)
 
@@ -1891,7 +1893,7 @@ export function ChatView({
                             isMobile={isMobileFullscreen}
                             isConversationsSidebarOpen={conversationsSidebarMode === "sidebar"}
                             sandboxId={sandboxId || undefined}
-                            projectPath={worktreePath || undefined}
+                            projectPath={projectPath ?? worktreePath ?? undefined}
                             isArchived={isArchived}
                             onRestoreWorkspace={handleRestoreWorkspace}
                             existingPrUrl={agentChat?.prUrl}
@@ -1945,7 +1947,7 @@ export function ChatView({
                                 isMobile={isMobileFullscreen}
                                 isConversationsSidebarOpen={conversationsSidebarMode === "sidebar"}
                                 sandboxId={sandboxId || undefined}
-                                projectPath={worktreePath || undefined}
+                                projectPath={projectPath ?? worktreePath ?? undefined}
                                 isArchived={isArchived}
                                 onRestoreWorkspace={handleRestoreWorkspace}
                                 existingPrUrl={agentChat?.prUrl}
@@ -2012,7 +2014,7 @@ export function ChatView({
                       isMobile={isMobileFullscreen}
                       isConversationsSidebarOpen={conversationsSidebarMode === "sidebar"}
                       sandboxId={sandboxId || undefined}
-                      projectPath={worktreePath || undefined}
+                      projectPath={projectPath ?? worktreePath ?? undefined}
                       isArchived={isArchived}
                       onRestoreWorkspace={handleRestoreWorkspace}
                       existingPrUrl={agentChat?.prUrl}

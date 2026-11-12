@@ -14,6 +14,7 @@ import {
 } from "../../lib/atoms"
 import { cn } from "../../lib/utils"
 import {
+  PluginFilledIcon,
   BugFilledIcon,
   FolderFilledIcon,
   GitBranchFilledIcon,
@@ -85,6 +86,8 @@ function TabButton({ tab, isActive, onClick }: TabButtonProps) {
 
   return (
     <button
+      type="button"
+      role="tab"
       onClick={onClick}
       aria-selected={isActive}
       className={cn(

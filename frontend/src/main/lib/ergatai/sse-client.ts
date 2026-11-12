@@ -184,6 +184,7 @@ const agentOutputEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("done"), stop_reason: z.string(), conversation_id: z.string().nullish() }),
   z.object({ type: z.literal("turn_started"), role: z.string().nullish(), turn_id: z.string().nullish(), conversation_id: z.string().nullish() }),
   z.object({ type: z.literal("error"), message: z.string(), conversation_id: z.string().nullish() }),
+  z.object({ type: z.literal("status"), message: z.string(), conversation_id: z.string().nullish() }),
   z.object({
     type: z.literal("conversation_message"),
     message_id: z.string(),
@@ -295,6 +296,7 @@ export type AgentOutputEvent =
   | ({ type: "done"; stop_reason: string } & AgentOutputEventContext)
   | ({ type: "turn_started"; role?: string | null; turn_id?: string | null } & AgentOutputEventContext)
   | ({ type: "error"; message: string } & AgentOutputEventContext)
+  | ({ type: "status"; message: string } & AgentOutputEventContext)
   | ({
       type: "conversation_message"
       message_id: string
@@ -370,6 +372,9 @@ export function convertEventToChunk(event: AgentOutputEvent): UIMessageChunk | n
       return { type: "finish", finishReason: event.stop_reason }
     case "error":
       return { type: "error", errorText: event.message }
+    case "status":
+      // Surface agent retry / 401 / stderr status lines instead of dropping them.
+      return { type: "text-delta", textDelta: `${event.message}\n` }
     default:
       log.warn("Unknown event type", undefined, { event })
       return null

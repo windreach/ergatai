@@ -116,9 +116,6 @@ export function WidgetsPanel({
               />
             )
 
-          case "info":
-            return null
-
           case "todo":
             return (
               <TodoWidget key="todo" conversationId={activeConversationId || null} />
@@ -192,9 +189,6 @@ export function WidgetsPanel({
           //     </WidgetCard>
           //   )
           case "mcp":
-            return null
-
-          case "monitoring":
             return null
 
           default:

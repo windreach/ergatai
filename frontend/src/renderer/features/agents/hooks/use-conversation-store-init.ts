@@ -3,6 +3,7 @@ import { useEffect } from "react"
 import { appStore } from "../../../lib/jotai-store"
 import { conversationModeAtomFamily } from "../../../lib/atoms"
 import { useAgentConversationStore } from "../stores/conversation-store"
+import { mentionsToReadableText } from "../../../../shared/mention-title"
 
 interface ConversationMeta {
   id: string
@@ -76,7 +77,9 @@ export function useConversationStoreInit({
           : sc.updated_at?.toISOString()
       const dbName = typeof sc.name === "string" && sc.name.trim() ? sc.name : null
       const localName = existingLocal?.name && existingLocal.name.trim() ? existingLocal.name : null
-      const name = dbName || localName || "New Chat"
+      // Historical titles can contain serialized mention tokens (e.g.
+      // "@[file:local:...] fix this"). Render a readable title instead.
+      const name = mentionsToReadableText(dbName || localName || "") || "New Chat"
       return {
         id: sc.id,
         name,

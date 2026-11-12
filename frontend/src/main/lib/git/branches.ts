@@ -27,6 +27,35 @@ export const createBranchesRouter = () => {
 				}
 			}),
 
+		initRepository: publicProcedure
+			.input(z.object({ path: z.string() }))
+			.mutation(async ({ input }): Promise<{ success: boolean }> => {
+				const git = simpleGit(input.path);
+				try {
+					const isRepo = await git.checkIsRepo();
+					if (isRepo) {
+						return { success: true };
+					}
+				} catch {
+					// Not a repo yet; fall through to init.
+				}
+
+				await git.init();
+				try {
+					await git.raw(["branch", "-M", "main"]);
+				} catch {
+					// Branch rename may fail on very old git versions; ignore.
+				}
+				try {
+					await git.raw(["config", "user.email", "ergatai@local"]);
+					await git.raw(["config", "user.name", "Ergatai"]);
+				} catch {
+					// Ignore config errors; commit may still succeed with global config.
+				}
+				await git.raw(["commit", "--allow-empty", "-m", "Initial commit"]);
+				return { success: true };
+			}),
+
 		getBranches: publicProcedure
 			.input(z.object({ worktreePath: z.string() }))
 			.query(

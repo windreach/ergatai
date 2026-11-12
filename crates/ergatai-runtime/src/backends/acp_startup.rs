@@ -3,6 +3,8 @@
 //! 将 agent 启动过程分解为三个独立阶段，每个阶段实现统一的 trait，
 //! 支持可配置的重试策略和超时控制。
 
+use crate::backends::acp::AgentOutputEvent;
+use crate::output_publisher::get_global_output_publisher;
 use ergatai_error::{ErgataiError, ErgataiResult};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -154,7 +156,16 @@ impl RetryExecutor {
     pub async fn execute_with_retry<E: StartupPhaseExecutor>(
         executor: &E,
         agent_id: &str,
+        conversation_id: Option<&str>,
     ) -> ErgataiResult<()> {
+        // Wait for the global output publisher to be available (configured during
+        // startup) so retry status can be forwarded to the conversation stream.
+        for _ in 0..50 {
+            if crate::output_publisher::get_global_output_publisher().is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         let phase = executor.phase();
         let policy = executor.retry_policy();
         let timeout = executor.timeout();
@@ -218,6 +229,24 @@ impl RetryExecutor {
                         return Err(e);
                     }
 
+                    if let Some(conv_id) = conversation_id {
+                        if let Some(publisher) = get_global_output_publisher() {
+                            let _ = publisher
+                                .publish(
+                                    conv_id,
+                                    AgentOutputEvent::Status {
+                                        message: format!(
+                                            "{} failed (attempt {}/{}), retrying: {}",
+                                            phase,
+                                            attempt + 1,
+                                            policy.max_attempts + 1,
+                                            e
+                                        ),
+                                    },
+                                )
+                                .await;
+                        }
+                    }
                     warn!(
                         agent_id = %agent_id,
                         phase = %phase,
@@ -244,6 +273,23 @@ impl RetryExecutor {
                         return Err(timeout_error);
                     }
 
+                    if let Some(conv_id) = conversation_id {
+                        if let Some(publisher) = get_global_output_publisher() {
+                            let _ = publisher
+                                .publish(
+                                    conv_id,
+                                    AgentOutputEvent::Status {
+                                        message: format!(
+                                            "{} timed out (attempt {}/{}), retrying",
+                                            phase,
+                                            attempt + 1,
+                                            policy.max_attempts + 1
+                                        ),
+                                    },
+                                )
+                                .await;
+                        }
+                    }
                     warn!(
                         agent_id = %agent_id,
                         phase = %phase,
@@ -257,6 +303,17 @@ impl RetryExecutor {
         }
 
         // 所有重试用尽
+        if let Some(conv_id) = conversation_id {
+            if let Some(publisher) = get_global_output_publisher() {
+                let msg = match &last_error {
+                    Some(e) => format!("{} failed after all retries: {}", phase, e),
+                    None => format!("{} failed after all retries", phase),
+                };
+                let _ = publisher
+                    .publish(conv_id, AgentOutputEvent::Status { message: msg })
+                    .await;
+            }
+        }
         let final_error = last_error.unwrap_or_else(|| {
             ErgataiError::internal(format!(
                 "{} failed after {} attempts",

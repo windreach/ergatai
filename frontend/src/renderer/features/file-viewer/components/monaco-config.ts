@@ -3,8 +3,27 @@ import { loader } from "@monaco-editor/react"
 // react-doctor-disable-next-line prefer-dynamic-import
 import * as monaco from "monaco-editor"
 import type { editor } from "monaco-editor"
-// Workers disabled in test environment (monaco-editor is a stub)
-self.MonacoEnvironment = { getWorker() { return null as any } }
+// Workers are intentionally disabled for the read-only file viewer.
+// Monaco expects `getWorker()` to return a Worker-like object; returning
+// `null` makes Monaco crash with "Cannot read properties of null
+// (reading 'postMessage')" when opening files whose language service
+// uses a worker (e.g. JSON). Return a no-op worker instead.
+self.MonacoEnvironment = {
+  getWorker() {
+    return {
+      postMessage() {},
+      terminate() {},
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent() {
+        return true
+      },
+      onmessage: null,
+      onmessageerror: null,
+      onerror: null,
+    } as unknown as Worker
+  },
+}
 
 // Configure Monaco to use local package instead of CDN
 // Required for Electron apps due to CSP restrictions

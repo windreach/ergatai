@@ -480,14 +480,8 @@ pub async fn update(
                 })?;
 
                 // Validate that the project exists and belongs to this workspace
-                let project_exists = tokio::task::spawn_blocking({
-                    let workspace_id = existing.workspace_id;
-                    move || {
-                        crate::user_data_db::projects::exists_and_belongs_to(
-                            project_id.as_i64(),
-                            workspace_id.as_i64(),
-                        )
-                    }
+                let project_exists = tokio::task::spawn_blocking(move || {
+                    crate::user_data_db::projects::exists(project_id.as_i64())
                 })
                 .await
                 .map_err(|e| WorkspaceManagerError::Internal(e.into()))??;
@@ -1086,6 +1080,32 @@ pub fn list_projects(workspace_id: &str) -> Result<Vec<Project>, WorkspaceManage
         .collect())
 }
 
+/// Get a single project by its ID (searches across all workspaces)
+pub fn get_project(project_id: &str) -> Result<Project, WorkspaceManagerError> {
+    let pid = ProjectId::decode(project_id).map_err(|_| {
+        WorkspaceManagerError::NotFound(format!("Invalid project ID format: {}", project_id))
+    })?;
+
+    let db_project = crate::user_data_db::projects::get(pid.as_i64())
+        .map_err(WorkspaceManagerError::from)?
+        .ok_or_else(|| WorkspaceManagerError::NotFound(project_id.to_string()))?;
+
+    Ok(Project {
+        project_id: format_id(db_project.project_id, IdType::Project),
+        workspace_id: format_id(db_project.workspace_id, IdType::Workspace),
+        name: db_project.name,
+        path: normalized_path(&db_project.path),
+        description: db_project.description,
+        git_remote_url: db_project.git_remote_url,
+        git_provider: db_project.git_provider,
+        git_owner: db_project.git_owner,
+        git_repo: db_project.git_repo,
+        icon_path: db_project.icon_path,
+        created_at: db_project.created_at,
+        updated_at: db_project.updated_at,
+    })
+}
+
 /// Register a new project in a workspace
 pub fn register_project(
     workspace_id: &str,
@@ -1103,15 +1123,26 @@ pub fn register_project(
     // Validate project path
     let canonical_path = canonical_path(&request.path)?;
 
-    // Check if path is already registered (prevent duplicates)
+    // If the path is already registered, reuse the existing project instead of
+    // failing. This allows workspaces to reference a project that was
+    // registered elsewhere (path is globally unique).
     if let Some(existing) =
         projects::find_by_path(&canonical_path).map_err(WorkspaceManagerError::from)?
     {
-        return Err(WorkspaceManagerError::Conflict(format!(
-            "Path '{}' is already registered for workspace {}",
-            canonical_path,
-            format_id(existing.workspace_id, IdType::Workspace)
-        )));
+        return Ok(Project {
+            project_id: format_id(existing.project_id, IdType::Project),
+            workspace_id: format_id(existing.workspace_id, IdType::Workspace),
+            name: existing.name,
+            path: normalized_path(&existing.path),
+            description: existing.description,
+            git_remote_url: existing.git_remote_url,
+            git_provider: existing.git_provider,
+            git_owner: existing.git_owner,
+            git_repo: existing.git_repo,
+            icon_path: existing.icon_path,
+            created_at: existing.created_at,
+            updated_at: existing.updated_at,
+        });
     }
 
     // Create project in database

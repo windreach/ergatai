@@ -142,6 +142,8 @@ You are a helpful test assistant. Always respond with "Agent response:" followed
 
     const btns = await ctx.page.$$eval('button', els => els.map(e=>e.textContent?.trim()).filter(Boolean).slice(0,20))
     console.log('DEBUG buttons:', btns)
+    const ls = await ctx.page.evaluate(() => Object.keys(localStorage).filter(k=>k.includes('selectedWorkspace')).map(k=>k+'='+localStorage.getItem(k)))
+    console.log('DEBUG localStorage:', ls)
 
     // Step 2: 点击 [Select workspace] 按钮
     const selectButton = ctx.page.getByRole('button', { name: 'Select workspace' }).first()

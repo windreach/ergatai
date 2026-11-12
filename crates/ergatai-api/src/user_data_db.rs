@@ -94,6 +94,85 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
     migrate_backfill_worktree_path_in_chats(conn)?;
     migrate_backfill_chat_name_in_chats(conn)?;
     migrate_backfill_thinking_parts(conn)?;
+    migrate_provider_connection_agent_id(conn)?;
+    migrate_provider_connection_name_scope(conn)?;
+    let _ = conn.execute(
+        "ALTER TABLE initial_prompt_turns ADD COLUMN provider_connection_id TEXT",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE initial_prompt_turns ADD COLUMN model TEXT", []);
+    Ok(())
+}
+
+/// Bind provider connections to a single owning agent profile.
+///
+/// Product model: one connection belongs to exactly one registered agent,
+/// while one agent may own many connections. Legacy rows (created before
+/// binding existed) are backfilled to the core agent matching their protocol
+/// so no connection stays unowned.
+fn migrate_provider_connection_agent_id(conn: &Connection) -> Result<()> {
+    // Fresh installs already have the column via CREATE TABLE; the ALTER is a
+    // no-op failure we deliberately ignore (matches existing migration style).
+    let _ = conn.execute(
+        "ALTER TABLE provider_connections ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    conn.execute(
+        "UPDATE provider_connections SET agent_id = CASE protocol
+            WHEN 'anthropic' THEN 'claude-code'
+            WHEN 'openai_compatible' THEN 'codex'
+            WHEN 'opencode' THEN 'opencode'
+            ELSE agent_id
+        END
+        WHERE agent_id = ''",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Scope provider connection name uniqueness to (agent_id, name) instead of
+/// a global UNIQUE on name. The legacy schema declared `name TEXT NOT NULL
+/// UNIQUE`, which prevented two agents from each importing a connection named
+/// "Default (imported)" (and more generally forced globally unique names across
+/// agents). Recreate the table when the old constraint is still present.
+fn migrate_provider_connection_name_scope(conn: &Connection) -> Result<()> {
+    let table_sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='provider_connections'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_default();
+    // Already on the new schema (or table absent): nothing to do.
+    if table_sql.is_empty() || !table_sql.contains("name TEXT NOT NULL UNIQUE") {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        r#"
+        PRAGMA foreign_keys=OFF;
+        CREATE TABLE provider_connections_new (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            agent_id TEXT NOT NULL DEFAULT '',
+            protocol TEXT NOT NULL CHECK (protocol IN ('anthropic', 'openai_compatible', 'opencode')),
+            base_url TEXT,
+            auth_ref TEXT,
+            default_model TEXT,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE (agent_id, name)
+        );
+        INSERT INTO provider_connections_new
+            (id, name, agent_id, protocol, base_url, auth_ref, default_model, is_default, created_at, updated_at)
+        SELECT id, name, agent_id, protocol, base_url, auth_ref, default_model, is_default, created_at, updated_at
+        FROM provider_connections;
+        DROP TABLE provider_connections;
+        ALTER TABLE provider_connections_new RENAME TO provider_connections;
+        PRAGMA foreign_keys=ON;
+        "#,
+    )?;
     Ok(())
 }
 
@@ -220,6 +299,8 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
             message_id INTEGER NOT NULL UNIQUE,
             client_request_id TEXT NOT NULL UNIQUE,
             agent_command TEXT NOT NULL,
+            provider_connection_id TEXT,
+            model TEXT,
             prompt TEXT NOT NULL,
             images TEXT NOT NULL DEFAULT '[]',
             status TEXT NOT NULL CHECK (status IN ('pending', 'dispatching', 'running', 'completed', 'failed')),
@@ -291,6 +372,20 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
             pr_url TEXT,
             pr_number INTEGER,
             FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS provider_connections (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            agent_id TEXT NOT NULL DEFAULT '',
+            protocol TEXT NOT NULL CHECK (protocol IN ('anthropic', 'openai_compatible', 'opencode')),
+            base_url TEXT,
+            auth_ref TEXT,
+            default_model TEXT,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE (agent_id, name)
         );
 
         CREATE TABLE IF NOT EXISTS group_agent_bindings (
@@ -4126,6 +4221,190 @@ pub mod conversation_execution_contexts {
             },
         )
         .optional()
+    }
+}
+
+// ── Provider Connections ────────────────────────────────────────────────────
+//
+// The connection row holds non-secret routing metadata only. API keys are
+// stored in the OS credential store and referenced by `auth_ref`. This keeps
+// model/provider routing reusable across profiles without embedding credentials
+// in profile YAML or duplicating secrets per agent.
+pub mod provider_connections {
+    use super::*;
+
+    #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ProviderConnection {
+        pub id: String,
+        pub name: String,
+        /// Owning agent profile name (e.g. "claude-code"). One connection is
+        /// bound to exactly one agent; one agent may own many connections.
+        pub agent_id: String,
+        pub protocol: String,
+        pub base_url: Option<String>,
+        pub auth_ref: Option<String>,
+        pub default_model: Option<String>,
+        pub is_default: bool,
+        pub created_at: i64,
+        pub updated_at: i64,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ProviderConnectionUpsert {
+        pub id: Option<String>,
+        pub name: String,
+        pub agent_id: String,
+        pub protocol: String,
+        pub base_url: Option<String>,
+        pub default_model: Option<String>,
+        #[serde(default)]
+        pub is_default: bool,
+    }
+
+    fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64
+    }
+
+    fn row_to_connection(row: &rusqlite::Row<'_>) -> Result<ProviderConnection> {
+        Ok(ProviderConnection {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            agent_id: row.get(2)?,
+            protocol: row.get(3)?,
+            base_url: row.get(4)?,
+            auth_ref: row.get(5)?,
+            default_model: row.get(6)?,
+            is_default: row.get::<_, i64>(7)? != 0,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+        })
+    }
+
+    const SELECT_COLUMNS: &str =
+        "id, name, agent_id, protocol, base_url, auth_ref, default_model, is_default, created_at, updated_at";
+
+    pub fn list() -> Result<Vec<ProviderConnection>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {SELECT_COLUMNS} FROM provider_connections ORDER BY is_default DESC, name COLLATE NOCASE"
+        ))?;
+        let rows = stmt
+            .query_map([], row_to_connection)?
+            .collect::<Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn get(id: &str) -> Result<Option<ProviderConnection>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            &format!("SELECT {SELECT_COLUMNS} FROM provider_connections WHERE id = ?1"),
+            params![id],
+            row_to_connection,
+        )
+        .optional()
+    }
+
+    pub fn upsert(input: ProviderConnectionUpsert) -> Result<ProviderConnection> {
+        if input.name.trim().is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "provider connection name cannot be empty".to_string(),
+            ));
+        }
+        if !matches!(
+            input.protocol.as_str(),
+            "anthropic" | "openai_compatible" | "opencode"
+        ) {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "unsupported provider protocol: {}",
+                input.protocol
+            )));
+        }
+
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let now = now_ms();
+        let id = match input.id.as_deref().filter(|id| !id.trim().is_empty()) {
+            Some(id) => id.trim().to_string(),
+            None => uuid::Uuid::new_v4().to_string(),
+        };
+        if input.agent_id.trim().is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "provider connection agent_id cannot be empty".to_string(),
+            ));
+        }
+        let existing = conn
+            .query_row(
+                &format!("SELECT {SELECT_COLUMNS} FROM provider_connections WHERE id = ?1"),
+                params![id],
+                row_to_connection,
+            )
+            .optional()?;
+        let auth_ref = existing
+            .as_ref()
+            .and_then(|existing| existing.auth_ref.clone())
+            .unwrap_or_else(|| format!("ergatai-provider:{}", id));
+        let created_at = existing
+            .as_ref()
+            .map(|existing| existing.created_at)
+            .unwrap_or(now);
+
+        conn.execute(
+            r#"
+            INSERT INTO provider_connections
+                (id, name, agent_id, protocol, base_url, auth_ref, default_model, is_default, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                agent_id = excluded.agent_id,
+                protocol = excluded.protocol,
+                base_url = excluded.base_url,
+                default_model = excluded.default_model,
+                is_default = excluded.is_default,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                id,
+                input.name.trim(),
+                input.agent_id.trim(),
+                input.protocol,
+                input.base_url.as_deref().map(str::trim).filter(|v| !v.is_empty()),
+                auth_ref,
+                input.default_model.as_deref().map(str::trim).filter(|v| !v.is_empty()),
+                input.is_default as i64,
+                created_at,
+                now,
+            ],
+        )?;
+
+        if input.is_default {
+            conn.execute(
+                // Default is scoped to the owning agent: an agent always has
+                // exactly one default connection among its own.
+                "UPDATE provider_connections SET is_default = CASE WHEN id = ?1 THEN 1 ELSE 0 END
+                 WHERE agent_id = (SELECT agent_id FROM provider_connections WHERE id = ?1)",
+                params![id],
+            )?;
+        }
+
+        drop(conn);
+        get(&id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn delete(id: &str) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let affected = conn.execute(
+            "DELETE FROM provider_connections WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(affected > 0)
     }
 }
 

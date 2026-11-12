@@ -413,7 +413,14 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
     <MessageGroupWrapper isLastGroup={isLastGroup}>
       {/* All attachments in one row - NOT sticky (only when there's also text) */}
       {((!isImageOnlyMessage && imageParts.length > 0) || textMentions.length > 0) && (
-        <div className="mb-2 pointer-events-auto flex flex-wrap items-end gap-1.5">
+        <div
+          className={cn(
+            "mb-2 pointer-events-auto flex flex-wrap items-end gap-1.5",
+            // Human user messages are right-aligned; keep their attachment
+            // cards grouped with the bubble instead of floating at the left.
+            !isAgentSourcedMessage && "justify-end",
+          )}
+        >
           {imageParts.length > 0 && !isImageOnlyMessage && imageItems.map((item, idx) => (
             <AgentImageItem
               key={item.id}

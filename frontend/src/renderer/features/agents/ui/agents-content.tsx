@@ -1119,6 +1119,7 @@ export function AgentsContent() {
                 selectedTeamName={undefined}
                 selectedTeamImageUrl={undefined}
                 isMobileFullscreen={true}
+                projectPath={selectedWorkspace?.projects?.[0]?.projectPath ?? selectedWorkspace?.workDir}
                 onBackToChats={() => {
                   setMobileViewMode("chats")
                   setSelectedChatId(null)
@@ -1235,6 +1236,7 @@ export function AgentsContent() {
                     onToggleSidebar={isLinuxTitleBar ? undefined : () => setSidebarOpen((prev) => !prev)}
                     selectedTeamName={undefined}
                     selectedTeamImageUrl={undefined}
+                    projectPath={selectedWorkspace?.projects?.[0]?.projectPath ?? selectedWorkspace?.workDir}
                   />
                 </div>
               ) : selectedDraftId || showNewChatForm ? (

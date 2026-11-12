@@ -70,7 +70,7 @@ export function createTestContext(options: TestContextOptions = {}) {
   const extraBeforeAll: Array<(page: any) => Promise<void>> = []
   const extraAfterAll: Array<(page: any) => Promise<void>> = []
 
-  beforeAll(async () => {
+  const launch = async () => {
     ctx.electron = await launchElectron({
       extraEnv: {
         NODE_ENV: 'test',
@@ -79,47 +79,80 @@ export function createTestContext(options: TestContextOptions = {}) {
       },
     })
     ctx.page = ctx.electron.page
+  }
 
-    // Process exit safety: ensure Electron is closed even if tests hang
-    process.on('exit', async () => {
-      if (ctx.electron) {
-        try { await ctx.electron.close() } catch (_e) { /* ignore */ }
-      }
-    })
-    process.on('SIGINT', async () => {
-      if (ctx.electron) { await ctx.electron.close() }
-      process.exit(130)
-    })
-
-    // Run any extra beforeAll hooks
-    for (const hook of extraBeforeAll) {
-      await hook(ctx.page)
-    }
-  })
-
-  afterAll(async () => {
-    // Run any extra afterAll hooks (before closing electron)
-    for (const hook of extraAfterAll) {
-      await hook(ctx.page)
-    }
-
+  const close = async () => {
     if (ctx.electron) {
       await ctx.electron.close()
+      ctx.electron = null
+      ctx.page = null
     }
-  })
+  }
 
-  if (!options.skipAutoCleanup) {
+  const runCleanup = async () => {
+    if (!options.skipAutoCleanup && ctx.page) {
+      await ctx.page.waitForLoadState('domcontentloaded').catch(() => {})
+      await ctx.page.evaluate(async () => {
+        const trpc = (window as any).trpc
+        if (trpc?.test?.helpers?.cleanup?.mutate) {
+          await trpc.test.helpers.cleanup.mutate()
+        }
+      }).catch(() => {})
+    }
+  }
+
+  if (options.perTest) {
     beforeEach(async () => {
-      if (ctx.page) {
-        await ctx.page.waitForLoadState('domcontentloaded').catch(() => {})
-        await ctx.page.evaluate(async () => {
-          const trpc = (window as any).trpc
-          if (trpc?.test?.helpers?.cleanup?.mutate) {
-            await trpc.test.helpers.cleanup.mutate()
-          }
-        }).catch(() => {})
+      await launch()
+      for (const hook of extraBeforeAll) {
+        await hook(ctx.page)
+      }
+      await runCleanup()
+    })
+
+    afterEach(async () => {
+      for (const hook of extraAfterAll) {
+        await hook(ctx.page)
+      }
+      await close()
+    })
+  } else {
+    beforeAll(async () => {
+      await launch()
+
+      // Process exit safety: ensure Electron is closed even if tests hang
+      process.on('exit', async () => {
+        if (ctx.electron) {
+          try { await ctx.electron.close() } catch (_e) { /* ignore */ }
+        }
+      })
+      process.on('SIGINT', async () => {
+        if (ctx.electron) { await ctx.electron.close() }
+        process.exit(130)
+      })
+
+      // Run any extra beforeAll hooks
+      for (const hook of extraBeforeAll) {
+        await hook(ctx.page)
       }
     })
+
+    afterAll(async () => {
+      // Run any extra afterAll hooks (before closing electron)
+      for (const hook of extraAfterAll) {
+        await hook(ctx.page)
+      }
+
+      if (ctx.electron) {
+        await ctx.electron.close()
+      }
+    })
+
+    if (!options.skipAutoCleanup) {
+      beforeEach(async () => {
+        await runCleanup()
+      })
+    }
   }
 
   // Return a proxy that allows registering extra hooks

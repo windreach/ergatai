@@ -577,10 +577,12 @@ impl ConversationRuntimeStore {
                     runtime.status = RuntimeStatus::Streaming;
                 }
             }
-        } else if !matches!(
-            runtime.status,
-            RuntimeStatus::Idle | RuntimeStatus::Streaming
-        ) {
+        } else if !matches!(event, AgentOutputEvent::ContextUsage { .. })
+            && !matches!(
+                runtime.status,
+                RuntimeStatus::Idle | RuntimeStatus::Streaming
+            )
+        {
             runtime.events.clear();
             runtime.turn_id = Some(format!(
                 "turn-{}-{}",
@@ -589,7 +591,9 @@ impl ConversationRuntimeStore {
             ));
             runtime.started_at_ms = Some(now);
             runtime.status = RuntimeStatus::Streaming;
-        } else if runtime.status == RuntimeStatus::Idle {
+        } else if !matches!(event, AgentOutputEvent::ContextUsage { .. })
+            && runtime.status == RuntimeStatus::Idle
+        {
             runtime.status = RuntimeStatus::Streaming;
             runtime.turn_id = Some(format!(
                 "turn-{}-{}",
@@ -1058,6 +1062,38 @@ mod tests {
             snapshot.events.last().expect("event").event,
             AgentOutputEvent::ConversationMessage { ref message_type, .. }
                 if message_type.as_deref() == Some("request")
+        ));
+    }
+
+    #[tokio::test]
+    async fn context_usage_does_not_restart_a_completed_turn() {
+        let store = ConversationRuntimeStore::ephemeral();
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::Done {
+                    role: "assistant".to_string(),
+                    stop_reason: "end_turn".to_string(),
+                },
+            )
+            .await;
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::ContextUsage {
+                    used: 100,
+                    size: 200,
+                },
+            )
+            .await;
+
+        let snapshot = store.snapshot("conv_1", None).await;
+        assert_eq!(snapshot.status, RuntimeStatus::Completed);
+        assert!(snapshot.turn_id.is_some());
+        assert_eq!(snapshot.events.len(), 2);
+        assert!(matches!(
+            snapshot.events.last().expect("event").event,
+            AgentOutputEvent::ContextUsage { .. }
         ));
     }
 }

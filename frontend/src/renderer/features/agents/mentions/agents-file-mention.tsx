@@ -40,6 +40,8 @@ interface AgentsFileMentionProps {
   sandboxId?: string
   branch?: string // For fetching files from specific branch via GitHub API
   projectPath?: string // For fetching files from local project directory (desktop)
+  browseRoot?: string | null // Current directory root for @ browsing
+  onBrowseRootChange?: (path: string | null) => void
   changedFiles?: ChangedFile[] // Files changed in current conversation (shown at top)
   agentId?: string // Agent ID for discovery endpoint (skills, commands, MCP)
   agentKind?: string
@@ -167,6 +169,8 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   sandboxId,
   branch,
   projectPath,
+  browseRoot,
+  onBrowseRootChange,
   // react-doctor-disable-next-line rerender-memo-with-default-value
   changedFiles = [],
   agentId,
@@ -223,11 +227,13 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       sandboxId: sandboxId,
       branch: branch, // Pass branch for GitHub API fetch
       projectPath: projectPath, // For local project file search (desktop)
+      collapseChains: !debouncedSearchText,
+      collapseRoot: browseRoot || undefined,
     },
     {
       // Enable if we have projectPath (desktop) OR teamId with repository/sandboxId/branch (web)
       // Also enable when showingFilesList is true (user explicitly selected files category)
-      enabled: isOpen && (showingFilesList || scope !== "agents") && (!!projectPath || (!!teamId && (!!repository || !!sandboxId || !!branch))),
+      enabled: isOpen && (!!projectPath || (!!teamId && (!!repository || !!sandboxId || !!branch))),
       staleTime: 5000,
       refetchOnWindowFocus: false,
       // Keep showing previous results while fetching new ones
@@ -384,7 +390,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   // Filter category options based on available data
   const availableCategoryOptions = useMemo(() => {
     return CATEGORY_OPTIONS.filter(category => {
-      if (scope === "agents") return category.id === "agents"
+      if (scope === "agents") return category.id === "files"
       if (scope === "resources" && category.id === "agents") return false
       if (category.id === "files") return true // Always show files
       if (category.id === "skills") return hasSkills
@@ -396,9 +402,15 @@ export const AgentsFileMention = memo(function AgentsFileMention({
 
   // Combined options for keyboard navigation
   const options: FileMentionOption[] = useMemo(() => {
+    // agents scope: show the file list directly (no drill-down category)
     if (scope === "agents") {
-      return agentOptions
+      const allFiles = [...changedFileOptions, ...repoFileOptions]
+      if (debouncedSearchText) {
+        return sortFilesByRelevance(allFiles, debouncedSearchText)
+      }
+      return allFiles
     }
+    // agents scope now falls through so files can be shown; skills/tools excluded below
 
     // SUBPAGE: Files (or if no skills/agents/tools, show files directly)
     if (showingFilesList || hasOnlyFiles) {
@@ -421,9 +433,10 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       const filteredCategories = availableCategoryOptions.filter(c =>
         c.label.toLowerCase().includes(searchLower)
       )
+      const allowedCategoryIds = new Set(["agents", "files", "skills", "tools"])
       const allItems = [
         ...changedFileOptions,
-        ...filteredCategories.filter(c => c.id === "agents" || c.id === "files" || c.id === "skills" || c.id === "tools"),
+        ...filteredCategories.filter(c => allowedCategoryIds.has(c.id)),
         ...(scope === "all" ? agentOptions : []),
         ...discoveryMentionOptions,
         ...repoFileOptions,
@@ -570,6 +583,21 @@ export const AgentsFileMention = memo(function AgentsFileMention({
         msOverflowStyle: "none",
       } as React.CSSProperties}
     >
+
+      {/* Browse root indicator */}
+      {browseRoot && (
+        <div className="flex items-center gap-2 px-2.5 py-1.5 mx-1 text-xs text-muted-foreground border-b border-border/50">
+          <button
+            type="button"
+            aria-label="Clear browse root"
+            className="hover:text-foreground"
+            onClick={() => onBrowseRootChange?.(null)}
+          >
+            ✕
+          </button>
+          <span className="truncate">{browseRoot}/</span>
+        </div>
+      )}
 
       {/* All mentions in one section */}
       {options.length > 0 && (

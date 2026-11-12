@@ -95,13 +95,25 @@ export function ResizableSidebar({
       ? Number.POSITIVE_INFINITY
       : document.documentElement.clientWidth,
   )
-
   // Use local width during resize, otherwise use persisted width
   const currentWidth = localWidth ?? sidebarWidth
+  // Reserve space for the main content area (which has a 350px minimum) so a
+  // sidebar can never be dragged wide enough to push the whole layout (and
+  // itself) off-screen. The 80% cap is kept as an additional safety limit.
   const maxAllowedWidth = Math.max(
     minWidth,
-    Math.min(maxWidth, Math.floor(availableWidth * 0.8)),
+    Math.min(
+      maxWidth,
+      Math.floor(availableWidth * 0.8),
+      availableWidth - 350,
+    ),
   )
+  // Keep the latest max allowed width available to in-flight drag handlers
+  // without recreating the pointer-down closure mid-drag.
+  const maxAllowedWidthRef = useRef(maxAllowedWidth)
+  useEffect(() => {
+    maxAllowedWidthRef.current = maxAllowedWidth
+  }, [maxAllowedWidth])
   const animatedWidth = Math.max(
     minWidth,
     Math.min(maxAllowedWidth, currentWidth),
@@ -280,7 +292,7 @@ export function ResizableSidebar({
         resizeHandleRef.current ?? (event.currentTarget as HTMLElement)
 
       const clampWidth = (width: number) =>
-        Math.max(minWidth, Math.min(maxAllowedWidth, width))
+        Math.max(minWidth, Math.min(maxAllowedWidthRef.current, width))
 
       handleElement.setPointerCapture?.(pointerId)
       // Clear tooltip timeout when starting resize
@@ -362,7 +374,7 @@ export function ResizableSidebar({
         once: true,
       })
     },
-    [sidebarWidth, setSidebarWidth, handleClose, minWidth, maxAllowedWidth, side, disableClickToClose],
+    [sidebarWidth, setSidebarWidth, handleClose, minWidth, side, disableClickToClose],
   )
 
   // Determine resize handle position based on side
@@ -449,12 +461,15 @@ export function ResizableSidebar({
                 setIsHiddenAfterClose(true)
               }
             }}
-            className={`bg-transparent flex flex-col text-xs h-full relative ${className}`}
+            className={`bg-transparent flex flex-col text-xs h-full relative flex-shrink-0 flex-grow-0 ${className}`}
             data-resizing={isResizing || undefined}
             data-animating={shouldAnimate || undefined}
             style={{
               minWidth: 0,
               maxWidth: maxAllowedWidth,
+              flexShrink: 0,
+              flexGrow: 0,
+              flexBasis: "auto",
               overflow: "hidden",
               visibility:
                 persistContent && !isOpen && isHiddenAfterClose

@@ -358,6 +358,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             delete(api::workspaces::remove_managed_workspace_project),
         )
         .route(
+            "/api/v1/projects/{project_id}",
+            get(api::workspaces::get_project),
+        )
+        .route(
             "/api/v1/workspaces/managed/{id}/status",
             get(api::workspaces::managed_workspace_status),
         )
@@ -549,6 +553,30 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/agent-profiles/{name}/models/refresh",
             post(api::agent_profiles::refresh_profile_models),
+        )
+        // ════════════════════════════════════════════════════════════════
+        // Provider Connections (shared credential/model routing)
+        // ════════════════════════════════════════════════════════════════
+        .route(
+            "/api/v1/provider-connections",
+            get(api::provider_connections::list_provider_connections)
+                .post(api::provider_connections::create_or_update_provider_connection),
+        )
+        .route(
+            "/api/v1/provider-connections/native",
+            get(api::provider_connections::detect_native_config),
+        )
+        .route(
+            "/api/v1/provider-connections/import-native",
+            post(api::provider_connections::import_native_config),
+        )
+        .route(
+            "/api/v1/provider-connections/{id}/default",
+            post(api::provider_connections::set_default_provider_connection),
+        )
+        .route(
+            "/api/v1/provider-connections/{id}",
+            delete(api::provider_connections::delete_provider_connection),
         )
         // ════════════════════════════════════════════════════════════════
         // MCP Server Configuration API
