@@ -573,21 +573,6 @@ pub async fn get_profile_models(Path(name): Path<String>) -> axum::response::Res
         (status = 500, description = "Internal server error", body = crate::api::ApiError),
     )
 )]
-/// Resolve the Claude CLI binary, preferring absolute paths so the subprocess
-/// works even when the server's PATH does not include ~/.local/bin.
-fn claude_cli_path() -> String {
-    for candidate in [
-        "/root/.local/bin/claude",
-        "/usr/local/bin/claude",
-        "/usr/bin/claude",
-    ] {
-        if std::path::Path::new(candidate).exists() {
-            return candidate.to_string();
-        }
-    }
-    "claude".to_string()
-}
-
 pub async fn refresh_profile_models(Path(name): Path<String>) -> axum::response::Response {
     // Rate limit check: prevent frequent refreshes (30s cooldown per profile)
     use std::collections::HashMap;
@@ -624,106 +609,44 @@ pub async fn refresh_profile_models(Path(name): Path<String>) -> axum::response:
         }
     };
 
-    // 0. SDK-first detection (preferred over ACP/CLI).
+    // 0. Agent-specific discovery (config files, CLI, SDK). Generic layer only
+    // dispatches by kind and persists the result.
     {
-        let kind = {
-            let hay = profile.name.to_lowercase();
-            if hay.contains("opencode") {
-                "opencode"
-            } else if hay.contains("codex") {
-                "codex"
-            } else if hay.contains("claude") {
-                "claude"
-            } else {
-                ""
-            }
-        };
-        if !kind.is_empty() {
-            if let Ok(details) = profile_service::refresh_profile_models(kind, &name, None).await {
-                if !details.is_empty() {
-                    let models: Vec<String> = details.iter().map(|d| d.id.clone()).collect();
-                    return (
-                        StatusCode::OK,
-                        Json(serde_json::json!({
-                            "status": "available",
-                            "source": "agent_sdk",
-                            "models": models,
-                            "model_details": details,
-                            "current": null,
-                        })),
-                    )
-                        .into_response();
-                }
-            }
-        }
-    }
-
-    // 2. Claude Code has no ACP model selector; detect via CLI subprocess.
-    if profile.name.to_lowercase().contains("claude") {
-        if let Ok(output) = tokio::process::Command::new(claude_cli_path())
-            .arg("/model")
-            .output()
+        let kind = crate::services::agent::resolve_kind(&profile);
+        let discovered = crate::services::agent::discover_models(kind, &name, None).await;
+        if !discovered.details.is_empty() {
+            if let Err(e) = crate::services::profile_service::persist_profile_models(
+                &name,
+                &discovered.details,
+                discovered.source,
+                &discovered.sources,
+                discovered.default_model.as_deref(),
+            )
             .await
-        {
-            let text = String::from_utf8_lossy(&output.stdout);
-            if let Some(parsed) = parse_model_output(&text) {
-                let current = parsed
-                    .get("current")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToString::to_string);
-                // Only collapse alias/variant tokens when running through a
-                // non-Claude (gateway) backend; native Claude exposes them all.
-                let is_gateway = current
-                    .as_ref()
-                    .map(|c| {
-                        let l = c.to_lowercase();
-                        !(l.contains("sonnet")
-                            || l.contains("opus")
-                            || l.contains("haiku")
-                            || l.contains("fable")
-                            || l.contains("claude"))
-                    })
-                    .unwrap_or(false);
-                let models = parsed
-                    .get("models")
-                    .and_then(serde_json::Value::as_array)
-                    .map(|values| {
-                        values
-                            .iter()
-                            .filter_map(serde_json::Value::as_str)
-                            .filter(|m| {
-                                if !is_gateway {
-                                    return true;
-                                }
-                                let lower = m.to_lowercase();
-                                !lower.contains('[')
-                                    && lower != "best"
-                                    && lower != "opusplan"
-                                    && lower != "default"
-                            })
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                if !models.is_empty() {
-                    if let Err(e) =
-                        profile_service::save_profile_models_by_name(&name, &models, None).await
-                    {
-                        return crate::http_error::internal(e, "refresh_profile_models_save")
-                            .into_response();
-                    }
-                    return (
-                        StatusCode::OK,
-                        Json(serde_json::json!({
-                            "status": "available",
-                            "source": "cli_subprocess",
-                            "models": models,
-                            "current": current,
-                        })),
-                    )
-                        .into_response();
-                }
+            {
+                return crate::http_error::internal(e, "refresh_profile_models_save")
+                    .into_response();
             }
+            let models: Vec<String> = discovered.details.iter().map(|d| d.id.clone()).collect();
+            let source = match discovered.source {
+                crate::services::profile_service::ProfileModelSource::ConfigFile => "config_file",
+                crate::services::profile_service::ProfileModelSource::AgentSdk => "agent_sdk",
+                crate::services::profile_service::ProfileModelSource::AcpConfigOptions => {
+                    "acp_config_options"
+                }
+                crate::services::profile_service::ProfileModelSource::None => "none",
+            };
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "available",
+                    "source": source,
+                    "models": models,
+                    "model_details": discovered.details,
+                    "current": discovered.current,
+                })),
+            )
+                .into_response();
         }
     }
 
@@ -829,56 +752,6 @@ pub async fn refresh_profile_models(Path(name): Path<String>) -> axum::response:
         }
     }
 
-    // 4b. Claude Code does not expose a model selector over ACP, but its CLI
-    // prints the available models to stdout. Fall back to a short subprocess
-    // so the catalog can still be populated.
-    if models_result.is_none() && profile.name.to_lowercase().contains("claude") {
-        match tokio::process::Command::new(claude_cli_path())
-            .arg("/model")
-            .output()
-            .await
-        {
-            Ok(output) => {
-                let text = String::from_utf8_lossy(&output.stdout);
-                if let Some(parsed) = parse_model_output(&text) {
-                    let models = parsed
-                        .get("models")
-                        .and_then(serde_json::Value::as_array)
-                        .map(|values| {
-                            values
-                                .iter()
-                                .filter_map(serde_json::Value::as_str)
-                                // Claude prints alias/variant tokens (best, *plan, * [1m])
-                                // that are not individually selectable in most setups.
-                                .filter(|m| {
-                                    let lower = m.to_lowercase();
-                                    !lower.contains('[')
-                                        && lower != "best"
-                                        && lower != "opusplan"
-                                        && lower != "default"
-                                })
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    if !models.is_empty() {
-                        models_result = Some(DetectedModels {
-                            models,
-                            current: parsed
-                                .get("current")
-                                .and_then(serde_json::Value::as_str)
-                                .map(ToString::to_string),
-                            option_id: None,
-                        });
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Claude /model subprocess failed");
-            }
-        }
-    }
-
     // 5. Persist only definitive results. A missing backend/read error leaves
     // the previous cache untouched, but the response still explains why.
     if let Some(detection) = models_result {
@@ -906,16 +779,21 @@ pub async fn refresh_profile_models(Path(name): Path<String>) -> axum::response:
         {
             return crate::http_error::internal(e, "refresh_profile_models_save").into_response();
         }
-        let source =
-            if profile.name.to_lowercase().contains("claude") && detection.option_id.is_none() {
-                "cli_subprocess"
-            } else {
-                detection
-                    .option_id
-                    .as_deref()
-                    .map(|_| "acp_config_options")
-                    .unwrap_or("slash_command")
-            };
+        let source = if crate::services::agent::resolve_kind_parts(
+            &profile.name,
+            &profile.command,
+            &profile.agent_type,
+        ) == crate::services::agent::AgentKind::Claude
+            && detection.option_id.is_none()
+        {
+            "cli_subprocess"
+        } else {
+            detection
+                .option_id
+                .as_deref()
+                .map(|_| "acp_config_options")
+                .unwrap_or("slash_command")
+        };
         (
             StatusCode::OK,
             Json(serde_json::json!({

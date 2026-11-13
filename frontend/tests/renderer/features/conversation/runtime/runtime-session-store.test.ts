@@ -237,6 +237,61 @@ describe("RuntimeSessionStore", () => {
       ])
     })
 
+    it("keeps the previous live turn visible when the next turn starts before persistence lands", () => {
+      const store = getRuntimeSessionStore()
+      store.ensureSession("conv-1")
+
+      const userMessage: Message = {
+        id: "user-1",
+        role: "user",
+        parts: [{ type: "text", text: "Question" }],
+        sequence: 0,
+      } as Message
+      const turn1: Message = {
+        id: "runtime-conv-1-turn-1-0",
+        role: "assistant",
+        parts: [{ type: "text", text: "First turn" }],
+        metadata: { turnId: "turn-1", runtime: true },
+      } as Message
+      const turn2: Message = {
+        id: "runtime-conv-1-turn-2-0",
+        role: "assistant",
+        parts: [{ type: "text", text: "Second turn" }],
+        metadata: { turnId: "turn-2", runtime: true },
+      } as Message
+
+      store.setPersistedMessages("conv-1", [userMessage])
+      store.setRuntimeMessages("conv-1", [turn1])
+      store.setRuntimeMessages("conv-1", [turn2])
+
+      let state = store.getRuntimeState("conv-1")
+      expect(state?.runtimeMessages.map((message) => message.id)).toEqual([
+        "runtime-conv-1-turn-1-0",
+        "runtime-conv-1-turn-2-0",
+      ])
+
+      // Canonical turn-1 replaces the retained live projection; turn-2 stays
+      // live until its own durable copy arrives.
+      const canonicalTurn1: Message = {
+        id: "msg-canonical-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "First turn (persisted)" }],
+        metadata: { turnId: "turn-1" },
+        sequence: 1,
+      } as Message
+      store.setPersistedMessages("conv-1", [userMessage, canonicalTurn1])
+
+      state = store.getRuntimeState("conv-1")
+      expect(state?.runtimeMessages.map((message) => message.id)).toEqual([
+        "runtime-conv-1-turn-2-0",
+      ])
+      expect(state?.visibleMessages.map((message) => message.id)).toEqual([
+        "user-1",
+        "msg-canonical-1",
+        "runtime-conv-1-turn-2-0",
+      ])
+    })
+
     it("should collapse different assistant projections by the backend turn id", () => {
       const store = getRuntimeSessionStore()
       store.ensureSession("conv-1")

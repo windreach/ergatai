@@ -33,6 +33,8 @@ interface ModelItem {
 interface UseAvailableModelsReturn {
   models: typeof CLAUDE_MODELS
   currentModelId: string | null
+  defaultModelId: string | null
+  agentSelectedModelId: string | null
   lastKnownModels: ModelItem[]
   status: "available" | "unsupported" | "not_detected"
   source: "acp_config_options" | "config_file" | "agent_sdk" | "none"
@@ -202,15 +204,16 @@ export function useAvailableModels(agentId?: string | null, profileHint?: string
     if (!effectiveAgentId || !agents) return null
     return agents.find((a) => a.agent_id === effectiveAgentId) ?? null
   }, [effectiveAgentId, agents])
-  // Allow refresh even without a running agent when a profile hint is given:
-  // the backend can still enumerate models from config files (degraded stage).
-  const canRefreshModels = activeAgent?.is_alive === true || !!profileHint
-
   // The profile registry is the only authoritative model-cache key. Static
   // model lists remain a UI fallback when no runtime agent has been resolved.
   // Fall back to a profile hint (e.g. the agent provider name) so models can
   // still be enumerated from config files even before an agent is running.
   const profileName = activeAgent?.profile ?? profileHint ?? null
+
+  // Config-file reads do not require a running agent: as long as we have a
+  // resolved profile name, the backend can enumerate models from that profile's
+  // config files (SDK/ACP remain fallbacks when those reads are empty).
+  const canRefreshModels = !!profileName
 
   // Query cached models from backend by profile name
   // Synchronously hydrate from a local cache so the selector renders models
@@ -309,6 +312,15 @@ export function useAvailableModels(agentId?: string | null, profileHint?: string
   // react-doctor-disable-next-line exhaustive-deps
   }, [modelData, profileName, canRefreshModels])
 
+  // Fetch persisted runtime selected model for this agent (if any).
+  const { data: agentSelectedModelRaw } = trpc.ergatai.getAgentSelectedModel.useQuery(
+    { agentId: effectiveAgentId ?? "" },
+    { enabled: !!effectiveAgentId, refetchOnWindowFocus: false, staleTime: 30_000 },
+  )
+  const agentSelectedModelId = agentSelectedModelRaw
+    ? normalizeModelId(agentSelectedModelRaw)
+    : null
+
   // Map backend response to UI format
   const backendModels = useMemo(() => {
     if (!modelData || modelData.status !== "available" || modelData.models.length === 0) {
@@ -332,6 +344,7 @@ export function useAvailableModels(agentId?: string | null, profileHint?: string
     return {
       models: unique,
       current: runtimeCurrentModelId,
+      defaultModel: (modelData as { default_model?: string | null } | undefined)?.default_model ? normalizeModelId((modelData as { default_model?: string | null }).default_model as string) : null,
     }
   }, [modelData, runtimeCurrentModelId])
 
@@ -353,6 +366,7 @@ export function useAvailableModels(agentId?: string | null, profileHint?: string
   // other ACP agent and masks the difference between cached and live state.
   const baseModels = backendModels?.models ?? []
   const currentModelId = backendModels?.current ?? null
+  const defaultModelId = backendModels?.defaultModel ?? ((modelData as { default_model?: string | null } | undefined)?.default_model ? normalizeModelId((modelData as { default_model?: string | null }).default_model as string) : null)
 
   // Ollama status
   const { data: ollamaStatus } = trpc.ollama.getStatus.useQuery(undefined, {
@@ -370,6 +384,8 @@ export function useAvailableModels(agentId?: string | null, profileHint?: string
     return {
       models: baseModels,
       currentModelId,
+      defaultModelId,
+      agentSelectedModelId,
       lastKnownModels,
       status,
       source,
@@ -384,6 +400,8 @@ export function useAvailableModels(agentId?: string | null, profileHint?: string
   return {
     models: baseModels,
     currentModelId,
+    defaultModelId,
+    agentSelectedModelId,
     lastKnownModels,
     status,
     source,

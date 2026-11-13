@@ -534,6 +534,21 @@ async fn async_main(args: Args) -> Result<()> {
         tracing::warn!("Failed to initialize profile registry: {}", e);
     } else {
         tracing::info!("✅ Profile registry initialized");
+        // Background SDK/config model probing on process startup (plan: restart reads SDK).
+        tokio::spawn(async move {
+            if let Ok(registry) = ergatai_api::services::profile_service::get_profile_registry() {
+                if let Ok(profiles) = registry.list_with_status() {
+                    for profile in profiles {
+                        if profile.installed {
+                            ergatai_api::api::agents::spawn_model_detection(
+                                String::new(),
+                                profile.name.clone(),
+                            );
+                        }
+                    }
+                }
+            }
+        });
     }
 
     // Spawn the A/B adapter manager to automatically build and manage adapters.

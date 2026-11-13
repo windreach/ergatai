@@ -1083,6 +1083,13 @@ mod tests {
                 AgentOutputEvent::ContextUsage {
                     used: 100,
                     size: 200,
+                    input_tokens: None,
+                    output_tokens: None,
+                    total_tokens: None,
+                    cached_input_tokens: None,
+                    cache_write_input_tokens: None,
+                    reasoning_output_tokens: None,
+                    model_usage: None,
                 },
             )
             .await;

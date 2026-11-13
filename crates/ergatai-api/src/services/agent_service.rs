@@ -263,6 +263,10 @@ pub async fn try_auto_resume_suspended_agent(
                     )
                     .await;
                 }
+                // Restore runtime selected model if present.
+                if let Some(model) = get_agent_runtime_selected_model(&new_agent_id).await {
+                    let _ = set_agent(&new_agent_id, &model).await;
+                }
                 return Some(new_agent_id);
             }
             Err(e) => {
@@ -298,6 +302,9 @@ pub async fn try_auto_resume_suspended_agent(
                     );
                     crate::api::agent_sdk::apply_model_override(&new_agent_id, conversation_id)
                         .await;
+                    if let Some(model) = get_agent_runtime_selected_model(&new_agent_id).await {
+                        let _ = set_agent(&new_agent_id, &model).await;
+                    }
                     return Some(new_agent_id);
                 }
                 Err(e) => {
@@ -750,23 +757,119 @@ pub async fn execute_agent_command(
 
 /// Switch the model of a running agent.
 ///
-/// Prefers the ACP `session/set_model` request when the agent supports it.
-/// Falls back to the `/model` slash command for agents that do not.
-pub async fn set_agent_model(agent_id: &str, model: &str) -> anyhow::Result<String> {
+/// Prefers agent SDK switching when available (e.g. OpenCode HTTP session model API),
+/// then ACP `session/set_model`, then falls back to the `/model` slash command.
+pub async fn set_agent(agent_id: &str, model: &str) -> anyhow::Result<String> {
+    let model_trimmed = model.trim();
+    if model_trimmed.is_empty() {
+        return Err(anyhow::anyhow!("model must not be empty"));
+    }
+
+    // Prefer SDK path first so agents like OpenCode can switch via their native API
+    // instead of prompt-driven slash commands.
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    if let Some(info) = runtime.get_agent(agent_id).await {
+        let profile_name = info.profile.clone();
+        let cwd = info
+            .handle
+            .metadata
+            .get("work_dir")
+            .cloned()
+            .or_else(|| info.handle.workspace.metadata.get("work_dir").cloned());
+        let session_id = runtime.backend().session_id(agent_id).await.ok().flatten();
+
+        let kind = if let Some(pn) = profile_name.as_deref() {
+            crate::services::agent::resolve_kind_by_name(pn).await
+        } else {
+            crate::services::agent::AgentKind::Unknown
+        };
+
+        if kind != crate::services::agent::AgentKind::Unknown {
+            let sdk_result = crate::services::agent::switch_model(
+                kind,
+                agent_id,
+                model_trimmed,
+                cwd.as_deref(),
+                session_id.as_deref(),
+            )
+            .await;
+            if sdk_result
+                .get("ok")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                tracing::info!(
+                    agent_id = %agent_id,
+                    model = %model_trimmed,
+                    ?session_id,
+                    "Model switched via agent SDK"
+                );
+
+                // Persist runtime selected model (best effort).
+                let agent_id_owned = agent_id.to_string();
+                let model_owned = model_trimmed.to_string();
+                tokio::spawn(async move {
+                    let runtime = crate::context::get_app_context().agent_runtime.clone();
+                    let profile_name = runtime
+                        .get_agent(&agent_id_owned)
+                        .await
+                        .and_then(|i| i.profile.clone());
+                    crate::services::agent_service::set_agent_runtime_selected_model(
+                        &agent_id_owned,
+                        profile_name.as_deref(),
+                        &model_owned,
+                        "user_selected",
+                    )
+                    .await;
+                });
+
+                return Ok(String::new());
+            }
+
+            tracing::debug!(
+                agent_id = %agent_id,
+                model = %model_trimmed,
+                error = ?sdk_result.get("error"),
+                "Agent SDK model switch unavailable, falling back to ACP"
+            );
+        }
+    }
+
     let backend = backend();
-    match backend.set_session_model(agent_id, model.trim()).await {
-        Ok(()) => return Ok(String::new()),
+    let result = match backend.set_session_model(agent_id, model_trimmed).await {
+        Ok(()) => Ok(String::new()),
         Err(e) => {
             tracing::debug!(
                 agent_id = %agent_id,
                 error = %e,
                 "ACP set_session_model unavailable, falling back to /model"
             );
+            let command = format!("/model {}", model_trimmed);
+            execute_agent_command(agent_id, &command, 30).await
         }
+    };
+
+    // Persist runtime selected model (best effort).
+    if result.is_ok() {
+        let agent_id_owned = agent_id.to_string();
+        let model_owned = model_trimmed.to_string();
+        tokio::spawn(async move {
+            let runtime = crate::context::get_app_context().agent_runtime.clone();
+            let profile_name = runtime
+                .get_agent(&agent_id_owned)
+                .await
+                .and_then(|i| i.profile.clone());
+            crate::services::agent_service::set_agent_runtime_selected_model(
+                &agent_id_owned,
+                profile_name.as_deref(),
+                &model_owned,
+                "user_selected",
+            )
+            .await;
+        });
     }
 
-    let command = format!("/model {}", model.trim());
-    execute_agent_command(agent_id, &command, 30).await
+    result
 }
 
 /// List available ACP sessions for an agent.
@@ -1232,6 +1335,42 @@ pub async fn delete_chat_agent(
     })??;
 
     Ok(result)
+}
+
+// ── Runtime selected model persistence (Phase 3) ──
+
+pub async fn get_agent_runtime_selected_model(agent_id: &str) -> Option<String> {
+    let agent_id = agent_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        crate::user_data_db::get_agent_runtime_model(&agent_id)
+            .ok()
+            .flatten()
+            .and_then(|(_, model, _, _)| model)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+pub async fn set_agent_runtime_selected_model(
+    agent_id: &str,
+    profile_name: Option<&str>,
+    selected_model: &str,
+    source: &str,
+) {
+    let agent_id = agent_id.to_string();
+    let profile_name = profile_name.map(str::to_string);
+    let selected_model = selected_model.to_string();
+    let source = source.to_string();
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = crate::user_data_db::set_agent_runtime_model(
+            &agent_id,
+            profile_name.as_deref(),
+            Some(&selected_model),
+            &source,
+        );
+    })
+    .await;
 }
 
 #[cfg(test)]

@@ -111,7 +111,7 @@ export function useActiveChatController(props: {
   chat: Chat<any>
   conversationId: string
   parentChatId: string
-  provider?: "claude-code" | "codex"
+  provider?: "claude-code" | "codex" | "opencode"
   isFirstConversation: boolean
   onCreateNewConversation?: () => void
   onProviderChange?: (
@@ -327,7 +327,7 @@ useEffect(() => {
     editorRef.current?.insertMention(pendingMention)
     editorRef.current?.focus()
     setPendingMention(null)
-  }, [isActive, pendingMention, setPendingMention])
+  }, [isActive, pendingMention, setPendingMention, editorRef])
 
 const [isRollingBack, setIsRollingBack] = useAtom(isRollingBackAtom)
 
@@ -528,7 +528,7 @@ const addTextContext = useCallback((text: string, source: TextSelectionSource) =
 
 const handleFocusInput = useCallback(() => {
     editorRef.current?.focus()
-  }, [])
+  }, [editorRef])
 
 useCustomEventListeners({
     isActive,

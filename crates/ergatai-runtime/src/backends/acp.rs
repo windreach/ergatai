@@ -248,6 +248,14 @@ pub enum ExtendedSessionNotification {
     SubagentSpawned(Box<SubagentSpawnedEvent>),
     /// Subagent state update event (extension from Claude/Codex adapters)
     SubagentStateUpdate(Box<SubagentStateUpdateEvent>),
+    /// Claude auth status push notification (`_auth/status_update` / `auth/status_update`).
+    AuthStatusUpdate { auth_status: serde_json::Value },
+    /// Generic extension update for any other custom `sessionUpdate` kind
+    /// (subagent_update, async_task_*, compaction_*, notice, ...).
+    ExtensionUpdate {
+        kind: String,
+        payload: serde_json::Value,
+    },
 }
 
 /// Event emitted when a subagent is spawned by the parent agent.
@@ -288,10 +296,15 @@ pub struct SubagentStateUpdateEvent {
 impl JsonRpcMessage for ExtendedSessionNotification {
     fn matches_method(method: &str) -> bool {
         method == "session/update"
+            || method == "auth/status_update"
+            || method == "_auth/status_update"
     }
 
     fn method(&self) -> &str {
-        "session/update"
+        match self {
+            ExtendedSessionNotification::AuthStatusUpdate { .. } => "_auth/status_update",
+            _ => "session/update",
+        }
     }
 
     fn to_untyped_message(&self) -> Result<UntypedMessage, agent_client_protocol::Error> {
@@ -323,6 +336,19 @@ impl JsonRpcMessage for ExtendedSessionNotification {
                 });
                 UntypedMessage::new("session/update", params)
             }
+            ExtendedSessionNotification::AuthStatusUpdate { auth_status } => {
+                let params = serde_json::json!({ "authStatus": auth_status });
+                UntypedMessage::new("_auth/status_update", params)
+            }
+            ExtendedSessionNotification::ExtensionUpdate { kind, payload } => {
+                let params = serde_json::json!({
+                    "update": {
+                        "sessionUpdate": kind,
+                        "payload": payload,
+                    }
+                });
+                UntypedMessage::new("session/update", params)
+            }
         }
     }
 
@@ -341,6 +367,26 @@ impl JsonRpcMessage for ExtendedSessionNotification {
         let value = serde_json::to_value(params).map_err(|e| {
             agent_client_protocol::Error::new(-32700, format!("Failed to serialize params: {}", e))
         })?;
+
+        // Auth status push notification (connection-scoped, not a session/update).
+        if method == "auth/status_update" || method == "_auth/status_update" {
+            let auth_status = value
+                .get("authStatus")
+                .or_else(|| value.get("auth_status"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            return Ok(ExtendedSessionNotification::AuthStatusUpdate { auth_status });
+        }
+
+        if method != "session/update" {
+            return Err(agent_client_protocol::Error::new(
+                -32602,
+                format!(
+                    "ExtendedSessionNotification: unsupported method: {}",
+                    method
+                ),
+            ));
+        }
 
         // Extract the update.sessionUpdate field to determine the event type
         let session_update_type = value
@@ -422,15 +468,36 @@ impl JsonRpcMessage for ExtendedSessionNotification {
                     },
                 )))
             }
+            "subagent_update"
+            | "async_task_spawned"
+            | "async_task_progress"
+            | "async_task_state_update"
+            | "compaction_update"
+            | "compaction_summary_chunk"
+            | "notice" => {
+                let payload = value.get("update").cloned().unwrap_or(value.clone());
+                Ok(ExtendedSessionNotification::ExtensionUpdate {
+                    kind: session_update_type.to_string(),
+                    payload,
+                })
+            }
             _ => {
                 // Try to parse as standard v1 SessionNotification
-                let standard: SessionNotification = serde_json::from_value(value).map_err(|e| {
-                    agent_client_protocol::Error::new(
-                        -32602,
-                        format!("Failed to parse as SessionNotification: {}", e),
-                    )
-                })?;
-                Ok(ExtendedSessionNotification::Standard(Box::new(standard)))
+                if let Ok(standard) = serde_json::from_value::<SessionNotification>(value.clone()) {
+                    return Ok(ExtendedSessionNotification::Standard(Box::new(standard)));
+                }
+                // Unknown custom kind: capture generically instead of dropping.
+                if !session_update_type.is_empty() {
+                    let payload = value.get("update").cloned().unwrap_or(value.clone());
+                    return Ok(ExtendedSessionNotification::ExtensionUpdate {
+                        kind: session_update_type.to_string(),
+                        payload,
+                    });
+                }
+                Err(agent_client_protocol::Error::new(
+                    -32602,
+                    "Failed to parse as SessionNotification".to_string(),
+                ))
             }
         }
     }
@@ -450,9 +517,11 @@ fn event_type_name(event: &AgentOutputEvent) -> &'static str {
         AgentOutputEvent::SessionTitleUpdate { .. } => "SessionTitleUpdate",
         AgentOutputEvent::SubagentSpawned { .. } => "SubagentSpawned",
         AgentOutputEvent::SubagentStateUpdate { .. } => "SubagentStateUpdate",
+        AgentOutputEvent::ExtensionUpdate { .. } => "ExtensionUpdate",
         AgentOutputEvent::Done { .. } => "Done",
         AgentOutputEvent::TurnStarted { .. } => "TurnStarted",
         AgentOutputEvent::Error { .. } => "Error",
+        AgentOutputEvent::Status { .. } => "Status",
         AgentOutputEvent::ConversationMessage { .. } => "ConversationMessage",
         _ => "Unknown",
     }
@@ -633,17 +702,19 @@ async fn send_output_event_with_turn_token(
 ) {
     // Get the turn-scoped token
     let token = turn_token.read().clone();
-    let Some(t) = token else {
-        // No active turn token - reject this event
+    if let Some(t) = token {
+        send_output_event_internal(Some(&t), None, event).await;
+    } else {
+        // No active turn token - still publish to the conversation stream so the
+        // output is visible in the UI, even though it is not accumulated for
+        // persistence. This keeps slash-command / early-agent output visible.
         tracing::debug!(
             conversation_id = %conversation_id,
             event_type = %event_type_name(&event),
-            "No active turn token; rejecting notification accumulation"
+            "No active turn token; publishing event without accumulation"
         );
-        return;
-    };
-
-    send_output_event_internal(Some(&t), None, event).await;
+        send_output_event_internal(None, Some(conversation_id), event).await;
+    }
 }
 
 /// Internal implementation for send_output_event
@@ -652,6 +723,12 @@ async fn send_output_event_internal(
     conversation_id: Option<&str>,
     event: AgentOutputEvent,
 ) {
+    tracing::info!(
+        has_token = token.is_some(),
+        conversation_id = ?conversation_id,
+        event_type = %event_type_name(&event),
+        "send_output_event_internal called"
+    );
     // Accumulate output data for persistence (synchronously to avoid race conditions)
     // Only accumulate if there's an active turn (accumulator exists)
     if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
@@ -729,7 +806,7 @@ async fn send_output_event_internal(
                 AgentOutputEvent::SessionTitleUpdate { title, .. } => {
                     acc.set_session_title(title.clone());
                 }
-                AgentOutputEvent::ContextUsage { used, size } => {
+                AgentOutputEvent::ContextUsage { used, size, .. } => {
                     tracing::info!(used = used, size = size, "Accumulating context_usage event");
                     acc.set_context_usage(*used, *size);
                 }
@@ -777,6 +854,58 @@ async fn send_output_event_internal(
     }
 }
 
+fn detect_acp_adapter_kind(command: &str) -> &'static str {
+    let c = command.to_ascii_lowercase();
+    if c.contains("claude") {
+        "claude"
+    } else if c.contains("codex") {
+        "codex"
+    } else if c.contains("opencode") {
+        "opencode"
+    } else {
+        "unknown"
+    }
+}
+
+fn append_adapter_field_log(adapter_kind: &str, event: &str, data: serde_json::Value) {
+    let kind = match adapter_kind {
+        "claude" | "codex" | "opencode" => adapter_kind,
+        _ => "unknown",
+    };
+    let dir = std::path::Path::new("logs");
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        tracing::debug!(error = %e, "Failed to create logs dir for adapter field log");
+        return;
+    }
+    // Ensure requested per-adapter log files exist for actual testing.
+    for name in ["claude.log", "codex.log", "opencode.log"] {
+        let p = dir.join(name);
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p);
+    }
+    let path = dir.join(format!("{kind}.log"));
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let entry = serde_json::json!({
+        "ts_ms": ts_ms,
+        "adapter": kind,
+        "event": event,
+        "data": data,
+    });
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write as _;
+        let _ = writeln!(f, "{}", entry);
+    }
+}
+
 /// Helper function to handle standard v1 session notifications.
 /// This contains the original session notification handling logic extracted from the main handler.
 #[allow(clippy::too_many_arguments)]
@@ -802,8 +931,63 @@ async fn handle_standard_session_notification(
     in_thinking: &std::sync::atomic::AtomicBool,
     in_tool_call: &std::sync::atomic::AtomicBool,
     turn_token: &Arc<RwLock<Option<crate::output_accumulator::TurnToken>>>,
+    adapter_kind: &str,
 ) {
     *last_activity.write() = Instant::now();
+
+    // Consume ACP extension metadata (_meta) emitted by official adapters.
+    // Pure parsing; missing/unknown fields are ignored (debug-logged on parse).
+    let session_id_snapshot = session_id.read().clone();
+    let raw_meta = notification
+        .meta
+        .as_ref()
+        .map(|m| serde_json::Value::Object(m.clone()));
+    let ext_meta = crate::acp_extension::parse_meta(notification.meta.as_ref());
+    if ext_meta.steering_supported == Some(true)
+        || ext_meta.child_session_updates.is_some()
+        || ext_meta.compaction.is_some()
+        || ext_meta.thread_status.is_some()
+        || ext_meta.quota.is_some()
+        || ext_meta.rate_limit.is_some()
+        || ext_meta.auth_status.is_some()
+        || ext_meta.model.is_some()
+        || ext_meta.sdk_message.is_some()
+        || ext_meta.error.is_some()
+    {
+        debug!(
+            agent_id = %agent_id,
+            steering = ?ext_meta.steering_supported,
+            thread_status = ?ext_meta.thread_status,
+            quota = ?ext_meta.quota,
+            rate_limit = ?ext_meta.rate_limit.is_some(),
+            auth_status = ?ext_meta.auth_status.is_some(),
+            model = ?ext_meta.model.is_some(),
+            "ACP extension metadata received"
+        );
+    }
+    let unknown = notification
+        .meta
+        .as_ref()
+        .map(crate::acp_extension::unknown_meta_keys)
+        .unwrap_or_default();
+    usage.record_unknown_keys(&unknown, agent_id);
+
+    let parsed_meta = serde_json::to_value(&ext_meta).unwrap_or(serde_json::Value::Null);
+    append_adapter_field_log(
+        adapter_kind,
+        "session_notification.meta",
+        serde_json::json!({
+            "agent_id": agent_id,
+            "conversation_id": conversation_id,
+            "session_id": session_id_snapshot,
+            "raw_meta": raw_meta,
+            "parsed": parsed_meta,
+            "unknown_keys": unknown,
+        }),
+    );
+
+    usage.update_extension_meta(ext_meta);
+
     match &notification.update {
         SessionUpdate::AgentMessageChunk(chunk) => {
             if let Some(text) = extract_text_from_chunk(chunk) {
@@ -865,6 +1049,56 @@ async fn handle_standard_session_notification(
                 size = usage_update.size,
                 "ACP usage update"
             );
+            let mut quota_input_tokens = None;
+            let mut quota_output_tokens = None;
+            let mut quota_total_tokens = None;
+            let mut quota_cached_input_tokens = None;
+            let mut quota_cache_write_input_tokens = None;
+            let mut quota_reasoning_output_tokens = None;
+            let mut quota_model_usage = None;
+            // Consume extension quota detail from _meta (e.g. Codex cache/reasoning tokens).
+            if let Some(meta) = usage_update.meta.as_ref() {
+                let ext = crate::acp_extension::parse_meta(Some(meta));
+                if let Some(q) = &ext.quota {
+                    debug!(
+                        agent_id = %agent_id,
+                        total = ?q.total_tokens,
+                        input = ?q.input_tokens,
+                        cached = ?q.cached_input_tokens,
+                        cache_write = ?q.cache_write_input_tokens,
+                        output = ?q.output_tokens,
+                        reasoning = ?q.reasoning_output_tokens,
+                        "ACP extension quota detail"
+                    );
+                    quota_input_tokens = q.input_tokens;
+                    quota_output_tokens = q.output_tokens;
+                    quota_total_tokens = q.total_tokens;
+                    quota_cached_input_tokens = q.cached_input_tokens;
+                    quota_cache_write_input_tokens = q.cache_write_input_tokens;
+                    quota_reasoning_output_tokens = q.reasoning_output_tokens;
+                    quota_model_usage = q.model_usage.clone().or_else(|| ext.model_usage.clone());
+                } else if ext.model_usage.is_some() {
+                    quota_model_usage = ext.model_usage.clone();
+                }
+                let unknown = crate::acp_extension::unknown_meta_keys(meta);
+                usage.record_unknown_keys(&unknown, agent_id);
+                append_adapter_field_log(
+                    adapter_kind,
+                    "usage_update.meta",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "conversation_id": conversation_id,
+                        "session_id": session_id.read().clone(),
+                        "used": usage_update.used,
+                        "size": usage_update.size,
+                        "raw_meta": serde_json::Value::Object(meta.clone()),
+                        "parsed": serde_json::to_value(&ext).unwrap_or(serde_json::Value::Null),
+                        "unknown_keys": unknown,
+                    }),
+                );
+
+                usage.update_extension_meta(ext);
+            }
             usage.record(usage_update.used as usize, usage_update.size as usize);
 
             // Try to accumulate in the active turn (if any)
@@ -900,6 +1134,13 @@ async fn handle_standard_session_notification(
                 AgentOutputEvent::ContextUsage {
                     used: usage_update.used,
                     size: usage_update.size,
+                    input_tokens: quota_input_tokens,
+                    output_tokens: quota_output_tokens,
+                    total_tokens: quota_total_tokens,
+                    cached_input_tokens: quota_cached_input_tokens,
+                    cache_write_input_tokens: quota_cache_write_input_tokens,
+                    reasoning_output_tokens: quota_reasoning_output_tokens,
+                    model_usage: quota_model_usage,
                 },
             )
             .await;
@@ -997,6 +1238,15 @@ async fn handle_standard_session_notification(
                     name: tc.title.clone(),
                     input: tc.raw_input.clone(),
                     locations: tc.locations.clone(),
+                    parent_tool_use_id: tc.meta.as_ref().and_then(|m| {
+                        m.get("claudeCode")
+                            .or_else(|| m.get("claude_code"))
+                            .and_then(|v| {
+                                v.get("parentToolUseId")
+                                    .or_else(|| v.get("parent_tool_use_id"))
+                            })
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    }),
                 },
             )
             .await;
@@ -1117,6 +1367,16 @@ async fn handle_standard_session_notification(
             *plan_state.write() = Some(TrackedPlan::from_acp(acp_plan));
         }
         SessionUpdate::SessionInfoUpdate(info) => {
+            // Consume extension metadata carried on session_info_update (e.g. promptSuggestions).
+            if let Some(meta) = info.meta.as_ref() {
+                let ext = crate::acp_extension::parse_meta(Some(meta));
+                if ext.prompt_suggestions.is_some() {
+                    debug!(agent_id = %agent_id, "ACP session_info_update prompt suggestions received");
+                }
+                let unknown = crate::acp_extension::unknown_meta_keys(meta);
+                usage.record_unknown_keys(&unknown, agent_id);
+                usage.update_extension_meta(ext);
+            }
             if let Some(new_title) = info.title.value() {
                 let should_send = {
                     let mut title_lock = session_title.write();
@@ -1397,6 +1657,8 @@ pub enum AgentOutputEvent {
         name: String,
         input: Option<serde_json::Value>,
         locations: Vec<ToolCallLocation>,
+        /// Claude ACP `_meta.claudeCode.parentToolUseId` for nested/subagent tool calls.
+        parent_tool_use_id: Option<String>,
     },
     /// Streaming tool call input (JSON delta).
     ToolCallInput {
@@ -1448,6 +1710,15 @@ pub enum AgentOutputEvent {
         /// New state: "completed", "failed", "cancelled", or "disconnected"
         state: String,
     },
+    /// Generic ACP extension update (subagent_update, async_task_*, compaction_*, notice, ...).
+    ExtensionUpdate {
+        /// Message role: "assistant" for local agent, "agent" for inter-agent
+        role: String,
+        /// The custom sessionUpdate kind
+        kind: String,
+        /// Raw payload
+        payload: serde_json::Value,
+    },
     /// Prompt completed.
     Done {
         /// Message role: "assistant" for local agent, "agent" for inter-agent
@@ -1469,6 +1740,21 @@ pub enum AgentOutputEvent {
         /// Message role: "assistant" for local agent, "agent" for inter-agent
         role: String,
         message: String,
+        /// Structured error type name (when provided by adapter/protocol).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_name: Option<String>,
+        /// Structured error type (semantic alias of `error_name`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_type: Option<String>,
+        /// Service/source that reported the error (when provided).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service: Option<String>,
+        /// Numeric/stringified error code from structured error data (when provided).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<i64>,
+        /// Raw structured error payload from the protocol/adapter (e.g. JSON-RPC `error.data`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_data: Option<serde_json::Value>,
     },
     /// Conversation ID for persistence (emitted at prompt start so SSE stream
     /// can associate output with the correct conversation thread).
@@ -1498,6 +1784,27 @@ pub enum AgentOutputEvent {
         used: u64,
         /// Total context window size
         size: u64,
+        /// Detailed input tokens (quota/adapter-provided)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_tokens: Option<u64>,
+        /// Detailed output tokens
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_tokens: Option<u64>,
+        /// Detailed total tokens
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total_tokens: Option<u64>,
+        /// Cached input/read tokens
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cached_input_tokens: Option<u64>,
+        /// Cache write tokens
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_write_input_tokens: Option<u64>,
+        /// Reasoning/thought output tokens
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_output_tokens: Option<u64>,
+        /// Per-model usage breakdown (adapter-specific structure)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_usage: Option<serde_json::Value>,
     },
 }
 
@@ -1737,6 +2044,10 @@ impl ToolCallTracker {
 struct UsageTracker {
     input_tokens: AtomicUsize,
     output_tokens: AtomicUsize,
+    /// Latest parsed ACP extension metadata (_meta) reported by the agent.
+    extension_meta: RwLock<Option<crate::acp_extension::ExtensionMeta>>,
+    /// Aggregated unknown extension keys encountered (drift detection).
+    unknown_extension_keys: RwLock<std::collections::HashMap<String, usize>>,
 }
 
 impl UsageTracker {
@@ -1744,6 +2055,8 @@ impl UsageTracker {
         Self {
             input_tokens: AtomicUsize::new(0),
             output_tokens: AtomicUsize::new(0),
+            extension_meta: RwLock::new(None),
+            unknown_extension_keys: RwLock::new(std::collections::HashMap::new()),
         }
     }
 
@@ -1757,6 +2070,96 @@ impl UsageTracker {
             self.input_tokens.load(Ordering::Relaxed),
             self.output_tokens.load(Ordering::Relaxed),
         )
+    }
+
+    /// Replace the stored extension metadata with a merged view of the new
+    /// parsed metadata (new fields override, missing fields are preserved).
+    fn update_extension_meta(&self, incoming: crate::acp_extension::ExtensionMeta) {
+        let mut guard = self.extension_meta.write();
+        let mut merged = guard.clone().unwrap_or_default();
+        if incoming.steering_supported.is_some() {
+            merged.steering_supported = incoming.steering_supported;
+        }
+        if incoming.idle_behavior.is_some() {
+            merged.idle_behavior = incoming.idle_behavior;
+        }
+        if incoming.child_session_updates.is_some() {
+            merged.child_session_updates = incoming.child_session_updates;
+        }
+        if incoming.compaction.is_some() {
+            merged.compaction = incoming.compaction;
+        }
+        if incoming.thread_status.is_some() {
+            merged.thread_status = incoming.thread_status;
+        }
+        if incoming.quota.is_some() {
+            merged.quota = incoming.quota;
+        }
+        if incoming.rate_limit.is_some() {
+            merged.rate_limit = incoming.rate_limit;
+        }
+        if incoming.auth_status.is_some() {
+            merged.auth_status = incoming.auth_status;
+        }
+        if incoming.model.is_some() {
+            merged.model = incoming.model;
+        }
+        if incoming.origin.is_some() {
+            merged.origin = incoming.origin;
+        }
+        if incoming.sdk_message.is_some() {
+            merged.sdk_message = incoming.sdk_message;
+        }
+        if incoming.claude_code.is_some() {
+            merged.claude_code = incoming.claude_code;
+        }
+        if incoming.model_usage.is_some() {
+            merged.model_usage = incoming.model_usage;
+        }
+        if incoming.prompt_suggestions.is_some() {
+            merged.prompt_suggestions = incoming.prompt_suggestions;
+        }
+        if incoming.jetbrains.is_some() {
+            merged.jetbrains = incoming.jetbrains;
+        }
+        if incoming.goal.is_some() {
+            merged.goal = incoming.goal;
+        }
+        if incoming.error.is_some() {
+            merged.error = incoming.error;
+        }
+        crate::acp_extension::normalize_extension_meta(&mut merged);
+        *guard = Some(merged);
+    }
+
+    /// Record a batch of unknown extension keys (drift detection), incrementing
+    /// per-key counters and logging a warning for newly-seen keys.
+    fn record_unknown_keys(&self, keys: &[String], agent_id: &str) {
+        if keys.is_empty() {
+            return;
+        }
+        let mut guard = self.unknown_extension_keys.write();
+        for key in keys {
+            let entry = guard.entry(key.clone()).or_insert(0);
+            if *entry == 0 {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    extension_key = %key,
+                    "Unknown ACP extension key encountered (possible adapter drift)"
+                );
+            }
+            *entry += 1;
+        }
+    }
+
+    /// Snapshot of unknown extension keys and their occurrence counts.
+    fn get_unknown_extension_keys(&self) -> std::collections::HashMap<String, usize> {
+        self.unknown_extension_keys.read().clone()
+    }
+
+    /// Snapshot of the latest extension metadata (if any).
+    fn get_extension_meta(&self) -> Option<crate::acp_extension::ExtensionMeta> {
+        self.extension_meta.read().clone()
     }
 }
 
@@ -1780,11 +2183,12 @@ enum AcpCommand {
         images: Vec<crate::types::AgentImage>,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
     },
-    /// Execute an internal slash command without durable conversation output.
+    /// Execute a slash command through the agent process as a prompt turn.
     ///
-    /// Slash commands are control-plane probes (for example `/model`). They run
-    /// through an agent process, but their output is returned to the caller and
-    /// must not create persisted assistant messages in a conversation.
+    /// Slash commands (for example `/model` probes or fallback model switches)
+    /// run through ACP prompt execution. Their output is accumulated and
+    /// persisted like a normal turn so reasoning/tool/output is not lost when
+    /// a command is prompt-driven; callers can still capture buffered output.
     SlashCommand {
         message: String,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
@@ -2721,6 +3125,38 @@ impl AcpBackend {
         agents.get(agent_id).map(|entry| entry.usage.get_usage())
     }
 
+    /// Get the latest parsed ACP extension metadata for an agent, if any.
+    pub fn get_agent_extension_meta(
+        &self,
+        agent_id: &str,
+    ) -> Option<crate::acp_extension::ExtensionMeta> {
+        self.reap_dead();
+        let agents = self.agents.read();
+        let meta = agents
+            .get(agent_id)
+            .and_then(|entry| entry.usage.get_extension_meta());
+        tracing::debug!(
+            agent_id = %agent_id,
+            has_meta = meta.is_some(),
+            meta = ?meta,
+            "get_agent_extension_meta"
+        );
+        meta
+    }
+
+    /// Get aggregated unknown extension keys (drift detection) for an agent.
+    pub fn get_agent_unknown_extension_keys(
+        &self,
+        agent_id: &str,
+    ) -> std::collections::HashMap<String, usize> {
+        self.reap_dead();
+        let agents = self.agents.read();
+        agents
+            .get(agent_id)
+            .map(|entry| entry.usage.get_unknown_extension_keys())
+            .unwrap_or_default()
+    }
+
     /// Cancel the current prompt turn for an agent (sends `session/cancel`).
     ///
     /// This does NOT stop the agent — it only cancels the in-flight prompt.
@@ -3654,6 +4090,16 @@ impl AcpBackendInterface for AcpBackend {
         let join_handle = tokio::spawn({
             let recent_thinking = recent_thinking.clone();
             async move {
+                let task_adapter_kind = detect_acp_adapter_kind(&task_command_for_save);
+                append_adapter_field_log(
+                    task_adapter_kind,
+                    "adapter.session_start",
+                    serde_json::json!({
+                        "agent_id": connection_agent_id,
+                        "conversation_id": connection_conversation_id,
+                        "command": task_command_for_save,
+                    }),
+                );
                 // Create ByteStreams transport from the spawned process stdin/stdout.
                 let transport = ByteStreams::new(child_stdin, child_stdout);
 
@@ -3684,12 +4130,16 @@ impl AcpBackendInterface for AcpBackend {
                         let notify_in_thinking = task_in_thinking.clone();
                         let notify_in_tool_call = task_in_tool_call.clone();
                         let notify_turn_token = task_current_turn_token.clone();
+                        let notify_adapter_kind = task_adapter_kind;
                         async move |notification: ExtendedSessionNotification, _cx| {
                             // Capture mode: collect replayed history without normal side effects.
                             if task_capture_mode.load(std::sync::atomic::Ordering::SeqCst) {
                                 let payload = match &notification {
                                     ExtendedSessionNotification::Standard(n) => {
                                         serde_json::to_value(&n.update).ok()
+                                    }
+                                    ExtendedSessionNotification::ExtensionUpdate { payload, .. } => {
+                                        Some(payload.clone())
                                     }
                                     _ => None,
                                 };
@@ -3703,6 +4153,50 @@ impl AcpBackendInterface for AcpBackend {
 
                             // Handle extended session notifications (including subagent events)
                             match notification {
+                                ExtendedSessionNotification::AuthStatusUpdate { auth_status } => {
+                                    info!(agent_id = %notify_agent_id, "ACP auth status update received");
+                                    append_adapter_field_log(
+                                        notify_adapter_kind,
+                                        "auth_status_update",
+                                        serde_json::json!({
+                                            "agent_id": notify_agent_id,
+                                            "conversation_id": notify_conversation_id,
+                                            "session_id": notify_session_id.read().clone(),
+                                            "auth_status": auth_status,
+                                        }),
+                                    );
+                                    let ext = crate::acp_extension::ExtensionMeta {
+                                        auth_status: Some(auth_status.clone()),
+                                        ..Default::default()
+                                    };
+                                    usage.update_extension_meta(ext);
+                                    return Ok(());
+                                }
+                                ExtendedSessionNotification::ExtensionUpdate { kind, payload } => {
+                                    info!(agent_id = %notify_agent_id, kind = %kind, "ACP extension update received");
+                                    append_adapter_field_log(
+                                        notify_adapter_kind,
+                                        "session_update.extension",
+                                        serde_json::json!({
+                                            "agent_id": notify_agent_id,
+                                            "conversation_id": notify_conversation_id,
+                                            "session_id": notify_session_id.read().clone(),
+                                            "kind": kind,
+                                            "payload": payload,
+                                        }),
+                                    );
+                                    send_output_event_with_turn_token(
+                                        &notify_turn_token,
+                                        &notify_conversation_id,
+                                        AgentOutputEvent::ExtensionUpdate {
+                                            role: "assistant".to_string(),
+                                            kind: kind.clone(),
+                                            payload: payload.clone(),
+                                        },
+                                    )
+                                    .await;
+                                    return Ok(());
+                                }
                                 ExtendedSessionNotification::Standard(std_notif) => {
                                     handle_standard_session_notification(
                                         *std_notif, &out, &thoughts, &notify_recent_thinking, &tool_calls, &usage,
@@ -3713,6 +4207,7 @@ impl AcpBackendInterface for AcpBackend {
                                         &notify_config_options, &notify_available_commands,
                                         &notify_in_thinking, &notify_in_tool_call,
                                         &notify_turn_token,
+                                        notify_adapter_kind,
                                     ).await;
                                 }
                                 ExtendedSessionNotification::SubagentSpawned(event) => {
@@ -3722,6 +4217,19 @@ impl AcpBackendInterface for AcpBackend {
                                         name = %event.name,
                                         task = %event.task,
                                         "Subagent spawned by agent"
+                                    );
+                                    append_adapter_field_log(
+                                        notify_adapter_kind,
+                                        "session_update.subagent_spawned",
+                                        serde_json::json!({
+                                            "agent_id": notify_agent_id,
+                                            "conversation_id": notify_conversation_id,
+                                            "session_id": notify_session_id.read().clone(),
+                                            "parent_session_id": event.session_id,
+                                            "subagent_session_id": event.subagent_session_id,
+                                            "name": event.name,
+                                            "task": event.task,
+                                        }),
                                     );
                                     // Emit subagent event for upstream processing
                                     send_output_event_with_turn_token(
@@ -3740,6 +4248,17 @@ impl AcpBackendInterface for AcpBackend {
                                         subagent_session_id = %event.subagent_session_id,
                                         state = %event.state,
                                         "Subagent state updated"
+                                    );
+                                    append_adapter_field_log(
+                                        notify_adapter_kind,
+                                        "session_update.subagent_state_update",
+                                        serde_json::json!({
+                                            "agent_id": notify_agent_id,
+                                            "conversation_id": notify_conversation_id,
+                                            "session_id": notify_session_id.read().clone(),
+                                            "subagent_session_id": event.subagent_session_id,
+                                            "state": event.state,
+                                        }),
                                     );
                                     // Emit subagent state update for upstream processing
                                     send_output_event_with_turn_token(
@@ -3926,6 +4445,38 @@ impl AcpBackendInterface for AcpBackend {
                                 "Init response not set by executor",
                             )
                         })?;
+
+                    // Consume extension metadata from the initialize response.
+                    if let Some(meta) = init_response.meta.as_ref() {
+                        let ext = crate::acp_extension::parse_meta(Some(meta));
+                        append_adapter_field_log(
+                            task_adapter_kind,
+                            "initialize_response.meta",
+                            serde_json::json!({
+                                "agent_id": connection_agent_id,
+                                "conversation_id": connection_conversation_id,
+                                "raw_meta": serde_json::Value::Object(meta.clone()),
+                                "parsed": serde_json::to_value(&ext).unwrap_or(serde_json::Value::Null),
+                                "unknown_keys": crate::acp_extension::unknown_meta_keys(meta),
+                            }),
+                        );
+                        task_usage.clone().update_extension_meta(ext);
+                    }
+                    if let Some(meta) = init_response.agent_capabilities.meta.as_ref() {
+                        let ext = crate::acp_extension::parse_meta(Some(meta));
+                        append_adapter_field_log(
+                            task_adapter_kind,
+                            "initialize_response.agent_capabilities.meta",
+                            serde_json::json!({
+                                "agent_id": connection_agent_id,
+                                "conversation_id": connection_conversation_id,
+                                "raw_meta": serde_json::Value::Object(meta.clone()),
+                                "parsed": serde_json::to_value(&ext).unwrap_or(serde_json::Value::Null),
+                                "unknown_keys": crate::acp_extension::unknown_meta_keys(meta),
+                            }),
+                        );
+                        task_usage.clone().update_extension_meta(ext);
+                    }
 
                     let mcp_acp_supported = init_response
                         .agent_capabilities
@@ -4213,6 +4764,29 @@ impl AcpBackendInterface for AcpBackend {
                                             .unwrap_or_else(|_| format!("{:?}", response.stop_reason))
                                             .trim_matches('"')
                                             .to_string();
+                                        if let Some(meta) = response.meta.as_ref() {
+                                            let ext = crate::acp_extension::parse_meta(Some(meta));
+                                            tracing::debug!(
+                                                agent_id = %connection_agent_id,
+                                                parsed = ?ext,
+                                                "Parsed interrupt prompt response extension meta"
+                                            );
+                                            append_adapter_field_log(
+                                                task_adapter_kind,
+                                                "prompt_response.meta",
+                                                serde_json::json!({
+                                                    "agent_id": connection_agent_id,
+                                                    "conversation_id": connection_conversation_id,
+                                                    "session_id": session_id.to_string(),
+                                                    "prompt_kind": "interrupt",
+                                                    "stop_reason": sr,
+                                                    "raw_meta": serde_json::Value::Object(meta.clone()),
+                                                    "parsed": serde_json::to_value(&ext).unwrap_or(serde_json::Value::Null),
+                                                    "unknown_keys": crate::acp_extension::unknown_meta_keys(meta),
+                                                }),
+                                            );
+                                            task_usage.clone().update_extension_meta(ext);
+                                        }
                                         info!(
                                             agent_id = %connection_agent_id,
                                             message_id = %message_id,
@@ -4292,7 +4866,56 @@ impl AcpBackendInterface for AcpBackend {
                                         }
                                     }
                                     Err(e) => {
-                                        warn!(error = %e, message_id = %message_id, "Interrupt prompt failed");
+                                        let enriched = crate::acp_extension::enrich_error_message(
+                                            &e.to_string(),
+                                            e.data.as_ref(),
+                                        );
+                                        tracing::error!(
+                                            agent_id = %connection_agent_id,
+                                            session_id = %session_id,
+                                            conversation_id = %connection_conversation_id,
+                                            message_id = %message_id,
+                                            turn_id = ?turn_token.as_ref().map(|t| t.turn_id.clone()),
+                                            prompt_kind = "interrupt",
+                                            raw_error = %e,
+                                            error_data = ?e.data,
+                                            enriched_error = %enriched,
+                                            "ACP prompt failed"
+                                        );
+                                        // Persist structured error detail for the debug panel/meta API.
+                                        let parsed = if let Some(data) = e.data.as_ref() {
+                                            crate::acp_extension::parse_error_data(data)
+                                        } else {
+                                            crate::acp_extension::ErrorDetail {
+                                                message: Some(enriched.clone()),
+                                                ..Default::default()
+                                            }
+                                        };
+                                        append_adapter_field_log(
+                                            task_adapter_kind,
+                                            "prompt_error",
+                                            serde_json::json!({
+                                                "agent_id": connection_agent_id,
+                                                "conversation_id": connection_conversation_id,
+                                                "session_id": session_id.to_string(),
+                                                "message_id": message_id,
+                                                "prompt_kind": "interrupt",
+                                                "raw_error": e.to_string(),
+                                                "error_data": e.data,
+                                                "parsed_error": serde_json::to_value(&parsed).unwrap_or(serde_json::Value::Null),
+                                                "enriched_error": enriched,
+                                            }),
+                                        );
+                                        let error_name = parsed.error_name.clone();
+                                        let error_type = parsed.error_name.clone();
+                                        let service = parsed.service.clone();
+                                        let code = parsed.code;
+                                        let error_data = e.data.clone();
+                                        let ext = crate::acp_extension::ExtensionMeta {
+                                            error: Some(parsed),
+                                            ..Default::default()
+                                        };
+                                        task_usage.clone().update_extension_meta(ext);
                                         // Surface the concrete failure (including 401/retry details)
                                         // to the conversation stream before the terminal Done event.
                                         if let Some(ref token) = turn_token {
@@ -4300,7 +4923,33 @@ impl AcpBackendInterface for AcpBackend {
                                                 token,
                                                 AgentOutputEvent::Error {
                                                     role: "assistant".to_string(),
-                                                    message: e.to_string(),
+                                                    message: enriched.clone(),
+                                                    error_name: error_name.clone(),
+                                                    error_type: error_type.clone(),
+                                                    service: service.clone(),
+                                                    code,
+                                                    error_data: error_data.clone(),
+                                                },
+                                            )
+                                            .await;
+                                        } else {
+                                            tracing::warn!(
+                                                agent_id = %connection_agent_id,
+                                                conversation_id = %connection_conversation_id,
+                                                prompt_kind = "interrupt",
+                                                "No active turn token; publishing error directly to conversation subject"
+                                            );
+                                            send_output_event_internal(
+                                                None,
+                                                Some(&connection_conversation_id),
+                                                AgentOutputEvent::Error {
+                                                    role: "assistant".to_string(),
+                                                    message: enriched.clone(),
+                                                    error_name,
+                                                    error_type,
+                                                    service,
+                                                    code,
+                                                    error_data,
                                                 },
                                             )
                                             .await;
@@ -4314,7 +4963,7 @@ impl AcpBackendInterface for AcpBackend {
                                             "failed interrupt",
                                         ).await;
                                         let _ = response_tx.send(Err(ErgataiError::internal(
-                                            format!("Interrupt prompt failed: {e}"),
+                                            format!("Interrupt prompt failed: {enriched}"),
                                         )));
                                     }
                                 }
@@ -4324,12 +4973,19 @@ impl AcpBackendInterface for AcpBackend {
                                 *task_paused_task.write() = None;
                             }
                             Some(AcpCommand::SlashCommand { message, response_tx }) => {
+                                // Drain any prior output so callers only capture this command's response.
+                                let _ = task_output.capture();
                                 task_text_output_seen.store(false, Ordering::Relaxed);
                                 task_recent_thinking.lock().clear();
 
-                                // Do not call begin_turn_lifecycle here. Slash commands
-                                // are internal probes; notifications are captured by the
-                                // OutputBuffer but must not create durable output.
+                                // Slash commands (e.g. /model fallback) are executed via ACP prompts.
+                                // Run them as normal persisted turns so their reasoning/tool/output
+                                // events are accumulated and visible in conversation history.
+                                let turn_token = begin_turn_lifecycle(
+                                    &task_current_turn_token,
+                                    &connection_conversation_id,
+                                ).await;
+
                                 let prompt_started_at = Instant::now();
                                 info!(
                                     agent_id = %connection_agent_id,
@@ -4350,25 +5006,35 @@ impl AcpBackendInterface for AcpBackend {
                                     ));
 
                                 let result = request.block_task().await;
-                                // Slash commands intentionally have no turn token, but
-                                // notifications such as ContextUsage can still reach the
-                                // runtime store. Emit a terminal event so the control-plane
-                                // command cannot leave the conversation marked streaming.
-                                send_output_event_internal(
-                                    None,
-                                    Some(&connection_conversation_id),
-                                    AgentOutputEvent::Done {
-                                        role: "assistant".to_string(),
-                                        stop_reason: "slash_command".to_string(),
-                                    },
-                                )
-                                .await;
                                 match result {
                                     Ok(response) => {
                                         let sr = serde_json::to_string(&response.stop_reason)
                                             .unwrap_or_else(|_| format!("{:?}", response.stop_reason))
                                             .trim_matches('"')
                                             .to_string();
+                                        if let Some(meta) = response.meta.as_ref() {
+                                            let ext = crate::acp_extension::parse_meta(Some(meta));
+                                            tracing::debug!(
+                                                agent_id = %connection_agent_id,
+                                                parsed = ?ext,
+                                                "Parsed slash command response extension meta"
+                                            );
+                                            append_adapter_field_log(
+                                                task_adapter_kind,
+                                                "prompt_response.meta",
+                                                serde_json::json!({
+                                                    "agent_id": connection_agent_id,
+                                                    "conversation_id": connection_conversation_id,
+                                                    "session_id": session_id.to_string(),
+                                                    "prompt_kind": "slash_command",
+                                                    "stop_reason": sr,
+                                                    "raw_meta": serde_json::Value::Object(meta.clone()),
+                                                    "parsed": serde_json::to_value(&ext).unwrap_or(serde_json::Value::Null),
+                                                    "unknown_keys": crate::acp_extension::unknown_meta_keys(meta),
+                                                }),
+                                            );
+                                            task_usage.clone().update_extension_meta(ext);
+                                        }
                                         info!(
                                             agent_id = %connection_agent_id,
                                             session_id = %session_id,
@@ -4376,16 +5042,109 @@ impl AcpBackendInterface for AcpBackend {
                                             duration_ms = prompt_started_at.elapsed().as_millis() as u64,
                                             "ACP slash command completed"
                                         );
+                                        crate::permission_service::global_permission_service()
+                                            .force_resolve_rejected_for_agent(&connection_agent_id)
+                                            .await;
+                                        *task_stop_reason.write() = Some(sr.clone());
+
+                                        // End turn lifecycle: Done event + flush + clear token
+                                        end_turn_lifecycle(
+                                            &turn_token,
+                                            &task_current_turn_token,
+                                            &connection_agent_id,
+                                            &sr,
+                                            "slash command",
+                                        ).await;
+
                                         let _ = response_tx.send(Ok(()));
                                     }
                                     Err(e) => {
+                                        let enriched = crate::acp_extension::enrich_error_message(
+                                            &e.to_string(),
+                                            e.data.as_ref(),
+                                        );
+                                        let parsed = if let Some(data) = e.data.as_ref() {
+                                            crate::acp_extension::parse_error_data(data)
+                                        } else {
+                                            crate::acp_extension::ErrorDetail {
+                                                message: Some(enriched.clone()),
+                                                ..Default::default()
+                                            }
+                                        };
+                                        append_adapter_field_log(
+                                            task_adapter_kind,
+                                            "prompt_error",
+                                            serde_json::json!({
+                                                "agent_id": connection_agent_id,
+                                                "conversation_id": connection_conversation_id,
+                                                "session_id": session_id.to_string(),
+                                                "prompt_kind": "slash_command",
+                                                "raw_error": e.to_string(),
+                                                "error_data": e.data,
+                                                "parsed_error": serde_json::to_value(&parsed).unwrap_or(serde_json::Value::Null),
+                                                "enriched_error": enriched,
+                                            }),
+                                        );
                                         warn!(
                                             agent_id = %connection_agent_id,
                                             session_id = %session_id,
-                                            error = %e,
+                                            raw_error = %e,
+                                            error_data = ?e.data,
+                                            enriched_error = %enriched,
                                             duration_ms = prompt_started_at.elapsed().as_millis() as u64,
                                             "ACP slash command failed"
                                         );
+
+                                        let error_name = parsed.error_name.clone();
+                                        let error_type = parsed.error_name.clone();
+                                        let service = parsed.service.clone();
+                                        let code = parsed.code;
+                                        let error_data = e.data.clone();
+                                        let ext = crate::acp_extension::ExtensionMeta {
+                                            error: Some(parsed),
+                                            ..Default::default()
+                                        };
+                                        task_usage.clone().update_extension_meta(ext);
+
+                                        if let Some(ref token) = turn_token {
+                                            send_output_event(
+                                                token,
+                                                AgentOutputEvent::Error {
+                                                    role: "assistant".to_string(),
+                                                    message: enriched.clone(),
+                                                    error_name: error_name.clone(),
+                                                    error_type: error_type.clone(),
+                                                    service: service.clone(),
+                                                    code,
+                                                    error_data: error_data.clone(),
+                                                },
+                                            )
+                                            .await;
+                                        } else {
+                                            send_output_event_internal(
+                                                None,
+                                                Some(&connection_conversation_id),
+                                                AgentOutputEvent::Error {
+                                                    role: "assistant".to_string(),
+                                                    message: enriched.clone(),
+                                                    error_name,
+                                                    error_type,
+                                                    service,
+                                                    code,
+                                                    error_data,
+                                                },
+                                            )
+                                            .await;
+                                        }
+
+                                        end_turn_lifecycle(
+                                            &turn_token,
+                                            &task_current_turn_token,
+                                            &connection_agent_id,
+                                            "error",
+                                            "slash command",
+                                        ).await;
+
                                         let _ = response_tx.send(Err(ErgataiError::internal(
                                             format!("ACP slash command failed: {e}"),
                                         )));
@@ -4440,6 +5199,29 @@ impl AcpBackendInterface for AcpBackend {
                                             .unwrap_or_else(|_| format!("{:?}", response.stop_reason))
                                             .trim_matches('"')
                                             .to_string();
+                                        if let Some(meta) = response.meta.as_ref() {
+                                            let ext = crate::acp_extension::parse_meta(Some(meta));
+                                            tracing::debug!(
+                                                agent_id = %connection_agent_id,
+                                                parsed = ?ext,
+                                                "Parsed queued prompt response extension meta"
+                                            );
+                                            append_adapter_field_log(
+                                                task_adapter_kind,
+                                                "prompt_response.meta",
+                                                serde_json::json!({
+                                                    "agent_id": connection_agent_id,
+                                                    "conversation_id": connection_conversation_id,
+                                                    "session_id": session_id.to_string(),
+                                                    "prompt_kind": "queued",
+                                                    "stop_reason": sr,
+                                                    "raw_meta": serde_json::Value::Object(meta.clone()),
+                                                    "parsed": serde_json::to_value(&ext).unwrap_or(serde_json::Value::Null),
+                                                    "unknown_keys": crate::acp_extension::unknown_meta_keys(meta),
+                                                }),
+                                            );
+                                            task_usage.clone().update_extension_meta(ext);
+                                        }
                                         info!(
                                             agent_id = %connection_agent_id,
                                             session_id = %session_id,
@@ -4464,7 +5246,54 @@ impl AcpBackendInterface for AcpBackend {
                                         let _ = response_tx.send(Ok(()));
                                     }
                                     Err(e) => {
-                                        warn!(error = %e, "ACP queued prompt failed");
+                                        let enriched = crate::acp_extension::enrich_error_message(
+                                            &e.to_string(),
+                                            e.data.as_ref(),
+                                        );
+                                        tracing::error!(
+                                            agent_id = %connection_agent_id,
+                                            session_id = %session_id,
+                                            conversation_id = %connection_conversation_id,
+                                            turn_id = ?turn_token.as_ref().map(|t| t.turn_id.clone()),
+                                            prompt_kind = "queued",
+                                            raw_error = %e,
+                                            error_data = ?e.data,
+                                            enriched_error = %enriched,
+                                            "ACP prompt failed"
+                                        );
+                                        // Persist structured error detail for the debug panel/meta API.
+                                        let parsed = if let Some(data) = e.data.as_ref() {
+                                            crate::acp_extension::parse_error_data(data)
+                                        } else {
+                                            crate::acp_extension::ErrorDetail {
+                                                message: Some(enriched.clone()),
+                                                ..Default::default()
+                                            }
+                                        };
+                                        append_adapter_field_log(
+                                            task_adapter_kind,
+                                            "prompt_error",
+                                            serde_json::json!({
+                                                "agent_id": connection_agent_id,
+                                                "conversation_id": connection_conversation_id,
+                                                "session_id": session_id.to_string(),
+                                                "prompt_kind": "queued",
+                                                "raw_error": e.to_string(),
+                                                "error_data": e.data,
+                                                "parsed_error": serde_json::to_value(&parsed).unwrap_or(serde_json::Value::Null),
+                                                "enriched_error": enriched,
+                                            }),
+                                        );
+                                        let error_name = parsed.error_name.clone();
+                                        let error_type = parsed.error_name.clone();
+                                        let service = parsed.service.clone();
+                                        let code = parsed.code;
+                                        let error_data = e.data.clone();
+                                        let ext = crate::acp_extension::ExtensionMeta {
+                                            error: Some(parsed),
+                                            ..Default::default()
+                                        };
+                                        task_usage.clone().update_extension_meta(ext);
                                         // Surface the concrete failure (including 401/retry details)
                                         // to the conversation stream before the terminal Done event.
                                         if let Some(ref token) = turn_token {
@@ -4472,7 +5301,33 @@ impl AcpBackendInterface for AcpBackend {
                                                 token,
                                                 AgentOutputEvent::Error {
                                                     role: "assistant".to_string(),
-                                                    message: e.to_string(),
+                                                    message: enriched.clone(),
+                                                    error_name: error_name.clone(),
+                                                    error_type: error_type.clone(),
+                                                    service: service.clone(),
+                                                    code,
+                                                    error_data: error_data.clone(),
+                                                },
+                                            )
+                                            .await;
+                                        } else {
+                                            tracing::warn!(
+                                                agent_id = %connection_agent_id,
+                                                conversation_id = %connection_conversation_id,
+                                                prompt_kind = "queued",
+                                                "No active turn token; publishing error directly to conversation subject"
+                                            );
+                                            send_output_event_internal(
+                                                None,
+                                                Some(&connection_conversation_id),
+                                                AgentOutputEvent::Error {
+                                                    role: "assistant".to_string(),
+                                                    message: enriched.clone(),
+                                                    error_name,
+                                                    error_type,
+                                                    service,
+                                                    code,
+                                                    error_data,
                                                 },
                                             )
                                             .await;
@@ -4486,7 +5341,7 @@ impl AcpBackendInterface for AcpBackend {
                                             "failed queued prompt",
                                         ).await;
                                         let _ = response_tx.send(Err(ErgataiError::internal(
-                                            format!("ACP queued prompt failed: {e}"),
+                                            format!("ACP queued prompt failed: {enriched}"),
                                         )));
                                     }
                                 }
@@ -5400,6 +6255,20 @@ impl AcpBackendInterface for AcpBackend {
 
     async fn usage(&self, agent_id: &str) -> ErgataiResult<Option<(usize, usize)>> {
         Ok(self.get_agent_usage(agent_id))
+    }
+
+    async fn extension_meta(
+        &self,
+        agent_id: &str,
+    ) -> ErgataiResult<Option<crate::acp_extension::ExtensionMeta>> {
+        Ok(self.get_agent_extension_meta(agent_id))
+    }
+
+    async fn unknown_extension_keys(
+        &self,
+        agent_id: &str,
+    ) -> ErgataiResult<std::collections::HashMap<String, usize>> {
+        Ok(self.get_agent_unknown_extension_keys(agent_id))
     }
 
     async fn pid(&self, agent_id: &str) -> ErgataiResult<Option<u32>> {

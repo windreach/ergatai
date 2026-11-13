@@ -34,7 +34,7 @@ fn parse_frontmatter(content: &str) -> Option<(String, String)> {
     Some((name?, description.unwrap_or_default()))
 }
 
-fn scan_dir(dir: &Path, source: &str, out: &mut Vec<SkillInfo>) {
+pub fn scan_dir(dir: &Path, source: &str, out: &mut Vec<SkillInfo>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -63,7 +63,7 @@ fn scan_dir(dir: &Path, source: &str, out: &mut Vec<SkillInfo>) {
     }
 }
 
-fn scan_marketplaces(home: &Path, out: &mut Vec<SkillInfo>) {
+pub fn scan_marketplaces(home: &Path, out: &mut Vec<SkillInfo>) {
     let marketplaces = home.join(".claude").join("plugins").join("marketplaces");
     let entries = match fs::read_dir(&marketplaces) {
         Ok(e) => e,

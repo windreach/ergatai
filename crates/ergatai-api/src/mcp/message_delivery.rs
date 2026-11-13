@@ -924,16 +924,27 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                 }
             }
 
-            // Check if this is a permanent "agent not found" error vs transient error
+            // Check if this is a permanent error vs transient error.
+            // "agent not found" is permanently undeliverable.
+            // Provider free-usage-limit errors are also effectively permanent for
+            // this message: retrying the same prompt cannot succeed until the
+            // user changes model/provider, and redelivery only floods the stream
+            // with duplicate errors.
             let is_agent_not_found = matches!(e, ergatai_error::ErgataiError::AgentNotFound(_));
+            let err_text = e.to_string();
+            let is_permanent_provider_limit = err_text.contains("Free usage limit")
+                || err_text.contains("free-limit")
+                || err_text.contains("provider.free-limit");
 
-            if is_agent_not_found {
-                // Agent permanently gone — ack to discard, no point retrying
+            if is_agent_not_found || is_permanent_provider_limit {
+                // Permanently undeliverable (or not retryable) — ack to discard,
+                // no point retrying. The ACP layer already surfaced the concrete
+                // error to the conversation stream.
                 warn!(
                     from = from,
                     to = to,
                     error = %e,
-                    "Target agent no longer exists — acking to discard (no retry)"
+                    "Message not retryable — acking to discard (no retry)"
                 );
                 if let Err(ack_err) = msg.ack().await {
                     error!("Failed to ack undeliverable message: {}", ack_err);

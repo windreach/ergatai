@@ -9,7 +9,6 @@ use utoipa::ToSchema;
 
 use crate::{
     http_error::internal,
-    services::native_agent_config::{self, NativeAgentConfig},
     services::provider_connection_service,
     user_data_db::provider_connections::{ProviderConnection, ProviderConnectionUpsert},
     AppState,
@@ -79,14 +78,24 @@ pub async fn list_provider_connections(
     tag = "Provider Connections",
     params(("agent_id" = String, Query, description = "Owning agent profile name")),
     responses(
-        (status = 200, description = "Native agent configuration (null when none found)", body = Option<NativeAgentConfig>),
+        (status = 200, description = "Native agent configuration (null when none found)", body = Option<crate::services::native_agent_config::NativeAgentConfig>),
         (status = 500, description = "Internal server error", body = crate::api::ApiError)
     )
 )]
 pub async fn detect_native_config(
     Query(query): Query<NativeConfigQuery>,
 ) -> impl axum::response::IntoResponse {
-    match tokio::task::spawn_blocking(move || native_agent_config::detect(&query.agent_id)).await {
+    let kind = crate::services::agent::resolve_kind_by_name(&query.agent_id).await;
+    let agent_id = query.agent_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        if kind == crate::services::agent::AgentKind::Unknown {
+            crate::services::native_agent_config::detect(&agent_id)
+        } else {
+            crate::services::agent::detect_native_config(kind)
+        }
+    })
+    .await
+    {
         Ok(Ok(config)) => Json(config).into_response(),
         Ok(Err(error)) => internal(error, "detect_native_config").into_response(),
         Err(error) => internal(error, "detect_native_config_join").into_response(),
@@ -119,7 +128,16 @@ pub async fn import_native_config(
             .into_response();
     }
     let agent_id = request.agent_id.trim().to_string();
-    match tokio::task::spawn_blocking(move || native_agent_config::import(&agent_id)).await {
+    let kind = crate::services::agent::resolve_kind_by_name(&agent_id).await;
+    match tokio::task::spawn_blocking(move || {
+        if kind == crate::services::agent::AgentKind::Unknown {
+            crate::services::native_agent_config::import(&agent_id)
+        } else {
+            crate::services::agent::import_native_config(kind)
+        }
+    })
+    .await
+    {
         Ok(Ok(connection)) => (
             StatusCode::OK,
             Json(ProviderConnectionMutationResponse { connection }),

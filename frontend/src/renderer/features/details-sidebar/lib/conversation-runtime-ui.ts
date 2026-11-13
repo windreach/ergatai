@@ -23,7 +23,16 @@ type RuntimeEvent = {
       }
     | { type: "tool_call_error"; id: string; error: string }
     | { type: "done"; stop_reason: string }
-    | { type: "error"; message: string }
+    | {
+        type: "error"
+        message: string
+        role?: string | null
+        error_name?: string | null
+        error_type?: string | null
+        service?: string | null
+        code?: number | string | null
+        error_data?: unknown
+      }
     | {
         type: "conversation_message"
         message_id: string
@@ -117,6 +126,7 @@ export function buildRuntimeMessages(
   let streamMessageIndex = 0
   const conversationId = snapshot?.conversationId ?? "conversation"
   const turnId = (snapshot as { turnId?: string } | undefined)?.turnId
+  let sawExplicitErrorEvent = false
 
   const finalizeStreamMessage = () => {
     if (!currentMessage || currentMessage.parts.length === 0) {
@@ -244,11 +254,66 @@ export function buildRuntimeMessages(
       continue
     }
 
-    if (event.type === "done" || event.type === "error") {
+    if (event.type === "error") {
+      sawExplicitErrorEvent = true
       // Close reasoning part before finalizing (stream ended while thinking)
       if (currentMessage) {
         closeStreamingReasoning(currentMessage)
       }
+
+      const parts: string[] = []
+      if (event.code != null && event.code !== "") parts.push(`[${event.code}]`)
+      const typeName = event.error_type ?? event.error_name
+      if (typeName) parts.push(String(typeName))
+      if (event.service) parts.push(`(${event.service})`)
+      const prefix = parts.join(" ")
+      const errorText = prefix ? `${prefix}: ${event.message}` : event.message
+
+      const message = ensureStreamMessage(event.role ?? undefined)
+      closeStreamingReasoning(message)
+      const msgParts = message.parts
+      const lastPart = msgParts.length > 0 ? msgParts[msgParts.length - 1] : null
+      if (lastPart && lastPart.type === "text") {
+        const prev = lastPart.text ?? ""
+        lastPart.text = prev ? `${prev}\n\n${errorText}` : errorText
+      } else {
+        msgParts.push({ type: "text", text: errorText })
+      }
+
+      finalizeStreamMessage()
+      continue
+    }
+
+    if (event.type === "done") {
+      // Close reasoning part before finalizing (stream ended while thinking)
+      if (currentMessage) {
+        closeStreamingReasoning(currentMessage)
+      }
+
+      // Safety net: if backend ends turn with an error stop_reason but the
+      // runtime snapshot/events no longer include the explicit error event,
+      // keep a visible failure message instead of silently disappearing.
+      if (event.stop_reason === "error" && !sawExplicitErrorEvent) {
+        const hasRenderedError = messages.some((m) =>
+          (m as RuntimeStreamMessage).parts?.some(
+            (p) =>
+              p.type === "text" &&
+              typeof p.text === "string" &&
+              (p.text.includes("provider.free-limit") ||
+                p.text.includes("Free usage limit") ||
+                p.text.toLower().includes("error")),
+          ),
+        )
+        if (!hasRenderedError) {
+          const message = ensureStreamMessage(event.role)
+          closeStreamingReasoning(message)
+          message.parts.push({
+            type: "text",
+            text: "Request failed (stop_reason=error). Please check provider/model limits and retry.",
+          })
+        }
+      }
+
       finalizeStreamMessage()
       continue
     }

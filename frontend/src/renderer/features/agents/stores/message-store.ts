@@ -927,7 +927,7 @@ function freezeDeep<T>(value: T): T {
  * Extract turnId from message metadata. Checks both `metadata.turnId` and
  * top-level `turnId` field for compatibility with different message shapes.
  */
-function getMessageTurnId(message: Message): string | null {
+export function getMessageTurnId(message: Message): string | null {
   const metadata = message.metadata
   if (metadata && typeof metadata === "object") {
     const mdTurnId = (metadata as Record<string, unknown>).turnId

@@ -7,7 +7,7 @@ interface UseCreateNewConversationOptions {
   chatId: string | null
   defaultAgentMode: "plan" | "agent"
   activeConversationId: string | null
-  inferProviderFromMessages: (conversationId?: string) => "claude-code" | "codex"
+  inferProviderFromMessages: (conversationId?: string) => "claude-code" | "codex" | "opencode"
   setConversationUnseenChanges: (updater: (prev: Set<string>) => Set<string>) => void
   selectedChatId: string | null
   setUnseenChanges: (updater: (prev: Set<string>) => Set<string>) => void

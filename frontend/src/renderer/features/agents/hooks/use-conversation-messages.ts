@@ -423,6 +423,11 @@ class ConversationPipeline {
           }
 
           if (type === "error") {
+            console.log("[use-conversation-messages] received error event", {
+              conversationId: this.conversationId,
+              agentId: this.agentId,
+              event: deltaEvent,
+            })
             this.state = { ...this.state, error: new Error(deltaEvent.message ?? "Agent error") }
             this.notify()
             this.consecutiveStreamErrors = 0

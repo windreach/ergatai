@@ -57,7 +57,18 @@ pub struct DiscoverQuery {
 /// Frontend normally does not call this directly — it goes through
 /// `/api/v1/agents/:id/discovery` instead.
 pub async fn discover(Query(q): Query<DiscoverQuery>) -> Json<serde_json::Value> {
-    Json(crate::services::agent_sdk_service::discover(&q.agent, q.cwd.as_deref()).await)
+    let agent_kind = match q.agent.as_str() {
+        "claude" => crate::services::agent::AgentKind::Claude,
+        "codex" => crate::services::agent::AgentKind::Codex,
+        "opencode" => crate::services::agent::AgentKind::OpenCode,
+        _ => crate::services::agent::AgentKind::Unknown,
+    };
+    let result = if agent_kind == crate::services::agent::AgentKind::Unknown {
+        crate::services::agent_sdk_service::discover(&q.agent, q.cwd.as_deref()).await
+    } else {
+        crate::services::agent::discover(agent_kind, q.cwd.as_deref()).await
+    };
+    Json(result)
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,54 +118,43 @@ pub async fn switch_model(
 
     let profile_name = agent_info.as_ref().and_then(|i| i.profile.clone());
 
-    let mut kind = String::new();
-    if let Some(pn) = profile_name.as_deref() {
-        if let Ok(reg) = crate::services::profile_service::get_profile_registry() {
-            if let Ok(profiles) = reg.list_with_status() {
-                if let Some(p) = profiles.into_iter().find(|x| x.name == pn) {
-                    let hay = format!("{} {} {}", p.name, p.command, p.agent_type).to_lowercase();
-                    if hay.contains("opencode") {
-                        kind = "opencode".into();
-                    } else if hay.contains("codex") {
-                        kind = "codex".into();
-                    } else if hay.contains("claude") {
-                        kind = "claude".into();
-                    }
-                }
-            }
-        }
-    }
+    // Resolve session id for SDK-based switching when caller did not provide it.
+    // OpenCode's SDK helper needs SESSION_ID to call /api/session/{id}/model;
+    // without it we may unnecessarily fall back to ACP/prompt-based switching.
+    let runtime_session_id = if body.session_id.is_none() {
+        runtime.backend().session_id(&agent_id).await.ok().flatten()
+    } else {
+        None
+    };
+    let effective_session_id = body.session_id.clone().or(runtime_session_id);
 
-    // Fallback: infer kind from profile name when registry lookup missed.
-    if kind.is_empty() {
-        if let Some(pn) = profile_name.as_deref() {
-            let hay = pn.to_lowercase();
-            if hay.contains("opencode") {
-                kind = "opencode".into();
-            } else if hay.contains("codex") {
-                kind = "codex".into();
-            } else if hay.contains("claude") {
-                kind = "claude".into();
-            }
-        }
-    }
+    let kind = if let Some(pn) = profile_name.as_deref() {
+        crate::services::agent::resolve_kind_by_name(pn).await
+    } else {
+        crate::services::agent::AgentKind::Unknown
+    };
 
     // Priority: SDK first (Claude/OpenCode), then ACP fallback for agents
     // whose SDK does not support runtime model switching (e.g. Codex) or
     // when the SDK call fails. This keeps OpenCode's HTTP SDK path preferred
     // while still allowing ACP-native switching.
-    let sdk_result = crate::services::agent_sdk_service::switch_model(
-        &kind,
-        &body.model,
-        cwd.as_deref(),
-        body.session_id.as_deref(),
-    )
-    .await;
+    let sdk_result = if kind == crate::services::agent::AgentKind::Unknown {
+        serde_json::json!({"ok": false, "error": "unknown agent kind"})
+    } else {
+        crate::services::agent::switch_model(
+            kind,
+            &agent_id,
+            &body.model,
+            cwd.as_deref(),
+            effective_session_id.as_deref(),
+        )
+        .await
+    };
 
     let mut result = sdk_result.clone();
     if !result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         // Fallback to ACP (session/set_model, then /model).
-        match crate::services::agent_service::set_agent_model(&agent_id, &body.model).await {
+        match crate::services::agent_service::set_agent(&agent_id, &body.model).await {
             Ok(_) => {
                 result = serde_json::json!({
                     "ok": true,
@@ -181,28 +181,27 @@ pub async fn switch_model(
     // switching succeeded through ACP fallback.
     if result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         if let Some(pn) = profile_name.as_deref() {
-            if kind.is_empty() {
+            if kind == crate::services::agent::AgentKind::Unknown {
                 tracing::debug!(agent_id = %agent_id, "Skipping SDK model refresh: unknown agent kind");
             } else {
-                match crate::services::profile_service::refresh_profile_models(
-                    &kind,
-                    pn,
-                    cwd.as_deref(),
-                )
-                .await
-                {
-                    Ok(refreshed) if refreshed.is_empty() => {
-                        let _ = crate::services::profile_service::save_profile_models_by_name(
-                            pn,
-                            std::slice::from_ref(&body.model),
-                            Some(&body.model),
-                        )
-                        .await;
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!(error = %e, profile = %pn, "SDK model refresh failed");
-                    }
+                let discovered =
+                    crate::services::agent::discover_models(kind, pn, cwd.as_deref()).await;
+                if discovered.details.is_empty() {
+                    let _ = crate::services::profile_service::save_profile_models_by_name(
+                        pn,
+                        std::slice::from_ref(&body.model),
+                        Some(&body.model),
+                    )
+                    .await;
+                } else {
+                    let _ = crate::services::profile_service::persist_profile_models(
+                        pn,
+                        &discovered.details,
+                        discovered.source,
+                        &discovered.sources,
+                        discovered.default_model.as_deref(),
+                    )
+                    .await;
                 }
             }
         }
@@ -271,36 +270,12 @@ pub async fn inject_mcp(
 
     let profile_name = agent_info.as_ref().and_then(|i| i.profile.clone());
 
-    // Resolve agent kind
-    let mut kind = String::new();
-    if let Some(pn) = profile_name.as_deref() {
-        if let Ok(reg) = crate::services::profile_service::get_profile_registry() {
-            if let Ok(profiles) = reg.list_with_status() {
-                if let Some(p) = profiles.into_iter().find(|x| x.name == pn) {
-                    let hay = format!("{} {} {}", p.name, p.command, p.agent_type).to_lowercase();
-                    if hay.contains("opencode") {
-                        kind = "opencode".into();
-                    } else if hay.contains("codex") {
-                        kind = "codex".into();
-                    } else if hay.contains("claude") {
-                        kind = "claude".into();
-                    }
-                }
-            }
-        }
-    }
-    if kind.is_empty() {
-        if let Some(pn) = profile_name.as_deref() {
-            let hay = pn.to_lowercase();
-            if hay.contains("opencode") {
-                kind = "opencode".into();
-            } else if hay.contains("codex") {
-                kind = "codex".into();
-            } else if hay.contains("claude") {
-                kind = "claude".into();
-            }
-        }
-    }
+    // Resolve agent kind via the shared agent resolver.
+    let kind = if let Some(pn) = profile_name.as_deref() {
+        crate::services::agent::resolve_kind_by_name(pn).await
+    } else {
+        crate::services::agent::AgentKind::Unknown
+    };
 
     // Resolve session id: body override, then runtime ACP session id.
     let runtime_session_id = if body.session_id.is_none() {
@@ -355,8 +330,8 @@ pub async fn inject_mcp(
 
     let servers_json = servers_value.to_string();
 
-    let result = crate::services::agent_sdk_service::inject_mcp(
-        &kind,
+    let result = crate::services::agent::inject_mcp(
+        kind,
         cwd.as_deref(),
         session_id.as_deref(),
         &servers_json,
@@ -425,36 +400,11 @@ pub async fn inject_mcp_running() -> Json<serde_json::Value> {
             .cloned()
             .or_else(|| agent.handle.workspace.metadata.get("work_dir").cloned());
         let profile_name = agent.profile.clone();
-        let mut kind = String::new();
-        if let Some(pn) = profile_name.as_deref() {
-            if let Ok(reg) = crate::services::profile_service::get_profile_registry() {
-                if let Ok(profiles) = reg.list_with_status() {
-                    if let Some(p) = profiles.into_iter().find(|x| x.name == pn) {
-                        let hay =
-                            format!("{} {} {}", p.name, p.command, p.agent_type).to_lowercase();
-                        if hay.contains("opencode") {
-                            kind = "opencode".into();
-                        } else if hay.contains("codex") {
-                            kind = "codex".into();
-                        } else if hay.contains("claude") {
-                            kind = "claude".into();
-                        }
-                    }
-                }
-            }
-        }
-        if kind.is_empty() {
-            if let Some(pn) = profile_name.as_deref() {
-                let hay = pn.to_lowercase();
-                if hay.contains("opencode") {
-                    kind = "opencode".into();
-                } else if hay.contains("codex") {
-                    kind = "codex".into();
-                } else if hay.contains("claude") {
-                    kind = "claude".into();
-                }
-            }
-        }
+        let kind = if let Some(pn) = profile_name.as_deref() {
+            crate::services::agent::resolve_kind_by_name(pn).await
+        } else {
+            crate::services::agent::AgentKind::Unknown
+        };
 
         let session_id = runtime
             .backend()
@@ -494,8 +444,8 @@ pub async fn inject_mcp_running() -> Json<serde_json::Value> {
         }
         let servers_json = serde_json::Value::Object(map).to_string();
 
-        let res = crate::services::agent_sdk_service::inject_mcp(
-            &kind,
+        let res = crate::services::agent::inject_mcp(
+            kind,
             cwd.as_deref(),
             session_id.as_deref(),
             &servers_json,
@@ -562,36 +512,11 @@ pub async fn process_pending_mcp_injections() -> Json<serde_json::Value> {
             .cloned()
             .or_else(|| agent.handle.workspace.metadata.get("work_dir").cloned());
         let profile_name = agent.profile.clone();
-        let mut kind = String::new();
-        if let Some(pn) = profile_name.as_deref() {
-            if let Ok(reg) = crate::services::profile_service::get_profile_registry() {
-                if let Ok(profiles) = reg.list_with_status() {
-                    if let Some(p) = profiles.into_iter().find(|x| x.name == pn) {
-                        let hay =
-                            format!("{} {} {}", p.name, p.command, p.agent_type).to_lowercase();
-                        if hay.contains("opencode") {
-                            kind = "opencode".into();
-                        } else if hay.contains("codex") {
-                            kind = "codex".into();
-                        } else if hay.contains("claude") {
-                            kind = "claude".into();
-                        }
-                    }
-                }
-            }
-        }
-        if kind.is_empty() {
-            if let Some(pn) = profile_name.as_deref() {
-                let hay = pn.to_lowercase();
-                if hay.contains("opencode") {
-                    kind = "opencode".into();
-                } else if hay.contains("codex") {
-                    kind = "codex".into();
-                } else if hay.contains("claude") {
-                    kind = "claude".into();
-                }
-            }
-        }
+        let kind = if let Some(pn) = profile_name.as_deref() {
+            crate::services::agent::resolve_kind_by_name(pn).await
+        } else {
+            crate::services::agent::AgentKind::Unknown
+        };
 
         let session_id = runtime
             .backend()
@@ -630,8 +555,8 @@ pub async fn process_pending_mcp_injections() -> Json<serde_json::Value> {
         }
         let servers_json = serde_json::Value::Object(map).to_string();
 
-        let res = crate::services::agent_sdk_service::inject_mcp(
-            &kind,
+        let res = crate::services::agent::inject_mcp(
+            kind,
             cwd.as_deref(),
             session_id.as_deref(),
             &servers_json,

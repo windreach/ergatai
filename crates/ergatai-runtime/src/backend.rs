@@ -205,6 +205,24 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
     /// Get the agent's token usage statistics (input_tokens, output_tokens).
     async fn usage(&self, agent_id: &str) -> ErgataiResult<Option<(usize, usize)>>;
 
+    /// Get the latest parsed ACP extension metadata for an agent, if any.
+    ///
+    /// Default implementation returns `None` for backends that do not track it.
+    async fn extension_meta(
+        &self,
+        _agent_id: &str,
+    ) -> ErgataiResult<Option<crate::acp_extension::ExtensionMeta>> {
+        Ok(None)
+    }
+
+    /// Get aggregated unknown extension keys (drift detection).
+    async fn unknown_extension_keys(
+        &self,
+        _agent_id: &str,
+    ) -> ErgataiResult<std::collections::HashMap<String, usize>> {
+        Ok(std::collections::HashMap::new())
+    }
+
     /// Get the agent's process ID.
     async fn pid(&self, agent_id: &str) -> ErgataiResult<Option<u32>>;
 

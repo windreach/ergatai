@@ -38,6 +38,19 @@ export const agentsRouter = router({
       return agents.find((a) => a.agent_id === input.agentId) ?? null
     }),
 
+  getAgentSelectedModel: publicProcedure
+    .input(z.object({ agentId: agentIdSchema }))
+    .query(async ({ input }) => {
+      try {
+        const result = await ergataiFetch<{ selected_model: string | null }>(
+          `/api/v1/agents/${encodeURIComponent(input.agentId)}/selected-model`,
+        )
+        return result.selected_model ?? null
+      } catch {
+        return null
+      }
+    }),
+
   /** Get migration progress for an agent's history import */
   getAgentMigrationProgress: publicProcedure
     .input(z.object({ agentId: agentIdSchema }))
@@ -623,6 +636,7 @@ export const agentsRouter = router({
           option_id?: string | null
           verified_at?: number | null
           current: string | null
+          default_model?: string | null
         }>(`/api/v1/agent-profiles/${encodeURIComponent(input.profileName)}/models`)
       } catch {
         return {

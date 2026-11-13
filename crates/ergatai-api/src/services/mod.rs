@@ -3,6 +3,7 @@
 //! 目标：将 handler 中重复的初始化/查询代码集中到 service 层，
 //! handler 只负责 HTTP 协议细节（请求解析、响应格式化、状态码映射）。
 
+pub mod agent;
 pub mod agent_history_import;
 pub mod agent_output_cleanup;
 pub mod agent_output_persistence;

@@ -307,6 +307,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/agents/{id}/model",
             axum::routing::post(api::agent_sdk::switch_model),
         )
+        .route(
+            "/api/v1/agents/{id}/selected-model",
+            axum::routing::get(api::agents::get_agent_selected_model),
+        )
         // Path registration lookup (single-call replacement for N+1 client-side path resolution)
         .route(
             "/api/v1/registered-path",

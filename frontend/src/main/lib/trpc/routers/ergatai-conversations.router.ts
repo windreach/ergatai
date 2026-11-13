@@ -302,12 +302,37 @@ export const conversationsRouter = router({
     )
     .subscription(({ input }) => {
       return observable<ConversationRuntimeStreamEvent>((emit) => {
+        console.log("[trpc][ergatai-conversations.subscribeConversationRuntime] subscribe", input)
         return subscribeConversationRuntime(
           input.conversationId,
           input.afterSequence,
-          (snapshot) => emit.next({ kind: "snapshot", snapshot }),
-          (event) => emit.next({ kind: "event", event }),
-          (error) => emit.error(error),
+          (snapshot) => {
+            console.log("[trpc][ergatai-conversations.subscribeConversationRuntime] snapshot", {
+              input,
+              status: snapshot.status,
+              events: snapshot.events.length,
+              lastSequence: snapshot.lastSequence,
+            })
+            emit.next({ kind: "snapshot", snapshot })
+          },
+          (event) => {
+            console.log("[trpc][ergatai-conversations.subscribeConversationRuntime] event", {
+              input,
+              type: event.event.type,
+              ...(event.event.type === "error" ? { event } : {}),
+            })
+            emit.next({ kind: "event", event })
+          },
+          (error) => {
+            console.error("[trpc][ergatai-conversations.subscribeConversationRuntime] error", {
+              input,
+              error,
+            })
+            emit.error(error)
+          },
+          () => {
+            console.log("[trpc][ergatai-conversations.subscribeConversationRuntime] complete", input)
+          },
         )
       })
     }),

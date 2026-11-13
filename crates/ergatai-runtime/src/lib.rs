@@ -34,6 +34,7 @@
 //! ```
 
 // Core types
+pub mod acp_extension;
 pub mod activity_monitor;
 pub mod adapter_manager;
 pub mod agent_installer;

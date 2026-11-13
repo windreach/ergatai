@@ -152,6 +152,7 @@ const agentOutputEventSchema = z.discriminatedUnion("type", [
     input: z.unknown().optional(),
     output: z.unknown().optional(),
     locations: z.array(z.object({ path: z.string(), line: z.number().optional() })).optional(),
+    parent_tool_use_id: z.string().nullish(),
     conversation_id: z.string().nullish(),
   }),
   z.object({ type: z.literal("tool_call_input"), id: z.string(), delta: z.string(), conversation_id: z.string().nullish() }),
@@ -183,9 +184,24 @@ const agentOutputEventSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("done"), stop_reason: z.string(), conversation_id: z.string().nullish() }),
   z.object({ type: z.literal("turn_started"), role: z.string().nullish(), turn_id: z.string().nullish(), conversation_id: z.string().nullish() }),
-  z.object({ type: z.literal("error"), message: z.string(), conversation_id: z.string().nullish() }),
+  z.object({
+    type: z.literal("error"),
+    message: z.string(),
+    error_name: z.string().nullish(),
+    error_type: z.string().nullish(),
+    service: z.string().nullish(),
+    code: z.union([z.number(), z.string()]).nullish(),
+    error_data: z.unknown().nullish(),
+    conversation_id: z.string().nullish(),
+  }),
   z.object({ type: z.literal("status"), message: z.string(), conversation_id: z.string().nullish() }),
   z.object({
+    type: z.literal("extension_update"),
+    role: z.string().nullish(),
+    kind: z.string(),
+    payload: z.unknown(),
+    conversation_id: z.string().nullish(),
+  }),  z.object({
     type: z.literal("conversation_message"),
     message_id: z.string(),
     role: z.string(),
@@ -211,6 +227,13 @@ const agentOutputEventSchema = z.discriminatedUnion("type", [
     type: z.literal("context_usage"),
     used: z.number(),
     size: z.number(),
+    input_tokens: z.number().nullish(),
+    output_tokens: z.number().nullish(),
+    total_tokens: z.number().nullish(),
+    cached_input_tokens: z.number().nullish(),
+    cache_write_input_tokens: z.number().nullish(),
+    reasoning_output_tokens: z.number().nullish(),
+    model_usage: z.unknown().nullish(),
     conversation_id: z.string().nullish(),
   }),
   // Emitted by the raw agent stream immediately after NATS subscribers are
@@ -276,6 +299,7 @@ type ToolCallEventData = {
   input?: unknown
   output?: unknown
   locations?: ToolCallLocation[]
+  parent_tool_use_id?: string | null
 }
 
 /** Attribution injected by the API layer: the conversation whose prompt produced the event. */
@@ -293,9 +317,17 @@ export type AgentOutputEvent =
   | ({ type: "session_title_update"; title: string } & AgentOutputEventContext)
   | ({ type: "subagent_spawned"; subagent_session_id: string; name: string; task: string; role?: string | null } & AgentOutputEventContext)
   | ({ type: "subagent_state_update"; subagent_session_id: string; state: string; role?: string | null } & AgentOutputEventContext)
-  | ({ type: "done"; stop_reason: string } & AgentOutputEventContext)
+  | ({ type: "extension_update"; kind: string; payload: unknown; role?: string | null } & AgentOutputEventContext)  | ({ type: "done"; stop_reason: string } & AgentOutputEventContext)
   | ({ type: "turn_started"; role?: string | null; turn_id?: string | null } & AgentOutputEventContext)
-  | ({ type: "error"; message: string } & AgentOutputEventContext)
+  | ({
+      type: "error"
+      message: string
+      error_name?: string | null
+      error_type?: string | null
+      service?: string | null
+      code?: number | string | null
+      error_data?: unknown
+    } & AgentOutputEventContext)
   | ({ type: "status"; message: string } & AgentOutputEventContext)
   | ({
       type: "conversation_message"
@@ -322,6 +354,13 @@ export type AgentOutputEvent =
       type: "context_usage"
       used: number
       size: number
+      input_tokens?: number | null
+      output_tokens?: number | null
+      total_tokens?: number | null
+      cached_input_tokens?: number | null
+      cache_write_input_tokens?: number | null
+      reasoning_output_tokens?: number | null
+      model_usage?: unknown
     } & AgentOutputEventContext)
   | ({
       type: "stream_ready"
@@ -370,8 +409,16 @@ export function convertEventToChunk(event: AgentOutputEvent): UIMessageChunk | n
       return null
     case "done":
       return { type: "finish", finishReason: event.stop_reason }
-    case "error":
-      return { type: "error", errorText: event.message }
+    case "error": {
+      const parts: string[] = []
+      if (event.code != null && event.code !== "") parts.push(`[${event.code}]`)
+      const typeName = event.error_type ?? event.error_name
+      if (typeName) parts.push(String(typeName))
+      if (event.service) parts.push(`(${event.service})`)
+      const prefix = parts.join(" ")
+      const errorText = prefix ? `${prefix}: ${event.message}` : event.message
+      return { type: "error", errorText }
+    }
     case "status":
       // Surface agent retry / 401 / stderr status lines instead of dropping them.
       return { type: "text-delta", textDelta: `${event.message}\n` }
@@ -606,6 +653,14 @@ export function subscribeRawAgentStream(
       event = agentOutputEventSchema.parse(JSON.parse(data)) as AgentOutputEvent
     } catch (parseError) {
       log.error("Failed to parse or validate event data", parseError as Error)
+      console.error("[sse-client][subscribeRawAgentStream] parse/validate failed", {
+        agentId,
+        promptId,
+        conversationId,
+        eventName,
+        data,
+        parseError,
+      })
       return
     }
 
@@ -624,10 +679,32 @@ export function subscribeRawAgentStream(
       })
     }
 
+    if (event.type === "error") {
+      console.log("[sse-client][subscribeRawAgentStream] received error event", {
+        agentId,
+        promptId,
+        conversationId,
+        event,
+      })
+    } else {
+      console.log("[sse-client][subscribeRawAgentStream] received event", {
+        agentId,
+        promptId,
+        conversationId,
+        type: event.type,
+      })
+    }
+
     onEvent(event)
 
     // Auto-cleanup on done/error events
     if ((event.type === "done" || event.type === "error") && cleanupRef) {
+      console.log("[sse-client][subscribeRawAgentStream] completing stream due to terminal event", {
+        agentId,
+        promptId,
+        conversationId,
+        type: event.type,
+      })
       cleanupRef()
     }
   }
@@ -779,11 +856,33 @@ export function subscribeConversationRuntime(
     try {
       const parsed = JSON.parse(data)
       if (eventName === "snapshot") {
-        onSnapshot(conversationRuntimeSnapshotSchema.parse(parsed))
+        const snapshot = conversationRuntimeSnapshotSchema.parse(parsed)
+        console.log("[sse-client][subscribeConversationRuntime] snapshot", {
+          conversationId,
+          afterSequence,
+          status: snapshot.status,
+          events: snapshot.events.length,
+          lastSequence: snapshot.lastSequence,
+        })
+        onSnapshot(snapshot)
       } else {
-        onEvent(conversationRuntimeEventSchema.parse(parsed))
+        const event = conversationRuntimeEventSchema.parse(parsed)
+        console.log("[sse-client][subscribeConversationRuntime] event", {
+          conversationId,
+          afterSequence,
+          type: event.event.type,
+          ...(event.event.type === "error" ? { event } : {}),
+        })
+        onEvent(event)
       }
     } catch (error) {
+      console.error("[sse-client][subscribeConversationRuntime] parse error", {
+        conversationId,
+        afterSequence,
+        eventName,
+        data,
+        error,
+      })
       log.error("Failed to parse SSE event", error as Error)
     }
   }

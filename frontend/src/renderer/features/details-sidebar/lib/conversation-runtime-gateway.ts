@@ -67,10 +67,23 @@ const MAX_RETRY_DELAY_MS = 10_000
 
 function resolveRuntimeStatus(
   eventType: string,
+  stopReason?: string | null,
 ): "idle" | "streaming" | "completed" | "error" {
-  if (eventType === "done") return "completed"
   if (eventType === "error") return "error"
+  if (eventType === "done") {
+    return stopReason === "error" ? "error" : "completed"
+  }
   return "streaming"
+}
+
+function resolveRuntimeStatusForEvent(event: {
+  type: string
+  stop_reason?: string | null
+}): "idle" | "streaming" | "completed" | "error" {
+  return resolveRuntimeStatus(
+    event.type,
+    event.type === "done" ? event.stop_reason : undefined,
+  )
 }
 
 const channels = new Map<string, RuntimeChannel>()
@@ -138,15 +151,19 @@ export function mergeSnapshot(
     if (event.sequence > lastSequence + 1) {
       // A gap cannot be repaired incrementally. The next snapshot will become
       // the source of truth.
+      const gapEvents = [...snapshot.events]
+      const gapHasError = gapEvents.some(
+        (e) => e.event.type === "error" || (e.event.type === "done" && e.event.stop_reason === "error"),
+      )
       return {
         conversationId,
-        status: snapshot.status,
+        status: gapHasError && snapshot.status === "completed" ? "error" : snapshot.status,
         connectionStatus: "reconnecting",
         epoch: snapshot.epoch,
         turnId,
         lastSequence: snapshot.lastSequence,
         firstSequence: snapshot.firstSequence ?? undefined,
-        events: [...snapshot.events],
+        events: gapEvents,
         startedAtMs: snapshot.startedAtMs ?? undefined,
         updatedAtMs: snapshot.updatedAtMs ?? undefined,
       }
@@ -155,9 +172,13 @@ export function mergeSnapshot(
     lastSequence = event.sequence
   }
 
+  const hasError = events.some(
+    (e) => e.event.type === "error" || (e.event.type === "done" && e.event.stop_reason === "error"),
+  )
+
   return {
     conversationId,
-    status: snapshot.status,
+    status: hasError && snapshot.status === "completed" ? "error" : snapshot.status,
     connectionStatus: "connected",
     epoch: snapshot.epoch,
     turnId,
@@ -194,6 +215,13 @@ function connect(conversationId: string) {
     },
     {
       onData: (message) => {
+        console.log("[conversation-runtime-gateway] onData", {
+          conversationId,
+          kind: message.kind,
+          ...(message.kind === "event"
+            ? { type: message.event.event.type, event: message.event }
+            : { status: message.snapshot.status, events: message.snapshot.events.length }),
+        })
         if (message.kind === "snapshot") {
           channel.state = mergeSnapshot(conversationId, channel.state, message.snapshot)
           channel.retryAttempt = 0
@@ -211,7 +239,7 @@ function connect(conversationId: string) {
           if (event.turnId !== channel.state.turnId) {
             channel.state = {
               ...channel.state,
-              status: resolveRuntimeStatus(event.event.type),
+              status: resolveRuntimeStatusForEvent(event.event),
               turnId: event.turnId,
               lastSequence: event.sequence,
               events: [event],
@@ -250,7 +278,7 @@ function connect(conversationId: string) {
 
           channel.state = {
             ...channel.state,
-            status: resolveRuntimeStatus(event.event.type),
+            status: resolveRuntimeStatusForEvent(event.event),
             lastSequence: event.sequence,
             events: [...channel.state.events, event].slice(-MAX_EVENTS),
             updatedAtMs: event.timestampMs,

@@ -249,7 +249,7 @@ impl AuditManager {
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
-                    row.get::<_, u64>(4)?,
+                    row.get::<_, i64>(4)? as u64,
                 ))
             })?)
         } else {
@@ -259,7 +259,7 @@ impl AuditManager {
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
-                    row.get::<_, u64>(4)?,
+                    row.get::<_, i64>(4)? as u64,
                 ))
             })?)
         };
@@ -380,7 +380,7 @@ impl AuditManager {
 
         let rows = stmt
             .query_map(params![period_str], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
             })
             .map_err(|e| ErgataiError::internal(format!("Failed to query: {}", e)))?;
 
@@ -418,7 +418,7 @@ impl AuditManager {
 
         let rows = stmt
             .query_map(params![period_str], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
             })
             .map_err(|e| ErgataiError::internal(format!("Failed to query: {}", e)))?;
 
@@ -467,10 +467,10 @@ impl AuditManager {
             .query_map(params![period_str], |row| {
                 Ok(AgentAccessSummary {
                     agent_id: row.get(0)?,
-                    total_accesses: row.get(1)?,
-                    unique_files: row.get(2)?,
-                    write_count: row.get(3)?,
-                    conflict_count: row.get(4)?,
+                    total_accesses: row.get::<_, i64>(1)? as u64,
+                    unique_files: row.get::<_, i64>(2)? as u64,
+                    write_count: row.get::<_, i64>(3)? as u64,
+                    conflict_count: row.get::<_, i64>(4)? as u64,
                 })
             })
             .map_err(|e| ErgataiError::internal(format!("Failed to query: {}", e)))?
@@ -507,10 +507,10 @@ impl AuditManager {
             .query_map(params![period_str], |row| {
                 Ok(FileAccessSummary {
                     file_path: row.get(0)?,
-                    total_accesses: row.get(1)?,
-                    unique_agents: row.get(2)?,
-                    write_count: row.get(3)?,
-                    conflict_count: row.get(4)?,
+                    total_accesses: row.get::<_, i64>(1)? as u64,
+                    unique_agents: row.get::<_, i64>(2)? as u64,
+                    write_count: row.get::<_, i64>(3)? as u64,
+                    conflict_count: row.get::<_, i64>(4)? as u64,
                 })
             })
             .map_err(|e| ErgataiError::internal(format!("Failed to query: {}", e)))?
@@ -731,7 +731,9 @@ impl AuditManager {
         let conn = self.conn.lock();
 
         // Count current rows
-        let count: u64 = conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
+        let count: u64 = conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| {
+            row.get::<_, i64>(0).map(|v| v as u64)
+        })?;
 
         if count <= max_rows {
             return Ok(0);

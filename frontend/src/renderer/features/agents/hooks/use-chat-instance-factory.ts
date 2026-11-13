@@ -50,7 +50,7 @@ interface UseChatInstanceFactoryProps {
 
   // Provider 配置
   provider: {
-    inferProviderFromMessages: (conversationId?: string) => "claude-code" | "codex"
+    inferProviderFromMessages: (conversationId?: string) => "claude-code" | "codex" | "opencode"
     conversationProviderOverrides: Record<string, "claude-code" | "codex">
   }
 

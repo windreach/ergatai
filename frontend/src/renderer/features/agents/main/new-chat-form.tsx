@@ -35,6 +35,7 @@ import {
   lastSelectedCodexThinkingAtom,
   lastSelectedBranchesAtom,
   lastSelectedModelIdAtom,
+  agentModelIdAtomFamily,
   lastSelectedWorkModeAtom,
   type WorkMode,
   pendingInitialPromptAtomFamily,
@@ -512,6 +513,11 @@ export function NewChatForm({
   )
   const fallbackAgent = enabledAgents[0] ?? { id: "claude-code" as CoreAgentId, name: "Claude Code" }
   const [selectedAgent, setSelectedAgent] = useState<CoreAgentOption>(fallbackAgent)
+  const agentModelIdAtom = useMemo(
+    () => agentModelIdAtomFamily(selectedAgent?.id ?? "claude-code"),
+    [selectedAgent?.id],
+  )
+  const [agentModelId] = useAtom(agentModelIdAtom)
 
   const selectedAgentKind = useMemo(() => {
     if (selectedAgent.id === "claude-code") return "claude"
@@ -584,8 +590,15 @@ export function NewChatForm({
       const backendCurrent = availableModels.currentModelId
         ? availableModels.models.find((m) => m.id === availableModels.currentModelId)
         : null
+      const agentSelected = availableModels.models.find((m) => m.id === agentModelId)
+      const runtimeSelected = availableModels.agentSelectedModelId
+        ? availableModels.models.find((m) => m.id === availableModels.agentSelectedModelId)
+        : null
+      const defaultSelected = availableModels.defaultModelId
+        ? availableModels.models.find((m) => m.id === availableModels.defaultModelId)
+        : null
       const lastSelected = availableModels.models.find((m) => m.id === lastSelectedModelId)
-      return backendCurrent || lastSelected || availableModels.models[0]
+      return backendCurrent || runtimeSelected || agentSelected || defaultSelected || lastSelected || availableModels.models[0]
     },
   )
 
@@ -596,13 +609,29 @@ export function NewChatForm({
       const backendCurrent = availableModels.currentModelId
         ? availableModels.models.find((m) => m.id === availableModels.currentModelId)
         : null
+      const agentSelected = availableModels.models.find((m) => m.id === agentModelId)
+      const runtimeSelected = availableModels.agentSelectedModelId
+        ? availableModels.models.find((m) => m.id === availableModels.agentSelectedModelId)
+        : null
+      const defaultSelected = availableModels.defaultModelId
+        ? availableModels.models.find((m) => m.id === availableModels.defaultModelId)
+        : null
       const lastSelected =
         selectedAgent.id === "claude-code"
           ? availableModels.models.find((m) => m.id === lastSelectedModelId)
           : null
-      setSelectedModel(backendCurrent || lastSelected || availableModels.models[0])
+      setSelectedModel(backendCurrent || runtimeSelected || agentSelected || defaultSelected || lastSelected || availableModels.models[0])
     }
-  }, [selectedModel, availableModels.models, availableModels.currentModelId, lastSelectedModelId, selectedAgent.id])
+  }, [
+    selectedModel,
+    availableModels.models,
+    availableModels.currentModelId,
+    availableModels.agentSelectedModelId,
+    availableModels.defaultModelId,
+    agentModelId,
+    lastSelectedModelId,
+    selectedAgent.id,
+  ])
 
   // Sync selectedModel when backend current model or atom value changes
   // react-doctor-disable-next-line no-effect-chain
@@ -2052,6 +2081,10 @@ export function NewChatForm({
                             onOpenChange={setModelPopoverOpen}
                             selectedAgentId={selectedAgent.id === "codex" ? "codex" : "claude-code"}
                             onSelectedAgentIdChange={(next) => {
+                              // OpenCode is represented as "claude-code" inside the
+                              // model selector. Switching models there must not
+                              // replace the selected OpenCode agent with Claude.
+                              if (selectedAgent.id === "opencode") return
                               if (next === "codex") {
                                 setSelectedAgent(enabledAgents.find((a) => a.id === "codex") || fallbackAgent)
                               } else {

@@ -56,8 +56,7 @@ import { getCoreAgentIcon } from "../components/core-agent-selector"
 import { AgentsSlashCommand } from "../commands"
 import type { SlashCommandOption } from "../commands"
 import { PermissionModeSelector } from "../components/permission-mode-selector"
-import {
-  loadGroupAgentIds,
+import {  loadGroupAgentIds,
   resolveGroupMentionAgents,
   saveGroupAgents,
 } from "../collaboration/group-agent-storage"
@@ -597,10 +596,10 @@ export const ChatInputArea = memo(function ChatInputArea({
     conversationModelIdAtom,
   )
 
-  // Avoid stale model selections leaking across agents/conversations.
-  useEffect(() => {
-    setSelectedConversationModelId("")
-  }, [agentId, provider, setSelectedConversationModelId])
+  // Keep the per-conversation selection (which falls back to the last selected
+  // model, i.e. the model chosen in the new-chat form). Do not wipe it to "",
+  // otherwise the selector loses the new-chat choice and falls back to the
+  // backend's detected current model.
   const conversationCodexModelIdAtom = useMemo(
     () => conversationCodexModelIdAtomFamily(conversationId),
     [conversationId],
@@ -619,7 +618,11 @@ export const ChatInputArea = memo(function ChatInputArea({
   const setLastSelectedModelId = useSetAtom(lastSelectedModelIdAtom)
   const setLastSelectedCodexModelId = useSetAtom(lastSelectedCodexModelIdAtom)
   const setLastSelectedCodexThinking = useSetAtom(lastSelectedCodexThinkingAtom)
-  const availableModels = useAvailableModels(agentId)
+  const profileHint =
+  provider === "codex" ? "codex" :
+  provider === "opencode" ? "opencode" :
+  "claude-code"
+const availableModels = useAvailableModels(agentId, profileHint)
   const queryClient = trpc.useContext()
   const { data: runtimeAgentsForModelSwitch } = trpc.ergatai.listAgents.useQuery(undefined, {
     enabled: !!agentId,
@@ -642,7 +645,11 @@ export const ChatInputArea = memo(function ChatInputArea({
       toast.error(`Failed to switch model: ${error.message}`)
     },
   })
-  const isRuntimeModelProvider = provider !== "claude-code" && provider !== "codex"
+  // OpenCode (and Claude Code) expose selectable model lists; only truly
+  // runtime-managed agents that cannot be switched from Ergatai fall through to
+  // the read-only detected-model display below.
+  const isRuntimeModelProvider =
+    provider !== "claude-code" && provider !== "codex" && provider !== "opencode"
 
   // Debug logging: only log when agentId changes
   useEffect(() => {
@@ -664,9 +671,9 @@ export const ChatInputArea = memo(function ChatInputArea({
   })
   const runtimeProfileName = useMemo(() => {
     const activeAgent = runtimeAgents?.find((agent) => agent.agent_id === agentId)
-    // Only the registered agent profile is authoritative. Do not guess from a
-    // provider command, otherwise profiles can share/clobber model metadata.
-    return activeAgent?.profile ?? null
+    // Fall back to the provider name for runtime-model providers so profile
+    // metadata can still be read before/while the agent is registered.
+    return activeAgent?.profile ?? (isRuntimeModelProvider ? provider : null)
   }, [agentId, runtimeAgents])
 
   // Native triggers are opt-in metadata. Absent metadata means unknown syntax,
@@ -745,7 +752,8 @@ export const ChatInputArea = memo(function ChatInputArea({
     const activeAgent = runtimeAgents?.find((agent) => agent.agent_id === agentId)
     const currentModel =
       activeAgent?.current_model?.trim() ||
-      extractRuntimeModelFromConfigOptions(activeAgent?.config_options)
+      extractRuntimeModelFromConfigOptions(activeAgent?.config_options) ||
+      runtimeModelData?.current?.trim()
     if (currentModel) {
       setRuntimeModel(currentModel)
       // react-doctor-disable-next-line no-adjust-state-on-prop-change
@@ -779,6 +787,14 @@ export const ChatInputArea = memo(function ChatInputArea({
     refreshRuntimeModelDataRef.current.mutate(
       { profileName: runtimeProfileName },
       {
+        onSuccess: (data) => {
+          const refreshedCurrent = data?.current?.trim()
+          if (refreshedCurrent) {
+            setRuntimeModel(refreshedCurrent)
+            setRuntimeModelKnown(true)
+          }
+          void refetchRuntimeModelData()
+        },
         onSettled: () => setIsDetectingRuntimeModel(false),
       },
     )
@@ -790,6 +806,7 @@ export const ChatInputArea = memo(function ChatInputArea({
     runtimeModelData,
     runtimeProfileName,
     runtimeAgentIsAlive,
+    refetchRuntimeModelData,
   ])
 
   const hiddenModels = useAtomValue(hiddenModelsAtom)
@@ -1571,10 +1588,9 @@ export const ChatInputArea = memo(function ChatInputArea({
       }}
       className="px-2 pb-2 shadow-sm shadow-background relative z-10"
     >
-      <div className="w-full max-w-2xl mx-auto">
+      <div className="w-full max-w-2xl mx-auto space-y-2">
         <div
-          className="relative w-full"
-          onDragOver={handleDragOver}
+          className="relative w-full"          onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
@@ -1725,6 +1741,10 @@ export const ChatInputArea = memo(function ChatInputArea({
 	                        onOpenChange={setIsModelDropdownOpen}
 	                        selectedAgentId={provider === "codex" ? "codex" : "claude-code"}
 	                        onSelectedAgentIdChange={(nextProvider) => {
+	                          // OpenCode is represented as "claude-code" inside the
+	                          // model selector; selecting a model there must not
+	                          // replace the active OpenCode agent with Claude Code.
+	                          if (provider === "opencode") return
 	                          if (!canSwitchProvider) return
 	                          if (nextProvider === provider) return
 	                          onProviderChange?.(nextProvider)

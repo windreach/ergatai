@@ -31,6 +31,7 @@ import type {
 } from "./contracts"
 
 import type { Message } from "../../agents"
+import { getMessageTurnId } from "../../agents"
 
 import {
   readPersistedSequence,
@@ -39,6 +40,9 @@ import {
 } from "./runtime-sequence-persistence"
 import { getConversationProjectionService } from "./conversation-projection-service"
 import { StableSnapshotCache } from "@/lib/stable-snapshot-cache"
+
+/** Safety cap for live turns kept until their canonical copies arrive. */
+const MAX_RETAINED_RUNTIME_MESSAGES = 50
 
 // ============================================================================
 // SESSION STATE - Internal state structure
@@ -296,6 +300,7 @@ class RuntimeSessionStoreImpl {
     if (!this.messagesChanged(session.persistedMessages, messages)) return
 
     session.persistedMessages = this.normalizeMessages(session, messages)
+    session.runtimeMessages = this.prunePersistedRuntimeMessages(session)
     session.visibleMessages = this.mergeMessages(session)
     this.invalidateCachedState(session)
     session.updatedAt = new Date()
@@ -338,6 +343,13 @@ class RuntimeSessionStoreImpl {
   /**
    * Update runtime messages.
    *
+   * New turns replace the live projection of the *same* turn, but a turn that
+   * just ended must remain visible until its canonical (persisted) copy lands.
+   * Keeping those messages here avoids a blank frame when the next turn starts
+   * 1-2 seconds before the durable message is fetched. The projection service
+   * hides retained runtime messages as soon as a canonical message with the
+   * same turn id exists.
+   *
    * @param conversationId - Conversation ID
    * @param messages - Runtime messages
    */
@@ -359,9 +371,12 @@ class RuntimeSessionStoreImpl {
       return
     }
 
-    if (!this.messagesChanged(session.runtimeMessages, messages)) return
+    const normalized = this.normalizeMessages(session, messages)
+    const merged = this.mergeRuntimeMessages(session, normalized)
 
-    session.runtimeMessages = this.normalizeMessages(session, messages)
+    if (!this.messagesChanged(session.runtimeMessages, merged)) return
+
+    session.runtimeMessages = merged
     session.visibleMessages = this.mergeMessages(session)
     this.invalidateCachedState(session)
     session.updatedAt = new Date()
@@ -624,6 +639,76 @@ class RuntimeSessionStoreImpl {
       runtimeMessages: session.runtimeMessages,
       localMessages: session.localMessages,
     }).visibleMessages
+  }
+
+  private collectPersistedTurnIds(session: RuntimeSessionState): Set<string> {
+    const turnIds = new Set<string>()
+    for (const message of session.persistedMessages) {
+      const turnId = getMessageTurnId(message)
+      if (turnId) turnIds.add(turnId)
+    }
+    return turnIds
+  }
+
+  /**
+   * Keep runtime messages from earlier turns until their canonical copy is
+   * available. A live turn is replaced by a newer one when the backend starts
+   * the next turn, but the completed turn is persisted a moment later. Without
+   * this, the UI briefly loses the previous answer and then re-adds it.
+   *
+   * Explicit clears (`incoming.length === 0`) still clear the source.
+   */
+  private mergeRuntimeMessages(
+    session: RuntimeSessionState,
+    incoming: Message[],
+  ): Message[] {
+    if (incoming.length === 0) return incoming
+
+    const incomingIds = new Set(incoming.map((message) => message.id))
+    const incomingTurnIds = new Set<string>()
+    for (const message of incoming) {
+      const turnId = getMessageTurnId(message)
+      if (turnId) incomingTurnIds.add(turnId)
+    }
+    const persistedTurnIds = this.collectPersistedTurnIds(session)
+
+    const retained = session.runtimeMessages.filter((message) => {
+      if (incomingIds.has(message.id)) return false
+      const turnId = getMessageTurnId(message)
+      if (!turnId) return false
+      // Same turn: the incoming snapshot is the authoritative live projection.
+      if (incomingTurnIds.has(turnId)) return false
+      // Canonical copy exists: the projection service already hides the
+      // ephemeral one, so there is no reason to keep it in memory.
+      if (persistedTurnIds.has(turnId)) return false
+      return true
+    })
+
+    if (retained.length === 0) return incoming
+    return [
+      ...retained.slice(-MAX_RETAINED_RUNTIME_MESSAGES),
+      ...incoming,
+    ]
+  }
+
+  /**
+   * Drop runtime messages whose turn now has a durable canonical message.
+   * This keeps the retention window bounded while preserving the "no blank
+   * frame" guarantee during the persistence handoff.
+   */
+  private prunePersistedRuntimeMessages(
+    session: RuntimeSessionState,
+  ): Message[] {
+    const persistedTurnIds = this.collectPersistedTurnIds(session)
+    if (persistedTurnIds.size === 0) return session.runtimeMessages
+
+    const pruned = session.runtimeMessages.filter((message) => {
+      const turnId = getMessageTurnId(message)
+      return !turnId || !persistedTurnIds.has(turnId)
+    })
+    return pruned.length === session.runtimeMessages.length
+      ? session.runtimeMessages
+      : pruned
   }
 
   /**

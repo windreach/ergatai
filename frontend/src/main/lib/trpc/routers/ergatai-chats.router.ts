@@ -318,18 +318,34 @@ export const chatsRouter = router({
     )
     .subscription(({ input }) => {
       return observable<AgentOutputEvent>((emit) => {
+        console.log("[trpc][ergatai-chats.subscribeAgentStream] subscribe", input)
         return subscribeRawAgentStream(
           input.agentId,
           input.promptId,
           input.conversationId,
           (event) => {
+            console.log("[trpc][ergatai-chats.subscribeAgentStream] event", {
+              input,
+              type: event.type,
+              ...(event.type === "error" ? { event } : {}),
+            })
             emit.next(event)
             if (event.type === "done" || event.type === "error") {
+              console.log("[trpc][ergatai-chats.subscribeAgentStream] complete after terminal event", {
+                input,
+                type: event.type,
+              })
               emit.complete()
             }
           },
-          (error) => emit.error(error),
-          () => emit.complete(),
+          (error) => {
+            console.error("[trpc][ergatai-chats.subscribeAgentStream] error", { input, error })
+            emit.error(error)
+          },
+          () => {
+            console.log("[trpc][ergatai-chats.subscribeAgentStream] complete", input)
+            emit.complete()
+          },
         )
       })
     }),
@@ -482,8 +498,16 @@ export const chatsRouter = router({
         {
           method: "POST",
           body: JSON.stringify({
-            interaction: input.interaction,
-            collaboration_mode: input.collaborationMode,
+            text: input.interaction.text,
+            kind: "message",
+            mentioned_agent_ids: input.interaction.mentions ?? [],
+            metadata: {
+              chat_id: input.interaction.chatId,
+              workspace_id: input.interaction.workspaceId,
+              collaboration_mode: input.collaborationMode,
+            },
+            route: "auto",
+            auto_execute: true,
           }),
         },
       )

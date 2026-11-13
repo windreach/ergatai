@@ -552,6 +552,20 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
         conn.execute_batch("DROP TABLE IF EXISTS deletion_queue;")?;
     }
 
+    // Runtime selected model per agent instance (Phase 3).
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_runtime_models (
+            agent_id TEXT PRIMARY KEY,
+            profile_name TEXT,
+            selected_model TEXT,
+            source TEXT,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_runtime_models_profile ON agent_runtime_models(profile_name);
+        "#,
+    )?;
+
     Ok(())
 }
 
@@ -4834,6 +4848,54 @@ pub fn create_default_chat_with_binding(
     transaction.commit()?;
 
     Ok(agent_conversation.conversation_id)
+}
+
+/// Runtime selected model helpers (Phase 3).
+pub type AgentRuntimeModel = (Option<String>, Option<String>, Option<String>, Option<i64>);
+
+pub fn get_agent_runtime_model(
+    agent_id: &str,
+) -> Result<Option<AgentRuntimeModel>, rusqlite::Error> {
+    let db = get_user_data_db();
+    let conn = db.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT profile_name, selected_model, source, updated_at FROM agent_runtime_models WHERE agent_id = ?1",
+    )?;
+    let mut rows = stmt.query(params![agent_id])?;
+    if let Some(row) = rows.next()? {
+        let profile_name: Option<String> = row.get(0)?;
+        let selected_model: Option<String> = row.get(1)?;
+        let source: Option<String> = row.get(2)?;
+        let updated_at: Option<i64> = row.get(3)?;
+        Ok(Some((profile_name, selected_model, source, updated_at)))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn set_agent_runtime_model(
+    agent_id: &str,
+    profile_name: Option<&str>,
+    selected_model: Option<&str>,
+    source: &str,
+) -> Result<(), rusqlite::Error> {
+    let db = get_user_data_db();
+    let conn = db.lock().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    conn.execute(
+        "INSERT INTO agent_runtime_models (agent_id, profile_name, selected_model, source, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5) \
+         ON CONFLICT(agent_id) DO UPDATE SET \
+            profile_name = excluded.profile_name, \
+            selected_model = excluded.selected_model, \
+            source = excluded.source, \
+            updated_at = excluded.updated_at",
+        params![agent_id, profile_name, selected_model, source, now],
+    )?;
+    Ok(())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

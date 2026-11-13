@@ -141,14 +141,35 @@ export function useMainChatInvocation({
     runtimeStatus !== "streaming" &&
     persistedMessagesLoading === true &&
     runtimeMessages.length > 0
+  const existingRuntimeMessages = sessionState?.runtimeMessages
   const backendRuntimeMessages = useMemo(
     () => {
       if (isLocalStreaming || shouldDeferTerminalRuntimePreview) return []
-      return runtimeMessages.map((message) =>
+      const next = runtimeMessages.map((message) =>
         getProjectionService().normalizeRawMessage(message, "runtime"),
       )
+      // A new backend turn begins with `turn_started`, which has no
+      // renderable content yet. `buildRuntimeMessages` therefore returns an
+      // empty array for one frame. Keep the previous turn's live projection
+      // until the new turn emits thinking/tool/text; otherwise the assistant
+      // answer disappears and then reappears (visible flash). The store prunes
+      // these messages as soon as their canonical copies are persisted.
+      if (
+        next.length === 0 &&
+        runtimeStatus === "streaming" &&
+        existingRuntimeMessages?.length
+      ) {
+        return existingRuntimeMessages
+      }
+      return next
     },
-    [isLocalStreaming, shouldDeferTerminalRuntimePreview, runtimeMessages],
+    [
+      isLocalStreaming,
+      shouldDeferTerminalRuntimePreview,
+      runtimeMessages,
+      runtimeStatus,
+      existingRuntimeMessages,
+    ],
   )
 
   // The hook only ingests raw sources. RuntimeSessionStore owns merging and

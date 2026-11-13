@@ -411,6 +411,32 @@ const conversationModelIdsStorageAtom = atomWithStorage<Record<string, string>>(
   { getOnInit: true },
 )
 
+// Storage for per-agent selected model (Phase 4).
+const agentModelIdsStorageAtom = atomWithStorage<Record<string, string>>(
+  "agents:agentModelIds",
+  {},
+  undefined,
+  { getOnInit: true },
+)
+
+export const agentModelIdAtomFamily = atomFamily((agentId: string) =>
+  atom(
+    (get) => {
+      if (!agentId) return get(lastSelectedModelIdAtom)
+      return get(agentModelIdsStorageAtom)[agentId] ?? get(lastSelectedModelIdAtom)
+    },
+    (get, set, newModelId: string) => {
+      if (!agentId) {
+        set(lastSelectedModelIdAtom, newModelId)
+        return
+      }
+      const current = get(agentModelIdsStorageAtom)
+      if (current[agentId] === newModelId) return
+      set(agentModelIdsStorageAtom, { ...current, [agentId]: newModelId })
+    },
+  ),
+)
+
 export const conversationModelIdAtomFamily = atomFamily((conversationId: string) =>
   atom(
     (get) => {

@@ -463,8 +463,18 @@ async fn ensure_agent(turn: &InitialPromptTurn) -> Result<String> {
         .await
         .map_err(|error| anyhow::anyhow!("Failed to launch agent: {}", error))?;
 
-    if let Some(model) = model.as_deref().filter(|model| !model.trim().is_empty()) {
-        crate::services::agent_service::set_agent_model(&agent_id, model.trim())
+    // Prefer turn model, then runtime persisted selected model.
+    let effective_model = if model
+        .as_deref()
+        .map(|m| !m.trim().is_empty())
+        .unwrap_or(false)
+    {
+        model.clone()
+    } else {
+        crate::services::agent_service::get_agent_runtime_selected_model(&agent_id).await
+    };
+    if let Some(model) = effective_model.as_deref().filter(|m| !m.trim().is_empty()) {
+        crate::services::agent_service::set_agent(&agent_id, model.trim())
             .await
             .map_err(|error| anyhow::anyhow!("Failed to set agent model: {}", error))?;
     }

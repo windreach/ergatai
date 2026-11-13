@@ -302,7 +302,6 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
   // Use the new workspace-level store
   const {
     chats,
-    activeChatId,
     pinnedChatIds,
     sortBy,
     filterQuery,
@@ -313,7 +312,6 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
   } = useWorkspaceChatsStore(
     useShallow((state) => ({
       chats: state.chats,
-      activeChatId: state.activeChatId,
       pinnedChatIds: state.pinnedChatIds,
       sortBy: state.sortBy,
       filterQuery: state.filterQuery,
@@ -534,7 +532,10 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
   // Render chat item using memoized component
   const renderChatItem = useCallback(
     (chat: WorkspaceChat, index: number) => {
-      const isActive = chat.id === activeChatId
+      // Use the atom as the source of truth for the active chat. The store's
+      // activeChatId is only updated on sidebar clicks, so it goes stale when a
+      // chat is selected elsewhere (e.g. after creating a new chat).
+      const isActive = chat.id === selectedChatId
       const isPinned = pinnedChatIds.includes(chat.id)
       const isJustCreated = justCreatedIds.has(chat.id)
       const hasPendingQuestion = pendingQuestionsMap.has(chat.id)
@@ -575,7 +576,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
         />
       )
     },
-    [activeChatId, pinnedChatIds, justCreatedIds, pendingQuestionsMap, unseenChanges, defaultAgentMode, draftsCache, workspaceId, conversationFiles, handleChatClick, handlePinChat, handleArchiveChat, filteredChats.length, chatAgentLogos]
+    [selectedChatId, pinnedChatIds, justCreatedIds, pendingQuestionsMap, unseenChanges, defaultAgentMode, draftsCache, workspaceId, conversationFiles, handleChatClick, handlePinChat, handleArchiveChat, filteredChats.length, chatAgentLogos]
   )
 
   return (

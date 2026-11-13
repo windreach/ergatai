@@ -239,15 +239,15 @@ impl Drop for InFlightGuard {
 // ---------------------------------------------------------------------------
 
 fn resolve_agent_kind(profile: Option<&str>, command: Option<&str>) -> &'static str {
-    let hay = format!("{} {}", profile.unwrap_or(""), command.unwrap_or("")).to_lowercase();
-    if hay.contains("opencode") {
-        "opencode"
-    } else if hay.contains("codex") {
-        "codex"
-    } else if hay.contains("claude") {
-        "claude"
-    } else {
-        ""
+    match crate::services::agent::resolve_kind_parts(
+        profile.unwrap_or(""),
+        command.unwrap_or(""),
+        "",
+    ) {
+        crate::services::agent::AgentKind::OpenCode => "opencode",
+        crate::services::agent::AgentKind::Codex => "codex",
+        crate::services::agent::AgentKind::Claude => "claude",
+        crate::services::agent::AgentKind::Unknown => "",
     }
 }
 
@@ -279,15 +279,16 @@ async fn resolve_context(
             if let Ok(reg) = crate::services::profile_service::get_profile_registry() {
                 if let Ok(profiles) = reg.list_with_status() {
                     if let Some(p) = profiles.into_iter().find(|x| x.name == pn) {
-                        let hay =
-                            format!("{} {} {}", p.name, p.command, p.agent_type).to_lowercase();
-                        if hay.contains("opencode") {
-                            kind = "opencode".into();
-                        } else if hay.contains("codex") {
-                            kind = "codex".into();
-                        } else if hay.contains("claude") {
-                            kind = "claude".into();
-                        }
+                        kind = match crate::services::agent::resolve_kind_parts(
+                            &p.name,
+                            &p.command,
+                            &p.agent_type,
+                        ) {
+                            crate::services::agent::AgentKind::OpenCode => "opencode".to_string(),
+                            crate::services::agent::AgentKind::Codex => "codex".to_string(),
+                            crate::services::agent::AgentKind::Claude => "claude".to_string(),
+                            crate::services::agent::AgentKind::Unknown => String::new(),
+                        };
                     }
                 }
             }
@@ -311,10 +312,13 @@ async fn fetch_convention_skills(cwd: Option<&str>, agent_kind: Option<&str>) ->
     let cwd_owned = cwd.map(|s| s.to_string());
     let agent_kind_owned = agent_kind.map(|s| s.to_string());
     let skills = tokio::task::spawn_blocking(move || {
-        crate::services::skills_service::list_skills(
-            cwd_owned.as_deref(),
-            agent_kind_owned.as_deref(),
-        )
+        let kind = match agent_kind_owned.as_deref() {
+            Some("claude") => crate::services::agent::AgentKind::Claude,
+            Some("codex") => crate::services::agent::AgentKind::Codex,
+            Some("opencode") => crate::services::agent::AgentKind::OpenCode,
+            _ => crate::services::agent::AgentKind::Unknown,
+        };
+        crate::services::agent::list_skills(kind, cwd_owned.as_deref())
     })
     .await
     .unwrap_or_default();
@@ -356,7 +360,17 @@ async fn fetch_acp_commands(agent_id: &str) -> Value {
 }
 
 async fn fetch_sdk_bundle(kind: &str, cwd: Option<&str>) -> Value {
-    crate::services::agent_sdk_service::discover(kind, cwd).await
+    let agent_kind = match kind {
+        "claude" => crate::services::agent::AgentKind::Claude,
+        "codex" => crate::services::agent::AgentKind::Codex,
+        "opencode" => crate::services::agent::AgentKind::OpenCode,
+        _ => crate::services::agent::AgentKind::Unknown,
+    };
+    if agent_kind == crate::services::agent::AgentKind::Unknown {
+        crate::services::agent_sdk_service::discover(kind, cwd).await
+    } else {
+        crate::services::agent::discover(agent_kind, cwd).await
+    }
 }
 
 async fn fetch_plugins() -> Value {

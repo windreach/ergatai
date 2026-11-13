@@ -1103,7 +1103,7 @@ pub async fn spawn_agent(
                 .as_deref()
                 .filter(|model| !model.trim().is_empty())
             {
-                crate::services::agent_service::set_agent_model(&agent_id, model.trim())
+                crate::services::agent_service::set_agent(&agent_id, model.trim())
                     .await
                     .map(|_| ())
             } else {
@@ -1117,7 +1117,7 @@ pub async fn spawn_agent(
                 Err(error) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
-                        error: crate::sanitize_error(&error, "set_agent_model"),
+                        error: crate::sanitize_error(&error, "set_agent"),
                     }),
                 )
                     .into_response(),
@@ -1213,7 +1213,7 @@ pub struct SetAgentModelRequest {
     pub model: String,
 }
 
-pub async fn set_agent_model(
+pub async fn set_agent(
     State(_state): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<SetAgentModelRequest>,
@@ -1227,7 +1227,7 @@ pub async fn set_agent_model(
         )
             .into_response();
     }
-    match crate::services::agent_service::set_agent_model(&id, &req.model).await {
+    match crate::services::agent_service::set_agent(&id, &req.model).await {
         Ok(output) => (
             StatusCode::OK,
             Json(serde_json::json!({ "status": "ok", "output": output })),
@@ -1236,7 +1236,7 @@ pub async fn set_agent_model(
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: crate::sanitize_error(&e, "set_agent_model"),
+                error: crate::sanitize_error(&e, "set_agent"),
             }),
         )
             .into_response(),
@@ -4482,111 +4482,45 @@ pub async fn get_agent(
 /// - Phase 2 (exponential backoff, max 30s): retry model extraction if no model category yet
 ///
 /// This is called from all agent spawn paths (REST API, initial_prompt_turns, messaging auto-spawn).
-pub(crate) fn spawn_model_detection(agent_id: String, profile_name: String) {
+pub fn spawn_model_detection(agent_id: String, profile_name: String) {
     tokio::spawn(async move {
         tracing::info!(
             agent_id = %agent_id,
             profile = %profile_name,
-            "Model detection: background task started (SDK-first)"
+            "Model detection: background task started (agent-model)"
         );
 
-        // Infer agent kind from profile name (same heuristic as agent_sdk routes).
-        let kind = {
-            let hay = profile_name.to_lowercase();
-            if hay.contains("opencode") {
-                "opencode"
-            } else if hay.contains("codex") {
-                "codex"
-            } else if hay.contains("claude") {
-                "claude"
-            } else {
-                ""
-            }
-        };
-
-        if kind.is_empty() {
+        let kind = crate::services::agent::resolve_kind_by_name(&profile_name).await;
+        if kind == crate::services::agent::AgentKind::Unknown {
             tracing::debug!(profile = %profile_name, "Model detection: unknown agent kind, skipping");
             return;
         }
 
-        // Primary: config-file read (fast, no subprocess).
-        match crate::services::profile_service::refresh_profile_models(kind, &profile_name, None)
-            .await
-        {
-            Ok(details) if !details.is_empty() => {
-                tracing::info!(
-                    models_count = details.len(),
-                    profile = %profile_name,
-                    "Model detection: models detected via config file"
-                );
-                return;
-            }
-            Ok(_) => {
-                tracing::debug!(
-                    profile = %profile_name,
-                    "Model detection: config file returned no models"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    profile = %profile_name,
-                    "Model detection: SDK refresh failed"
-                );
-            }
+        let discovered = crate::services::agent::discover_models(kind, &profile_name, None).await;
+        if discovered.details.is_empty() {
+            tracing::debug!(
+                profile = %profile_name,
+                "Model detection: no models discovered"
+            );
+            return;
         }
 
-        // Claude fallback: CLI `/model` output, in case the SDK adapter is unavailable.
-        if kind == "claude" {
-            let claude = if std::path::Path::new("/root/.local/bin/claude").exists() {
-                "/root/.local/bin/claude"
-            } else {
-                "claude"
-            };
-            if let Ok(output) = tokio::process::Command::new(claude)
-                .arg("/model")
-                .output()
-                .await
-            {
-                let text = String::from_utf8_lossy(&output.stdout);
-                if let Some(parsed) = parse_model_output(&text) {
-                    let models: Vec<String> = parsed
-                        .get("models")
-                        .and_then(serde_json::Value::as_array)
-                        .map(|values| {
-                            values
-                                .iter()
-                                .filter_map(serde_json::Value::as_str)
-                                .filter(|m| {
-                                    let lower = m.to_lowercase();
-                                    !lower.contains('[')
-                                        && lower != "best"
-                                        && lower != "opusplan"
-                                        && lower != "default"
-                                })
-                                .map(ToString::to_string)
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    if !models.is_empty() {
-                        if let Err(e) =
-                            crate::services::profile_service::save_profile_models_by_name(
-                                &profile_name,
-                                &models,
-                                None,
-                            )
-                            .await
-                        {
-                            tracing::warn!(error = %e, "Failed to save Claude models (CLI fallback)");
-                        } else {
-                            tracing::info!(
-                                models_count = models.len(),
-                                "Claude models detected via CLI fallback"
-                            );
-                        }
-                    }
-                }
-            }
+        if let Err(e) = crate::services::profile_service::persist_profile_models(
+            &profile_name,
+            &discovered.details,
+            discovered.source,
+            &discovered.sources,
+            discovered.default_model.as_deref(),
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "Failed to save models (agent-model)");
+        } else {
+            tracing::info!(
+                models_count = discovered.details.len(),
+                profile = %profile_name,
+                "Model detection: models detected via agent-model"
+            );
         }
     });
 }
@@ -5517,4 +5451,15 @@ pub async fn get_agent_discovery(
     let refresh = q.refresh.as_deref() == Some("1") || q.refresh.as_deref() == Some("true");
     let result = crate::services::discovery_service::discover(&id, q.cwd.as_deref(), refresh).await;
     (axum::http::StatusCode::OK, axum::Json(result)).into_response()
+}
+
+/// GET /api/v1/agents/{id}/selected-model
+pub async fn get_agent_selected_model(
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> impl axum::response::IntoResponse {
+    let model = crate::services::agent_service::get_agent_runtime_selected_model(&id).await;
+    (
+        axum::http::StatusCode::OK,
+        axum::Json(serde_json::json!({ "selected_model": model })),
+    )
 }

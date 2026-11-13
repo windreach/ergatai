@@ -2307,7 +2307,7 @@ impl FileLockManager {
                     approved_by: row.get::<_, String>(7)?,
                     issued_at: parse_datetime(&row.get::<_, String>(8)?),
                     expires_at: parse_datetime(&row.get::<_, String>(9)?),
-                    heartbeat_interval_secs: row.get::<_, u64>(10)?,
+                    heartbeat_interval_secs: row.get::<_, i64>(10)? as u64,
                     heartbeat_at: parse_datetime(&row.get::<_, String>(11)?),
                     status: parse_token_status(&row.get::<_, String>(12)?),
                     // SAFETY: priority is stored as i64 (SQLite INTEGER) but must fit u8 (0-255).
@@ -2352,7 +2352,7 @@ impl FileLockManager {
                     project_root: row.get::<_, String>(3)?,
                     issued_at: parse_datetime(&row.get::<_, String>(4)?),
                     expires_at: parse_datetime(&row.get::<_, String>(5)?),
-                    heartbeat_interval_secs: row.get::<_, u64>(6)?,
+                    heartbeat_interval_secs: row.get::<_, i64>(6)? as u64,
                     heartbeat_at: parse_datetime(&row.get::<_, String>(7)?),
                     status: parse_token_status(&row.get::<_, String>(8)?),
                 })
@@ -2386,7 +2386,7 @@ impl FileLockManager {
                 token.approved_by,
                 token.issued_at.to_rfc3339(),
                 token.expires_at.to_rfc3339(),
-                token.heartbeat_interval_secs,
+                token.heartbeat_interval_secs as i64,
                 token.heartbeat_at.to_rfc3339(),
                 token.status.to_string(),
                 token.priority.map(|p| p as i64),
@@ -2428,7 +2428,7 @@ impl FileLockManager {
                     approved_by: row.get::<_, String>(7)?,
                     issued_at: parse_datetime(&row.get::<_, String>(8)?),
                     expires_at: parse_datetime(&row.get::<_, String>(9)?),
-                    heartbeat_interval_secs: row.get::<_, u64>(10)?,
+                    heartbeat_interval_secs: row.get::<_, i64>(10)? as u64,
                     heartbeat_at: parse_datetime(&row.get::<_, String>(11)?),
                     status: parse_token_status(&row.get::<_, String>(12)?),
                     // SAFETY: priority is stored as i64 (SQLite INTEGER) but must fit u8 (0-255).

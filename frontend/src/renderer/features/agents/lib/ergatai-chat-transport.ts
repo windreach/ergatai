@@ -236,11 +236,23 @@ function transformEvent(
     case "done":
       return [{ type: "finish" }]
 
-    case "error":
+    case "error": {
+      const parts: string[] = []
+      if (event.code != null && event.code !== "") parts.push(`[${event.code}]`)
+      const typeName = event.error_type ?? event.error_name
+      if (typeName) parts.push(String(typeName))
+      if (event.service) parts.push(`(${event.service})`)
+      const prefix = parts.join(" ")
+      const errorText = prefix ? `${prefix}: ${event.message}` : event.message
+      console.log("[ErgataiChatTransport][transformEvent] mapped error event", {
+        event,
+        errorText,
+      })
       return [
-        { type: "error", errorText: event.message },
+        { type: "error", errorText },
         { type: "finish" },
       ]
+    }
 
     default:
       return []
@@ -386,6 +398,13 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
             },
             {
               onData: (event) => {
+                console.log("[ErgataiChatTransport][subscribeAgentStream] onData", {
+                  agentId,
+                  promptId,
+                  conversationId,
+                  type: event.type,
+                  ...(event.type === "error" ? { event } : {}),
+                })
                 if (finished) {
                   return
                 }
@@ -425,6 +444,43 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                   // The actual animation is handled by the UI component
                   const sessionStore = getRuntimeSessionStore()
                   sessionStore.updateContextUsage(conversationId, event.used, event.size)
+                  return
+                }
+
+                // Surface subagent spawn/state events in the message stream.
+                if (event.type === "subagent_spawned") {
+                  if (activeBlock === "reasoning") {
+                    controller.enqueue({ type: "reasoning-end", id: getReasoningBlockId() })
+                    activeBlock = null
+                  } else if (activeBlock === "text") {
+                    // keep current text block open to append marker
+                  } else {
+                    textBlockCounter++
+                    controller.enqueue({ type: "text-start", id: getTextBlockId() })
+                    activeBlock = "text"
+                  }
+                  controller.enqueue({
+                    type: "text-delta",
+                    id: getTextBlockId(),
+                    delta: `\n[Subagent spawned: ${event.name} — ${event.task}]\n`,
+                  })
+                  return
+                }
+
+                if (event.type === "subagent_state_update") {
+                  if (activeBlock !== "text") {
+                    if (activeBlock === "reasoning") {
+                      controller.enqueue({ type: "reasoning-end", id: getReasoningBlockId() })
+                    }
+                    textBlockCounter++
+                    controller.enqueue({ type: "text-start", id: getTextBlockId() })
+                    activeBlock = "text"
+                  }
+                  controller.enqueue({
+                    type: "text-delta",
+                    id: getTextBlockId(),
+                    delta: `\n[Subagent ${event.subagent_session_id} state: ${event.state}]\n`,
+                  })
                   return
                 }
 

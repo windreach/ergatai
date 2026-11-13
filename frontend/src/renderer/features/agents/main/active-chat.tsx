@@ -191,6 +191,7 @@ import {
 } from "./active-chat-helpers"
 import { useActiveChatController } from "./use-active-chat-controller";
 import { parsePersistedMessagesByConversation } from "../lib/parse-persisted-messages";
+import { conversationAgentStorage } from "../lib/conversation-agent-storage";
 
 // Inner chat component - only rendered when chat object is ready
 // Memoized to prevent re-renders when parent state changes (e.g., selectedFilePath)
@@ -199,7 +200,7 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       chat: Chat<UIMessage>
       conversationId: string
       parentChatId: string
-      provider?: "claude-code" | "codex"
+      provider?: "claude-code" | "codex" | "opencode"
       isFirstConversation: boolean
       onCreateNewConversation?: () => void
       onProviderChange?: (
@@ -1419,11 +1420,16 @@ export function ChatView({
   })
 
   const inferProviderFromMessages = useCallback(
-    (conversationId?: string): "claude-code" | "codex" => {
+    (conversationId?: string): "claude-code" | "codex" | "opencode" => {
       if (!conversationId) return "claude-code"
 
       const override = conversationProviderOverrides[conversationId]
       if (override) return override
+
+      const storedAgent = conversationAgentStorage.get(conversationId)
+      if (storedAgent === "opencode") return "opencode"
+      if (storedAgent === "codex") return "codex"
+      if (storedAgent === "claude-code") return "claude-code"
 
       const conversation = ((agentChat as ExtendedAgentChat | undefined)?.conversations || []).find(
         (sc: { id?: string }) => sc?.id === conversationId,

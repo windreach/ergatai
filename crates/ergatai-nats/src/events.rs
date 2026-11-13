@@ -831,6 +831,13 @@ pub enum AgentOutputPayload {
         name: String,
         input: Option<serde_json::Value>,
         locations: Vec<ToolCallLocation>,
+        parent_tool_use_id: Option<String>,
+    },
+    /// Generic ACP extension update.
+    ExtensionUpdate {
+        role: String,
+        kind: String,
+        payload: serde_json::Value,
     },
     /// Streaming tool call input (JSON delta).
     ToolCallInput { id: String, delta: String },

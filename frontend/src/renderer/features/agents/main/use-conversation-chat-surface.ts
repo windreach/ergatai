@@ -68,6 +68,7 @@ import type { ChatConversation } from "@/features/details-sidebar"
 import type { AgentsMentionsEditorHandle } from "../mentions"
 import { trpcClient } from "../../../lib/trpc"
 import { api } from "../../../lib/api-adapter"
+import { conversationAgentStorage } from "../lib/conversation-agent-storage"
 
 /**
  * Shared chat surface controller used by both main and side conversations.
@@ -136,12 +137,17 @@ export function useConversationChatSurface({
 }) {
   const backendConversationId = conversation.backendConversationId
   const runtimeConversationId = backendConversationId ?? conversation.id
+  const storedAgent = typeof window !== "undefined"
+    ? conversationAgentStorage?.get?.(conversation.backendConversationId ?? conversation.id)
+    : null
   const provider =
-    conversation.agent?.id === "codex"
+    storedAgent === "codex" || conversation.agent?.id === "codex"
       ? "codex"
-      : conversation.agent?.id === "claude-code"
-        ? "claude-code"
-        : "opencode"
+      : storedAgent === "opencode" || conversation.agent?.id === "opencode"
+        ? "opencode"
+        : storedAgent === "claude-code" || conversation.agent?.id === "claude-code"
+          ? "claude-code"
+          : "opencode"
 
   const [pendingMention, setPendingMention] = useAtom(pendingMentionAtom)
   const [pendingInitialPrompt, setPendingInitialPrompt] = useAtom(
@@ -309,7 +315,9 @@ export function useConversationChatSurface({
   const sendMessageRef = useRef<any>(null)
   const stopRef = useRef<any>(null)
   const isStreamingRef = useRef(isStreaming)
-  isStreamingRef.current = isStreaming
+  useEffect(() => {
+    isStreamingRef.current = isStreaming
+  }, [isStreaming])
 
   const {
     pendingQuestions,
@@ -331,8 +339,12 @@ export function useConversationChatSurface({
   })
 
   // Keep refs in sync for question answers
-  sendMessageRef.current = sendUserMessage
-  stopRef.current = stop
+  useEffect(() => {
+    sendMessageRef.current = sendUserMessage
+  }, [sendUserMessage])
+  useEffect(() => {
+    stopRef.current = stop
+  }, [stop])
 
   const clearPendingQuestionCallback = useCallback(() => {
     setPendingQuestionsMap((current: Map<string, any>) => {
@@ -609,11 +621,15 @@ export function useConversationChatSurface({
 
   const messageTokenData = useMessageTokenData(messages as any, provider, sessionState as any)
 
+  const fallbackCacheFileContent = useCallback(
+    (mentionId: string, content: string) => {
+      fileContentsRef.current.set(mentionId, content)
+    },
+    [fileContentsRef],
+  )
   const cacheFileContent = attachments
     ? attachments.cacheFileContent
-    : useCallback((mentionId: string, content: string) => {
-        fileContentsRef.current.set(mentionId, content)
-      }, [])
+    : fallbackCacheFileContent
 
   return {
     // chat instance

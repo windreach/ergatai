@@ -157,23 +157,34 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
       </div>
 
       {/* Content - expanded while streaming, collapsible after */}
-      {isExpanded && thinkingText && (
-        <div className="relative mt-1">
-          {/* Top gradient fade when streaming */}
-          <div
-            className={cn(
-              "absolute inset-x-0 top-0 h-8 bg-gradient-to-b from-background to-transparent z-10 pointer-events-none transition-opacity duration-200",
-              isStreaming && isOverflowing ? "opacity-100" : "opacity-0",
-            )}
-          />
-          <div
-            ref={scrollRef}
-            className={cn(
-              "px-2",
-              isStreaming && "overflow-y-auto scrollbar-hide max-h-36",
-            )}
-          >
-            <ChatMarkdownRenderer content={thinkingText} size="sm" isStreaming={isStreaming} />
+      {thinkingText && (
+        <div
+          aria-hidden={!isExpanded}
+          inert={!isExpanded}
+          className={cn(
+            "grid transition-[grid-template-rows,opacity] duration-200 ease-out",
+            isExpanded
+              ? "grid-rows-[1fr] opacity-100"
+              : "grid-rows-[0fr] opacity-0",
+          )}
+        >
+          <div className="relative overflow-hidden">
+            {/* Top gradient fade when streaming */}
+            <div
+              className={cn(
+                "absolute inset-x-0 top-0 h-8 bg-gradient-to-b from-background to-transparent z-10 pointer-events-none transition-opacity duration-200",
+                isStreaming && isOverflowing ? "opacity-100" : "opacity-0",
+              )}
+            />
+            <div
+              ref={scrollRef}
+              className={cn(
+                "px-2 pt-1",
+                isStreaming && "overflow-y-auto scrollbar-hide max-h-36",
+              )}
+            >
+              <ChatMarkdownRenderer content={thinkingText} size="sm" isStreaming={isStreaming} />
+            </div>
           </div>
         </div>
       )}
