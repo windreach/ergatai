@@ -90,21 +90,8 @@ pub async fn discover_models(
     }
 }
 
-pub async fn switch_model(
-    kind: AgentKind,
-    agent_id: &str,
-    model: &str,
-    cwd: Option<&str>,
-    session_id: Option<&str>,
-) -> Value {
-    match kind {
-        AgentKind::Claude => claude::switch_model(agent_id, model, cwd, session_id).await,
-        AgentKind::Codex => codex::switch_model(agent_id, model, cwd, session_id).await,
-        AgentKind::OpenCode => opencode::switch_model(agent_id, model, cwd, session_id).await,
-        AgentKind::Unknown => serde_json::json!({"ok": false, "error": "unknown agent kind"}),
-    }
-}
-
+// Runtime model switching is performed in-process by the ACP agent.
+// SDK-based runtime switching has been removed.
 pub async fn discover(kind: AgentKind, cwd: Option<&str>) -> Value {
     match kind {
         AgentKind::Claude => claude::discover(cwd).await,

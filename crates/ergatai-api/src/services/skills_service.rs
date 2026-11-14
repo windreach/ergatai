@@ -121,15 +121,31 @@ pub fn list_skills(cwd: Option<&str>, agent_kind: Option<&str>) -> Vec<SkillInfo
     }
 
     // OpenCode
+    // OpenCode reads skills from its own directories plus Claude-compatible
+    // and agent-ecosystem-compatible locations (see official docs).
     if scan_opencode {
+        // User-level (global) skill directories.
         scan_dir(
             &home.join(".config").join("opencode").join("skills"),
             "user",
             &mut out,
         );
+        scan_dir(&home.join(".claude").join("skills"), "user", &mut out);
+        scan_dir(&home.join(".agents").join("skills"), "user", &mut out);
+        // Project-level skill directories.
         if let Some(cwd) = cwd {
             scan_dir(
                 &Path::new(cwd).join(".opencode").join("skills"),
+                "project",
+                &mut out,
+            );
+            scan_dir(
+                &Path::new(cwd).join(".claude").join("skills"),
+                "project",
+                &mut out,
+            );
+            scan_dir(
+                &Path::new(cwd).join(".agents").join("skills"),
                 "project",
                 &mut out,
             );

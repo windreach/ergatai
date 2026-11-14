@@ -443,7 +443,15 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                   // Notify UI to update context usage display
                   // The actual animation is handled by the UI component
                   const sessionStore = getRuntimeSessionStore()
-                  sessionStore.updateContextUsage(conversationId, event.used, event.size)
+                  sessionStore.updateContextUsage(conversationId, event.used, event.size, {
+                    inputTokens: event.input_tokens,
+                    outputTokens: event.output_tokens,
+                    totalTokens: event.total_tokens,
+                    cachedInputTokens: event.cached_input_tokens,
+                    cacheWriteInputTokens: event.cache_write_input_tokens,
+                    reasoningOutputTokens: event.reasoning_output_tokens,
+                    modelUsage: event.model_usage,
+                  })
                   return
                 }
 

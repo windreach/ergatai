@@ -332,6 +332,8 @@ async fn fetch_convention_skills(cwd: Option<&str>, agent_kind: Option<&str>) ->
                 "path": s.path,
                 "source": s.source,
                 "group": "Skills",
+                "type": "skill",
+                "targetTriggers": ["$"],
             })
         })
         .collect();
@@ -378,6 +380,61 @@ async fn fetch_plugins() -> Value {
         .await
         .unwrap_or_default();
     json!(plugins)
+}
+
+async fn fetch_convention_mcp_items(cwd: Option<&str>) -> Vec<Value> {
+    let cwd_owned = cwd.map(|s| s.to_string());
+    tokio::task::spawn_blocking(move || {
+        let mut items: Vec<Value> = Vec::new();
+        for m in crate::services::mcp_convention::scan_claude_mcp(cwd_owned.as_deref()) {
+            items.push(json!({
+                "name": m.name,
+                "description": format!("Claude MCP config ({})", m.source),
+                "status": "configured",
+                "config": m.config,
+                "source": format!("convention-{}", m.source),
+                "path": m.path,
+                "group": "MCP",
+                "type": "mcp",
+                "targetTriggers": ["@"],
+            }));
+        }
+        for m in crate::services::mcp_convention::scan_codex_mcp(cwd_owned.as_deref()) {
+            items.push(json!({
+                "name": m.name,
+                "description": format!("Codex MCP config ({})", m.source),
+                "status": "configured",
+                "config": m.config,
+                "source": format!("convention-{}", m.source),
+                "path": m.path,
+                "group": "MCP",
+                "type": "mcp",
+                "targetTriggers": ["@"],
+            }));
+        }
+        for m in crate::services::mcp_convention::scan_opencode_mcp(cwd_owned.as_deref()) {
+            items.push(json!({
+                "name": m.name,
+                "description": format!("OpenCode MCP config ({})", m.source),
+                "status": "configured",
+                "config": m.config,
+                "source": format!("convention-{}", m.source),
+                "path": m.path,
+                "group": "MCP",
+                "type": "mcp",
+                "targetTriggers": ["@"],
+            }));
+        }
+        items
+    })
+    .await
+    .unwrap_or_default()
+}
+
+fn merge_mcp_items(mut base: Vec<Value>, extra: Vec<Value>) -> Vec<Value> {
+    base.extend(extra);
+    dedup_by_name(&mut base, "name");
+    base
 }
 
 /// Fetch a source by name. Pure function dispatching to the right fetcher.
@@ -476,22 +533,83 @@ fn merge_sources(
 ) -> Value {
     let mut errors: Vec<Value> = Vec::new();
 
-    // Skills: convention + SDK
+    fn canonical_type(raw: Option<&str>, fallback: &str) -> &'static str {
+        match raw {
+            Some("skill") => "skill",
+            Some("command") => "command",
+            Some("mcp") => "mcp",
+            Some("plugin") => "plugin",
+            Some("agent") => "agent",
+            _ => match fallback {
+                "skill" => "skill",
+                "command" => "command",
+                "mcp" => "mcp",
+                "plugin" => "plugin",
+                "agent" => "agent",
+                _ => "skill",
+            },
+        }
+    }
+
+    fn target_triggers_for_type(t: &str) -> Value {
+        match t {
+            "skill" => json!(["$"]),
+            "command" => json!(["/"]),
+            "mcp" => json!(["@"]),
+            "plugin" => json!(["@", "$", "/"]),
+            "agent" => json!(["@"]),
+            _ => json!([]),
+        }
+    }
+
+    fn group_for_type(t: &str) -> &'static str {
+        match t {
+            "skill" => "Skills",
+            "command" => "Commands",
+            "mcp" => "MCP",
+            "plugin" => "Plugins",
+            "agent" => "Agents",
+            _ => "Items",
+        }
+    }
+
+    fn normalize_discovery_item(
+        item: &mut Value,
+        bucket_fallback_type: &str,
+        default_source: Option<&str>,
+    ) {
+        let t = canonical_type(
+            item.get("type").and_then(|v| v.as_str()),
+            bucket_fallback_type,
+        );
+        item["type"] = json!(t);
+        // Routing is hardcoded by type (SDK/source only needs to provide type).
+        item["targetTriggers"] = target_triggers_for_type(t);
+        if item.get("group").is_none()
+            || item
+                .get("group")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .is_empty()
+        {
+            item["group"] = json!(group_for_type(t));
+        }
+        if item.get("source").is_none() {
+            if let Some(src) = default_source {
+                item["source"] = json!(src);
+            }
+        }
+    }
+
+    // Skills: convention + SDK (classify by explicit type, bucket is fallback only)
     let mut skills: Vec<Value> = convention_skills.as_array().cloned().unwrap_or_default();
     for s in &mut skills {
-        if s.get("group").is_none() {
-            s["group"] = json!("Skills");
-        }
+        normalize_discovery_item(s, "skill", None);
     }
     if let Some(arr) = sdk_bundle.get("skills").and_then(|v| v.as_array()) {
         for s in arr {
             let mut s = s.clone();
-            if s.get("source").is_none() {
-                s["source"] = json!("agent-sdk");
-            }
-            if s.get("group").is_none() {
-                s["group"] = json!("Skills");
-            }
+            normalize_discovery_item(&mut s, "skill", Some("agent-sdk"));
             skills.push(s);
         }
     }
@@ -500,19 +618,12 @@ fn merge_sources(
     // Commands: ACP + SDK
     let mut commands: Vec<Value> = acp_commands.as_array().cloned().unwrap_or_default();
     for c in &mut commands {
-        if c.get("group").is_none() {
-            c["group"] = json!("Commands");
-        }
+        normalize_discovery_item(c, "command", None);
     }
     if let Some(arr) = sdk_bundle.get("commands").and_then(|v| v.as_array()) {
         for c in arr {
             let mut c = c.clone();
-            if c.get("source").is_none() {
-                c["source"] = json!("agent-sdk");
-            }
-            if c.get("group").is_none() {
-                c["group"] = json!("Commands");
-            }
+            normalize_discovery_item(&mut c, "command", Some("agent-sdk"));
             commands.push(c);
         }
     }
@@ -525,12 +636,8 @@ fn merge_sources(
         .cloned()
         .unwrap_or_default();
     for m in &mut mcp {
-        if m.get("group").is_none() {
-            m["group"] = json!("MCP");
-        }
+        normalize_discovery_item(m, "mcp", None);
     }
-    // MCP fallback from registry also gets category
-    // (handled at merge end? set here for registry items in discovery.rs)
 
     // Plugins: backend marketplace scan + SDK (Claude reloadPlugins)
     let scan_plugins: Vec<Value> = plugins.as_array().cloned().unwrap_or_default();
@@ -544,19 +651,13 @@ fn merge_sources(
         }
     }
 
-    let mut scan_plugins = scan_plugins;
-    for p in &mut scan_plugins {
-        if p.get("group").is_none() {
-            p["group"] = json!("Plugins");
-        }
+    let mut plugins_out: Vec<Value> = scan_plugins;
+    for p in &mut plugins_out {
+        normalize_discovery_item(p, "plugin", None);
     }
-    let mut plugins: Vec<Value> = scan_plugins;
     if let Some(arr) = sdk_bundle.get("plugins").and_then(|v| v.as_array()) {
         for p in arr {
             let mut p = p.clone();
-            if p.get("source").is_none() {
-                p["source"] = json!("agent-sdk");
-            }
             // Enrich SDK plugin metadata from marketplace scan when available.
             if let Some(name) = p
                 .get("name")
@@ -587,13 +688,12 @@ fn merge_sources(
                     }
                 }
             }
-            if p.get("group").is_none() {
-                p["group"] = json!("Plugins");
-            }
-            plugins.push(p);
+            normalize_discovery_item(&mut p, "plugin", Some("agent-sdk"));
+            plugins_out.push(p);
         }
     }
-    dedup_by_name(&mut plugins, "name");
+    dedup_by_name(&mut plugins_out, "name");
+    let plugins = plugins_out;
 
     // Propagate SDK errors to the errors array
     if let Some(err) = sdk_bundle.get("error").and_then(|v| v.as_str()) {
@@ -813,14 +913,17 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
         );
     }
 
-    // MCP fallback: if SDK did not provide runtime MCP status, fall back to
-    // Ergatai's own MCP server registry so the UI still has a usable list.
-    let mcp_empty = result
+    // Merge convention MCP configs (project/user .mcp.json, ~/.claude.json, codex config)
+    // as static, type-tagged MCP items routed to @.
+    let convention_mcp = fetch_convention_mcp_items(cwd_opt).await;
+    let mut merged_mcp = result
         .get("mcp")
         .and_then(|v| v.as_array())
-        .map(|a| a.is_empty())
-        .unwrap_or(true);
-    if mcp_empty {
+        .cloned()
+        .unwrap_or_default();
+
+    // MCP fallback: if SDK did not provide runtime MCP status, include Ergatai registry.
+    if merged_mcp.is_empty() {
         if let Ok(registry_mcp) = tokio::task::spawn_blocking(|| -> Vec<Value> {
             crate::user_data_db::mcp_servers::list()
                 .unwrap_or_default()
@@ -837,16 +940,21 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
                         },
                         "source": "registry",
                         "group": "MCP",
+                        "type": "mcp",
+                        "targetTriggers": ["@"],
                     })
                 })
                 .collect()
         })
         .await
         {
-            if !registry_mcp.is_empty() {
-                result["mcp"] = json!(registry_mcp);
-            }
+            merged_mcp.extend(registry_mcp);
         }
+    }
+
+    merged_mcp = merge_mcp_items(merged_mcp, convention_mcp);
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("mcp".to_string(), json!(merged_mcp));
     }
 
     // Persistent cache: prefer last-known-good data when the live fetch is
@@ -999,6 +1107,36 @@ pub async fn discover_static(cwd: Option<&str>, agent_kind: Option<&str>, refres
         .cloned()
         .unwrap_or_else(|| json!([]));
 
+    // Include convention + registry MCP in static discovery so @ can show MCP
+    // without a running agent session (project .mcp.json, ~/.claude.json, codex config, registry).
+    let mut mcp: Vec<Value> = fetch_convention_mcp_items(cwd_opt).await;
+    if let Ok(registry_mcp) = tokio::task::spawn_blocking(|| -> Vec<Value> {
+        crate::user_data_db::mcp_servers::list()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| {
+                json!({
+                    "name": s.name,
+                    "status": if s.enabled { "pending" } else { "failed" },
+                    "config": {
+                        "type": s.server_type,
+                        "command": s.command,
+                        "args": s.args,
+                        "url": s.url,
+                    },
+                    "source": "registry",
+                    "group": "MCP",
+                    "type": "mcp",
+                    "targetTriggers": ["@"],
+                })
+            })
+            .collect()
+    })
+    .await
+    {
+        mcp = merge_mcp_items(mcp, registry_mcp);
+    }
+
     tracing::debug!(
         elapsed_ms = %started.elapsed().as_millis(),
         "static discovery completed"
@@ -1007,6 +1145,7 @@ pub async fn discover_static(cwd: Option<&str>, agent_kind: Option<&str>, refres
     json!({
         "skills": skills,
         "plugins": plugins,
+        "mcp": mcp,
         "triggers": get_triggers(None, cwd_opt).await,
     })
 }
@@ -1015,58 +1154,129 @@ pub async fn discover_static(cwd: Option<&str>, agent_kind: Option<&str>, refres
 // Trigger registry
 // ---------------------------------------------------------------------------
 
-async fn resolve_agent_discovery_triggers(agent_id: &str) -> Option<String> {
+#[derive(Clone)]
+struct AgentTriggerContext {
+    discovery_triggers_json: Option<String>,
+    agent_kind: String,
+}
+
+async fn resolve_agent_trigger_context(agent_id: &str) -> Option<AgentTriggerContext> {
     let runtime = crate::context::get_app_context().agent_runtime.clone();
     let agent_info = runtime.get_agent(agent_id).await?;
-    let profile_name = agent_info.profile?;
+    let profile_name = agent_info.profile;
 
-    if let Ok(reg) = crate::services::profile_service::get_profile_registry() {
-        if let Ok(Some(profile)) = reg.get_by_name(&profile_name).await {
-            return profile.discovery_triggers_json;
-        }
+    let mut discovery_triggers_json = None;
+    let mut agent_kind = String::new();
+    if let Some(pn) = profile_name {
+        let (kind, triggers) = tokio::task::spawn_blocking(move || {
+            let mut kind = String::new();
+            let mut triggers = None;
+            if let Ok(reg) = crate::services::profile_service::get_profile_registry() {
+                if let Ok(profiles) = reg.list_with_status() {
+                    if let Some(p) = profiles.into_iter().find(|x| x.name == pn) {
+                        kind = match crate::services::agent::resolve_kind_parts(
+                            &p.name,
+                            &p.command,
+                            &p.agent_type,
+                        ) {
+                            crate::services::agent::AgentKind::OpenCode => "opencode".to_string(),
+                            crate::services::agent::AgentKind::Codex => "codex".to_string(),
+                            crate::services::agent::AgentKind::Claude => "claude".to_string(),
+                            crate::services::agent::AgentKind::Unknown => String::new(),
+                        };
+                        triggers = p.discovery_triggers_json.clone();
+                    }
+                }
+            }
+            (kind, triggers)
+        })
+        .await
+        .unwrap_or_default();
+        agent_kind = kind;
+        discovery_triggers_json = triggers;
     }
-    None
+
+    Some(AgentTriggerContext {
+        discovery_triggers_json,
+        agent_kind,
+    })
+}
+
+fn default_trigger_types_for_kind(
+    agent_kind: &str,
+    is_static: bool,
+) -> (Vec<&'static str>, Vec<&'static str>) {
+    if is_static {
+        // Static discovery only provides convention skills/plugins (and files handled by UI).
+        // No agent-specific rule applies; use a neutral default.
+        return (vec![], vec!["skill", "plugin", "file", "folder"]);
+    }
+
+    match agent_kind {
+        // Claude Code: @ 引用文件/agent/MCP 资源；/ 为控制指令与可调用技能/插件能力
+        "claude" => (
+            vec!["command", "skill", "plugin"],
+            vec!["file", "folder", "agent", "mcp"],
+        ),
+        // Codex: @ 引用文件/agent/插件/MCP 资源；/ 为控制指令；skill 通过 $skill-name（独立触发）
+        "codex" => (
+            vec!["command"],
+            vec!["file", "folder", "agent", "plugin", "mcp"],
+        ),
+        // OpenCode: @ 引用文件/agent/skill 等上下文；/ 为 agent 自带/自定义命令
+        "opencode" => (
+            vec!["command"],
+            vec!["skill", "agent", "file", "folder", "mcp", "plugin"],
+        ),
+        // Fallback: keep slash for commands, mentions for resources.
+        _ => (
+            vec!["command"],
+            vec!["skill", "mcp", "plugin", "agent", "file", "folder"],
+        ),
+    }
 }
 
 /// Returns the registered triggers for the editor.
 ///
-/// When `agent_id` is provided, returns triggers with full types
-/// (skill, command, mcp, plugin, agent, file, folder).
-/// Without `agent_id`, returns static triggers (skill, plugin only).
+/// When `agent_id` is provided, returns triggers with types resolved from the agent/profile
+/// (or per-agent-kind defaults). Without `agent_id`, returns static defaults.
 ///
 /// Schema: `char`, `position`, `types` — `allowSpaces`/`maxLength` removed (not needed).
 pub async fn get_triggers(agent_id: Option<&str>, _cwd: Option<&str>) -> Value {
-    // Default triggers (always present).
-    let full_types = vec![
-        "skill", "command", "mcp", "plugin", "agent", "file", "folder",
-    ];
-    let static_types = vec!["skill", "plugin"];
-
-    let (base_types, is_static) = if agent_id.is_some() {
-        (full_types.clone(), false)
+    let (slash_types, mention_types, is_static, custom_discovery_json): (
+        Vec<&str>,
+        Vec<&str>,
+        bool,
+        Option<String>,
+    ) = if let Some(aid) = agent_id {
+        let ctx = resolve_agent_trigger_context(aid).await;
+        let kind = ctx.as_ref().map(|c| c.agent_kind.as_str()).unwrap_or("");
+        let (slash, mention) = default_trigger_types_for_kind(kind, false);
+        let custom = ctx.and_then(|c| c.discovery_triggers_json);
+        (slash, mention, false, custom)
     } else {
-        (static_types.clone(), true)
+        let (slash, mention) = default_trigger_types_for_kind("", true);
+        (slash, mention, true, None)
     };
 
     let mut triggers = vec![
         serde_json::json!({
             "char": "/",
             "position": "start-of-line",
-            "types": base_types,
+            "types": slash_types,
             "kind": "slash",
         }),
         serde_json::json!({
             "char": "@",
             "position": "standalone",
-            "types": base_types,
+            "types": mention_types,
             "kind": "mention",
         }),
     ];
 
     // Agent-specific discovery triggers (only when agent is present).
-    if let Some(aid) = agent_id {
-        let discovery_json = resolve_agent_discovery_triggers(aid).await;
-        if let Some(custom) = discovery_json {
+    if agent_id.is_some() {
+        if let Some(custom) = custom_discovery_json {
             if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(&custom) {
                 for item in parsed {
                     // Validate minimal shape: must have char.
@@ -1078,7 +1288,7 @@ pub async fn get_triggers(agent_id: Option<&str>, _cwd: Option<&str>) -> Value {
                     if ch == "/" || ch == "@" {
                         continue;
                     }
-                    // Apply static type filtering when no agent? Already agent present here.
+                    // Apply defaults when fields are omitted.
                     let mut t = item.clone();
                     if let Some(obj) = t.as_object_mut() {
                         obj.entry("kind").or_insert(serde_json::json!("mention"));
@@ -1086,7 +1296,13 @@ pub async fn get_triggers(agent_id: Option<&str>, _cwd: Option<&str>) -> Value {
                             obj.insert("position".to_string(), serde_json::json!("standalone"));
                         }
                         if !obj.contains_key("types") {
-                            obj.insert("types".to_string(), serde_json::json!(base_types));
+                            // Agent-provided custom triggers: default to full mentionable/command set.
+                            obj.insert(
+                                "types".to_string(),
+                                serde_json::json!([
+                                    "skill", "command", "mcp", "plugin", "agent", "file", "folder"
+                                ]),
+                            );
                         }
                     }
                     triggers.push(t);
@@ -1095,7 +1311,6 @@ pub async fn get_triggers(agent_id: Option<&str>, _cwd: Option<&str>) -> Value {
         }
     }
 
-    // Static type filtering for no-agent case already applied via base_types.
     let _ = is_static;
     serde_json::Value::Array(triggers)
 }

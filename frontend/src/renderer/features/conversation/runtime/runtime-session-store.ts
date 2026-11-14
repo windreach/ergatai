@@ -103,6 +103,17 @@ export type RuntimeSessionState = {
   /** ACP context window usage snapshot (from SSE UsageUpdate events) */
   contextUsed?: number
   contextWindow?: number
+
+  /** ACP extension quota detail (from SSE UsageUpdate _meta) */
+  contextQuota?: {
+    inputTokens?: number | null
+    outputTokens?: number | null
+    totalTokens?: number | null
+    cachedInputTokens?: number | null
+    cacheWriteInputTokens?: number | null
+    reasoningOutputTokens?: number | null
+    modelUsage?: unknown
+  }
 }
 
 // ============================================================================
@@ -499,18 +510,52 @@ class RuntimeSessionStoreImpl {
    * @param conversationId - Conversation ID
    * @param used - Tokens currently used in context
    * @param size - Total context window size
+   * @param quota - Optional ACP extension quota detail (input/output/cached/etc.)
    */
-  updateContextUsage(conversationId: string, used: number, size: number): void {
+  updateContextUsage(
+    conversationId: string,
+    used: number,
+    size: number,
+    quota?: {
+      inputTokens?: number | null
+      outputTokens?: number | null
+      totalTokens?: number | null
+      cachedInputTokens?: number | null
+      cacheWriteInputTokens?: number | null
+      reasoningOutputTokens?: number | null
+      modelUsage?: unknown
+    } | null,
+  ): void {
     const session = this.ensureSession(conversationId)
     // Only update if values changed (prevent unnecessary re-renders)
-    if (session.contextUsed === used && session.contextWindow === size) {
+    const nextQuota = quota === undefined ? session.contextQuota : (quota ?? undefined)
+    if (
+      session.contextUsed === used &&
+      session.contextWindow === size &&
+      JSON.stringify(session.contextQuota ?? null) === JSON.stringify(nextQuota ?? null)
+    ) {
       return
     }
     session.contextUsed = used
     session.contextWindow = size
+    session.contextQuota = nextQuota
     this.invalidateCachedState(session)
     session.updatedAt = new Date()
 
+    this.notifyListeners(conversationId)
+  }
+
+  /**
+   * Reset ACP context window usage snapshot.
+   * Useful when switching models or when the adapter stops reporting usage.
+   */
+  resetContextUsage(conversationId: string): void {
+    const session = this.ensureSession(conversationId)
+    session.contextUsed = undefined
+    session.contextWindow = undefined
+    session.contextQuota = undefined
+    this.invalidateCachedState(session)
+    session.updatedAt = new Date()
     this.notifyListeners(conversationId)
   }
 
@@ -799,6 +844,7 @@ class RuntimeSessionStoreImpl {
       lastRuntimeSequence: session.lastRuntimeSequence,
       contextUsed: session.contextUsed || undefined,
       contextWindow: session.contextWindow || undefined,
+      contextQuota: session.contextQuota || undefined,
     }
   }
 

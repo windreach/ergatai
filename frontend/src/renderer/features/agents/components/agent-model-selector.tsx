@@ -28,6 +28,42 @@ import type { CodexThinkingLevel } from "../lib/models"
 import { formatCodexThinkingLabel } from "../lib/models"
 
 const CROSS_PROVIDER_DIALOG_DISMISSED_KEY = "agent-model-selector:skip-cross-provider-dialog"
+const RECENT_MODELS_STORAGE_PREFIX = "agent-model-selector:recent"
+const MAX_RECENT_MODELS = 8
+
+function formatProviderLabel(provider: string): string {
+  return provider
+    .replace(/[\/_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function getRecentModelsStorageKey(agentId: AgentProviderId): string {
+  return `${RECENT_MODELS_STORAGE_PREFIX}:${agentId}`
+}
+
+function readRecentModelKeys(agentId: AgentProviderId): string[] {
+  try {
+    const raw = localStorage.getItem(getRecentModelsStorageKey(agentId))
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === "string")
+      : []
+  } catch {
+    return []
+  }
+}
+
+function writeRecentModelKey(agentId: AgentProviderId, key: string) {
+  try {
+    const next = [key, ...readRecentModelKeys(agentId).filter((item) => item !== key)].slice(
+      0,
+      MAX_RECENT_MODELS,
+    )
+    localStorage.setItem(getRecentModelsStorageKey(agentId), JSON.stringify(next))
+  } catch {}
+}
 
 const CodexIcon = ({ className }: { className?: string }) => (
   <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
@@ -340,6 +376,11 @@ export function AgentModelSelector({
   const [search, setSearch] = useState("")
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false)
   const [pendingProvider, setPendingProvider] = useState<AgentProviderId | null>(null)
+  const [recentKeys, setRecentKeys] = useState<string[]>(() => readRecentModelKeys(selectedAgentId))
+
+  useEffect(() => {
+    setRecentKeys(readRecentModelKeys(selectedAgentId))
+  }, [selectedAgentId, open])
 
   const canSelectProvider = (provider: AgentProviderId) =>
     allowProviderSwitch || selectedAgentId === provider
@@ -397,6 +438,102 @@ export function AgentModelSelector({
     })
   }, [allModels, search])
 
+  const getItemIcon = (item: FlatModelItem) => {
+    switch (item.type) {
+      case "claude":
+        return <ClaudeCodeIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+      case "codex":
+        return <CodexIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+      case "ollama":
+        return <Zap className="h-4 w-4 text-muted-foreground shrink-0" />
+      case "custom":
+        return <ClaudeCodeIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+    }
+  }
+
+  const getItemLabel = (item: FlatModelItem): string => {
+    switch (item.type) {
+      case "claude":
+        return `${item.model.name} ${item.model.version}`
+      case "codex":
+        return item.model.name
+      case "ollama":
+        return item.modelName + (item.isRecommended ? " (recommended)" : "")
+      case "custom":
+        return "Custom Model"
+    }
+  }
+
+  const getItemProviderLabel = (item: FlatModelItem): string | null => {
+    switch (item.type) {
+      case "claude":
+        return item.model.provider ? formatProviderLabel(item.model.provider) : null
+      case "codex":
+        return "Codex"
+      case "ollama":
+        return "Ollama"
+      case "custom":
+        return "Custom"
+    }
+  }
+
+  const getItemKey = (item: FlatModelItem): string => {
+    switch (item.type) {
+      case "claude":
+        return `claude-${item.model.id}`
+      case "codex":
+        return `codex-${item.model.id}`
+      case "ollama":
+        return `ollama-${item.modelName}`
+      case "custom":
+        return "custom"
+    }
+  }
+
+  const isItemSelected = (item: FlatModelItem): boolean => {
+    switch (item.type) {
+      case "claude":
+        return selectedAgentId === "claude-code" && claude.selectedModelId === item.model.id
+      case "codex":
+        return selectedAgentId === "codex" && codex.selectedModelId === item.model.id
+      case "ollama":
+        return selectedAgentId === "claude-code" && claude.selectedOllamaModel === item.modelName
+      case "custom":
+        return selectedAgentId === "claude-code"
+    }
+  }
+
+  const recentItems = useMemo(() => {
+    const byKey = new Map(filteredModels.map((item) => [getItemKey(item), item]))
+    const items = recentKeys
+      .map((key) => byKey.get(key))
+      .filter((item): item is FlatModelItem => Boolean(item))
+
+    // Keep the active model in Recent even when it was restored from config
+    // instead of being selected through this menu.
+    const selectedItem = filteredModels.find((item) => isItemSelected(item))
+    if (selectedItem) {
+      const selectedKey = getItemKey(selectedItem)
+      if (!items.some((item) => getItemKey(item) === selectedKey)) {
+        items.unshift(selectedItem)
+      }
+    }
+
+    return items
+  }, [
+    filteredModels,
+    recentKeys,
+    selectedAgentId,
+    claude.selectedModelId,
+    claude.selectedOllamaModel,
+    codex.selectedModelId,
+  ])
+
+  const recentKeySet = useMemo(
+    () => new Set(recentItems.map((item) => getItemKey(item))),
+    [recentItems],
+  )
+
   // Group Claude models by provider for sectioned rendering.
   const claudeProviderGroups = useMemo(() => {
     if (selectedAgentId !== "claude-code") return null
@@ -406,6 +543,7 @@ export function AgentModelSelector({
     const index = new Map<string, number>()
     for (const item of filteredModels) {
       if (item.type !== "claude") continue
+      if (recentKeySet.has(getItemKey(item))) continue
       const provider = item.model.provider || "Other"
       if (!index.has(provider)) {
         index.set(provider, groups.length)
@@ -414,7 +552,12 @@ export function AgentModelSelector({
       groups[index.get(provider)!].items.push(item)
     }
     return groups.length > 0 ? groups : null
-  }, [selectedAgentId, claude, filteredModels])
+  }, [selectedAgentId, claude, filteredModels, recentKeySet])
+
+  const nonClaudeGroupedItems = useMemo(() => {
+    if (claudeProviderGroups) return []
+    return filteredModels.filter((item) => !recentKeySet.has(getItemKey(item)))
+  }, [claudeProviderGroups, filteredModels, recentKeySet])
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
@@ -436,19 +579,6 @@ export function AgentModelSelector({
     ) : (
       <ClaudeCodeIcon className="h-3.5 w-3.5" />
     )
-
-  const isItemSelected = (item: FlatModelItem): boolean => {
-    switch (item.type) {
-      case "claude":
-        return selectedAgentId === "claude-code" && claude.selectedModelId === item.model.id
-      case "codex":
-        return selectedAgentId === "codex" && codex.selectedModelId === item.model.id
-      case "ollama":
-        return selectedAgentId === "claude-code" && claude.selectedOllamaModel === item.modelName
-      case "custom":
-        return selectedAgentId === "claude-code"
-    }
-  }
 
   const getItemProvider = (item: FlatModelItem): AgentProviderId => {
     return item.type === "codex" ? "codex" : "claude-code"
@@ -487,6 +617,15 @@ export function AgentModelSelector({
     setPendingProvider(null)
   }, [])
 
+  const recordRecentSelection = useCallback(
+    (item: FlatModelItem) => {
+      const key = getItemKey(item)
+      writeRecentModelKey(selectedAgentId, key)
+      setRecentKeys(readRecentModelKeys(selectedAgentId))
+    },
+    [selectedAgentId],
+  )
+
   const handleItemClick = (item: FlatModelItem) => {
     const provider = getItemProvider(item)
 
@@ -510,62 +649,27 @@ export function AgentModelSelector({
         if (!canSelectProvider("claude-code")) return
         onSelectedAgentIdChange("claude-code")
         claude.onSelectModel(item.model.id)
+        recordRecentSelection(item)
         break
       case "codex":
         if (!canSelectProvider("codex")) return
         onSelectedAgentIdChange("codex")
         codex.onSelectModel(item.model.id)
+        recordRecentSelection(item)
         break
       case "ollama":
         if (!canSelectProvider("claude-code")) return
         onSelectedAgentIdChange("claude-code")
         claude.onSelectOllamaModel(item.modelName)
+        recordRecentSelection(item)
         break
       case "custom":
         if (!canSelectProvider("claude-code")) return
         onSelectedAgentIdChange("claude-code")
+        recordRecentSelection(item)
         break
     }
     handleOpenChange(false)
-  }
-
-  const getItemIcon = (item: FlatModelItem) => {
-    switch (item.type) {
-      case "claude":
-        return <ClaudeCodeIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-      case "codex":
-        return <CodexIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-      case "ollama":
-        return <Zap className="h-4 w-4 text-muted-foreground shrink-0" />
-      case "custom":
-        return <ClaudeCodeIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-    }
-  }
-
-  const getItemLabel = (item: FlatModelItem): string => {
-    switch (item.type) {
-      case "claude":
-        return `${item.model.name} ${item.model.version}`
-      case "codex":
-        return item.model.name
-      case "ollama":
-        return item.modelName + (item.isRecommended ? " (recommended)" : "")
-      case "custom":
-        return "Custom Model"
-    }
-  }
-
-  const getItemKey = (item: FlatModelItem): string => {
-    switch (item.type) {
-      case "claude":
-        return `claude-${item.model.id}`
-      case "codex":
-        return `codex-${item.model.id}`
-      case "ollama":
-        return `ollama-${item.modelName}`
-      case "custom":
-        return "custom"
-    }
   }
 
   return (
@@ -636,14 +740,74 @@ export function AgentModelSelector({
 
           <CommandList className="max-h-[300px] overflow-y-auto">
             {filteredModels.length > 0 ? (
-              <CommandGroup>
-                {claudeProviderGroups
-                  ? claudeProviderGroups.map((group) => (
-                      <div key={group.provider}>
-                        <div className="px-2 py-1.5 text-xs font-semibold text-foreground">
-                          {group.provider}
-                        </div>
-                        {group.items.map((item) => {
+              <>
+                {recentItems.length > 0 && (
+                  <CommandGroup>
+                    <div className="px-2 py-1.5 text-sm font-semibold text-foreground">
+                      Recent
+                    </div>
+                    {recentItems.map((item) => {
+                      const selected = isItemSelected(item)
+                      const disabled = isItemDisabled(item)
+                      const crossProvider = isItemCrossProvider(item)
+                      const providerLabel = getItemProviderLabel(item)
+                      return (
+                        <CommandItem
+                          key={`recent-${getItemKey(item)}`}
+                          value={`recent-${getItemKey(item)}`}
+                          onSelect={() => handleItemClick(item)}
+                          disabled={disabled}
+                          className={cn("gap-2", crossProvider && "opacity-60")}
+                        >
+                          <span className="truncate flex-1">{getItemLabel(item)}</span>
+                          {providerLabel && (
+                            <span className="text-sm font-medium text-muted-foreground shrink-0">
+                              {providerLabel}
+                            </span>
+                          )}
+                          {crossProvider && (
+                            <span className="text-[10px] text-muted-foreground shrink-0">New chat</span>
+                          )}
+                          {selected && <CheckIcon className="h-4 w-4 shrink-0" />}
+                        </CommandItem>
+                      )
+                    })}
+                  </CommandGroup>
+                )}
+
+                {(claudeProviderGroups || nonClaudeGroupedItems.length > 0) && (
+                  <CommandGroup>
+                    {claudeProviderGroups
+                      ? claudeProviderGroups.map((group) => (
+                          <div key={group.provider}>
+                            <div className="px-2 py-1.5 text-sm font-semibold text-foreground">
+                              {formatProviderLabel(group.provider)}
+                            </div>
+                            {group.items.map((item) => {
+                              const selected = isItemSelected(item)
+                              const disabled = isItemDisabled(item)
+                              const crossProvider = isItemCrossProvider(item)
+                              return (
+                                <CommandItem
+                                  key={getItemKey(item)}
+                                  value={getItemKey(item)}
+                                  onSelect={() => handleItemClick(item)}
+                                  disabled={disabled}
+                                  className={cn("gap-2", crossProvider && "opacity-60")}
+                                >
+                                  <span className="truncate flex-1">{getItemLabel(item)}</span>
+                                  {crossProvider && (
+                                    <span className="text-[10px] text-muted-foreground shrink-0">New chat</span>
+                                  )}
+                                  {selected && (
+                                    <CheckIcon className="h-4 w-4 shrink-0" />
+                                  )}
+                                </CommandItem>
+                              )
+                            })}
+                          </div>
+                        ))
+                      : nonClaudeGroupedItems.map((item) => {
                           const selected = isItemSelected(item)
                           const disabled = isItemDisabled(item)
                           const crossProvider = isItemCrossProvider(item)
@@ -656,6 +820,11 @@ export function AgentModelSelector({
                               className={cn("gap-2", crossProvider && "opacity-60")}
                             >
                               <span className="truncate flex-1">{getItemLabel(item)}</span>
+                              {item.type === "claude" && item.model.provider && (
+                                <span className="text-sm font-medium text-muted-foreground shrink-0">
+                                  {formatProviderLabel(item.model.provider)}
+                                </span>
+                              )}
                               {crossProvider && (
                                 <span className="text-[10px] text-muted-foreground shrink-0">New chat</span>
                               )}
@@ -665,36 +834,9 @@ export function AgentModelSelector({
                             </CommandItem>
                           )
                         })}
-                      </div>
-                    ))
-                  : filteredModels.map((item) => {
-                      const selected = isItemSelected(item)
-                      const disabled = isItemDisabled(item)
-                      const crossProvider = isItemCrossProvider(item)
-                      return (
-                        <CommandItem
-                          key={getItemKey(item)}
-                          value={getItemKey(item)}
-                          onSelect={() => handleItemClick(item)}
-                          disabled={disabled}
-                          className={cn("gap-2", crossProvider && "opacity-60")}
-                        >
-                          <span className="truncate flex-1">{getItemLabel(item)}</span>
-                          {item.type === "claude" && item.model.provider && (
-                            <span className="text-[10px] text-muted-foreground shrink-0">
-                              {item.model.provider}
-                            </span>
-                          )}
-                          {crossProvider && (
-                            <span className="text-[10px] text-muted-foreground shrink-0">New chat</span>
-                          )}
-                          {selected && (
-                            <CheckIcon className="h-4 w-4 shrink-0" />
-                          )}
-                        </CommandItem>
-                      )
-                    })}
-              </CommandGroup>
+                  </CommandGroup>
+                )}
+              </>
             ) : (
               <CommandEmpty>No models found.</CommandEmpty>
             )}

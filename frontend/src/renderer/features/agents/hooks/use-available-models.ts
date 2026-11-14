@@ -92,6 +92,32 @@ function mapBackendModelToUI(modelName: string): ModelItem | null {
   return { id, name: displayName, version: "" }
 }
 
+function inferProviderFromModelId(modelId: string): string | undefined {
+  const slash = modelId.indexOf("/")
+  if (slash > 0) {
+    const provider = modelId.slice(0, slash).trim()
+    if (provider && provider.toLowerCase() !== "models") return provider
+  }
+  if (/claude/i.test(modelId)) return "Anthropic"
+  if (/^(gpt|o[134])/i.test(modelId)) return "OpenAI"
+  if (/gemini/i.test(modelId)) return "Google"
+  if (/deepseek/i.test(modelId)) return "DeepSeek"
+  if (/qwen/i.test(modelId)) return "Qwen"
+  if (/(kimi|moonshot)/i.test(modelId)) return "Moonshot"
+  if (/glm/i.test(modelId)) return "Zhipu"
+  if (/grok/i.test(modelId)) return "xAI"
+  return undefined
+}
+
+function normalizeModelProvider(
+  provider: string | undefined,
+  modelId: string,
+): string | undefined {
+  const trimmed = provider?.trim()
+  if (trimmed && trimmed.toLowerCase() !== "configured") return trimmed
+  return inferProviderFromModelId(modelId)
+}
+
 function mapBackendModelDetailToUI(detail: {
   id: string
   name?: string
@@ -119,7 +145,7 @@ function mapBackendModelDetailToUI(detail: {
     id,
     name: displayName,
     version: extractModelVersion(detail.description),
-    provider: detail.provider,
+    provider: normalizeModelProvider(detail.provider, raw),
   }
 }
 

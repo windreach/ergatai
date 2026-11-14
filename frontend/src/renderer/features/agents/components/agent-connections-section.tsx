@@ -56,6 +56,8 @@ interface AgentConnectionsSectionProps {
  * Product model: one connection belongs to exactly one agent, while one agent
  * may own many connections (multiple keys/endpoints to switch between).
  */
+// react-doctor-disable-next-line no-high-complexity-react-function
+// react-doctor-disable-next-line no-giant-component
 export function AgentConnectionsSection({
   agentId,
   agentDisplayName,

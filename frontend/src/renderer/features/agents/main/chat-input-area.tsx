@@ -32,6 +32,7 @@ import {
   normalizeCustomClaudeConfig,
 } from "../../../lib/atoms"
 import { useConversationOllamaModel } from "../hooks/use-conversation-ollama-model"
+import { getRuntimeSessionStore } from "../../conversation"
 import { trpc } from "../../../lib/trpc"
 import { cn } from "../../../lib/utils"
 import {
@@ -87,6 +88,8 @@ import {
   type AgentsMentionsEditorHandle,
   type FileMentionOption,
 } from "../mentions"
+import { AgentsSkillTrigger } from "../mentions/agents-skill-trigger"
+import { AgentsHashTrigger } from "../mentions/agents-hash-trigger"
 import {
   type AgentTriggerMatch,
   normalizeAgentTriggers,
@@ -205,6 +208,7 @@ export interface ChatInputAreaProps {
   repository?: string
   sandboxId?: string
   projectPath?: string
+  allowedPaths?: string[]
   changedFiles: ConversationFileChange[]
   // Mobile
   isMobile?: boolean
@@ -245,6 +249,7 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
     prevProps.repository !== nextProps.repository ||
     prevProps.sandboxId !== nextProps.sandboxId ||
     prevProps.projectPath !== nextProps.projectPath ||
+    (prevProps.allowedPaths?.join("|") !== nextProps.allowedPaths?.join("|")) ||
     prevProps.isMobile !== nextProps.isMobile ||
     prevProps.queueLength !== nextProps.queueLength ||
     prevProps.firstQueueItemId !== nextProps.firstQueueItemId ||
@@ -366,6 +371,7 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
     prevProps.messageTokenData.totalOutputTokens !== nextProps.messageTokenData.totalOutputTokens ||
     prevProps.messageTokenData.contextWindow !== nextProps.messageTokenData.contextWindow ||
     prevProps.messageTokenData.contextUsed !== nextProps.messageTokenData.contextUsed ||
+    prevProps.messageTokenData.contextQuota !== nextProps.messageTokenData.contextQuota ||
     prevProps.messageTokenData.messageCount !== nextProps.messageTokenData.messageCount
   ) {
     return false
@@ -438,6 +444,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   repository,
   sandboxId,
   projectPath,
+  allowedPaths,
   changedFiles,
   isMobile = false,
   queueLength = 0,
@@ -480,7 +487,7 @@ export const ChatInputArea = memo(function ChatInputArea({
     }
   }, [])
 
-  // Mention dropdown state
+  // Mention dropdown state (@)
   const [showMentionDropdown, setShowMentionDropdown] = useState(false)
   const [browseRoot, setBrowseRoot] = useState<string | null>(null)
 
@@ -495,6 +502,16 @@ export const ChatInputArea = memo(function ChatInputArea({
   const [mentionScope, setMentionScope] = useState<
     "agents" | "resources" | "all"
   >("agents")
+
+  // Skill trigger state ($)
+  const [showSkillDropdown, setShowSkillDropdown] = useState(false)
+  const [skillSearchText, setSkillSearchText] = useState("")
+  const [skillPosition, setSkillPosition] = useState({ top: 0, left: 0 })
+
+  // Hash/reference trigger state (#)
+  const [showHashDropdown, setShowHashDropdown] = useState(false)
+  const [hashSearchText, setHashSearchText] = useState("")
+  const [hashPosition, setHashPosition] = useState({ top: 0, left: 0 })
   const [groupAgentIds, setGroupAgentIds] = useState<CoreAgentId[]>([
     "claude-code",
   ])
@@ -578,11 +595,19 @@ export const ChatInputArea = memo(function ChatInputArea({
   const [showingFilesList, setShowingFilesList] = useState(false)
   const [showingAgentsList, setShowingAgentsList] = useState(false)
 
-  // Slash command dropdown state
+  // Slash command dropdown state (/)
   const [showSlashDropdown, setShowSlashDropdown] = useState(false)
   const [slashSearchText, setSlashSearchText] = useState("")
   const [slashPosition, setSlashPosition] = useState({ top: 0, left: 0 })
-  const slashTriggerCharRef = useRef("/")  // Slash command dropdown state
+  const slashTriggerCharRef = useRef("/")
+
+  const closeAllMentionTriggers = useCallback(() => {
+    setShowMentionDropdown(false)
+    setShowSkillDropdown(false)
+    setShowHashDropdown(false)
+    setShowingFilesList(false)
+    setShowingAgentsList(false)
+  }, [])
 
   const [nativeTriggerMatch, setNativeTriggerMatch] = useState<NativeTriggerHintPayload | null>(null)
 
@@ -639,6 +664,9 @@ const availableModels = useAvailableModels(agentId, profileHint)
     onSuccess: () => {
       void queryClient.ergatai.listAgents.invalidate()
       void queryClient.ergatai.getAgentProfileModels.invalidate()
+      if (conversationId) {
+        getRuntimeSessionStore().resetContextUsage(conversationId)
+      }
     },
     onError: (error) => {
       if (error.message.includes("agent not found")) return
@@ -674,7 +702,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
     // Fall back to the provider name for runtime-model providers so profile
     // metadata can still be read before/while the agent is registered.
     return activeAgent?.profile ?? (isRuntimeModelProvider ? provider : null)
-  }, [agentId, runtimeAgents])
+  }, [agentId, runtimeAgents, isRuntimeModelProvider, provider])
 
   // Native triggers are opt-in metadata. Absent metadata means unknown syntax,
   // which is intentionally not scanned and is passed through to the agent.
@@ -1268,7 +1296,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
     }
   }, [editorRef, images, files, textContexts, diffTextContexts, queueLength, onSendFromQueue, firstQueueItemId, onStop, onSend])
 
-  // Mention select handler
+  // Mention select handler (@)
   const handleMentionSelect = useCallback((mention: FileMentionOption) => {
     // Category navigation - enter subpage instead of inserting mention
     if (mention.type === "category") {
@@ -1282,7 +1310,6 @@ const availableModels = useAvailableModels(agentId, profileHint)
       }
     }
 
-    // @目录：切换浏览根，并作为普通文本插入（由 insertMention 处理触发词移除）
     const isFolder = mention.type === "folder"
 
     // Otherwise: insert mention as normal
@@ -1290,8 +1317,6 @@ const availableModels = useAvailableModels(agentId, profileHint)
 
     if (isFolder) {
       // Keep the dropdown open and scoped to the newly selected directory.
-      // insertMention() closes the trigger; schedule reopen after that so we can
-      // continue browsing/selecting inside the directory without retyping @.
       const nextBrowseRoot = mention.path
       const nextSearchText = `${mention.path}/`
       setBrowseRoot(nextBrowseRoot)
@@ -1305,14 +1330,23 @@ const availableModels = useAvailableModels(agentId, profileHint)
         editorRef.current?.triggerDetection?.()
       })
     } else {
-      // Reset subpage state and close
       setShowingFilesList(false)
       setShowingAgentsList(false)
       setShowMentionDropdown(false)
     }
   }, [editorRef])
 
-  // Slash command handlers
+  const handleSkillSelect = useCallback((mention: FileMentionOption) => {
+    editorRef.current?.insertMention(mention)
+    setShowSkillDropdown(false)
+  }, [editorRef])
+
+  const handleHashSelect = useCallback((mention: FileMentionOption) => {
+    editorRef.current?.insertMention(mention)
+    setShowHashDropdown(false)
+  }, [editorRef])
+
+  // Slash command handlers (/)
   const handleSlashTrigger = useCallback(
     ({ searchText, rect, triggerChar }: { searchText: string; rect: DOMRect; triggerChar?: string }) => {
       setSlashSearchText(searchText)
@@ -1676,21 +1710,34 @@ const availableModels = useAvailableModels(agentId, profileHint)
               <div className="relative">
                 <AgentsMentionsEditor
                   ref={editorRef}
-                  onTrigger={({ searchText, rect }) => {
-                    // Desktop: use projectPath for local file search
-                    if (projectPath || repository) {
-                      setMentionScope("agents")
-                      setMentionSearchText(searchText)
-                      setMentionPosition({ top: rect.top, left: rect.left })
-                      setShowMentionDropdown(true)
+                  onTrigger={({ searchText, rect, triggerChar }) => {
+                    const ch = triggerChar || "@"
+                    if (ch === "$") {
+                      setSkillSearchText(searchText)
+                      setSkillPosition({ top: rect.top, left: rect.left })
+                      setShowSkillDropdown(true)
+                      setShowMentionDropdown(false)
+                      setShowHashDropdown(false)
+                      return
                     }
+                    if (ch === "#") {
+                      setHashSearchText(searchText)
+                      setHashPosition({ top: rect.top, left: rect.left })
+                      setShowHashDropdown(true)
+                      setShowMentionDropdown(false)
+                      setShowSkillDropdown(false)
+                      return
+                    }
+                    // Default @ mention/context trigger
+                    // Open even without file-search project context so agents/MCP/discovery refs can be mentioned.
+                    setMentionScope("agents")
+                    setMentionSearchText(searchText)
+                    setMentionPosition({ top: rect.top, left: rect.left })
+                    setShowMentionDropdown(true)
+                    setShowSkillDropdown(false)
+                    setShowHashDropdown(false)
                   }}
-                  onCloseTrigger={() => {
-                    setShowMentionDropdown(false)
-                    // Reset subpage state when closing
-                    setShowingFilesList(false)
-                    setShowingAgentsList(false)
-                  }}
+                  onCloseTrigger={closeAllMentionTriggers}
                   nativeTriggers={nativeTriggers}
                   onSlashTrigger={handleSlashTrigger}
                   onCloseSlashTrigger={handleCloseSlashTrigger}
@@ -1703,7 +1750,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
                   onSubmit={onSubmitWithQuestionAnswer || handleEditorSubmit}
                   onForceSubmit={onForceSend}
                   onShiftTab={toggleMode}
-                  placeholder={isStreaming ? "Add to the queue" : "Plan, @ for agent, / for commands"}
+                  placeholder={isStreaming ? "Add to the queue" : "Plan, / command, @ context, $ skill, # ref"}
                   className={cn(
                     "bg-transparent max-h-[200px] overflow-y-auto p-1",
                     isMobile && "min-h-[56px]",
@@ -1927,16 +1974,11 @@ const availableModels = useAvailableModels(agentId, profileHint)
         </div>
       </div>
 
-      {/* File mention dropdown */}
-      {/* Desktop: use projectPath for local file search */}
+      {/* @ context mention dropdown */}
       <AgentsFileMention
-        isOpen={
-          showMentionDropdown &&
-          (!!projectPath || !!repository || !!sandboxId)
-        }
+        isOpen={showMentionDropdown}
         onClose={() => {
           setShowMentionDropdown(false)
-          // Reset subpage state when closing
           setShowingFilesList(false)
           setShowingAgentsList(false)
         }}
@@ -1949,17 +1991,45 @@ const availableModels = useAvailableModels(agentId, profileHint)
         repository={repository}
         sandboxId={sandboxId}
         projectPath={projectPath}
+        projectPaths={allowedPaths}
         browseRoot={browseRoot}
         onBrowseRootChange={setBrowseRoot}
         changedFiles={changedFiles}
-        // Subpage navigation state
+        agentId={agentId ?? undefined}
+        agentKind={provider}
         showingFilesList={showingFilesList}
         showingAgentsList={showingAgentsList}
         scope={mentionScope}
         boundAgents={isGroupMode ? boundGroupAgents : undefined}
       />
 
-      {/* Slash command dropdown */}
+      {/* $ skill/template trigger dropdown */}
+      <AgentsSkillTrigger
+        isOpen={showSkillDropdown}
+        onClose={() => setShowSkillDropdown(false)}
+        onSelect={handleSkillSelect}
+        searchText={skillSearchText}
+        position={skillPosition}
+        containerWidth={inputContainerWidth}
+        containerLeft={inputContainerLeft}
+        agentId={agentId ?? undefined}
+        cwd={projectPath}
+        agentKind={provider}
+      />
+
+      {/* # reference trigger dropdown */}
+      <AgentsHashTrigger
+        isOpen={showHashDropdown}
+        onClose={() => setShowHashDropdown(false)}
+        onSelect={handleHashSelect}
+        searchText={hashSearchText}
+        position={hashPosition}
+        containerWidth={inputContainerWidth}
+        containerLeft={inputContainerLeft}
+        changedFiles={changedFiles}
+      />
+
+      {/* / command dropdown */}
       <AgentsSlashCommand
         isOpen={showSlashDropdown}
         onClose={handleCloseSlashTrigger}

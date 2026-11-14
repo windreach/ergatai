@@ -9,6 +9,15 @@ type TokenMessage = {
 type SessionStateLike = {
   contextUsed?: number
   contextWindow?: number
+  contextQuota?: {
+    inputTokens?: number | null
+    outputTokens?: number | null
+    totalTokens?: number | null
+    cachedInputTokens?: number | null
+    cacheWriteInputTokens?: number | null
+    reasoningOutputTokens?: number | null
+    modelUsage?: unknown
+  }
 } | null | undefined
 
 /**
@@ -64,13 +73,34 @@ export function useMessageTokenData(
         ? Math.max(0, metadata.totalTokens - (metadata?.outputTokens ?? 0))
         : undefined
 
-    const totalInputTokens =
+    const contextQuota = sessionState?.contextQuota
+
+    // Prefer ACP extension quota detail when the adapter reports it; fall back to
+    // message metadata. This keeps token accounting working for adapters that do
+    // not populate per-message usage metadata.
+    const quotaInputTokens = contextQuota?.inputTokens
+    const quotaOutputTokens = contextQuota?.outputTokens
+    const quotaTotalTokens = contextQuota?.totalTokens
+    const quotaCachedInputTokens = contextQuota?.cachedInputTokens ?? 0
+    const quotaCacheWriteInputTokens = contextQuota?.cacheWriteInputTokens ?? 0
+
+    const metadataTotalInputTokens =
       provider === "codex"
         ? (codexInputTokensFromTotal ?? metadata?.inputTokens ?? 0)
         : (metadata?.inputTokens ?? 0) +
           cacheReadInputTokens +
           cacheCreationInputTokens
-    const totalOutputTokens = metadata?.outputTokens ?? 0
+
+    const totalInputTokens =
+      quotaInputTokens != null
+        ? provider === "codex"
+          ? (quotaTotalTokens != null
+              ? Math.max(0, quotaTotalTokens - (quotaOutputTokens ?? 0))
+              : quotaInputTokens)
+          : quotaInputTokens + quotaCachedInputTokens + quotaCacheWriteInputTokens
+        : metadataTotalInputTokens
+    const totalOutputTokens =
+      quotaOutputTokens != null ? quotaOutputTokens : (metadata?.outputTokens ?? 0)
     const totalCostUsd = metadata?.totalCostUsd ?? 0
     const contextWindow = metadata?.modelContextWindow
 
@@ -86,6 +116,7 @@ export function useMessageTokenData(
       messageCount,
       contextWindow: sessionContextWindow || contextWindow,
       contextUsed,
+      contextQuota: contextQuota ?? undefined,
     }
   }, [messages, provider, sessionState])
 }

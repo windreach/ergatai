@@ -301,11 +301,11 @@ export function buildRuntimeMessages(
               typeof p.text === "string" &&
               (p.text.includes("provider.free-limit") ||
                 p.text.includes("Free usage limit") ||
-                p.text.toLower().includes("error")),
+                p.text.toLowerCase().includes("error")),
           ),
         )
         if (!hasRenderedError) {
-          const message = ensureStreamMessage(event.role)
+          const message = ensureStreamMessage()
           closeStreamingReasoning(message)
           message.parts.push({
             type: "text",

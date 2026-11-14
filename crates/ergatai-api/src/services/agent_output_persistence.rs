@@ -322,7 +322,7 @@ pub async fn persist_agent_output(
             // Note: thinking/tool_calls/text_chunks are already JSON strings in AgentOutputData,
             // so we pass them through directly without re-encoding
             // Parse metadata to extract stop_reason, duration_ms, and context usage
-            let (stop_reason, duration_ms, context_used, context_window) =
+            let (stop_reason, duration_ms, context_used, context_window, context_quota_json) =
                 if let Some(ref metadata_json) = output_data.metadata {
                     if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(metadata_json) {
                         let sr = metadata
@@ -341,16 +341,17 @@ pub async fn persist_agent_output(
                             .get("context_window")
                             .and_then(|v| v.as_u64())
                             .map(|v| v as i64);
-                        (sr, dm, cu, cw)
+                        let cq = metadata.get("context_quota").map(|v| v.to_string());
+                        (sr, dm, cu, cw, cq)
                     } else {
                         tracing::warn!(
                             conversation_id = %output_data.conversation_id,
                             "Failed to parse metadata JSON"
                         );
-                        (None, None, None, None)
+                        (None, None, None, None, None)
                     }
                 } else {
-                    (None, None, None, None)
+                    (None, None, None, None, None)
                 };
 
             let output_fields = AgentOutputFields {
@@ -398,6 +399,7 @@ pub async fn persist_agent_output(
                     conversation_id,
                     cu,
                     cw,
+                    context_quota_json.as_deref(),
                 ) {
                     tracing::warn!(
                         conversation_id = %conversation_id,

@@ -115,25 +115,8 @@ pub async fn discover_models(_profile_name: &str, cwd: Option<&str>) -> Discover
     }
 }
 
-pub async fn switch_model(
-    _agent_id: &str,
-    model: &str,
-    cwd: Option<&str>,
-    session_id: Option<&str>,
-) -> serde_json::Value {
-    let sdk =
-        crate::services::agent_sdk_service::switch_model("opencode", model, cwd, session_id).await;
-    if sdk.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-        return sdk;
-    }
-
-    serde_json::json!({
-        "ok": false,
-        "error": sdk.get("error").cloned().unwrap_or_else(|| serde_json::json!("opencode sdk failed")),
-        "via": "sdk_failed",
-        "sdk_error": sdk.get("error").cloned(),
-    })
-}
+// Runtime model switching is performed in-process by the ACP agent.
+// SDK-based runtime switching has been removed.
 
 pub async fn discover(cwd: Option<&str>) -> serde_json::Value {
     crate::services::agent_sdk_service::discover("opencode", cwd).await
@@ -255,14 +238,36 @@ pub fn list_skills(cwd: Option<&str>) -> Vec<crate::services::skills_service::Sk
     let home = std::env::var("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    // OpenCode reads skills from its own directories plus Claude-compatible
+    // and agent-ecosystem-compatible locations.
     crate::services::skills_service::scan_dir(
         &home.join(".config").join("opencode").join("skills"),
+        "user",
+        &mut out,
+    );
+    crate::services::skills_service::scan_dir(
+        &home.join(".claude").join("skills"),
+        "user",
+        &mut out,
+    );
+    crate::services::skills_service::scan_dir(
+        &home.join(".agents").join("skills"),
         "user",
         &mut out,
     );
     if let Some(cwd) = cwd {
         crate::services::skills_service::scan_dir(
             &Path::new(cwd).join(".opencode").join("skills"),
+            "project",
+            &mut out,
+        );
+        crate::services::skills_service::scan_dir(
+            &Path::new(cwd).join(".claude").join("skills"),
+            "project",
+            &mut out,
+        );
+        crate::services::skills_service::scan_dir(
+            &Path::new(cwd).join(".agents").join("skills"),
             "project",
             &mut out,
         );
@@ -276,6 +281,48 @@ pub async fn inject_mcp(
     servers_json: &str,
 ) -> serde_json::Value {
     crate::services::agent_sdk_service::inject_mcp("opencode", cwd, session_id, servers_json).await
+}
+
+/// Resolve the provider for a model that only appears in the config's
+/// `model` field. OpenCode model IDs are normally `provider/model`.
+fn resolve_model_provider(model_id: &str, providers: &serde_json::Map<String, Value>) -> String {
+    if let Some((provider_id, _)) = model_id.split_once('/') {
+        return providers
+            .get(provider_id)
+            .and_then(|provider| provider.get("name"))
+            .and_then(|name| name.as_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(provider_id)
+            .to_string();
+    }
+
+    for (provider_id, provider) in providers {
+        let contains_model = provider
+            .get("models")
+            .and_then(|models| models.as_object())
+            .map(|models| models.contains_key(model_id))
+            .unwrap_or(false);
+        if contains_model {
+            return provider
+                .get("name")
+                .and_then(|name| name.as_str())
+                .unwrap_or(provider_id.as_str())
+                .to_string();
+        }
+    }
+
+    // A single configured provider can safely be inferred for a bare model ID.
+    if providers.len() == 1 {
+        if let Some((provider_id, provider)) = providers.iter().next() {
+            return provider
+                .get("name")
+                .and_then(|name| name.as_str())
+                .unwrap_or(provider_id.as_str())
+                .to_string();
+        }
+    }
+
+    String::new()
 }
 
 pub fn read_models(cwd: Option<&str>) -> Vec<crate::services::profile_service::ProfileModelDetail> {
@@ -324,12 +371,15 @@ pub fn read_models(cwd: Option<&str>) -> Vec<crate::services::profile_service::P
                 .to_string();
             if let Some(mobj) = pval.get("models").and_then(|v| v.as_object()) {
                 for mkey in mobj.keys() {
-                    if seen.contains(mkey) {
+                    // Keep the provider-qualified ID so it matches the IDs reported
+                    // by OpenCode ACP config options (e.g. `opencode-go/foo`).
+                    let full_id = format!("{}/{}", pname, mkey);
+                    if seen.contains(&full_id) {
                         continue;
                     }
-                    seen.insert(mkey.clone());
+                    seen.insert(full_id.clone());
                     models.push(crate::services::profile_service::ProfileModelDetail {
-                        id: mkey.clone(),
+                        id: full_id,
                         name: mkey.clone(),
                         description: String::new(),
                         provider: pname_str.clone(),
@@ -345,19 +395,23 @@ pub fn read_models(cwd: Option<&str>) -> Vec<crate::services::profile_service::P
             .map(|s| s.to_string());
         if let Some(dm) = dm {
             if !dm.is_empty() {
-                let id = if dm.contains('/') {
-                    dm.split('/').next_back().unwrap_or(&dm).to_string()
-                } else {
-                    dm.clone()
-                };
+                // Keep the full provider-qualified default model ID so it matches
+                // ACP config option values.
+                let id = dm.clone();
                 if !seen.contains(&id) {
+                    let name = id
+                        .split_once('/')
+                        .map(|(_, model)| model)
+                        .unwrap_or(&id)
+                        .to_string();
+                    let provider = resolve_model_provider(&id, &providers);
                     models.insert(
                         0,
                         crate::services::profile_service::ProfileModelDetail {
                             id: id.clone(),
-                            name: id.clone(),
+                            name,
                             description: "Configured model".to_string(),
-                            provider: "Configured".to_string(),
+                            provider,
                         },
                     );
                     seen.insert(id);

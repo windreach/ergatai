@@ -11,6 +11,7 @@ import { createPortal } from "react-dom"
 import type { SlashCommandOption } from "./types"
 import type { AgentMode } from "../atoms"
 import { useDiscoveryGroups } from "../discovery/use-discovery-groups"
+import { useRegisteredTriggers } from "../discovery/use-registered-triggers"
 import { useDropdownShell, getDropdownContainerStyle } from "../discovery/use-dropdown-shell"
 
 interface AgentsSlashCommandProps {
@@ -59,19 +60,31 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
 
   // Generic discovery aggregation (shared abstraction for trigger dropdowns).
   const { groups: discoveryGroups, isLoading: discoveryLoading } = useDiscoveryGroups(isOpen ? agentId : undefined, cwd, agentKind)
+  const { getTriggerTypes } = useRegisteredTriggers(isOpen ? agentId : undefined, cwd)
 
   const agentCommands: SlashCommandOption[] = useMemo(() => {
+    const slashTypes = getTriggerTypes("/")
+    const allowedTypesFallback =
+      slashTypes && slashTypes.length > 0 ? new Set(slashTypes) : null
     return discoveryGroups.flatMap((g) =>
-      g.items.map((it) => ({
-        id: `${it.source ?? "agent"}:${it.name}`,
-        name: it.name,
-        command: `/${it.name}`,
-        description: it.description || "",
-        category: "agent" as const,
-        group: g.id,
-      })),
+      g.items
+        .filter((it) => {
+          // Prefer deterministic routing markers stamped at read/discovery time.
+          if (it.targetTriggers?.includes("/")) return true
+          if (it.targetTriggers?.length) return false
+          // Legacy fallback: dynamic type filtering (fragile, kept for compatibility).
+          return allowedTypesFallback ? allowedTypesFallback.has(it.type) : it.type === "command"
+        })
+        .map((it) => ({
+          id: `${it.source ?? "agent"}:${it.name}`,
+          name: it.name,
+          command: `/${it.name}`,
+          description: it.description || "",
+          category: "agent" as const,
+          group: g.id,
+        })),
     )
-  }, [discoveryGroups])
+  }, [discoveryGroups, getTriggerTypes])
 
   // Filter options with raw searchText for option count (used by shell for keyboard nav)
   const filteredOptions: SlashCommandOption[] = useMemo(() => {

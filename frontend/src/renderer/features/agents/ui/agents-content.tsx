@@ -1024,7 +1024,10 @@ export function AgentsContent() {
   const chatDataExtended = chatData as
     | (typeof chatData & { worktreePath?: string; branch?: string })
     | undefined
-  const worktreePath = chatDataExtended?.worktreePath
+  const worktreePath =
+    chatDataExtended?.worktreePath ??
+    selectedWorkspace?.projects?.[0]?.projectPath ??
+    selectedWorkspace?.workDir
   const canShowTerminal = !!worktreePath
 
   // Terminal scope key for shared terminals
@@ -1119,7 +1122,7 @@ export function AgentsContent() {
                 selectedTeamName={undefined}
                 selectedTeamImageUrl={undefined}
                 isMobileFullscreen={true}
-                projectPath={selectedWorkspace?.projects?.[0]?.projectPath ?? selectedWorkspace?.workDir}
+                projectPath={selectedWorkspace?.projects?.map((p) => p.projectPath).filter(Boolean) ?? (selectedWorkspace?.workDir ? [selectedWorkspace.workDir] : [])}
                 onBackToChats={() => {
                   setMobileViewMode("chats")
                   setSelectedChatId(null)
@@ -1236,7 +1239,7 @@ export function AgentsContent() {
                     onToggleSidebar={isLinuxTitleBar ? undefined : () => setSidebarOpen((prev) => !prev)}
                     selectedTeamName={undefined}
                     selectedTeamImageUrl={undefined}
-                    projectPath={selectedWorkspace?.projects?.[0]?.projectPath ?? selectedWorkspace?.workDir}
+                    projectPath={selectedWorkspace?.projects?.map((p) => p.projectPath).filter(Boolean) ?? (selectedWorkspace?.workDir ? [selectedWorkspace.workDir] : [])}
                   />
                 </div>
               ) : selectedDraftId || showNewChatForm ? (

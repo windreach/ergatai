@@ -2106,6 +2106,8 @@ pub struct ContextUsageResponse {
     pub context_window: i64,
     pub percent_used: f64,
     pub updated_at: i64,
+    /// Persisted ACP extension quota detail (JSON), if reported.
+    pub context_quota: Option<serde_json::Value>,
 }
 
 /// Get ACP context window usage for a conversation.
@@ -2158,12 +2160,20 @@ pub async fn get_conversation_context_usage(
         0.0
     };
 
+    let quota_json = crate::user_data_db::conversations::get_context_quota_json(id_i64)
+        .ok()
+        .flatten();
+    let context_quota = quota_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+
     let response = ContextUsageResponse {
         conversation_id: id,
         context_used: conversation.context_used,
         context_window: conversation.context_window,
         percent_used: percent_used.min(100.0),
         updated_at: conversation.context_updated_at,
+        context_quota,
     };
 
     (StatusCode::OK, Json(response)).into_response()

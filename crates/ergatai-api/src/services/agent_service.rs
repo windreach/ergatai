@@ -765,94 +765,135 @@ pub async fn set_agent(agent_id: &str, model: &str) -> anyhow::Result<String> {
         return Err(anyhow::anyhow!("model must not be empty"));
     }
 
-    // Prefer SDK path first so agents like OpenCode can switch via their native API
-    // instead of prompt-driven slash commands.
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
-    if let Some(info) = runtime.get_agent(agent_id).await {
-        let profile_name = info.profile.clone();
-        let cwd = info
-            .handle
-            .metadata
-            .get("work_dir")
-            .cloned()
-            .or_else(|| info.handle.workspace.metadata.get("work_dir").cloned());
-        let session_id = runtime.backend().session_id(agent_id).await.ok().flatten();
-
-        let kind = if let Some(pn) = profile_name.as_deref() {
-            crate::services::agent::resolve_kind_by_name(pn).await
-        } else {
-            crate::services::agent::AgentKind::Unknown
-        };
-
-        if kind != crate::services::agent::AgentKind::Unknown {
-            let sdk_result = crate::services::agent::switch_model(
-                kind,
-                agent_id,
-                model_trimmed,
-                cwd.as_deref(),
-                session_id.as_deref(),
-            )
-            .await;
-            if sdk_result
-                .get("ok")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                tracing::info!(
-                    agent_id = %agent_id,
-                    model = %model_trimmed,
-                    ?session_id,
-                    "Model switched via agent SDK"
-                );
-
-                // Persist runtime selected model (best effort).
-                let agent_id_owned = agent_id.to_string();
-                let model_owned = model_trimmed.to_string();
-                tokio::spawn(async move {
-                    let runtime = crate::context::get_app_context().agent_runtime.clone();
-                    let profile_name = runtime
-                        .get_agent(&agent_id_owned)
-                        .await
-                        .and_then(|i| i.profile.clone());
-                    crate::services::agent_service::set_agent_runtime_selected_model(
-                        &agent_id_owned,
-                        profile_name.as_deref(),
-                        &model_owned,
-                        "user_selected",
-                    )
-                    .await;
-                });
-
-                return Ok(String::new());
-            }
-
-            tracing::debug!(
-                agent_id = %agent_id,
-                model = %model_trimmed,
-                error = ?sdk_result.get("error"),
-                "Agent SDK model switch unavailable, falling back to ACP"
-            );
-        }
-    }
+    // Runtime model switching must happen inside the running ACP process.
+    // SDK-based switching runs in a separate process and cannot reliably mutate
+    // the active ACP session, so it is intentionally not used here.
 
     let backend = backend();
-    let result = match backend.set_session_model(agent_id, model_trimmed).await {
-        Ok(()) => Ok(String::new()),
-        Err(e) => {
-            tracing::debug!(
-                agent_id = %agent_id,
-                error = %e,
-                "ACP set_session_model unavailable, falling back to /model"
-            );
-            let command = format!("/model {}", model_trimmed);
-            execute_agent_command(agent_id, &command, 30).await
+
+    // Resolve the agent kind so OpenCode can skip the unsupported
+    // `session/set_model` request and avoid noisy method-not-found logs.
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    let agent_kind = if let Some(info) = runtime.get_agent(agent_id).await {
+        if let Some(profile_name) = info.profile.as_deref() {
+            crate::services::agent::resolve_kind_by_name(profile_name).await
+        } else {
+            crate::services::agent::AgentKind::Unknown
+        }
+    } else {
+        crate::services::agent::AgentKind::Unknown
+    };
+
+    // Normalize the requested model to an ID actually supported by the running
+    // ACP agent. Agents such as OpenCode expose provider-qualified IDs (e.g.
+    // `opencode-go/iceman-contributor-free`) in their `model` config option,
+    // while callers may pass the bare model name.
+    let requested_model = model_trimmed.to_string();
+    let model_to_apply = if let Ok(Some(options)) = backend.config_options(agent_id).await {
+        if let Some(model_option) = options.iter().find(|o| &*o.id.0 == "model") {
+            let select_options = match &model_option.kind {
+                agent_client_protocol::schema::v1::SessionConfigKind::Select(select) => {
+                    Some(&select.options)
+                }
+                _ => None,
+            };
+            let mut candidates: Vec<&agent_client_protocol::schema::v1::SessionConfigSelectOption> =
+                Vec::new();
+            if let Some(select_options) = select_options {
+                match select_options {
+                    agent_client_protocol::schema::v1::SessionConfigSelectOptions::Ungrouped(
+                        opts,
+                    ) => {
+                        candidates.extend(opts.iter());
+                    }
+                    agent_client_protocol::schema::v1::SessionConfigSelectOptions::Grouped(
+                        groups,
+                    ) => {
+                        for group in groups {
+                            candidates.extend(group.options.iter());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Exact match first.
+            if candidates
+                .iter()
+                .any(|v| &*v.value.0 == requested_model.as_str())
+            {
+                requested_model.clone()
+            } else {
+                // Suffix / name match for bare IDs.
+                candidates
+                    .iter()
+                    .find_map(|v| {
+                        let value = v.value.0.clone();
+                        if &*value == requested_model.as_str()
+                            || value.ends_with(&format!("/{}", requested_model))
+                            || v.name == requested_model
+                        {
+                            Some(value.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(requested_model.clone())
+            }
+        } else {
+            requested_model.clone()
+        }
+    } else {
+        requested_model.clone()
+    };
+
+    let result = if agent_kind == crate::services::agent::AgentKind::OpenCode {
+        // OpenCode ACP does not support `session/set_model`; use config option directly.
+        match backend
+            .set_session_config_option(agent_id, "model", &model_to_apply)
+            .await
+        {
+            Ok(()) => Ok(String::new()),
+            Err(e2) => {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    error = %e2,
+                    "ACP model switching unavailable"
+                );
+                Err(anyhow::anyhow!("ACP model switching unavailable: {}", e2))
+            }
+        }
+    } else {
+        match backend.set_session_model(agent_id, &model_to_apply).await {
+            Ok(()) => Ok(String::new()),
+            Err(e1) => {
+                tracing::debug!(
+                    agent_id = %agent_id,
+                    error = %e1,
+                    "ACP set_session_model unavailable, trying session config option"
+                );
+                match backend
+                    .set_session_config_option(agent_id, "model", &model_to_apply)
+                    .await
+                {
+                    Ok(()) => Ok(String::new()),
+                    Err(e2) => {
+                        tracing::warn!(
+                            agent_id = %agent_id,
+                            error = %e2,
+                            "ACP model switching unavailable"
+                        );
+                        Err(anyhow::anyhow!("ACP model switching unavailable: {}", e2))
+                    }
+                }
+            }
         }
     };
 
     // Persist runtime selected model (best effort).
     if result.is_ok() {
         let agent_id_owned = agent_id.to_string();
-        let model_owned = model_trimmed.to_string();
+        let model_owned = model_to_apply.clone();
         tokio::spawn(async move {
             let runtime = crate::context::get_app_context().agent_runtime.clone();
             let profile_name = runtime

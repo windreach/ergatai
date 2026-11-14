@@ -159,6 +159,7 @@ export async function createWorktree(
 	branch: string,
 	worktreePath: string,
 	startPoint = "origin/main",
+	createBranch = true,
 ): Promise<void> {
 	const usesLfs = await repoUsesLfs(mainRepoPath);
 
@@ -193,20 +194,36 @@ export async function createWorktree(
 			}
 		}
 
-		await execFileAsync(
-			"git",
-			[
-				"-C",
-				mainRepoPath,
-				"worktree",
-				"add",
-				worktreePath,
-				"-b",
-				branch,
-				commitHash,
-			],
-			{ env, timeout: 120_000 },
-		);
+		// When creating a new branch we resolve to a commit hash (avoids Windows
+		// escaping issues with ^{commit}); when checking out an existing branch we
+		// must pass the branch ref itself so HEAD stays attached to that branch
+		// instead of becoming detached.
+		const checkoutRef = createBranch ? commitHash : startPoint;
+
+		const worktreeArgs = createBranch
+			? [
+					"-C",
+					mainRepoPath,
+					"worktree",
+					"add",
+					worktreePath,
+					"-b",
+					branch,
+					commitHash,
+				]
+			: [
+					"-C",
+					mainRepoPath,
+					"worktree",
+					"add",
+					worktreePath,
+					checkoutRef,
+				];
+
+		await execFileAsync("git", worktreeArgs, {
+			env,
+			timeout: 120_000,
+		});
 
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
@@ -924,6 +941,13 @@ export interface WorktreeResult {
 
 export interface CreateWorktreeForChatOptions {
 	onSetupComplete?: (result: WorktreeSetupResult) => void;
+	/**
+	 * "new" (default): derive a brand-new branch from the selected base branch.
+	 * "existing": check out an already-existing branch into the worktree instead
+	 * of creating a new one (reuses a worktree that already has the branch
+	 * checked out when possible).
+	 */
+	branchMode?: "new" | "existing";
 }
 
 /**
@@ -955,9 +979,104 @@ export async function createWorktreeForChat(
 			return { success: true, worktreePath: projectPath };
 		}
 
+		const branchMode = options?.branchMode ?? "existing";
+
 		// Use provided base branch or auto-detect
 		const baseBranch = selectedBaseBranch || await getDefaultBranch(projectPath);
 
+		// ------------------------------------------------------------------
+		// "existing" mode: check out an already-existing branch instead of
+		// deriving a new one. Reuse a worktree that already has the branch
+		// checked out when possible (this is required for branches such as
+		// `main`, which is already checked out in the main worktree).
+		// ------------------------------------------------------------------
+		if (branchMode === "existing") {
+			const branch = baseBranch;
+
+			// Is this branch already checked out in some worktree?
+			const checkedOutPath = await findCheckedOutWorktreePath(
+				projectPath,
+				branch,
+			);
+			if (checkedOutPath) {
+				return {
+					success: true,
+					worktreePath: checkedOutPath,
+					branch,
+					// baseBranch left undefined: diff against the default branch
+				};
+			}
+
+			const worktreesDir = join(homedir(), ".ergatai", "worktrees");
+			const projectWorktreeDir = join(worktreesDir, projectSlug);
+			const folderName = generateWorktreeFolderName(projectWorktreeDir);
+			const worktreePath = join(projectWorktreeDir, folderName);
+
+			// Determine whether the branch exists locally or only on remote.
+			const localBranches = (await git.branchLocal()).all;
+			const remoteBranches = (await git.branch(["-r"])).all
+				.filter((b) => b.startsWith("origin/") && !b.includes("->"))
+				.map((b) => b.replace("origin/", ""));
+
+			if (localBranches.includes(branch)) {
+				await createWorktree(projectPath, branch, worktreePath, branch, false);
+			} else if (remoteBranches.includes(branch)) {
+				// Create a local tracking branch for the remote branch.
+				await execFileAsync(
+					"git",
+					[
+						"-C",
+						projectPath,
+						"worktree",
+						"add",
+						"-b",
+						branch,
+						worktreePath,
+						`origin/${branch}`,
+					],
+					{ env: await getGitEnv(), timeout: 120_000 },
+				);
+			} else {
+				return {
+					success: false,
+					error: `Branch not found: ${branch}`,
+				};
+			}
+
+			// Run worktree setup commands in BACKGROUND.
+			executeWorktreeSetup(worktreePath, projectPath)
+				.then((setupResult) => {
+					options?.onSetupComplete?.(setupResult);
+					if (!setupResult.success) {
+						console.warn(
+							`[worktree] Setup completed with errors: ${setupResult.errors.join(", ")}`,
+						);
+					} else {
+						console.log(
+							`[worktree] Setup completed successfully for ${chatId}`,
+						);
+					}
+				})
+				.catch((setupError) => {
+					const errorMsg =
+						setupError instanceof Error
+							? setupError.message
+							: String(setupError);
+					options?.onSetupComplete?.({
+						success: false,
+						commandsRun: 0,
+						output: [`[error] ${errorMsg}`],
+						errors: [errorMsg],
+					});
+					console.warn(`[worktree] Setup failed: ${errorMsg}`);
+				});
+
+			return { success: true, worktreePath, branch };
+		}
+
+		// ------------------------------------------------------------------
+		// "new" mode (default): derive a brand-new branch from the selected base
+		// ------------------------------------------------------------------
 		const branch = generateBranchName();
 		const worktreesDir = join(homedir(), ".ergatai", "worktrees");
 		const projectWorktreeDir = join(worktreesDir, projectSlug);
@@ -967,7 +1086,8 @@ export async function createWorktreeForChat(
 		// Determine startPoint based on branch type
 		// For local branches, use the local ref directly
 		// For remote branches or when type is not specified, use origin/{branch}
-		const startPoint = branchType === "local" ? baseBranch : `origin/${baseBranch}`;
+		const startPoint =
+			branchType === "local" ? baseBranch : `origin/${baseBranch}`;
 
 		await createWorktree(projectPath, branch, worktreePath, startPoint);
 
@@ -977,13 +1097,20 @@ export async function createWorktreeForChat(
 			.then((setupResult) => {
 				options?.onSetupComplete?.(setupResult);
 				if (!setupResult.success) {
-					console.warn(`[worktree] Setup completed with errors: ${setupResult.errors.join(", ")}`);
+					console.warn(
+						`[worktree] Setup completed with errors: ${setupResult.errors.join(", ")}`,
+					);
 				} else {
-					console.log(`[worktree] Setup completed successfully for ${chatId}`);
+					console.log(
+						`[worktree] Setup completed successfully for ${chatId}`,
+					);
 				}
 			})
 			.catch((setupError) => {
-				const errorMsg = setupError instanceof Error ? setupError.message : String(setupError);
+				const errorMsg =
+					setupError instanceof Error
+						? setupError.message
+						: String(setupError);
 				options?.onSetupComplete?.({
 					success: false,
 					commandsRun: 0,
@@ -1000,6 +1127,35 @@ export async function createWorktreeForChat(
 			error: error instanceof Error ? error.message : "Unknown error",
 		};
 	}
+}
+
+/**
+ * Find the worktree path that already has `branch` checked out, if any.
+ * Returns null when the branch is not checked out in any worktree.
+ */
+async function findCheckedOutWorktreePath(
+	projectPath: string,
+	branch: string,
+): Promise<string | null> {
+	try {
+		const git = simpleGit(projectPath);
+		const worktreeList = await git.raw(["worktree", "list", "--porcelain"]);
+		const lines = worktreeList.split("\n");
+		let currentPath: string | null = null;
+		for (const line of lines) {
+			if (line.startsWith("worktree ")) {
+				currentPath = line.substring(9).trim();
+			} else if (line.startsWith("branch ")) {
+				const b = line.substring(7).trim().replace("refs/heads/", "");
+				if (b === branch && currentPath) {
+					return currentPath;
+				}
+			}
+		}
+	} catch {
+		// ignore
+	}
+	return null;
 }
 
 /**

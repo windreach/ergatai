@@ -50,12 +50,23 @@ export function useQuestionHandling({
         })
         console.log("[useQuestionHandling] Initial context usage:", result)
         // Initialize session store with persisted context usage
-        if (result.context_used > 0 || result.context_window > 0) {
+        if (result.context_used > 0 || result.context_window > 0 || result.context_quota) {
           const sessionStore = getRuntimeSessionStore()
           sessionStore.updateContextUsage(
             conversationId,
             result.context_used,
             result.context_window,
+            result.context_quota
+              ? {
+                  inputTokens: result.context_quota.input_tokens,
+                  outputTokens: result.context_quota.output_tokens,
+                  totalTokens: result.context_quota.total_tokens,
+                  cachedInputTokens: result.context_quota.cached_input_tokens,
+                  cacheWriteInputTokens: result.context_quota.cache_write_input_tokens,
+                  reasoningOutputTokens: result.context_quota.reasoning_output_tokens,
+                  modelUsage: result.context_quota.model_usage,
+                }
+              : null,
           )
           console.log("[useQuestionHandling] Updated session store with initial context usage")
         } else {

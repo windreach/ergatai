@@ -367,6 +367,150 @@ describe("Conversation Runtime - Stream Resumption", () => {
     })
   })
 
+  describe("Late / out-of-order runtime events", () => {
+    function connectWithCompletedTurn(convId: string) {
+      const listener = vi.fn()
+      subscribeConversationRuntime(convId, listener)
+
+      const subscribeCall = mocks.subscribe.mock.calls[0]
+      const options = subscribeCall[1]
+
+      options.onData({
+        kind: "snapshot",
+        snapshot: {
+          epoch: "epoch-1",
+          turnId: "turn_1",
+          status: "completed",
+          lastSequence: 10,
+          firstSequence: 1,
+          events: [],
+          startedAtMs: Date.now(),
+          updatedAtMs: Date.now(),
+        },
+      })
+
+      return options
+    }
+
+    it("does not flip a completed turn back to streaming on a late status line", () => {
+      const convId = getTestConversationId()
+      const options = connectWithCompletedTurn(convId)
+
+      // ACP agents can emit a stderr status line right after the prompt
+      // completes. The backend may attach it to a synthesized turn id; the
+      // gateway must not treat it as a new streaming turn.
+      options.onData({
+        kind: "event",
+        event: {
+          conversationId: convId,
+          turnId: "turn-boot-late-status",
+          sequence: 11,
+          timestampMs: Date.now(),
+          event: {
+            type: "status",
+            message: "[idle-compaction] skip: cache TTL is unknown",
+          },
+        },
+      })
+
+      const state = getConversationRuntimeState(convId)
+      expect(state?.status).toBe("completed")
+      expect(state?.lastSequence).toBe(11)
+    })
+
+    it("does not reopen a completed turn for a late content delta", () => {
+      const convId = getTestConversationId()
+      const options = connectWithCompletedTurn(convId)
+
+      // A notification handler can lose the race with the prompt response.
+      // The delta belongs to the finished turn, not a new one.
+      options.onData({
+        kind: "event",
+        event: {
+          conversationId: convId,
+          turnId: "turn_1",
+          sequence: 11,
+          timestampMs: Date.now(),
+          event: { type: "text", delta: "late delta" },
+        },
+      })
+
+      const state = getConversationRuntimeState(convId)
+      expect(state?.status).toBe("completed")
+    })
+
+    it("does not reopen a completed turn for a broadcast conversation message", () => {
+      const convId = getTestConversationId()
+      const options = connectWithCompletedTurn(convId)
+
+      options.onData({
+        kind: "event",
+        event: {
+          conversationId: convId,
+          turnId: "turn_1",
+          sequence: 11,
+          timestampMs: Date.now(),
+          event: {
+            type: "conversation_message",
+            message_id: "msg_1",
+            role: "agent",
+            message_type: "broadcast",
+            content: "peer update",
+            timestamp_ms: Date.now(),
+          },
+        },
+      })
+
+      const state = getConversationRuntimeState(convId)
+      expect(state?.status).toBe("completed")
+    })
+
+    it("still opens a new turn from an explicit turn_started event", () => {
+      const convId = getTestConversationId()
+      const options = connectWithCompletedTurn(convId)
+
+      options.onData({
+        kind: "event",
+        event: {
+          conversationId: convId,
+          turnId: "turn_2",
+          sequence: 11,
+          timestampMs: Date.now(),
+          event: { type: "turn_started", turn_id: "turn_2" },
+        },
+      })
+
+      const state = getConversationRuntimeState(convId)
+      expect(state?.status).toBe("streaming")
+      expect(state?.turnId).toBe("turn_2")
+    })
+
+    it("still opens a new turn from a durable user message", () => {
+      const convId = getTestConversationId()
+      const options = connectWithCompletedTurn(convId)
+
+      options.onData({
+        kind: "event",
+        event: {
+          conversationId: convId,
+          turnId: "message-msg_2-11",
+          sequence: 11,
+          timestampMs: Date.now(),
+          event: {
+            type: "conversation_message",
+            message_id: "msg_2",
+            role: "user",
+            content: "next question",
+            timestamp_ms: Date.now(),
+          },
+        },
+      })
+
+      const state = getConversationRuntimeState(convId)
+      expect(state?.status).toBe("streaming")
+    })
+  })
+
   describe("Persistence during resumption", () => {
     it("should persist sequence after each event during resumption", () => {
       const convId = getTestConversationId()

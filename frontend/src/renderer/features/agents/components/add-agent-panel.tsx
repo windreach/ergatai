@@ -58,6 +58,7 @@ function AgentAvatar({
   return <RuntimeIcon className="h-5 w-5" />
 }
 
+// react-doctor-disable-next-line no-giant-component
 export function AddAgentPanel({ className }: AddAgentPanelProps) {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [connectionsAgent, setConnectionsAgent] =

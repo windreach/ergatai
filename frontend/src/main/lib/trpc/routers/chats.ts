@@ -464,6 +464,7 @@ export const chatsRouter = router({
         baseBranch: z.string().optional(), // Branch to base the worktree off
         branch: z.string().optional(), // Branch name for the chat
         branchType: z.enum(["local", "remote"]).optional(), // Whether baseBranch is local or remote
+        branchMode: z.enum(["new", "existing"]).default("existing"), // "existing" checks out an existing branch (default); "new" derives a new branch
         useWorktree: z.boolean().default(true), // If false, work directly in project dir
         mode: z.enum(["plan", "agent"]).default("agent"),
         collaborationMode: z.enum(["supervisor", "group"]).default("supervisor"),
@@ -577,6 +578,7 @@ export const chatsRouter = router({
           input.baseBranch,
           input.branchType,
           {
+            branchMode: input.branchMode,
             onSetupComplete: (setupResult: WorktreeSetupResult) => {
               if (setupResult.success) return
               const message =

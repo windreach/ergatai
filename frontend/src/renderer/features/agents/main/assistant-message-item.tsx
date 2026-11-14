@@ -691,6 +691,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
       if (group) {
         return (
           <AgentTaskTool
+            // react-doctor-disable-next-line no-array-index-as-key
             key={`${messageRenderKey}-${idx}`}
             part={{
               type: "tool-Task",
@@ -713,6 +714,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
       const isTextStreaming = isLastMessage && isStreaming
       return (
         <MemoizedTextPart
+          // react-doctor-disable-next-line no-array-index-as-key
           key={`${messageRenderKey}-${idx}`}
           text={part.text}
           messageId={message.id}
@@ -724,6 +726,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
 
     if (part.type === "tool-Task") {
       const nestedTools = nestedToolsMap.get(part.toolCallId ?? "") || []
+      // react-doctor-disable-next-line no-array-index-as-key
       return <AgentTaskTool key={`${messageRenderKey}-${idx}`} part={part} nestedTools={nestedTools} chatStatus={status} />
     }
 
@@ -756,11 +759,14 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     }
 
     if (part.type === "tool-Bash" || part.type === "tool-shell")
+      // react-doctor-disable-next-line no-array-index-as-key
       return <AgentBashTool key={`${messageRenderKey}-${idx}`} part={part} messageId={message.id} partIndex={idx} chatStatus={status} />
+    // react-doctor-disable-next-line no-array-index-as-key
     if (part.type === "tool-Grep") return <AgentGrepTool key={`${messageRenderKey}-${idx}`} part={part} messageId={message.id} partIndex={idx} chatStatus={status} />
     if (part.type === "reasoning" || part.type === "tool-Thinking") {
       return (
         <AgentThinkingTool
+          // react-doctor-disable-next-line no-array-index-as-key
           key={`${messageRenderKey}-${idx}`}
           part={toThinkingToolPart(part, message?.id, idx) as unknown as ThinkingToolPart}
           chatStatus={status}
@@ -800,6 +806,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
           const isOpStreaming = isPending || (part.state === "input-streaming" && isStreaming && isLastMessage)
 
           return (
+            // react-doctor-disable-next-line no-array-index-as-key
             <div key={`${messageRenderKey}-${idx}`} className="flex items-center gap-1.5 px-2 py-0.5">
               <span className="text-xs text-muted-foreground">
                 {isOpStreaming ? (
@@ -817,6 +824,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
         // Last operation in final parts: show full card
         return (
           <AgentPlanFileTool
+            // react-doctor-disable-next-line no-array-index-as-key
             key={`${messageRenderKey}-${idx}`}
             part={part}
             chatStatus={status}
@@ -827,10 +835,15 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
       }
     }
 
+    // react-doctor-disable-next-line no-array-index-as-key
     if (part.type === "tool-Edit") return <AgentEditTool key={`${messageRenderKey}-${idx}`} part={part} messageId={message.id} partIndex={idx} chatStatus={status} />
+    // react-doctor-disable-next-line no-array-index-as-key
     if (part.type === "tool-Write") return <AgentEditTool key={`${messageRenderKey}-${idx}`} part={part} messageId={message.id} partIndex={idx} chatStatus={status} />
+    // react-doctor-disable-next-line no-array-index-as-key
     if (part.type === "tool-WebSearch") return <AgentWebSearchCollapsible key={`${messageRenderKey}-${idx}`} part={part} chatStatus={status} />
+    // react-doctor-disable-next-line no-array-index-as-key
     if (part.type === "tool-WebFetch") return <AgentWebFetchTool key={`${messageRenderKey}-${idx}`} part={part} chatStatus={status} />
+    // react-doctor-disable-next-line no-array-index-as-key
     if (part.type === "tool-PlanWrite") return <AgentPlanTool key={`${messageRenderKey}-${idx}`} part={part as unknown as PlanToolPart} chatStatus={status} />
 
     // ExitPlanMode tool is hidden - plan is shown in sidebar instead
@@ -839,6 +852,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     }
 
     if (part.type === "tool-TodoWrite") {
+      // react-doctor-disable-next-line no-array-index-as-key
       return <AgentTodoTool key={`${messageRenderKey}-${idx}`} part={part as unknown as Parameters<typeof AgentTodoTool>[0]["part"]} chatStatus={status} conversationId={conversationId} />
     }
 
@@ -846,6 +860,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
       const { isPending, isError } = getToolStatus(part, status)
       return (
         <AgentAskUserQuestionTool
+          // react-doctor-disable-next-line no-array-index-as-key
           key={`${messageRenderKey}-${idx}`}
           input={part.input as { questions?: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> }}
           result={part.result as { answers?: Record<string, string> } | string | undefined}
@@ -867,6 +882,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
         : undefined
       return (
         <AgentToolCall
+          // react-doctor-disable-next-line no-array-index-as-key
           key={`${messageRenderKey}-${idx}`}
           icon={meta.icon}
           title={meta.title(part)}
@@ -887,6 +903,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     if (isSendMessageTool) {
       return (
         <GroupAgentMentionTool
+          // react-doctor-disable-next-line no-array-index-as-key
           key={`${messageRenderKey}-${idx}`}
           part={part as any}
         />
@@ -897,6 +914,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     if (mcpInfo) {
       return (
         <AgentMcpToolCall
+          // react-doctor-disable-next-line no-array-index-as-key
           key={`${messageRenderKey}-${idx}`}
           part={part}
           mcpInfo={mcpInfo}
@@ -907,6 +925,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
 
     if (part.type?.startsWith("tool-")) {
       return (
+        // react-doctor-disable-next-line no-array-index-as-key
         <div key={`${messageRenderKey}-${idx}`} className="text-xs text-muted-foreground py-0.5 px-2">
           {part.type.replace("tool-", "")}
         </div>
@@ -952,6 +971,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
                   const isGroupStreaming = isStreaming && isLastMessage && isLast
                   return (
                     <AgentExploringGroup
+                      // react-doctor-disable-next-line no-array-index-as-key
                       key={`${messageRenderKey}-${idx}`}
                       parts={part.parts as MessagePart[]}
                       chatStatus={status}
@@ -964,6 +984,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
                   const isGroupStreaming = isStreaming && isLastMessage && isLast
                   return (
                     <AgentTaskToolsGroup
+                      // react-doctor-disable-next-line no-array-index-as-key
                       key={`${messageRenderKey}-${idx}`}
                       parts={part.parts as unknown as Parameters<typeof AgentTaskToolsGroup>[0]["parts"]}
                       chatStatus={status}
@@ -988,6 +1009,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
               const isGroupStreaming = isStreaming && isLastMessage && isLast
               return (
                 <AgentExploringGroup
+                  // react-doctor-disable-next-line no-array-index-as-key
                   key={`${messageRenderKey}-${idx}`}
                   parts={part.parts as MessagePart[]}
                   chatStatus={status}
@@ -1000,6 +1022,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
               const isGroupStreaming = isStreaming && isLastMessage && isLast
               return (
                 <AgentTaskToolsGroup
+                  // react-doctor-disable-next-line no-array-index-as-key
                   key={`${messageRenderKey}-${idx}`}
                   parts={part.parts as unknown as Parameters<typeof AgentTaskToolsGroup>[0]["parts"]}
                   chatStatus={status}

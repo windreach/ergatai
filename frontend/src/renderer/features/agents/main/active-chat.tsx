@@ -3,6 +3,7 @@ import { ChatViewSidebars } from "./active-chat-sidebars"
 
 
 import { Button } from "../../../components/ui/button"
+import { Popover, PopoverTrigger, PopoverContent } from "../../../components/ui/popover"
 import {
   AgentIcon,
   AttachIcon,
@@ -226,6 +227,8 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       workspaceName?: string | null
       workspaceBranch?: string | null
       workspaceRepoName?: string | null
+      worktreePath?: string | null
+      allowedPaths?: string[]
       workspaceId?: string | null
       projectId?: string | null
       persistedMessages?: RawMessage[]
@@ -258,11 +261,32 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       workspaceName: _workspaceName,
       workspaceBranch,
       workspaceRepoName,
+      worktreePath,
+      allowedPaths,
       workspaceId: _workspaceId,
       projectId: _projectId,
       persistedMessages: _persistedMessages,
       persistedMessagesLoading: _persistedMessagesLoading,
     } = props
+
+    // Branch switcher (title area) — local hooks
+    const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
+    const { data: branchData } = trpc.changes.getBranches.useQuery(
+      { worktreePath: worktreePath || "" },
+      { enabled: !!worktreePath },
+    )
+    const _branchUtils = api.useUtils()
+    const _trpcUtils = trpc.useUtils()
+    const switchBranchMutation = trpc.changes.switchBranch.useMutation({
+      onSuccess: () => {
+        setBranchPopoverOpen(false)
+        _branchUtils.agents.getAgentChat.invalidate({ chatId: parentChatId })
+        _trpcUtils.changes.getBranches.invalidate({ worktreePath: worktreePath || "" })
+      },
+      onError: (err) => {
+        toast.error(err.message || "Failed to switch branch", { position: "top-center" })
+      },
+    })
 
     const controller = useActiveChatController(props)
     const chatSurface = controller.chatSurface
@@ -592,7 +616,54 @@ const ChatViewInner = memo(function ChatViewInner(props: {
                 {(workspaceRepoName || workspaceBranch) && (
                   <div className="max-w-2xl mx-auto px-4">
                     <span className="text-xs text-muted-foreground/50 truncate block">
-                      {[workspaceRepoName, workspaceBranch].filter(Boolean).join(" • ")}
+                      {workspaceRepoName && (
+                        <span>{workspaceRepoName}</span>
+                      )}
+                      {workspaceRepoName && workspaceBranch && (
+                        <span className="mx-1">•</span>
+                      )}
+                      {workspaceBranch && worktreePath && branchData ? (
+                        <Popover open={branchPopoverOpen} onOpenChange={setBranchPopoverOpen}>
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              className="hover:text-foreground hover:underline underline-offset-2 transition-colors cursor-pointer"
+                              title="Switch branch"
+                            >
+                              {workspaceBranch}
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-64 p-0" align="start">
+                            <div className="max-h-60 overflow-auto py-1">
+                              {branchData.local.map((b) => {
+                                const isCurrent = b.branch === workspaceBranch
+                                return (
+                                  <button
+                                    key={b.branch}
+                                    type="button"
+                                    disabled={isCurrent || switchBranchMutation.isPending}
+                                    onClick={() => {
+                                      if (isCurrent) return
+                                      switchBranchMutation.mutate({
+                                        worktreePath: worktreePath!,
+                                        branch: b.branch,
+                                      })
+                                    }}
+                                    className={`flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left hover:bg-muted/50 transition-colors ${
+                                      isCurrent ? "text-foreground font-medium bg-muted/30" : "text-muted-foreground"
+                                    }`}
+                                  >
+                                    <span className="truncate flex-1">{b.branch}</span>
+                                    {isCurrent && <span className="text-[10px] opacity-60">current</span>}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          </PopoverContent>
+                        </Popover>
+                      ) : (
+                        workspaceBranch && <span>{workspaceBranch}</span>
+                      )}
                     </span>
                   </div>
                 )}
@@ -642,6 +713,7 @@ const ChatViewInner = memo(function ChatViewInner(props: {
         isCompacting={isCompacting}
         changedFilesForConversation={changedFilesForConversation}
         projectPath={projectPath}
+        allowedPaths={allowedPaths}
         handleStop={handleStop}
         editorRef={editorRef}
         fileInputRef={fileInputRef}
@@ -720,7 +792,7 @@ export function ChatView({
   onOpenDiff?: () => void
   onOpenTerminal?: () => void
   hideHeader?: boolean
-  projectPath?: string
+  projectPath?: string | string[]
 }) {
   const [selectedTeamId] = useAtom(selectedTeamIdAtom)
 
@@ -1153,8 +1225,41 @@ export function ChatView({
   // Get user usage data for credit checks
   const { data: _usageData } = api.usage.getUserUsage.useQuery()
 
-  // Desktop: use worktreePath instead of sandbox
-  const worktreePath = agentChat?.worktreePath as string | null
+  // Normalize workspace project paths into an array (supports single string or list).
+  const workspaceProjectPaths = Array.isArray(projectPath)
+    ? projectPath.filter(Boolean)
+    : projectPath
+      ? [projectPath]
+      : []
+
+  // Desktop: use worktreePath instead of sandbox.
+  // Fall back to the first workspace project path so the right rail / Git / terminal
+  // panels stay available even when a chat has no persisted worktreePath.
+  const worktreePath = (agentChat?.worktreePath as string | null) ?? workspaceProjectPaths[0] ?? null
+
+  // Inherit all workspace paths + chat worktree path, then dedupe.
+  // When a worktree exists, drop the original project path it replaces so the
+  // agent cannot reach back into the original repository.
+  const allowedPaths = (() => {
+    const base = [...workspaceProjectPaths]
+    const originalProjectPath = workspaceProjectPaths[0] ?? null
+    const filtered =
+      worktreePath && originalProjectPath
+        ? base.filter((p) => p !== originalProjectPath)
+        : base
+    const combined = worktreePath ? [...filtered, worktreePath] : filtered
+    // Dedupe by normalized path
+    const seen = new Set<string>()
+    const result: string[] = []
+    for (const p of combined) {
+      const key = p.replace(/[\\/]+/g, "/").replace(/\/$/, "")
+      if (!seen.has(key)) {
+        seen.add(key)
+        result.push(p)
+      }
+    }
+    return result
+  })()
   const panelLinkScopeKey = createPanelLinkScopeKey({ chatId })
   const dispatchPanelLink = useSetAtom(
     panelLinkCommandAtomFamily(panelLinkScopeKey),
@@ -1680,7 +1785,7 @@ export function ChatView({
       <FileSearchDialog
         open={fileSearchOpen}
         onOpenChange={setFileSearchOpen}
-        projectPath={worktreePath}
+        projectPaths={allowedPaths}
         onSelectFile={setLinkedFileViewerPath}
       />
     )}
@@ -1899,7 +2004,8 @@ export function ChatView({
                             isMobile={isMobileFullscreen}
                             isConversationsSidebarOpen={conversationsSidebarMode === "sidebar"}
                             sandboxId={sandboxId || undefined}
-                            projectPath={projectPath ?? worktreePath ?? undefined}
+                            projectPath={allowedPaths[0] ?? undefined}
+                            allowedPaths={allowedPaths}
                             isArchived={isArchived}
                             onRestoreWorkspace={handleRestoreWorkspace}
                             existingPrUrl={agentChat?.prUrl}
@@ -1909,6 +2015,7 @@ export function ChatView({
                             workspaceName={agentChat?.name ?? null}
                             workspaceBranch={agentChat?.branch ?? null}
                             workspaceRepoName={(agentChat as unknown as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as unknown as ExtendedAgentChat | undefined)?.project?.name || null}
+                            worktreePath={worktreePath}
                             workspaceId={agentChat?.workspaceId ?? null}
                             projectId={null}
                             persistedMessages={(persistedMessagesByConversationId.get(paneId) ?? []) as unknown as RawMessage[]}
@@ -1953,7 +2060,8 @@ export function ChatView({
                                 isMobile={isMobileFullscreen}
                                 isConversationsSidebarOpen={conversationsSidebarMode === "sidebar"}
                                 sandboxId={sandboxId || undefined}
-                                projectPath={projectPath ?? worktreePath ?? undefined}
+                                projectPath={allowedPaths[0] ?? undefined}
+                                allowedPaths={allowedPaths}
                                 isArchived={isArchived}
                                 onRestoreWorkspace={handleRestoreWorkspace}
                                 existingPrUrl={agentChat?.prUrl}
@@ -1963,6 +2071,7 @@ export function ChatView({
                                 workspaceName={agentChat?.name ?? null}
                                 workspaceBranch={agentChat?.branch ?? null}
                                 workspaceRepoName={(agentChat as unknown as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as unknown as ExtendedAgentChat | undefined)?.project?.name || null}
+                                worktreePath={worktreePath}
                                 workspaceId={agentChat?.workspaceId ?? null}
                                 projectId={null}
                                 persistedMessages={(persistedMessagesByConversationId.get(conversationId) ?? []) as unknown as RawMessage[]}
@@ -2020,7 +2129,8 @@ export function ChatView({
                       isMobile={isMobileFullscreen}
                       isConversationsSidebarOpen={conversationsSidebarMode === "sidebar"}
                       sandboxId={sandboxId || undefined}
-                      projectPath={projectPath ?? worktreePath ?? undefined}
+                      projectPath={allowedPaths[0] ?? undefined}
+                            allowedPaths={allowedPaths}
                       isArchived={isArchived}
                       onRestoreWorkspace={handleRestoreWorkspace}
                       existingPrUrl={agentChat?.prUrl}
@@ -2030,6 +2140,7 @@ export function ChatView({
                       workspaceName={agentChat?.name ?? null}
                       workspaceBranch={agentChat?.branch ?? null}
                       workspaceRepoName={(agentChat as unknown as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as unknown as ExtendedAgentChat | undefined)?.project?.name || null}
+                      worktreePath={worktreePath}
                       workspaceId={agentChat?.workspaceId ?? null}
                       projectId={null}
                       persistedMessages={(persistedMessagesByConversationId.get(conversationId) ?? []) as unknown as RawMessage[]}

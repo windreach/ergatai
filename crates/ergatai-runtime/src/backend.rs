@@ -202,6 +202,22 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
         let _ = (agent_id, model);
         Err(ErgataiError::BackendUnsupported("set_session_model".into()))
     }
+
+    /// Switch a session configuration option via ACP (best-effort).
+    ///
+    /// Used by agents such as claude-agent-acp that expose model switching as
+    /// the `model` config option instead of `session/set_model`.
+    async fn set_session_config_option(
+        &self,
+        agent_id: &str,
+        config_id: &str,
+        value: &str,
+    ) -> ErgataiResult<()> {
+        let _ = (agent_id, config_id, value);
+        Err(ErgataiError::BackendUnsupported(
+            "set_session_config_option".into(),
+        ))
+    }
     /// Get the agent's token usage statistics (input_tokens, output_tokens).
     async fn usage(&self, agent_id: &str) -> ErgataiResult<Option<(usize, usize)>>;
 

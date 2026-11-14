@@ -13,6 +13,29 @@ function safe(fn, fallback) {
   }
 }
 
+function resolveConfiguredProvider(modelId, providers = {}) {
+  const id = String(modelId || "").trim();
+  if (!id) return "";
+  const slash = id.indexOf("/");
+  if (slash > 0) {
+    const providerId = id.slice(0, slash);
+    const provider = providers[providerId];
+    return (provider && provider.name) || providerId;
+  }
+  for (const [providerId, provider] of Object.entries(providers)) {
+    const models = provider && provider.models && typeof provider.models === "object" ? provider.models : {};
+    if (Object.prototype.hasOwnProperty.call(models, id)) {
+      return (provider && provider.name) || providerId;
+    }
+  }
+  const providerIds = Object.keys(providers);
+  if (providerIds.length === 1) {
+    const provider = providers[providerIds[0]];
+    return (provider && provider.name) || providerIds[0];
+  }
+  return "";
+}
+
 async function claude() {
   const { createRequire } = await import("node:module");
   const require = createRequire(import.meta.url);
@@ -96,12 +119,22 @@ async function claude() {
         ];
         for (const [m, slot] of slots) {
           if (typeof m === "string" && m && !modelList.some((x) => x.id === m)) {
-            modelList.push({ id: m, name: m, description: `Configured ${slot}`, provider: "Configured" });
+            modelList.push({
+              id: m,
+              name: m,
+              description: `Configured ${slot}`,
+              provider: resolveConfiguredProvider(m) || "Anthropic",
+            });
           }
         }
         const dm = cfg?.model || env.ANTHROPIC_MODEL;
         if (typeof dm === "string" && dm && !modelList.some((x) => x.id === dm)) {
-          modelList.unshift({ id: dm, name: dm, description: "Configured model", provider: "Configured" });
+          modelList.unshift({
+            id: dm,
+            name: dm,
+            description: "Configured model",
+            provider: resolveConfiguredProvider(dm) || "Anthropic",
+          });
         } else if (typeof dm === "string" && dm) {
           const idx = modelList.findIndex((x) => x.id === dm);
           if (idx > 0) { const [it] = modelList.splice(idx, 1); modelList.unshift(it); }
@@ -184,13 +217,29 @@ async function opencode() {
     source: "agent-sdk",
   }));
 
-  const mcpArr = Array.isArray(mcpResp?.data) ? mcpResp.data : [];
-  const mcpList = mcpArr.map((m) => ({
-    name: m.name || m.id,
-    status: m.status || "pending",
-    config: m.config || null,
-    source: "agent-sdk",
-  }));
+  // OpenCode /api/mcp may return: array, {data: array}, {data: {name: {...}}}, or {name: {...}}.
+  let mcpArr = [];
+  const mcpRaw = mcpResp?.data ?? mcpResp;
+  if (Array.isArray(mcpRaw)) {
+    mcpArr = mcpRaw.map((m) => (m && typeof m === "object" ? m : null)).filter(Boolean);
+  } else if (mcpRaw && typeof mcpRaw === "object") {
+    mcpArr = Object.entries(mcpRaw)
+      .filter(([k, v]) => v && typeof v === "object" && !Array.isArray(v))
+      .map(([name, v]) => ({ name, ...v }));
+  }
+  const mcpList = mcpArr.map((m) => {
+    const name = m.name || m.id || m.serverName || "";
+    if (!name) return null;
+    const status = typeof m.status === "string"
+      ? m.status
+      : (m.connected === true ? "connected" : (m.error ? "failed" : "pending"));
+    return {
+      name,
+      status,
+      config: m.config ?? m.configuration ?? null,
+      source: "agent-sdk",
+    };
+  }).filter(Boolean);
 
   // Models from /api/model
   const modelsArr = Array.isArray(modelsResp?.data) ? modelsResp.data : (Array.isArray(modelsResp) ? modelsResp : []);
@@ -251,15 +300,22 @@ async function opencode() {
           const pnameStr = (pval && pval.name) || pname;
           const models = (pval && pval.models && typeof pval.models === "object") ? pval.models : {};
           for (const mkey of Object.keys(models)) {
-            if (modelList.some((m) => m.id === mkey)) continue;
-            modelList.push({ id: mkey, name: mkey, description: "", provider: pnameStr });
+            const fullId = `${pname}/${mkey}`;
+            if (modelList.some((m) => m.id === fullId)) continue;
+            modelList.push({ id: fullId, name: mkey, description: "", provider: pnameStr });
           }
         }
         const dm = cfg?.model;
         if (typeof dm === "string" && dm) {
-          const id = dm.includes("/") ? dm.split("/").pop() : dm;
+          const id = dm;
           if (id && !modelList.some((m) => m.id === id)) {
-            modelList.unshift({ id, name: id, description: "Configured model", provider: "Configured" });
+            const name = id.includes("/") ? id.slice(id.indexOf("/") + 1) : id;
+            modelList.unshift({
+              id,
+              name,
+              description: "Configured model",
+              provider: resolveConfiguredProvider(id, providers),
+            });
           } else if (id) {
             const idx = modelList.findIndex((m) => m.id === id);
             if (idx > 0) { const [it] = modelList.splice(idx, 1); modelList.unshift(it); }

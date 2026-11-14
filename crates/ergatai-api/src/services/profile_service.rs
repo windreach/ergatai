@@ -403,23 +403,28 @@ pub async fn get_profile_models_by_name(name: &str) -> Result<ProfileModelCatalo
             let mut seen: std::collections::HashSet<String> =
                 catalog.models.iter().cloned().collect();
             let mut merged_details = catalog.model_details.clone();
+            let mut changed = false;
             // Ensure all file models present.
             for fd in &file_details {
                 if !seen.contains(&fd.id) {
                     seen.insert(fd.id.clone());
                     merged_details.push(fd.clone());
                     catalog.models.push(fd.id.clone());
+                    changed = true;
                 } else {
                     // Update metadata if already present.
                     if let Some(existing) = merged_details.iter_mut().find(|d| d.id == fd.id) {
-                        if !fd.name.is_empty() {
+                        if !fd.name.is_empty() && existing.name != fd.name {
                             existing.name = fd.name.clone();
+                            changed = true;
                         }
-                        if !fd.description.is_empty() {
+                        if !fd.description.is_empty() && existing.description != fd.description {
                             existing.description = fd.description.clone();
+                            changed = true;
                         }
-                        if !fd.provider.is_empty() {
+                        if !fd.provider.is_empty() && existing.provider != fd.provider {
                             existing.provider = fd.provider.clone();
+                            changed = true;
                         }
                     }
                 }
@@ -427,20 +432,26 @@ pub async fn get_profile_models_by_name(name: &str) -> Result<ProfileModelCatalo
             catalog.model_details = merged_details;
             if catalog.status == ProfileModelStatus::NotDetected {
                 catalog.status = ProfileModelStatus::Available;
+                changed = true;
             }
             if !catalog.sources.contains(&ProfileModelSource::ConfigFile) {
                 catalog.sources.push(ProfileModelSource::ConfigFile);
+                changed = true;
             }
             if catalog.source == ProfileModelSource::None {
                 catalog.source = ProfileModelSource::ConfigFile;
+                changed = true;
             }
             // last_known_models
             if catalog.last_known_models.is_empty() {
                 catalog.last_known_models = catalog.models.clone();
+                changed = true;
             }
-            catalog.verified_at = Some(chrono::Utc::now().timestamp_millis());
-            // Persist merged catalog back to DB (best effort).
-            let _ = persist_merged_catalog(name, &catalog).await;
+            if changed {
+                catalog.verified_at = Some(chrono::Utc::now().timestamp_millis());
+                // Persist merged catalog back to DB (best effort).
+                let _ = persist_merged_catalog(name, &catalog).await;
+            }
         }
     }
 

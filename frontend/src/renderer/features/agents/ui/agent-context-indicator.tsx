@@ -27,6 +27,16 @@ export interface MessageTokenData {
   contextWindow?: number
   /** ACP context window usage (real-time snapshot from SSE) */
   contextUsed?: number
+  /** ACP extension quota detail (real-time from SSE) */
+  contextQuota?: {
+    inputTokens?: number | null
+    outputTokens?: number | null
+    totalTokens?: number | null
+    cachedInputTokens?: number | null
+    cacheWriteInputTokens?: number | null
+    reasoningOutputTokens?: number | null
+    modelUsage?: unknown
+  }
 }
 
 interface AgentContextIndicatorProps {
@@ -107,7 +117,10 @@ export const AgentContextIndicator = memo(function AgentContextIndicator({
   disabled,
 }: AgentContextIndicatorProps) {
   // Prefer ACP context_used (real-time SSE snapshot), fall back to totalInputTokens (metadata)
-  const contextTokens = tokenData.contextUsed ?? tokenData.totalInputTokens
+  const contextTokens =
+    tokenData.contextUsed ??
+    tokenData.contextQuota?.totalTokens ??
+    tokenData.totalInputTokens
   // Guard against division by zero: ensure contextWindow is always positive
   const contextWindow = Math.max(1, tokenData.contextWindow ?? CONTEXT_WINDOWS[modelId])
   const percentUsed = Math.min(100, (contextTokens / contextWindow) * 100)
@@ -162,9 +175,31 @@ export const AgentContextIndicator = memo(function AgentContextIndicator({
                 {formatTokens(contextTokens)} /{" "}
                 {formatTokens(contextWindow)} context
               </span>
+              {tokenData.contextQuota && (
+                <div className="mt-1 text-muted-foreground space-y-0.5">
+                  {tokenData.contextQuota.inputTokens != null && (
+                    <div>input: {formatTokens(tokenData.contextQuota.inputTokens)}</div>
+                  )}
+                  {tokenData.contextQuota.outputTokens != null && (
+                    <div>output: {formatTokens(tokenData.contextQuota.outputTokens)}</div>
+                  )}
+                  {tokenData.contextQuota.cachedInputTokens != null && (
+                    <div>cached: {formatTokens(tokenData.contextQuota.cachedInputTokens)}</div>
+                  )}
+                  {tokenData.contextQuota.reasoningOutputTokens != null && (
+                    <div>reasoning: {formatTokens(tokenData.contextQuota.reasoningOutputTokens)}</div>
+                  )}
+                  {tokenData.contextQuota.modelUsage != null && (
+                    <div>model usage reported</div>
+                  )}
+                </div>
+              )}
             </>
           )}
         </p>
+        {!tokenData.contextUsed && !tokenData.contextQuota && (
+          <p className="text-xs text-muted-foreground mt-1">adapter 未上报 usage</p>
+        )}
       </TooltipContent>
     </Tooltip>
   )

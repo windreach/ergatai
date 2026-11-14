@@ -42,7 +42,8 @@ function highlightMatches(
 interface FileSearchDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  projectPath: string
+  projectPath?: string
+  projectPaths?: string[]
   onSelectFile: (filePath: string) => void
 }
 
@@ -50,6 +51,7 @@ export const FileSearchDialog = memo(function FileSearchDialog({
   open,
   onOpenChange,
   projectPath,
+  projectPaths,
   onSelectFile,
 }: FileSearchDialogProps) {
   const [query, setQuery] = useState("")
@@ -81,44 +83,52 @@ export const FileSearchDialog = memo(function FileSearchDialog({
     }
   }, [open])
 
+  const roots = (projectPaths && projectPaths.length > 0
+    ? projectPaths
+    : projectPath
+      ? [projectPath]
+      : []).filter(Boolean)
+
   const { data: results } = trpc.files.search.useQuery(
     {
-      projectPath,
+      projectPaths: roots,
       query: debouncedQuery,
       limit: 50,
     },
     {
-      enabled: open && !!projectPath,
+      enabled: open && roots.length > 0,
       placeholderData: (prev) => prev,
     },
   )
 
   // Build recent file items directly from atom (independent of search results)
   const recentItems = useMemo(() => {
-    const prefix = projectPath + "/"
-    const items: { id: string; label: string; path: string }[] = []
+    const items: { id: string; label: string; path: string; root: string }[] = []
     const queryLower = debouncedQuery.toLowerCase()
-    for (const absPath of recentlyOpenedFiles) {
-      if (!absPath.startsWith(prefix)) continue
-      const relPath = absPath.slice(prefix.length)
-      const fileName = relPath.includes("/") ? relPath.slice(relPath.lastIndexOf("/") + 1) : relPath
-      // Filter by query if searching
-      if (queryLower && !relPath.toLowerCase().includes(queryLower)) continue
-      items.push({ id: `recent-${relPath}`, label: fileName, path: relPath })
+    for (const root of roots) {
+      const prefix = root + "/"
+      for (const absPath of recentlyOpenedFiles) {
+        if (!absPath.startsWith(prefix)) continue
+        const relPath = absPath.slice(prefix.length)
+        const fileName = relPath.includes("/") ? relPath.slice(relPath.lastIndexOf("/") + 1) : relPath
+        // Filter by query if searching
+        if (queryLower && !relPath.toLowerCase().includes(queryLower)) continue
+        items.push({ id: `recent-${root}-${relPath}`, label: fileName, path: relPath, root })
+      }
     }
     return items
-  }, [recentlyOpenedFiles, projectPath, debouncedQuery])
+  }, [recentlyOpenedFiles, roots, debouncedQuery])
 
   const recentPathsSet = useMemo(
-    () => new Set(recentItems.map((f) => f.path)),
+    () => new Set(recentItems.map((f) => `${f.root}:${f.path}`)),
     [recentItems],
   )
 
   // Search results excluding recently opened files
   const otherFiles = useMemo(() => {
     const allFiles = (results ?? []).filter((item) => item.type === "file")
-    return allFiles.filter((file) => !recentPathsSet.has(file.path))
-  }, [results, recentPathsSet])
+    return allFiles.filter((file) => !recentPathsSet.has(`${file.root ?? roots[0]}:${file.path}`))
+  }, [results, recentPathsSet, roots])
 
   // Flat list for keyboard navigation: recent first, then rest
   const allItems = useMemo(
@@ -141,20 +151,22 @@ export const FileSearchDialog = memo(function FileSearchDialog({
   }, [selectedIndex])
 
   const handleSelect = useCallback(
-    (relativePath: string) => {
-      const absolutePath = projectPath + "/" + relativePath
+    (relativePath: string, root?: string) => {
+      const base = root ?? roots[0] ?? projectPath ?? ""
+      const absolutePath = base + "/" + relativePath
       onSelectFile(absolutePath)
       onOpenChange(false)
     },
-    [projectPath, onSelectFile, onOpenChange],
+    [roots, projectPath, onSelectFile, onOpenChange],
   )
 
   const handleRemoveRecent = useCallback(
-    (relativePath: string) => {
-      const absolutePath = projectPath + "/" + relativePath
+    (relativePath: string, root?: string) => {
+      const base = root ?? roots[0] ?? projectPath ?? ""
+      const absolutePath = base + "/" + relativePath
       setRecentlyOpenedFiles((prev) => prev.filter((p) => p !== absolutePath))
     },
-    [projectPath, setRecentlyOpenedFiles],
+    [roots, projectPath, setRecentlyOpenedFiles],
   )
 
   const handleKeyDown = useCallback(
@@ -171,7 +183,7 @@ export const FileSearchDialog = memo(function FileSearchDialog({
         e.preventDefault()
         const file = allItems[selectedIndex]
         if (file) {
-          handleSelect(file.path)
+          handleSelect(file.path, (file as { root?: string }).root)
         }
       }
     },
@@ -248,11 +260,11 @@ export const FileSearchDialog = memo(function FileSearchDialog({
                       dirPath={dirPath}
                       index={i}
                       isSelected={i === selectedIndex}
-                      onSelect={() => handleSelect(item.path)}
+                      onSelect={() => handleSelect(item.path, item.root)}
                       setRef={handleSetRef}
                       query={debouncedQuery}
                       recentLabel="recently opened"
-                      onRemoveRecent={() => handleRemoveRecent(item.path)}
+                      onRemoveRecent={() => handleRemoveRecent(item.path, item.root)}
                     />
                   )
                 })}
@@ -272,7 +284,7 @@ export const FileSearchDialog = memo(function FileSearchDialog({
                           dirPath={dirPath}
                           index={flatIndex}
                           isSelected={flatIndex === selectedIndex}
-                          onSelect={() => handleSelect(item.path)}
+                          onSelect={() => handleSelect(item.path, item.root)}
                           setRef={handleSetRef}
                           query={debouncedQuery}
                         />

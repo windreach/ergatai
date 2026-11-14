@@ -122,7 +122,12 @@ pub async fn discover(cwd: Option<&str>) -> serde_json::Value {
 
 pub fn native_api_key() -> anyhow::Result<Option<String>> {
     use crate::services::native_agent_config;
-    let auth_path = native_agent_config::home_path(&[".codex", "auth.json"]);
+    // Respect CODEX_HOME (consistent with read_models).
+    let codex_home = std::env::var("CODEX_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| native_agent_config::home_path(&[".codex"]));
+    let auth_path = codex_home.join("auth.json");
     if auth_path.is_file() {
         let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(auth_path)?)?;
         if let Some(key) = value
@@ -133,32 +138,40 @@ pub fn native_api_key() -> anyhow::Result<Option<String>> {
             return Ok(Some(key.to_string()));
         }
     }
-    let config_path = native_agent_config::home_path(&[".codex", "config.toml"]);
-    let toml_value: toml::Value = toml::from_str(&std::fs::read_to_string(config_path)?)?;
-    let provider_id = toml_value
-        .get("model_provider")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let key = provider_id
-        .as_deref()
-        .and_then(|id| toml_value.get("model_providers").and_then(|v| v.get(id)))
-        .and_then(|provider| {
-            let provider: native_agent_config::CodexModelProvider =
-                provider.clone().try_into().ok()?;
-            provider
-                .env_key
-                .as_deref()
-                .and_then(native_agent_config::env_var)
-                .or(provider.experimental_bearer_token.clone())
-        })
-        .or_else(|| native_agent_config::env_var("OPENAI_API_KEY"));
+    let config_path = codex_home.join("config.toml");
+    let key = if config_path.is_file() {
+        let toml_value: toml::Value = toml::from_str(&std::fs::read_to_string(&config_path)?)?;
+        let provider_id = toml_value
+            .get("model_provider")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        provider_id
+            .as_deref()
+            .and_then(|id| toml_value.get("model_providers").and_then(|v| v.get(id)))
+            .and_then(|provider| {
+                let provider: native_agent_config::CodexModelProvider =
+                    provider.clone().try_into().ok()?;
+                provider
+                    .env_key
+                    .as_deref()
+                    .and_then(native_agent_config::env_var)
+                    .or(provider.experimental_bearer_token.clone())
+            })
+            .or_else(|| native_agent_config::env_var("OPENAI_API_KEY"))
+    } else {
+        native_agent_config::env_var("OPENAI_API_KEY")
+    };
     Ok(native_agent_config::trim_non_empty(key))
 }
 
 pub fn detect_native_config(
 ) -> anyhow::Result<Option<crate::services::native_agent_config::NativeAgentConfig>> {
     use crate::services::native_agent_config;
-    let path = native_agent_config::home_path(&[".codex", "config.toml"]);
+    let codex_home = std::env::var("CODEX_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| native_agent_config::home_path(&[".codex"]));
+    let path = codex_home.join("config.toml");
     if !path.is_file() {
         return Ok(None);
     }
@@ -219,16 +232,17 @@ pub fn detect_native_config(
 pub fn list_skills(cwd: Option<&str>) -> Vec<crate::services::skills_service::SkillInfo> {
     use std::path::Path;
     let mut out = Vec::new();
-    let home = std::env::var("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    let codex_home = std::env::var("CODEX_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var("HOME")
+                .map(|h| PathBuf::from(h).join(".codex"))
+                .unwrap_or_else(|_| PathBuf::from("/").join(".codex"))
+        });
+    crate::services::skills_service::scan_dir(&codex_home.join("skills"), "user", &mut out);
     crate::services::skills_service::scan_dir(
-        &home.join(".codex").join("skills"),
-        "user",
-        &mut out,
-    );
-    crate::services::skills_service::scan_dir(
-        &home.join(".codex").join("skills").join(".system"),
+        &codex_home.join("skills").join(".system"),
         "user",
         &mut out,
     );
@@ -286,46 +300,56 @@ pub fn read_models(
     let mut catalog_path: Option<PathBuf> = None;
     let mut profile_models: Vec<(String, String)> = Vec::new();
 
-    if let Ok(content) = fs::read_to_string(codex_home.join("config.toml")) {
-        let mut current: Option<String> = None;
-        for raw in content.lines() {
-            let t = raw.trim();
-            if t.is_empty() || t.starts_with('#') {
-                continue;
-            }
-            // section header
-            if t.starts_with('[') && t.ends_with(']') {
-                current = Some(t[1..t.len() - 1].trim().to_string());
-                continue;
-            }
-            let eq = match t.find('=') {
-                Some(i) => i,
-                None => continue,
-            };
-            let key = t[..eq].trim();
-            let mut val = t[eq + 1..].trim();
-            // strip inline comment
-            if let Some(h) = val.find('#') {
-                val = val[..h].trim();
-            }
-            let val = val.trim_matches(|c| c == '"' || c == '\'');
-            if val.is_empty() {
-                continue;
-            }
-            match &current {
-                None => {
-                    if key == "model" {
-                        top_model = Some(val.to_string());
-                    } else if key == "model_provider" {
-                        top_provider = val.to_string();
-                    } else if key == "model_catalog_json" {
-                        catalog_path = Some(PathBuf::from(val));
+    let mut codex_config_paths = vec![codex_home.join("config.toml")];
+    if let Some(c) = _cwd {
+        let project_cfg = PathBuf::from(c).join(".codex").join("config.toml");
+        if project_cfg != codex_config_paths[0] {
+            codex_config_paths.push(project_cfg);
+        }
+    }
+    for cfg_path in &codex_config_paths {
+        if let Ok(content) = fs::read_to_string(cfg_path) {
+            let mut current: Option<String> = None;
+            for raw in content.lines() {
+                let t = raw.trim();
+                if t.is_empty() || t.starts_with('#') {
+                    continue;
+                }
+                // section header
+                if t.starts_with('[') && t.ends_with(']') {
+                    current = Some(t[1..t.len() - 1].trim().to_string());
+                    continue;
+                }
+                let eq = match t.find('=') {
+                    Some(i) => i,
+                    None => continue,
+                };
+                let key = t[..eq].trim();
+                let mut val = t[eq + 1..].trim();
+                // strip inline comment
+                if let Some(h) = val.find('#') {
+                    val = val[..h].trim();
+                }
+                let val = val.trim_matches(|c| c == '"' || c == '\'');
+                if val.is_empty() {
+                    continue;
+                }
+                match &current {
+                    None => {
+                        if key == "model" {
+                            top_model = Some(val.to_string());
+                        } else if key == "model_provider" {
+                            top_provider = val.to_string();
+                        } else if key == "model_catalog_json" {
+                            catalog_path = Some(PathBuf::from(val));
+                        }
                     }
+                    Some(sec) if sec.starts_with("profiles.") && key == "model" => {
+                        profile_models
+                            .push((sec["profiles.".len()..].to_string(), val.to_string()));
+                    }
+                    _ => {}
                 }
-                Some(sec) if sec.starts_with("profiles.") && key == "model" => {
-                    profile_models.push((sec["profiles.".len()..].to_string(), val.to_string()));
-                }
-                _ => {}
             }
         }
     }

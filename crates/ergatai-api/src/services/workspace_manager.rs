@@ -1165,6 +1165,12 @@ pub fn register_project(
 
     let created = projects::create(db_project).map_err(WorkspaceManagerError::from)?;
 
+    // Register the project path as a lock-managed root (sync). Lock manager
+    // initialization is deferred to the async API layer.
+    let pid = created.project_id.to_string();
+    let path = std::path::PathBuf::from(&created.path);
+    let _ = ergatai_lock::register_project_root(&pid, &path);
+
     // Convert to Project type
     Ok(Project {
         project_id: format_id(created.project_id, IdType::Project),
@@ -1212,6 +1218,9 @@ pub fn remove_project(workspace_id: &str, project_id: &str) -> Result<(), Worksp
     // Delete project from database
     projects::delete(project_id_i64).map_err(WorkspaceManagerError::from)?;
 
+    // Unregister the project path from lock-managed roots.
+    ergatai_lock::unregister_project_roots(project_id);
+
     Ok(())
 }
 
@@ -1258,6 +1267,10 @@ pub fn update_project(
 
     if let Some(path) = request.path {
         let canonical_path = canonical_path(&path)?;
+        let pid = project.project_id.to_string();
+        // Remove any previous root for this project before registering the new one.
+        ergatai_lock::unregister_project_roots(&pid);
+        let _ = ergatai_lock::register_project_root(&pid, std::path::Path::new(&canonical_path));
         project.path = canonical_path;
     }
 

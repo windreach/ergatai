@@ -270,6 +270,17 @@ export type ConversationRuntimeState = {
 
   /** ACP context window: total size (real-time from SSE) */
   contextWindow?: number
+
+  /** ACP extension quota detail (real-time from SSE UsageUpdate _meta) */
+  contextQuota?: {
+    inputTokens?: number | null
+    outputTokens?: number | null
+    totalTokens?: number | null
+    cachedInputTokens?: number | null
+    cacheWriteInputTokens?: number | null
+    reasoningOutputTokens?: number | null
+    modelUsage?: unknown
+  }
 }
 
 // ============================================================================

@@ -266,6 +266,15 @@ export const conversationsRouter = router({
         context_window: number
         percent_used: number
         updated_at: number
+        context_quota?: {
+          input_tokens?: number | null
+          output_tokens?: number | null
+          total_tokens?: number | null
+          cached_input_tokens?: number | null
+          cache_write_input_tokens?: number | null
+          reasoning_output_tokens?: number | null
+          model_usage?: unknown
+        } | null
       }>(`/api/v1/conversations/${encodeURIComponent(input.conversationId)}/context-usage`)
     }),
 

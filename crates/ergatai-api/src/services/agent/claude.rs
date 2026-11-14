@@ -1,7 +1,6 @@
 use crate::services::agent::DiscoveredModels;
 use crate::services::profile_service::{ProfileModelDetail, ProfileModelSource};
 use serde_json::Value;
-use std::fs;
 
 pub async fn discover_models(_profile_name: &str, _cwd: Option<&str>) -> DiscoveredModels {
     let native_default = detect_native_config()
@@ -199,34 +198,95 @@ pub async fn discover_models(_profile_name: &str, _cwd: Option<&str>) -> Discove
     }
 }
 
-pub async fn switch_model(
-    _agent_id: &str,
-    model: &str,
-    cwd: Option<&str>,
-    session_id: Option<&str>,
-) -> Value {
-    let sdk =
-        crate::services::agent_sdk_service::switch_model("claude", model, cwd, session_id).await;
-    if sdk.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-        return sdk;
-    }
-
-    serde_json::json!({
-        "ok": false,
-        "error": sdk.get("error").cloned().unwrap_or_else(|| serde_json::json!("claude sdk failed")),
-        "via": "sdk_failed",
-        "sdk_error": sdk.get("error").cloned(),
-    })
-}
+// Runtime model switching is performed in-process by the ACP agent.
+// SDK-based runtime switching has been removed.
 
 pub async fn discover(cwd: Option<&str>) -> serde_json::Value {
     crate::services::agent_sdk_service::discover("claude", cwd).await
 }
 
+/// Deep-merge overlay into base for Claude settings (env deep-merged, others override).
+pub fn merge_claude_settings(base: &mut serde_json::Value, overlay: serde_json::Value) {
+    if let (Some(b), Some(o)) = (base.as_object_mut(), overlay.as_object()) {
+        for (k, v) in o {
+            if k == "env" {
+                if let Some(env_obj) = v.as_object() {
+                    let target = b
+                        .entry("env".to_string())
+                        .or_insert_with(|| serde_json::json!({}));
+                    if let Some(t) = target.as_object_mut() {
+                        for (ek, ev) in env_obj {
+                            t.insert(ek.clone(), ev.clone());
+                        }
+                    }
+                }
+            } else {
+                b.insert(k.clone(), v.clone());
+            }
+        }
+    }
+}
+
+/// Load and merge Claude settings from home, with `settings.local.json` overriding
+/// `settings.json` (env deep-merged). Returns None when neither exists.
+pub fn load_claude_settings() -> Option<serde_json::Value> {
+    load_claude_settings_with_cwd(None)
+}
+
+/// Load home + optional project-level Claude settings (`.claude/settings*.json`),
+/// merged in priority order: home base -> home local -> project base -> project local.
+pub fn load_claude_settings_with_cwd(cwd: Option<&str>) -> Option<serde_json::Value> {
+    use crate::services::native_agent_config;
+    let home = dirs::home_dir()?;
+    let mut merged = serde_json::json!({});
+    let mut found = false;
+
+    // Home-level
+    for name in ["settings.json", "settings.local.json"] {
+        let path = home.join(".claude").join(name);
+        if !path.is_file() {
+            continue;
+        }
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                merge_claude_settings(&mut merged, v);
+                found = true;
+            }
+        }
+    }
+
+    // Project-level (when cwd provided)
+    if let Some(c) = cwd {
+        for name in ["settings.json", "settings.local.json"] {
+            let path = std::path::Path::new(c).join(".claude").join(name);
+            if !path.is_file() {
+                continue;
+            }
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    merge_claude_settings(&mut merged, v);
+                    found = true;
+                }
+            }
+        }
+    }
+
+    if !found {
+        let _ = native_agent_config::env_var;
+        return None;
+    }
+    Some(merged)
+}
+
 pub fn native_api_key() -> anyhow::Result<Option<String>> {
     use crate::services::native_agent_config;
-    let path = native_agent_config::home_path(&[".claude", "settings.json"]);
-    let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    let value = match load_claude_settings() {
+        Some(v) => v,
+        None => {
+            return Ok(native_agent_config::env_var("ANTHROPIC_API_KEY")
+                .or_else(|| native_agent_config::env_var("ANTHROPIC_AUTH_TOKEN")));
+        }
+    };
     let env: std::collections::HashMap<String, String> = value
         .get("env")
         .map(native_agent_config::json_str_map)
@@ -242,12 +302,11 @@ pub fn native_api_key() -> anyhow::Result<Option<String>> {
 pub fn detect_native_config(
 ) -> anyhow::Result<Option<crate::services::native_agent_config::NativeAgentConfig>> {
     use crate::services::native_agent_config;
+    let value = match load_claude_settings() {
+        Some(v) => v,
+        None => return Ok(None),
+    };
     let path = native_agent_config::home_path(&[".claude", "settings.json"]);
-    if !path.is_file() {
-        return Ok(None);
-    }
-    let raw = std::fs::read_to_string(&path)?;
-    let value: serde_json::Value = serde_json::from_str(&raw)?;
 
     let env: std::collections::HashMap<String, String> = value
         .get("env")
@@ -319,6 +378,17 @@ pub async fn inject_mcp(
     crate::services::agent_sdk_service::inject_mcp("claude", cwd, session_id, servers_json).await
 }
 
+/// Claude Code models are served by Anthropic unless the configured model ID
+/// carries an explicit provider prefix.
+fn resolve_configured_provider(model_id: &str) -> String {
+    model_id
+        .split_once('/')
+        .map(|(provider, _)| provider)
+        .filter(|provider| !provider.is_empty())
+        .unwrap_or("Anthropic")
+        .to_string()
+}
+
 pub fn read_models(
     _cwd: Option<&str>,
 ) -> Vec<crate::services::profile_service::ProfileModelDetail> {
@@ -326,17 +396,9 @@ pub fn read_models(
     // empty even when settings.json has no overrides.
     let mut models: Vec<ProfileModelDetail> = Vec::new();
 
-    let settings_path = match dirs::home_dir() {
-        Some(h) => h.join(".claude").join("settings.json"),
+    let cfg = match load_claude_settings_with_cwd(_cwd) {
+        Some(v) => v,
         None => return models,
-    };
-    let content = match fs::read_to_string(&settings_path) {
-        Ok(c) => c,
-        Err(_) => return models,
-    };
-    let cfg: Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return models,
     };
 
     let env = cfg.get("env").and_then(|v| v.as_object());
@@ -363,7 +425,7 @@ pub fn read_models(
                     id: m.clone(),
                     name: m.clone(),
                     description: format!("Configured {}", slot),
-                    provider: "Configured".to_string(),
+                    provider: resolve_configured_provider(&m),
                 });
             }
         }
@@ -394,7 +456,7 @@ pub fn read_models(
                         id: dm.clone(),
                         name: dm.clone(),
                         description: "Configured model".to_string(),
-                        provider: "Configured".to_string(),
+                        provider: resolve_configured_provider(&dm),
                     },
                 );
             }

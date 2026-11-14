@@ -100,6 +100,7 @@ const ALLOWED_LOCK_FILES = new Set([
 interface FileEntry {
   path: string
   type: "file" | "folder"
+  root?: string
 }
 
 // Cache for file and folder listings (bounded LRU)
@@ -411,7 +412,7 @@ function filterEntries(
   query: string,
   limit: number,
   typeFilter?: "file" | "folder",
-): Array<{ id: string; label: string; path: string; repository: string; type: "file" | "folder" }> {
+): Array<{ id: string; label: string; path: string; repository: string; type: "file" | "folder"; root?: string }> {
   const queryLower = query.toLowerCase()
 
   // Filter entries that match the query and optional type filter
@@ -474,6 +475,7 @@ function filterEntries(
     path: entry.path,
     repository: "local",
     type: entry.type,
+    root: entry.root,
   }))
 }
 
@@ -484,7 +486,8 @@ export const filesRouter = router({
   search: publicProcedure
     .input(
       z.object({
-        projectPath: z.string(),
+        projectPath: z.string().optional(),
+        projectPaths: z.array(z.string()).optional(),
         query: z.string().default(""),
         limit: z.number().min(1).max(5000).default(50),
         typeFilter: z.enum(["file", "folder"]).optional(),
@@ -493,39 +496,52 @@ export const filesRouter = router({
       })
     )
     .query(async ({ input }) => {
-      const { projectPath, query, limit, typeFilter, collapseChains, collapseRoot } = input
+      const { query, limit, typeFilter, collapseChains, collapseRoot } = input
 
-      if (!projectPath) {
+      const roots =
+        input.projectPaths && input.projectPaths.length > 0
+          ? input.projectPaths
+          : input.projectPath
+            ? [input.projectPath]
+            : []
+
+      if (roots.length === 0) {
         return []
       }
 
       try {
-        // Verify the path exists and is a directory
-        const pathStat = await stat(projectPath)
-        if (!pathStat.isDirectory()) {
-          console.warn(`[files] Not a directory: ${projectPath}`)
-          return []
+        // Collect entries from all roots, tagging each with its root.
+        const taggedEntries: Array<FileEntry & { root: string }> = []
+        for (const root of roots) {
+          try {
+            const pathStat = await stat(root)
+            if (!pathStat.isDirectory()) {
+              console.warn(`[files] Not a directory: ${root}`)
+              continue
+            }
+            const rawEntries = await getEntryList(root)
+            const entries =
+              collapseChains && !query
+                ? collapseEntries(rawEntries, collapseRoot || "")
+                : collapseRoot
+                  ? rawEntries.filter(
+                      (e) =>
+                        e.path !== collapseRoot &&
+                        e.path.startsWith(`${collapseRoot}/`),
+                    )
+                  : rawEntries
+            for (const e of entries) {
+              taggedEntries.push({ ...e, root })
+            }
+          } catch (error) {
+            console.error(`[files] Error scanning ${root}:`, error)
+          }
         }
 
-        // Get entry list (cached or fresh scan)
-        const rawEntries = await getEntryList(projectPath)
-
-        // Optionally collapse directory chains for browsable @-mention views.
-        // Collapse is only applied when browsing (no query); searching keeps
-        // the full flat list so any file can be found.
-        const entries =
-          collapseChains && !query
-            ? collapseEntries(rawEntries, collapseRoot || "")
-            : collapseRoot
-              ? rawEntries.filter(
-                  (e) =>
-                    e.path !== collapseRoot &&
-                    e.path.startsWith(`${collapseRoot}/`),
-                )
-              : rawEntries
+        const rawEntries = taggedEntries
 
         // Filter and sort by query
-        return filterEntries(entries, query, limit, typeFilter)
+        return filterEntries(rawEntries, query, limit, typeFilter)
       } catch (error) {
         console.error(`[files] Error searching files:`, error)
         return []

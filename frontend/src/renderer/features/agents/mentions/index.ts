@@ -14,6 +14,8 @@ export { normalizeAgentTriggers, matchAgentTriggers } from "../../mentions"
 export type { AgentTriggerMatch, AgentNativeTrigger } from "../../mentions"
 
 export { AgentsFileMention } from "./agents-file-mention"
+export { AgentsSkillTrigger } from "./agents-skill-trigger"
+export { AgentsHashTrigger } from "./agents-hash-trigger"
 
 export {
   useRenderFileMentions,

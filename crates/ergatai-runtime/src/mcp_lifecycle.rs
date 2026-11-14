@@ -44,16 +44,20 @@ mod tests {
         static CLOSER: std::sync::OnceLock<AtomicUsize> = std::sync::OnceLock::new();
         let counter = CLOSER.get_or_init(|| AtomicUsize::new(0));
 
-        let result = set_global_mcp_session_closer(Arc::new(|_agent_id| {
+        let result = set_global_mcp_session_closer(Arc::new(|agent_id| {
             let counter = CLOSER.get().expect("closer installed");
+            let agent_id = agent_id.to_owned();
             Box::pin(async move {
-                counter.fetch_add(1, Ordering::SeqCst);
+                if agent_id == "agent-test" {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
             })
         }));
         assert!(result.is_ok(), "test global hook should only be set once");
 
+        let before = counter.load(Ordering::SeqCst);
         close_agent_mcp_sessions("agent-test").await;
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert_eq!(counter.load(Ordering::SeqCst), before + 1);
     }
 
     #[tokio::test]

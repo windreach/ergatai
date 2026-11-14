@@ -15,11 +15,6 @@ type MarkdownComponentProps<T extends keyof JSX.IntrinsicElements> = ComponentPr
   node?: unknown
 }
 
-// Preserve emojis in rendered/copied markdown content
-export function stripEmojis(text: string): string {
-  return text
-}
-
 // Escape HTML special characters for safe rendering
 function escapeHtml(text: string): string {
   return text

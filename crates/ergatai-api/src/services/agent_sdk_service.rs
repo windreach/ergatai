@@ -269,64 +269,8 @@ async fn ensure_opencode_ready() -> bool {
     healthy
 }
 
-pub async fn switch_model(
-    agent: &str,
-    model: &str,
-    cwd: Option<&str>,
-    session_id: Option<&str>,
-) -> Value {
-    let script = crate::services::embedded_scripts::model_script_path();
-    let mut cmd = Command::new("node");
-    cmd.arg(script).arg(agent).arg(model);
-    if let Some(c) = cwd {
-        cmd.arg(c);
-    }
-    if let Some(s) = session_id {
-        cmd.env("SESSION_ID", s);
-    }
-    if agent == "opencode" {
-        cmd.env("OPENCODE_URL", opencode_base_url().await);
-    }
-
-    // Build NODE_PATH dynamically based on user home and env vars
-    let node_path = build_node_path();
-    if !node_path.is_empty() {
-        cmd.env("NODE_PATH", &node_path);
-    }
-
-    cmd.kill_on_drop(true);
-
-    // Acquire a global permit to limit concurrent Node SDK subprocesses.
-    let _permit = SDK_SEMAPHORE.acquire().await.ok();
-
-    // Run with timeout; kill_on_drop ensures the child is terminated on timeout.
-    match tokio::time::timeout(SDK_SUBPROCESS_TIMEOUT, cmd.output()).await {
-        Ok(Ok(output)) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            serde_json::from_str(&stdout).unwrap_or_else(|e| {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::warn!(error = %e, raw = %stdout, "Failed to parse agent-sdk-model output");
-                serde_json::json!({"ok": false, "error": format!("JSON parse failed: {}", e), "stderr": stderr})
-            })
-        }
-        Ok(Err(e)) => {
-            tracing::warn!(error = %e, "Failed to execute agent-sdk-model script");
-            serde_json::json!({"ok": false, "error": e.to_string()})
-        }
-        Err(_timeout) => {
-            tracing::error!(
-                agent = %agent,
-                model = %model,
-                timeout_secs = %SDK_SUBPROCESS_TIMEOUT.as_secs(),
-                "agent-sdk-model subprocess timed out"
-            );
-            serde_json::json!({
-                "ok": false,
-                "error": format!("SDK subprocess timed out after {}s", SDK_SUBPROCESS_TIMEOUT.as_secs())
-            })
-        }
-    }
-}
+// Runtime model switching is performed in-process by the ACP agent.
+// SDK-based runtime switching has been removed.
 
 pub async fn discover(agent: &str, cwd: Option<&str>) -> Value {
     // For OpenCode, check server health first to avoid hanging SDK calls

@@ -46,8 +46,9 @@ pub use ipc_server::{start_ipc_server, IpcServerHandle};
 pub use lock_manager::FileLockManager;
 pub use lock_mode::LockModeManager;
 pub use manager::{
-    get_lock_manager, get_snapshot_manager, get_watchdog, init_file_access,
-    register_workspace_for_project, shutdown_file_access, unregister_workspace_for_project,
+    find_project_for_path, get_lock_manager, get_snapshot_manager, get_watchdog, init_file_access,
+    is_registered_path, register_project_root, register_workspace_for_project,
+    shutdown_file_access, unregister_project_roots, unregister_workspace_for_project,
 };
 pub use monitor::FileMonitor;
 pub use performance::{AsyncLockQueue, AsyncLockRequest, BatchOperations, LockCache};

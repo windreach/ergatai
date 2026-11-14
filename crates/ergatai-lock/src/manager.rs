@@ -10,7 +10,7 @@
 //! the tool lifecycle.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -42,6 +42,72 @@ fn file_access_manager() -> &'static RwLock<FileAccessManagerState> {
             projects: HashMap::new(),
         })
     })
+}
+
+/// Global registry of project roots keyed by canonical root path.
+///
+/// Allows lock management across multiple registered workspaces: a path is
+/// considered "in-workspace" if it lives under *any* registered root, and the
+/// owning project's lock manager is used to lock it.
+static GLOBAL_PROJECT_ROOTS: OnceLock<
+    std::sync::RwLock<std::collections::HashMap<PathBuf, String>>,
+> = OnceLock::new();
+
+fn global_project_roots() -> &'static std::sync::RwLock<std::collections::HashMap<PathBuf, String>>
+{
+    GLOBAL_PROJECT_ROOTS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+/// Register a project root so paths beneath it can be locked.
+pub fn register_project_root(project_id: &str, root: &Path) -> ErgataiResult<()> {
+    let canonical = root.canonicalize().map_err(|e| {
+        ErgataiError::InvalidArgument(format!(
+            "Failed to canonicalize project root {:?}: {}",
+            root, e
+        ))
+    })?;
+    let mut map = global_project_roots().write().unwrap();
+    map.insert(canonical, project_id.to_string());
+    Ok(())
+}
+
+/// Remove all roots registered for a project.
+pub fn unregister_project_roots(project_id: &str) {
+    let mut map = global_project_roots().write().unwrap();
+    map.retain(|_, pid| pid != project_id);
+}
+
+/// Find the project id that owns the given path (if any).
+pub fn find_project_for_path(path: &Path) -> Option<String> {
+    // Canonicalize the path itself, falling back to its parent for not-yet-existing files.
+    let canonical = if let Ok(p) = path.canonicalize() {
+        p
+    } else if let Some(parent) = path.parent() {
+        if let Ok(cp) = parent.canonicalize() {
+            if let Some(name) = path.file_name() {
+                cp.join(name)
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+
+    let map = global_project_roots().read().unwrap();
+    for (root, pid) in map.iter() {
+        if canonical.starts_with(root) {
+            return Some(pid.clone());
+        }
+    }
+    None
+}
+
+/// Returns true if the path is under any registered project root.
+pub fn is_registered_path(path: &Path) -> bool {
+    find_project_for_path(path).is_some()
 }
 
 /// Initialize file access control for a project

@@ -29,28 +29,9 @@ pub fn read_codex_models() -> Vec<ProfileModelDetail> {
 }
 
 pub fn strip_json_comments(s: &str) -> String {
-    // Remove // line comments and /* */ block comments (naive, matches JS).
-    let mut out = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    let n = bytes.len();
-    while i < n {
-        if i + 1 < n && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            while i < n && bytes[i] != b'\n' {
-                i += 1;
-            }
-        } else if i + 1 < n && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < n && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                i += 1;
-            }
-            i = (i + 2).min(n);
-        } else {
-            out.push(bytes[i] as char);
-            i += 1;
-        }
-    }
-    out
+    // Delegate to the string-aware implementation in native_agent_config so that
+    // comment markers inside string literals are preserved.
+    crate::services::native_agent_config::strip_json_comments(s)
 }
 
 #[cfg(test)]

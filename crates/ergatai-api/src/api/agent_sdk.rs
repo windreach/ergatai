@@ -118,61 +118,24 @@ pub async fn switch_model(
 
     let profile_name = agent_info.as_ref().and_then(|i| i.profile.clone());
 
-    // Resolve session id for SDK-based switching when caller did not provide it.
-    // OpenCode's SDK helper needs SESSION_ID to call /api/session/{id}/model;
-    // without it we may unnecessarily fall back to ACP/prompt-based switching.
-    let runtime_session_id = if body.session_id.is_none() {
-        runtime.backend().session_id(&agent_id).await.ok().flatten()
-    } else {
-        None
-    };
-    let effective_session_id = body.session_id.clone().or(runtime_session_id);
-
     let kind = if let Some(pn) = profile_name.as_deref() {
         crate::services::agent::resolve_kind_by_name(pn).await
     } else {
         crate::services::agent::AgentKind::Unknown
     };
 
-    // Priority: SDK first (Claude/OpenCode), then ACP fallback for agents
-    // whose SDK does not support runtime model switching (e.g. Codex) or
-    // when the SDK call fails. This keeps OpenCode's HTTP SDK path preferred
-    // while still allowing ACP-native switching.
-    let sdk_result = if kind == crate::services::agent::AgentKind::Unknown {
-        serde_json::json!({"ok": false, "error": "unknown agent kind"})
-    } else {
-        crate::services::agent::switch_model(
-            kind,
-            &agent_id,
-            &body.model,
-            cwd.as_deref(),
-            effective_session_id.as_deref(),
-        )
-        .await
+    // Runtime model switching is performed in-process by the running ACP agent.
+    // SDK-based switching is intentionally not used for runtime mutation.
+    let result = match crate::services::agent_service::set_agent(&agent_id, &body.model).await {
+        Ok(_) => serde_json::json!({
+            "ok": true,
+            "via": "acp",
+        }),
+        Err(e) => serde_json::json!({
+            "ok": false,
+            "error": format!("ACP model switch failed: {}", e),
+        }),
     };
-
-    let mut result = sdk_result.clone();
-    if !result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-        // Fallback to ACP (session/set_model, then /model).
-        match crate::services::agent_service::set_agent(&agent_id, &body.model).await {
-            Ok(_) => {
-                result = serde_json::json!({
-                    "ok": true,
-                    "via": "acp_fallback",
-                    "sdk_error": sdk_result.get("error").cloned().unwrap_or(serde_json::Value::Null),
-                });
-            }
-            Err(e) => {
-                // Preserve the original SDK error for diagnostics.
-                if result.get("error").is_none() {
-                    result = serde_json::json!({
-                        "ok": false,
-                        "error": format!("SDK and ACP model switch failed: {}", e),
-                    });
-                }
-            }
-        }
-    }
 
     // On success, refresh the profile model catalog via SDK so future
     // `get_profile_models` reads see the full SDK-reported list with

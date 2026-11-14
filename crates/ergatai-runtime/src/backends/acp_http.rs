@@ -338,6 +338,9 @@ impl AcpHttpBackend {
                                 SessionUpdate::AgentThoughtChunk(chunk) => {
                                     if let ContentBlock::Text(text_content) = &chunk.content {
                                         debug!(text_len = text_content.text.len(), "HTTP agent thought");
+                                        // Capture thinking content symmetrically with text output so it
+                                        // is not silently dropped (previously only flagged in_thinking).
+                                        out.append(text_content.text.as_bytes());
                                     }
                                     in_thinking.store(true, std::sync::atomic::Ordering::Relaxed);
                                     in_tool_call.store(false, std::sync::atomic::Ordering::Relaxed);

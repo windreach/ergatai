@@ -12,6 +12,7 @@ import {
 export type RuntimeAgentEvent = {
   type: string
   role?: string | null
+  message_type?: string | null
   delta?: string
   id?: string
   name?: string
@@ -65,25 +66,54 @@ const log = createLogger("ConversationRuntime")
 const STOP_DELAY_MS = 30_000
 const MAX_RETRY_DELAY_MS = 10_000
 
-function resolveRuntimeStatus(
-  eventType: string,
-  stopReason?: string | null,
-): "idle" | "streaming" | "completed" | "error" {
-  if (eventType === "error") return "error"
-  if (eventType === "done") {
-    return stopReason === "error" ? "error" : "completed"
-  }
-  return "streaming"
+// Metadata-only events must never change a turn's lifecycle status. They can
+// arrive after a turn has already completed (e.g. a late session title update
+// or an agent stderr/status line) and must not flip the conversation back into
+// the streaming state.
+const NON_STATUS_RUNTIME_EVENTS = new Set([
+  "session_title_update",
+  "context_usage",
+  "status",
+])
+
+function isNonStatusRuntimeEvent(type: string): boolean {
+  return NON_STATUS_RUNTIME_EVENTS.has(type)
 }
 
-function resolveRuntimeStatusForEvent(event: {
-  type: string
-  stop_reason?: string | null
-}): "idle" | "streaming" | "completed" | "error" {
-  return resolveRuntimeStatus(
-    event.type,
-    event.type === "done" ? event.stop_reason : undefined,
-  )
+/**
+ * Resolve the next lifecycle status for one incremental runtime event.
+ *
+ * `turn_started` and durable starting messages are the only events allowed to
+ * reopen a finished turn. A late content/tool/subagent delta that races with
+ * `done` belongs to the turn that just finished; treating it as a new turn
+ * would leave the UI stuck on "Generating" with no terminal event.
+ */
+function resolveRuntimeStatusAfterEvent(
+  currentStatus: ConversationRuntimeState["status"],
+  event: {
+    type: string
+    stop_reason?: string | null
+    role?: string | null
+    message_type?: string | null
+  },
+): ConversationRuntimeState["status"] {
+  if (event.type === "error") return "error"
+  if (event.type === "done") {
+    return event.stop_reason === "error" ? "error" : "completed"
+  }
+  if (isNonStatusRuntimeEvent(event.type)) return currentStatus
+  if (event.type === "turn_started") return "streaming"
+  if (event.type === "conversation_message") {
+    const startsWork =
+      event.role === "user" ||
+      (event.role === "agent" && event.message_type === "request")
+    if (startsWork) return "streaming"
+    return currentStatus
+  }
+  if (currentStatus === "completed" || currentStatus === "error") {
+    return currentStatus
+  }
+  return "streaming"
 }
 
 const channels = new Map<string, RuntimeChannel>()
@@ -239,7 +269,7 @@ function connect(conversationId: string) {
           if (event.turnId !== channel.state.turnId) {
             channel.state = {
               ...channel.state,
-              status: resolveRuntimeStatusForEvent(event.event),
+              status: resolveRuntimeStatusAfterEvent(channel.state.status, event.event),
               turnId: event.turnId,
               lastSequence: event.sequence,
               events: [event],
@@ -278,7 +308,7 @@ function connect(conversationId: string) {
 
           channel.state = {
             ...channel.state,
-            status: resolveRuntimeStatusForEvent(event.event),
+            status: resolveRuntimeStatusAfterEvent(channel.state.status, event.event),
             lastSequence: event.sequence,
             events: [...channel.state.events, event].slice(-MAX_EVENTS),
             updatedAtMs: event.timestampMs,

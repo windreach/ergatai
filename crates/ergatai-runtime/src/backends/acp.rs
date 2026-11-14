@@ -616,6 +616,61 @@ async fn flush_and_persist_output(
     }
 }
 
+/// Persist an error message that occurred outside an active turn.
+///
+/// Out-of-turn errors (e.g. prompt failures with no turn token) are published
+/// to the conversation stream but would otherwise never be persisted, so they
+/// vanish on refresh. This helper persists them as a single assistant message
+/// via the global persist callback, independent of the turn accumulator.
+async fn persist_out_of_turn_error(
+    conversation_id: &str,
+    enriched: &str,
+    _error_name: Option<String>,
+    _error_type: Option<String>,
+    _service: Option<String>,
+    _code: Option<i64>,
+    _error_data: Option<serde_json::Value>,
+) {
+    if enriched.trim().is_empty() {
+        return;
+    }
+    let Some(callback) = crate::output_accumulator::get_global_persist_callback() else {
+        tracing::warn!("No persist callback set; out-of-turn error not persisted");
+        return;
+    };
+    let cb = callback.clone();
+    let conv_id = conversation_id.to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let output_data = crate::output_accumulator::AgentOutputData {
+        conversation_id: 0, // overwritten by callback's parsed id
+        turn_id: format!("error-{}", now),
+        message_id: None,
+        role: "assistant".to_string(),
+        sender_agent_id: None,
+        sender_agent_name: None,
+        message_type: Some(crate::constants::MESSAGE_TYPE_AGENT_OUTPUT.to_string()),
+        reply_to_message_id: None,
+        correlation_id: None,
+        source_conversation_id: None,
+        thinking: None,
+        tool_calls: None,
+        text_chunks: None,
+        timeline: None,
+        final_text: Some(enriched.to_string()),
+        metadata: None,
+        created_at: now,
+        updated_at: now,
+    };
+    tokio::spawn(async move {
+        if let Err(e) = cb(conv_id, output_data).await {
+            tracing::error!(error = %e, "Failed to persist out-of-turn error");
+        }
+    });
+}
+
 /// Begin a new turn lifecycle: creates accumulator, registers token, emits TurnStarted.
 ///
 /// Encapsulates the duplicated turn setup logic used by interrupt, queued-prompt,
@@ -624,6 +679,22 @@ async fn begin_turn_lifecycle(
     task_current_turn_token: &Arc<RwLock<Option<crate::output_accumulator::TurnToken>>>,
     conversation_id: &str,
 ) -> Option<crate::output_accumulator::TurnToken> {
+    // Flush any pending out-of-turn chunk before starting a new turn, so chunk
+    // messages and turn messages do not interleave out of order.
+    if let Some(buffer) = crate::output_accumulator::get_global_chunk_buffer() {
+        if let Some(data) = buffer.flush(conversation_id).await {
+            if let Some(cb) = crate::output_accumulator::get_global_persist_callback() {
+                let cb = cb.clone();
+                let cid = conversation_id.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = cb(cid, data).await {
+                        tracing::error!(error = %e, "Failed to persist pending chunk at turn boundary");
+                    }
+                });
+            }
+        }
+    }
+
     let turn_token =
         if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
             let token = registry.begin_turn(conversation_id).await;
@@ -723,12 +794,6 @@ async fn send_output_event_internal(
     conversation_id: Option<&str>,
     event: AgentOutputEvent,
 ) {
-    tracing::info!(
-        has_token = token.is_some(),
-        conversation_id = ?conversation_id,
-        event_type = %event_type_name(&event),
-        "send_output_event_internal called"
-    );
     // Accumulate output data for persistence (synchronously to avoid race conditions)
     // Only accumulate if there's an active turn (accumulator exists)
     if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
@@ -808,7 +873,7 @@ async fn send_output_event_internal(
                 }
                 AgentOutputEvent::ContextUsage { used, size, .. } => {
                     tracing::info!(used = used, size = size, "Accumulating context_usage event");
-                    acc.set_context_usage(*used, *size);
+                    acc.set_context_usage(*used, *size, None);
                 }
                 _ => {}
             }
@@ -825,6 +890,33 @@ async fn send_output_event_internal(
                 event_type = %event_type_name(&event),
                 "Stale output event received for old turn generation, not accumulated"
             );
+        }
+    }
+
+    // Out-of-turn durable events: buffer into chunks for persistence
+    // (avoids per-event DB writes; flushed by size/time/turn-boundary).
+    if token.is_none() {
+        if let Some(conv_id) = conversation_id {
+            if crate::output_accumulator::is_durable_event(&event) {
+                if let Some(buffer) = crate::output_accumulator::get_global_chunk_buffer() {
+                    let should_flush = buffer.push(conv_id, &event).await;
+                    if should_flush {
+                        if let Some(data) = buffer.flush(conv_id).await {
+                            if let Some(cb) =
+                                crate::output_accumulator::get_global_persist_callback()
+                            {
+                                let cb = cb.clone();
+                                let cid = conv_id.to_string();
+                                tokio::spawn(async move {
+                                    if let Err(e) = cb(cid, data).await {
+                                        tracing::error!(error = %e, "Failed to persist chunk");
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -867,43 +959,9 @@ fn detect_acp_adapter_kind(command: &str) -> &'static str {
     }
 }
 
-fn append_adapter_field_log(adapter_kind: &str, event: &str, data: serde_json::Value) {
-    let kind = match adapter_kind {
-        "claude" | "codex" | "opencode" => adapter_kind,
-        _ => "unknown",
-    };
-    let dir = std::path::Path::new("logs");
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        tracing::debug!(error = %e, "Failed to create logs dir for adapter field log");
-        return;
-    }
-    // Ensure requested per-adapter log files exist for actual testing.
-    for name in ["claude.log", "codex.log", "opencode.log"] {
-        let p = dir.join(name);
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(p);
-    }
-    let path = dir.join(format!("{kind}.log"));
-    let ts_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let entry = serde_json::json!({
-        "ts_ms": ts_ms,
-        "adapter": kind,
-        "event": event,
-        "data": data,
-    });
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        use std::io::Write as _;
-        let _ = writeln!(f, "{}", entry);
-    }
+fn append_adapter_field_log(_adapter_kind: &str, _event: &str, _data: serde_json::Value) {
+    // Production: no-op. Adapter field logging is debug-only and disabled to
+    // avoid file I/O and disk growth in the request hot path.
 }
 
 /// Helper function to handle standard v1 session notifications.
@@ -1016,7 +1074,7 @@ async fn handle_standard_session_notification(
         }
         SessionUpdate::AgentThoughtChunk(chunk) => {
             if let Some(text) = extract_text_from_chunk(chunk) {
-                debug!(text_len = text.len(), "ACP agent thought chunk");
+                info!(text_len = text.len(), "ACP agent thought chunk received");
                 // Mark that we're in thinking mode (not safe to interrupt)
                 in_thinking.store(true, Ordering::SeqCst);
                 if capture_thoughts {
@@ -1041,6 +1099,8 @@ async fn handle_standard_session_notification(
                     },
                 )
                 .await;
+            } else {
+                warn!("ACP agent thought chunk received but no text content extracted");
             }
         }
         SessionUpdate::UsageUpdate(usage_update) => {
@@ -1113,7 +1173,27 @@ async fn handle_standard_session_notification(
                             size = usage_update.size,
                             "Accumulating context_usage in active turn"
                         );
-                        acc.set_context_usage(usage_update.used, usage_update.size);
+                        let quota_json = if quota_input_tokens.is_some()
+                            || quota_output_tokens.is_some()
+                            || quota_total_tokens.is_some()
+                            || quota_cached_input_tokens.is_some()
+                            || quota_cache_write_input_tokens.is_some()
+                            || quota_reasoning_output_tokens.is_some()
+                            || quota_model_usage.is_some()
+                        {
+                            Some(serde_json::json!({
+                                "input_tokens": quota_input_tokens,
+                                "output_tokens": quota_output_tokens,
+                                "total_tokens": quota_total_tokens,
+                                "cached_input_tokens": quota_cached_input_tokens,
+                                "cache_write_input_tokens": quota_cache_write_input_tokens,
+                                "reasoning_output_tokens": quota_reasoning_output_tokens,
+                                "model_usage": quota_model_usage,
+                            }))
+                        } else {
+                            None
+                        };
+                        acc.set_context_usage(usage_update.used, usage_update.size, quota_json);
                     }
                 }
             } else {
@@ -1193,6 +1273,118 @@ async fn handle_standard_session_notification(
                 return;
             }
 
+            // Derive locations from diff content when the agent omits them (e.g. Codex).
+            let derived_locations: Vec<ToolCallLocation> = if tc.locations.is_empty() {
+                tc.content
+                    .iter()
+                    .find_map(|c| match c {
+                        ToolCallContent::Diff(d) => Some(ToolCallLocation::new(d.path.clone())),
+                        _ => None,
+                    })
+                    .into_iter()
+                    .collect()
+            } else {
+                tc.locations.clone()
+            };
+
+            // Derive a canonical tool name for edit/write operations so the frontend
+            // can render the appropriate component/diff view. Different agents use
+            // different titles ("Editing files", "Edit /path", "write", ...).
+            let title_lower = tc.title.to_lowercase();
+            let is_edit_family = tc.kind == ToolKind::Edit
+                || title_lower == "edit"
+                || title_lower.starts_with("edit ")
+                || title_lower == "write"
+                || title_lower.starts_with("write ");
+            let tool_name = if is_edit_family {
+                let is_write = if let Some(diff) = tc.content.iter().find_map(|c| match c {
+                    ToolCallContent::Diff(d) => Some(d),
+                    _ => None,
+                }) {
+                    diff.old_text.is_none()
+                        || diff
+                            .meta
+                            .as_ref()
+                            .and_then(|m| m.get("kind"))
+                            .and_then(|v| v.as_str())
+                            == Some("add")
+                } else if title_lower == "write" || title_lower.starts_with("write ") {
+                    true
+                } else if let Some(raw) = &tc.raw_input {
+                    raw.get("content").is_some()
+                        && raw.get("old_string").is_none()
+                        && raw.get("new_string").is_none()
+                } else {
+                    false
+                };
+                if is_write {
+                    "Write".to_string()
+                } else {
+                    "Edit".to_string()
+                }
+            } else {
+                tc.title.clone()
+            };
+
+            // Synthesize input from diff content when raw_input is absent.
+            let mut synthesized_input = if tc.kind == ToolKind::Edit {
+                tc.content
+                    .iter()
+                    .find_map(|c| match c {
+                        ToolCallContent::Diff(d) => Some(d),
+                        _ => None,
+                    })
+                    .map(|d| {
+                        let is_add = d.old_text.is_none()
+                            || d.meta
+                                .as_ref()
+                                .and_then(|m| m.get("kind"))
+                                .and_then(|v| v.as_str())
+                                == Some("add");
+                        let mut input = serde_json::Map::new();
+                        input.insert(
+                            "_locations".to_string(),
+                            serde_json::json!([{
+                                "path": d.path.to_string_lossy()
+                            }]),
+                        );
+                        input.insert(
+                            "file_path".to_string(),
+                            serde_json::json!(d.path.to_string_lossy()),
+                        );
+                        if is_add {
+                            input.insert("content".to_string(), serde_json::json!(d.new_text));
+                        } else {
+                            input.insert(
+                                "old_string".to_string(),
+                                serde_json::json!(d.old_text.clone().unwrap_or_default()),
+                            );
+                            input.insert("new_string".to_string(), serde_json::json!(d.new_text));
+                        }
+                        serde_json::Value::Object(input)
+                    })
+            } else {
+                None
+            };
+            let event_input = tc.raw_input.clone().or_else(|| synthesized_input.take());
+            let event_input = match event_input {
+                Some(mut v) => {
+                    if let Some(obj) = v.as_object_mut() {
+                        if !obj.contains_key("_locations") && !derived_locations.is_empty() {
+                            obj.insert(
+                                "_locations".to_string(),
+                                serde_json::json!(derived_locations
+                                    .iter()
+                                    .map(|l| serde_json::json!({"path": l.path.to_string_lossy()}))
+                                    .collect::<Vec<_>>()),
+                            );
+                        }
+                    }
+                    Some(v)
+                }
+                None => None,
+            };
+
             debug!(
                 id = %tool_call_id,
                 title = %tc.title,
@@ -1235,9 +1427,9 @@ async fn handle_standard_session_notification(
                 AgentOutputEvent::ToolCallStart {
                     role: "assistant".to_string(),
                     id: tc.tool_call_id.to_string(),
-                    name: tc.title.clone(),
-                    input: tc.raw_input.clone(),
-                    locations: tc.locations.clone(),
+                    name: tool_name,
+                    input: event_input,
+                    locations: derived_locations,
                     parent_tool_use_id: tc.meta.as_ref().and_then(|m| {
                         m.get("claudeCode")
                             .or_else(|| m.get("claude_code"))
@@ -1326,6 +1518,43 @@ async fn handle_standard_session_notification(
                     }
                 }
 
+                // Derive a canonical name for edit operations.
+                let tracked_title = tracked
+                    .as_ref()
+                    .and_then(|t| t.title.clone())
+                    .unwrap_or_default();
+                let tracked_title_lower = tracked_title.to_lowercase();
+                let is_edit_family = tracked.as_ref().and_then(|t| t.kind) == Some(ToolKind::Edit)
+                    || tracked_title_lower == "edit"
+                    || tracked_title_lower.starts_with("edit ")
+                    || tracked_title_lower == "write"
+                    || tracked_title_lower.starts_with("write ");
+                let complete_name = if is_edit_family {
+                    let is_write = tracked
+                        .as_ref()
+                        .and_then(|t| t.raw_input.clone())
+                        .map(|v| {
+                            v.get("content").is_some()
+                                && v.get("old_string").is_none()
+                                && v.get("new_string").is_none()
+                        })
+                        .unwrap_or(false)
+                        || tracked_title_lower == "write"
+                        || tracked_title_lower.starts_with("write ");
+                    if is_write {
+                        "Write".to_string()
+                    } else {
+                        "Edit".to_string()
+                    }
+                } else {
+                    update
+                        .fields
+                        .title
+                        .clone()
+                        .or_else(|| tracked.as_ref().and_then(|t| t.title.clone()))
+                        .unwrap_or_default()
+                };
+
                 if is_complete {
                     send_output_event_with_turn_token(
                         turn_token,
@@ -1333,7 +1562,7 @@ async fn handle_standard_session_notification(
                         AgentOutputEvent::ToolCallComplete {
                             role: "assistant".to_string(),
                             id: update.tool_call_id.to_string(),
-                            name: update.fields.title.clone().unwrap_or_default(),
+                            name: complete_name,
                             input: raw_input,
                             output: raw_output,
                             locations,
@@ -1906,6 +2135,79 @@ impl ToolCallTracker {
     fn record_initial(&self, tc: &AcpToolCall) {
         let id = tc.tool_call_id.to_string();
         let now = Instant::now();
+
+        // Derive locations from diff content when absent (e.g. Codex edits).
+        let mut locations = tc.locations.clone();
+        if locations.is_empty() {
+            if let Some(diff) = tc.content.iter().find_map(|c| match c {
+                ToolCallContent::Diff(d) => Some(d),
+                _ => None,
+            }) {
+                locations.push(ToolCallLocation::new(diff.path.clone()));
+            }
+        }
+
+        // Synthesize raw_input from diff content when absent so the frontend
+        // can render edit/write diffs even for agents that only provide diffs.
+        let title_lower = tc.title.to_lowercase();
+        let is_edit_family = tc.kind == ToolKind::Edit
+            || title_lower == "edit"
+            || title_lower.starts_with("edit ")
+            || title_lower == "write"
+            || title_lower.starts_with("write ");
+        let mut raw_input = tc.raw_input.clone();
+        if is_edit_family {
+            let needs_input = raw_input
+                .as_ref()
+                .map(|v| v.is_null() || v.as_object().map(|o| o.is_empty()).unwrap_or(true))
+                .unwrap_or(true);
+            if needs_input {
+                if let Some(diff) = tc.content.iter().find_map(|c| match c {
+                    ToolCallContent::Diff(d) => Some(d),
+                    _ => None,
+                }) {
+                    let is_add = diff.old_text.is_none()
+                        || diff
+                            .meta
+                            .as_ref()
+                            .and_then(|m| m.get("kind"))
+                            .and_then(|v| v.as_str())
+                            == Some("add");
+                    let mut input = serde_json::Map::new();
+                    input.insert(
+                        "_locations".to_string(),
+                        serde_json::json!([{
+                            "path": diff.path.to_string_lossy()
+                        }]),
+                    );
+                    input.insert(
+                        "file_path".to_string(),
+                        serde_json::json!(diff.path.to_string_lossy()),
+                    );
+                    if is_add {
+                        input.insert("content".to_string(), serde_json::json!(diff.new_text));
+                    } else {
+                        input.insert(
+                            "old_string".to_string(),
+                            serde_json::json!(diff.old_text.clone().unwrap_or_default()),
+                        );
+                        input.insert("new_string".to_string(), serde_json::json!(diff.new_text));
+                    }
+                    raw_input = Some(serde_json::Value::Object(input));
+                }
+            } else if let Some(obj) = raw_input.as_mut().and_then(|v| v.as_object_mut()) {
+                if !obj.contains_key("_locations") && !locations.is_empty() {
+                    obj.insert(
+                        "_locations".to_string(),
+                        serde_json::json!(locations
+                            .iter()
+                            .map(|l| serde_json::json!({"path": l.path.to_string_lossy()}))
+                            .collect::<Vec<_>>()),
+                    );
+                }
+            }
+        }
+
         let tracked = TrackedToolCall {
             tool_call_id: id.clone(),
             title: Some(tc.title.clone()),
@@ -1913,8 +2215,8 @@ impl ToolCallTracker {
             status: tc.status,
             first_seen: now,
             last_updated: now,
-            locations: tc.locations.clone(),
-            raw_input: tc.raw_input.clone(),
+            locations,
+            raw_input,
             raw_output: tc.raw_output.clone().or_else(|| {
                 let text = extract_text_from_tool_call_content(&tc.content);
                 if text.is_empty() {
@@ -1962,9 +2264,79 @@ impl ToolCallTracker {
             }
             if let Some(ref locations) = update.fields.locations {
                 existing.locations = locations.clone();
+            } else if existing.locations.is_empty() {
+                if let Some(diff) = update.fields.content.as_ref().and_then(|c| {
+                    c.iter().find_map(|item| match item {
+                        ToolCallContent::Diff(d) => Some(d),
+                        _ => None,
+                    })
+                }) {
+                    existing
+                        .locations
+                        .push(ToolCallLocation::new(diff.path.clone()));
+                }
             }
             if update.fields.raw_input.is_some() {
                 existing.raw_input = update.fields.raw_input.clone();
+            } else if existing.raw_input.is_none() {
+                let existing_title_lower =
+                    existing.title.clone().unwrap_or_default().to_lowercase();
+                let is_edit_family = existing.kind == Some(ToolKind::Edit)
+                    || existing_title_lower == "edit"
+                    || existing_title_lower.starts_with("edit ")
+                    || existing_title_lower == "write"
+                    || existing_title_lower.starts_with("write ");
+                if is_edit_family {
+                    if let Some(diff) = update.fields.content.as_ref().and_then(|c| {
+                        c.iter().find_map(|item| match item {
+                            ToolCallContent::Diff(d) => Some(d),
+                            _ => None,
+                        })
+                    }) {
+                        let is_add = diff.old_text.is_none()
+                            || diff
+                                .meta
+                                .as_ref()
+                                .and_then(|m| m.get("kind"))
+                                .and_then(|v| v.as_str())
+                                == Some("add");
+                        let mut input = serde_json::Map::new();
+                        input.insert(
+                            "_locations".to_string(),
+                            serde_json::json!([{
+                                "path": diff.path.to_string_lossy()
+                            }]),
+                        );
+                        input.insert(
+                            "file_path".to_string(),
+                            serde_json::json!(diff.path.to_string_lossy()),
+                        );
+                        if is_add {
+                            input.insert("content".to_string(), serde_json::json!(diff.new_text));
+                        } else {
+                            input.insert(
+                                "old_string".to_string(),
+                                serde_json::json!(diff.old_text.clone().unwrap_or_default()),
+                            );
+                            input
+                                .insert("new_string".to_string(), serde_json::json!(diff.new_text));
+                        }
+                        existing.raw_input = Some(serde_json::Value::Object(input));
+                    }
+                } else if let Some(obj) =
+                    existing.raw_input.as_mut().and_then(|v| v.as_object_mut())
+                {
+                    if !obj.contains_key("_locations") && !existing.locations.is_empty() {
+                        obj.insert(
+                            "_locations".to_string(),
+                            serde_json::json!(existing
+                                .locations
+                                .iter()
+                                .map(|l| serde_json::json!({"path": l.path.to_string_lossy()}))
+                                .collect::<Vec<_>>()),
+                        );
+                    }
+                }
             }
             if update.fields.raw_output.is_some() {
                 existing.raw_output = update.fields.raw_output.clone();
@@ -2245,6 +2617,12 @@ enum AcpCommand {
     /// Switch the model of the current ACP session (best-effort).
     SetSessionModel {
         model: String,
+        response_tx: oneshot::Sender<ErgataiResult<()>>,
+    },
+    /// Switch a session configuration option of the current ACP session (best-effort).
+    SetSessionConfigOption {
+        config_id: String,
+        value: String,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
     },
 }
@@ -2552,6 +2930,62 @@ async fn collect_replay_messages(
 }
 
 impl AcpBackend {
+    /// Remove the temporary Codex project trust entry created at spawn time so
+    /// the user's global config is not permanently modified.
+    pub fn cleanup_opencode_project_config(&self, work_dir: &std::path::Path) {
+        let config_path = work_dir.join(".opencode").join("opencode.json");
+        if !config_path.exists() {
+            return;
+        }
+        let Ok(content) = std::fs::read_to_string(&config_path) else {
+            return;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+            return;
+        };
+        if value.get("ergatai_managed").and_then(|v| v.as_bool()) != Some(true) {
+            return;
+        }
+        let _ = std::fs::remove_file(&config_path);
+        // Remove empty directory if possible.
+        let _ = std::fs::remove_dir(work_dir.join(".opencode"));
+    }
+
+    pub fn cleanup_claude_project_config(&self, work_dir: &std::path::Path) {
+        let config_path = work_dir.join(".claude").join("settings.json");
+        if !config_path.exists() {
+            return;
+        }
+        let Ok(content) = std::fs::read_to_string(&config_path) else {
+            return;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+            return;
+        };
+        if value.get("ergatai_managed").and_then(|v| v.as_bool()) != Some(true) {
+            return;
+        }
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(work_dir.join(".claude"));
+    }
+
+    pub fn cleanup_codex_project_trust(&self, work_dir: &std::path::Path) {
+        let config_path = work_dir.join(".codex").join("config.toml");
+        if !config_path.exists() {
+            return;
+        }
+        let Ok(content) = std::fs::read_to_string(&config_path) else {
+            return;
+        };
+        let Ok(value) = toml::from_str::<toml::Value>(&content) else {
+            return;
+        };
+        if value.get("ergatai_managed").and_then(|v| v.as_bool()) != Some(true) {
+            return;
+        }
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(work_dir.join(".codex"));
+    }
     /// Create a new AcpBackend without session persistence and YOLO permissions.
     pub fn new() -> Self {
         Self {
@@ -3313,6 +3747,56 @@ impl AcpBackend {
         }
     }
 
+    /// Switch a session configuration option of the current ACP session.
+    pub async fn set_session_config_option_inner(
+        &self,
+        agent_id: &str,
+        config_id: &str,
+        value: &str,
+    ) -> ErgataiResult<()> {
+        self.reap_dead();
+
+        let command_tx = {
+            let agents = self.agents.read();
+            match agents.get(agent_id) {
+                Some(entry) => {
+                    if !entry.alive.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(ErgataiError::internal(format!(
+                            "Agent {} is not alive",
+                            agent_id
+                        )));
+                    }
+                    entry.command_tx.clone()
+                }
+                None => {
+                    return Err(ErgataiError::NotFound(format!(
+                        "Agent not found: {}",
+                        agent_id
+                    )));
+                }
+            }
+        };
+
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(AcpCommand::SetSessionConfigOption {
+                config_id: config_id.to_string(),
+                value: value.to_string(),
+                response_tx,
+            })
+            .await
+            .map_err(|_| ErgataiError::internal("ACP command channel closed"))?;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(30), response_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(ErgataiError::internal("ACP response channel closed")),
+            Err(_) => Err(ErgataiError::AgentTimeout {
+                message: "Set session config option timed out".to_string(),
+                source: None,
+            }),
+        }
+    }
+
     /// List available ACP sessions for an agent.
     ///
     /// Sends a `session/list` request to the agent and returns the list of sessions.
@@ -3743,6 +4227,169 @@ impl AcpBackendInterface for AcpBackend {
             debug!(
                 agent_id = %agent_id,
                 "LD_PRELOAD library not found; file lock snapshot reads disabled"
+            );
+        }
+
+        // Claude Code permission injection: ensure project-level settings ask for all tools.
+        // Claude Code uses "Manual" mode + "ask" rules; we set defaultMode=manual and
+        // ask=["*"] so every tool operation requests host approval.
+        if command.to_lowercase().contains("claude") {
+            let work_dir = handle
+                .metadata
+                .get("work_dir")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let claude_dir = work_dir.join(".claude");
+            let _ = std::fs::create_dir_all(&claude_dir);
+            let config_path = claude_dir.join("settings.json");
+
+            let mut config: serde_json::Value = std::fs::read_to_string(&config_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+
+            if let Some(obj) = config.as_object_mut() {
+                obj.insert("ergatai_managed".to_string(), serde_json::json!(true));
+                let perms = obj
+                    .entry("permissions".to_string())
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(p) = perms.as_object_mut() {
+                    p.insert("defaultMode".to_string(), serde_json::json!("manual"));
+                    p.insert(
+                        "ask".to_string(),
+                        serde_json::json!([
+                            "*",
+                            "Bash",
+                            "Read",
+                            "Edit",
+                            "Write",
+                            "Glob",
+                            "Grep",
+                            "WebFetch",
+                            "WebSearch",
+                            "Task",
+                            "NotebookEdit"
+                        ]),
+                    );
+                }
+            } else {
+                config = serde_json::json!({
+                    "ergatai_managed": true,
+                    "permissions": {
+                        "defaultMode": "manual",
+                        "ask": [
+                            "*",
+                            "Bash",
+                            "Read",
+                            "Edit",
+                            "Write",
+                            "Glob",
+                            "Grep",
+                            "WebFetch",
+                            "WebSearch",
+                            "Task",
+                            "NotebookEdit"
+                        ]
+                    }
+                });
+            }
+
+            let _ = std::fs::write(
+                &config_path,
+                serde_json::to_string_pretty(&config).unwrap_or_default(),
+            );
+            tracing::info!(
+                agent_id = %agent_id,
+                config_path = %config_path.display(),
+                "Injected Claude Code permission ask policy into project settings"
+            );
+        }
+
+        // OpenCode permission injection: ensure project-level config asks for all tools.
+        // OpenCode's built-in defaults are "allow" for most tools; relying on "*" alone
+        // is not enough, so we explicitly set every core tool to "ask".
+        if command.to_lowercase().contains("opencode") {
+            let work_dir = handle
+                .metadata
+                .get("work_dir")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let opencode_dir = work_dir.join(".opencode");
+            let _ = std::fs::create_dir_all(&opencode_dir);
+            let config_path = opencode_dir.join("opencode.json");
+
+            let mut config: serde_json::Value = std::fs::read_to_string(&config_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+
+            let permission = serde_json::json!({
+                "*": "ask",
+                "read": "ask",
+                "edit": "ask",
+                "bash": "ask",
+                "glob": "ask",
+                "grep": "ask",
+                "webfetch": "ask",
+                "websearch": "ask",
+                "doom_loop": "ask",
+                "external_directory": "ask"
+            });
+
+            if let Some(obj) = config.as_object_mut() {
+                obj.insert("permission".to_string(), permission);
+                obj.insert("ergatai_managed".to_string(), serde_json::json!(true));
+                if !obj.contains_key("$schema") {
+                    obj.insert(
+                        "$schema".to_string(),
+                        serde_json::json!("https://opencode.ai/config.json"),
+                    );
+                }
+            } else {
+                config = serde_json::json!({
+                    "$schema": "https://opencode.ai/config.json",
+                    "permission": permission
+                });
+            }
+
+            let _ = std::fs::write(
+                &config_path,
+                serde_json::to_string_pretty(&config).unwrap_or_default(),
+            );
+            tracing::info!(
+                agent_id = %agent_id,
+                config_path = %config_path.display(),
+                "Injected OpenCode permission ask policy into project config"
+            );
+        }
+
+        // Codex permission injection: mark project as untrusted so commands
+        // require approval before execution (approval_policy on-request + sandbox).
+        if command.to_lowercase().contains("codex") {
+            let work_dir = handle
+                .metadata
+                .get("work_dir")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+            let codex_dir = work_dir.join(".codex");
+            let _ = std::fs::create_dir_all(&codex_dir);
+            let config_path = codex_dir.join("config.toml");
+
+            // Overwrite (Ergatai-managed) to avoid stale invalid [permissions] sections.
+            let content = "ergatai_managed = true\napproval_policy = \"on-request\"\nsandbox_mode = \"read-only\"\n";
+            let _ = std::fs::write(&config_path, content);
+            // Force Codex to start in read-only mode so every file edit / command
+            // goes through an ACP `session/request_permission` round-trip instead
+            // of being auto-approved by the "agent" (auto-review) preset. Without
+            // this, codex never emits permission requests and Ergatai's approval
+            // + file-lock path is bypassed entirely (no approval logs, no locks).
+            env_with_preload.insert("INITIAL_AGENT_MODE".into(), "read-only".into());
+            tracing::info!(
+                agent_id = %agent_id,
+                config_path = %config_path.display(),
+                project = %work_dir.display(),
+                "Injected Codex project-level ask policy (on-request + read-only + permissions.ask)"
             );
         }
 
@@ -4945,12 +5592,22 @@ impl AcpBackendInterface for AcpBackend {
                                                 AgentOutputEvent::Error {
                                                     role: "assistant".to_string(),
                                                     message: enriched.clone(),
-                                                    error_name,
-                                                    error_type,
-                                                    service,
+                                                    error_name: error_name.clone(),
+                                                    error_type: error_type.clone(),
+                                                    service: service.clone(),
                                                     code,
-                                                    error_data,
+                                                    error_data: error_data.clone(),
                                                 },
+                                            )
+                                            .await;
+                                            persist_out_of_turn_error(
+                                                &connection_conversation_id,
+                                                &enriched,
+                                                error_name.clone(),
+                                                error_type.clone(),
+                                                service.clone(),
+                                                code,
+                                                error_data.clone(),
                                             )
                                             .await;
                                         }
@@ -5127,12 +5784,22 @@ impl AcpBackendInterface for AcpBackend {
                                                 AgentOutputEvent::Error {
                                                     role: "assistant".to_string(),
                                                     message: enriched.clone(),
-                                                    error_name,
-                                                    error_type,
-                                                    service,
+                                                    error_name: error_name.clone(),
+                                                    error_type: error_type.clone(),
+                                                    service: service.clone(),
                                                     code,
-                                                    error_data,
+                                                    error_data: error_data.clone(),
                                                 },
+                                            )
+                                            .await;
+                                            persist_out_of_turn_error(
+                                                &connection_conversation_id,
+                                                &enriched,
+                                                error_name.clone(),
+                                                error_type.clone(),
+                                                service.clone(),
+                                                code,
+                                                error_data.clone(),
                                             )
                                             .await;
                                         }
@@ -5323,12 +5990,22 @@ impl AcpBackendInterface for AcpBackend {
                                                 AgentOutputEvent::Error {
                                                     role: "assistant".to_string(),
                                                     message: enriched.clone(),
-                                                    error_name,
-                                                    error_type,
-                                                    service,
+                                                    error_name: error_name.clone(),
+                                                    error_type: error_type.clone(),
+                                                    service: service.clone(),
                                                     code,
-                                                    error_data,
+                                                    error_data: error_data.clone(),
                                                 },
+                                            )
+                                            .await;
+                                            persist_out_of_turn_error(
+                                                &connection_conversation_id,
+                                                &enriched,
+                                                error_name.clone(),
+                                                error_type.clone(),
+                                                service.clone(),
+                                                code,
+                                                error_data.clone(),
                                             )
                                             .await;
                                         }
@@ -5364,6 +6041,42 @@ impl AcpBackendInterface for AcpBackend {
                                         warn!(agent_id = %connection_agent_id, model = %model, error = %e, "Set session model failed");
                                         let _ = response_tx.send(Err(ErgataiError::internal(
                                             format!("Set session model failed: {e}"),
+                                        )));
+                                    }
+                                }
+                            }
+                            Some(AcpCommand::SetSessionConfigOption {
+                                config_id,
+                                value,
+                                response_tx,
+                            }) => {
+                                let request = connection.send_request(
+                                    agent_client_protocol::schema::v2::SetSessionConfigOptionRequest::new(
+                                        session_id.to_string(),
+                                        config_id.clone(),
+                                        value.as_str(),
+                                    ),
+                                );
+                                match request.block_task().await {
+                                    Ok(_) => {
+                                        info!(
+                                            agent_id = %connection_agent_id,
+                                            config_id = %config_id,
+                                            value = %value,
+                                            "Set session config option succeeded"
+                                        );
+                                        let _ = response_tx.send(Ok(()));
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            agent_id = %connection_agent_id,
+                                            config_id = %config_id,
+                                            value = %value,
+                                            error = %e,
+                                            "Set session config option failed"
+                                        );
+                                        let _ = response_tx.send(Err(ErgataiError::internal(
+                                            format!("Set session config option failed: {e}"),
                                         )));
                                     }
                                 }
@@ -5446,6 +6159,21 @@ impl AcpBackendInterface for AcpBackend {
                                             debug!(count = config_opts.len(), "Captured config_options from create_session response");
                                             *task_config_options.write() = config_opts;
                                         }
+
+                                        // Codex: force read-only sandbox mode so writes require approval.
+                                        if task_command_for_save.to_lowercase().contains("codex") {
+                                            let set_req = connection.send_request(
+                                                agent_client_protocol::schema::v2::SetSessionConfigOptionRequest::new(
+                                                    session_id.to_string(),
+                                                    "mode",
+                                                    "read-only",
+                                                ),
+                                            );
+                                            match set_req.block_task().await {
+                                                Ok(_) => info!(session_id = %session_id, "Forced Codex session mode to read-only"),
+                                                Err(e) => warn!(error = %e, "Failed to force Codex session mode to read-only"),
+                                            }
+                                        }
                                         let session_info = SessionInfo {
                                             session_id: session_id.clone(),
                                             cwd: Some(
@@ -5502,6 +6230,20 @@ impl AcpBackendInterface for AcpBackend {
                                         if let Some(config_opts) = load_resp.config_options {
                                             debug!(count = config_opts.len(), "Captured config_options from load_session response");
                                             *task_config_options.write() = config_opts;
+                                        }
+                                        // Codex: force read-only sandbox mode so writes require approval.
+                                        if task_command_for_save.to_lowercase().contains("codex") {
+                                            let set_req = connection.send_request(
+                                                agent_client_protocol::schema::v2::SetSessionConfigOptionRequest::new(
+                                                    target_session_id.clone(),
+                                                    "mode",
+                                                    "read-only",
+                                                ),
+                                            );
+                                            match set_req.block_task().await {
+                                                Ok(_) => info!(session_id = %target_session_id, "Forced Codex session mode to read-only"),
+                                                Err(e) => warn!(error = %e, "Failed to force Codex session mode to read-only"),
+                                            }
                                         }
                                         // Update the current session_id for subsequent prompts
                                         session_id = agent_client_protocol::schema::v1::SessionId::from(target_session_id);
@@ -5937,6 +6679,8 @@ impl AcpBackendInterface for AcpBackend {
         }
     }
 
+    /// Remove the temporary Codex project trust entry created at spawn time so
+    /// the user's global config is not permanently modified.
     async fn stop_agent(&self, handle: &AgentHandle) -> ErgataiResult<()> {
         self.reap_dead();
         let (command_tx, abort_handle) = {
@@ -5993,6 +6737,14 @@ impl AcpBackendInterface for AcpBackend {
                     .store(false, std::sync::atomic::Ordering::SeqCst);
             }
         }
+        // Clean up temporary permission config entries (if any).
+        if let Some(work_dir) = handle.metadata.get("work_dir") {
+            let work_dir = std::path::Path::new(work_dir);
+            self.cleanup_codex_project_trust(work_dir);
+            self.cleanup_opencode_project_config(work_dir);
+            self.cleanup_claude_project_config(work_dir);
+        }
+
         self.remove_agent(&handle.agent_id);
 
         // Remove the saved session — explicit stop means the user doesn't want to resume.
@@ -6035,6 +6787,14 @@ impl AcpBackendInterface for AcpBackend {
                     .store(false, std::sync::atomic::Ordering::SeqCst);
             }
         }
+        // Clean up temporary permission config entries (if any).
+        if let Some(work_dir) = handle.metadata.get("work_dir") {
+            let work_dir = std::path::Path::new(work_dir);
+            self.cleanup_codex_project_trust(work_dir);
+            self.cleanup_opencode_project_config(work_dir);
+            self.cleanup_claude_project_config(work_dir);
+        }
+
         self.remove_agent(&handle.agent_id);
 
         // Remove the saved session — explicit kill means the user doesn't want to resume.
@@ -6251,6 +7011,16 @@ impl AcpBackendInterface for AcpBackend {
 
     async fn set_session_model(&self, agent_id: &str, model: &str) -> ErgataiResult<()> {
         self.set_session_model_inner(agent_id, model).await
+    }
+
+    async fn set_session_config_option(
+        &self,
+        agent_id: &str,
+        config_id: &str,
+        value: &str,
+    ) -> ErgataiResult<()> {
+        self.set_session_config_option_inner(agent_id, config_id, value)
+            .await
     }
 
     async fn usage(&self, agent_id: &str) -> ErgataiResult<Option<(usize, usize)>> {

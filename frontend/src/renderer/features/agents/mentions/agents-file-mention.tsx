@@ -17,6 +17,7 @@ import type { FileMentionOption } from "./agents-mentions-editor"
 import { MENTION_PREFIXES } from "./mentions-utils"
 import type { CoreAgentOption } from "../lib/agent-contract-api"
 import { useDiscoveryGroups } from "../discovery/use-discovery-groups"
+import { useRegisteredTriggers } from "../discovery/use-registered-triggers"
 import { useDropdownShell, getDropdownContainerStyle } from "../discovery/use-dropdown-shell"
 
 
@@ -40,6 +41,7 @@ interface AgentsFileMentionProps {
   sandboxId?: string
   branch?: string // For fetching files from specific branch via GitHub API
   projectPath?: string // For fetching files from local project directory (desktop)
+  projectPaths?: string[] // For fetching files from multiple local project directories (desktop)
   browseRoot?: string | null // Current directory root for @ browsing
   onBrowseRootChange?: (path: string | null) => void
   changedFiles?: ChangedFile[] // Files changed in current conversation (shown at top)
@@ -169,6 +171,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   sandboxId,
   branch,
   projectPath,
+  projectPaths,
   browseRoot,
   onBrowseRootChange,
   // react-doctor-disable-next-line rerender-memo-with-default-value
@@ -194,6 +197,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
 
   // Generic discovery aggregation (shared abstraction for trigger dropdowns).
   const { groups: discoveryGroups, isLoading: discoveryLoading } = useDiscoveryGroups(isOpen ? agentId : undefined, projectPath, agentKind)
+  const { getTriggerTypes } = useRegisteredTriggers(isOpen ? agentId : undefined, projectPath)
 
   // Fetch custom agents from filesystem (cached for 5 minutes)
   const { data: customAgents = [] } = trpc.agents.listEnabled.useQuery(
@@ -227,13 +231,14 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       sandboxId: sandboxId,
       branch: branch, // Pass branch for GitHub API fetch
       projectPath: projectPath, // For local project file search (desktop)
+      projectPaths: projectPaths, // For local project file search (desktop, multi-root)
       collapseChains: !debouncedSearchText,
       collapseRoot: browseRoot || undefined,
     },
     {
-      // Enable if we have projectPath (desktop) OR teamId with repository/sandboxId/branch (web)
+      // Enable if we have projectPath/projectPaths (desktop) OR teamId with repository/sandboxId/branch (web)
       // Also enable when showingFilesList is true (user explicitly selected files category)
-      enabled: isOpen && (!!projectPath || (!!teamId && (!!repository || !!sandboxId || !!branch))),
+      enabled: isOpen && ((!!projectPath || (projectPaths && projectPaths.length > 0)) || (!!teamId && (!!repository || !!sandboxId || !!branch))),
       staleTime: 5000,
       refetchOnWindowFocus: false,
       // Keep showing previous results while fetching new ones
@@ -312,10 +317,17 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   // Generic discovery -> mention options (shared abstraction).
   const discoveryMentionOptions: FileMentionOption[] = useMemo(() => {
     const searchLower = debouncedSearchText.toLowerCase()
+    const mentionTypes = getTriggerTypes("@")
+    const allowedTypesFallback =
+      mentionTypes && mentionTypes.length > 0 ? new Set(mentionTypes) : null
     const out: FileMentionOption[] = []
     for (const g of discoveryGroups) {
       for (const it of g.items) {
         if (it.type === "agent") continue // agents handled separately
+        // Prefer deterministic routing markers stamped at read/discovery time.
+        const targeted = it.targetTriggers?.includes("@")
+        const fallbackByType = !it.targetTriggers?.length && !!allowedTypesFallback?.has(it.type)
+        if (!targeted && !fallbackByType) continue
         const mentionType =
           it.type === "mcp" ? "tool" :
           it.type === "skill" ? "skill" :
@@ -340,7 +352,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       }
     }
     return out
-  }, [discoveryGroups, debouncedSearchText])
+  }, [discoveryGroups, debouncedSearchText, getTriggerTypes])
 
   // Convert custom agents to mention options
   const agentOptions: FileMentionOption[] = useMemo(() => {

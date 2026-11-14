@@ -3,7 +3,8 @@ import { trpc } from "../../../lib/trpc"
 
 /**
  * Trigger configuration from backend.
- * Schema: char, position, types — no allowSpaces/maxLength (simplified).
+ * Backend may still provide capability/type hints, but editor grammar is owned
+ * by Ergatai's built-in rules (see BUILTIN_EDITOR_TRIGGERS below).
  */
 export interface RegisteredTrigger {
   char: string
@@ -12,23 +13,31 @@ export interface RegisteredTrigger {
   kind?: "slash" | "mention"
 }
 
+export interface EditorTriggerConfig {
+  char: string
+  position: "standalone" | "start-of-line" | "anywhere"
+  kind: "slash" | "mention"
+  types?: string[]
+}
+
 /**
- * Hook: fetch registered triggers from backend.
- *
- * Triggers are independent of discovery — can be cached with longer TTL.
- * When agentId is provided, returns full triggers (all types).
- * Without agentId, returns static triggers (skill, plugin only).
- *
- * Usage:
- * ```tsx
- * const { triggers, isTriggerChar, getTriggerTypes } = useRegisteredTriggers(agentId, cwd)
- *
- * // Check if a character is a trigger
- * if (isTriggerChar("/")) { ... }
- *
- * // Get types for a trigger (for filtering discovery results)
- * const types = getTriggerTypes("/") // ["skill", "command", ...]
- * ```
+ * Built-in, product-owned trigger grammar.
+ * Kept stable across agents/providers: agents contribute capabilities, not syntax.
+ */
+export const BUILTIN_EDITOR_TRIGGERS: readonly EditorTriggerConfig[] = [
+  { char: "/", position: "start-of-line", kind: "slash", types: ["command", "skill", "plugin"] },
+  { char: "@", position: "standalone", kind: "mention", types: ["file", "folder", "agent", "mcp", "skill", "command", "plugin", "tool"] },
+  { char: "$", position: "standalone", kind: "mention", types: ["skill", "command", "plugin"] },
+  { char: "#", position: "standalone", kind: "mention", types: ["file", "folder", "issue", "pr", "task"] },
+] as const
+
+const DEFAULT_TRIGGER_TYPES: Record<string, string[]> = Object.fromEntries(
+  BUILTIN_EDITOR_TRIGGERS.map((t) => [t.char, [...(t.types ?? [])]]),
+)
+
+/**
+ * Fetch backend discovery trigger metadata (types/capability hints).
+ * Editor trigger detection should NOT depend on this; use BUILTIN_EDITOR_TRIGGERS.
  */
 export function useRegisteredTriggers(
   agentId: string | undefined,
@@ -37,7 +46,7 @@ export function useRegisteredTriggers(
   const { data, isLoading } = trpc.discovery.getTriggers.useQuery(
     { agentId, cwd },
     {
-      // Triggers are stable config — cache for 5 minutes
+      // Triggers/capability hints are relatively stable — cache for 5 minutes
       staleTime: 5 * 60 * 1000,
       refetchOnWindowFocus: false,
     }
@@ -53,23 +62,31 @@ export function useRegisteredTriggers(
     }))
   }, [data])
 
-  // Helper: check if a character is a registered trigger
+  const backendTypesByChar = useMemo(() => {
+    const map = new Map<string, string[]>()
+    for (const t of triggers) {
+      if (t.char && Array.isArray(t.types)) map.set(t.char, t.types)
+    }
+    return map
+  }, [triggers])
+
+  // Helper: check if a character is a built-in editor trigger
   const isTriggerChar = useMemo(() => {
-    const chars = new Set(triggers.map((t) => t.char))
+    const chars = new Set(BUILTIN_EDITOR_TRIGGERS.map((t) => t.char))
     return (char: string) => chars.has(char)
-  }, [triggers])
+  }, [])
 
-  // Helper: get types for a trigger character
+  // Helper: get capability/item types for a trigger character.
+  // Prefers backend hints when present, otherwise falls back to built-in defaults.
   const getTriggerTypes = useMemo(() => {
-    const map = new Map(triggers.map((t) => [t.char, t.types ?? []]))
-    return (char: string) => map.get(char) ?? []
-  }, [triggers])
+    return (char: string) => backendTypesByChar.get(char) ?? DEFAULT_TRIGGER_TYPES[char] ?? []
+  }, [backendTypesByChar])
 
-  // Helper: get position rule for a trigger character
+  // Helper: get position rule for a built-in trigger character
   const getTriggerPosition = useMemo(() => {
-    const map = new Map(triggers.map((t) => [t.char, t.position ?? "anywhere"]))
+    const map = new Map(BUILTIN_EDITOR_TRIGGERS.map((t) => [t.char, t.position]))
     return (char: string) => map.get(char) ?? "anywhere"
-  }, [triggers])
+  }, [])
 
   return {
     triggers,
@@ -81,13 +98,16 @@ export function useRegisteredTriggers(
 }
 
 /**
- * Extract trigger config for a specific character from registered triggers.
+ * Extract trigger config for a specific character.
+ * Retained for compatibility; prefers built-in editor grammar.
  */
 export function extractTriggerConfig(
   triggers: RegisteredTrigger[],
   char: string,
   defaultPosition: "standalone" | "start-of-line" | "anywhere",
 ): { char: string; position: "standalone" | "start-of-line" | "anywhere" } | undefined {
+  const builtIn = BUILTIN_EDITOR_TRIGGERS.find((t) => t.char === char)
+  if (builtIn) return { char: builtIn.char, position: builtIn.position }
   const trigger = triggers.find((t) => t.char === char)
   return trigger
     ? { char: trigger.char, position: trigger.position ?? defaultPosition }
@@ -95,42 +115,26 @@ export function extractTriggerConfig(
 }
 
 /**
- * Hook: extract editor trigger configs for @ and / from registered triggers.
- *
- * Convenience wrapper around useRegisteredTriggers that returns pre-extracted
- * configs for the two main editor triggers (mention and slash command).
- *
- * Usage:
- * ```tsx
- * const { mentionTrigger, slashTrigger } = useEditorTriggerConfigs(agentId, cwd)
- * // Pass to AgentsMentionsEditor: mentionTrigger, slashTrigger
- * ```
+ * Hook: editor trigger configs are product-owned and stable.
+ * Backend discovery/agent metadata must not change trigger grammar.
  */
 export function useEditorTriggerConfigs(
-  agentId: string | undefined,
-  cwd?: string,
+  _agentId: string | undefined,
+  _cwd?: string,
 ) {
-  const { triggers } = useRegisteredTriggers(agentId, cwd)
-
   const mentionTrigger = useMemo(
-    () => extractTriggerConfig(triggers, "@", "standalone"),
-    [triggers],
+    () => BUILTIN_EDITOR_TRIGGERS.find((t) => t.char === "@"),
+    [],
   )
 
   const slashTrigger = useMemo(
-    () => extractTriggerConfig(triggers, "/", "start-of-line"),
-    [triggers],
+    () => BUILTIN_EDITOR_TRIGGERS.find((t) => t.char === "/"),
+    [],
   )
 
   const discoveryTriggers = useMemo(
-    () =>
-      triggers.map((t) => ({
-        char: t.char,
-        position: t.position ?? "anywhere",
-        types: t.types,
-        kind: t.kind ?? (t.char === "/" ? "slash" : "mention"),
-      })),
-    [triggers],
+    () => BUILTIN_EDITOR_TRIGGERS.map((t) => ({ ...t, types: [...(t.types ?? [])] })),
+    [],
   )
 
   return { mentionTrigger, slashTrigger, discoveryTriggers }

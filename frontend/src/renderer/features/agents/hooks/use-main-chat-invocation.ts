@@ -360,7 +360,7 @@ export function useMainChatInvocation({
         throw error
       }
     },
-    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, resolverAgentId],
+    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, resolverAgentId, invocationSource],
   )
 
   // Wrap send from queue to use new service
@@ -393,7 +393,7 @@ export function useMainChatInvocation({
         transportOverrides: undefined,
       })
     },
-    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, resolverAgentId],
+    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, resolverAgentId, invocationSource],
   )
 
   // Phase 17: Service-based enqueue function for useMessageSending
@@ -489,7 +489,7 @@ export function useMainChatInvocation({
         transportOverrides: undefined,
       })
     },
-    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, resolverAgentId],
+    [invocation, chatId, runtimeConversationId, conversation.backendConversationId, resolverAgentId, invocationSource],
   )
 
   // Wrap stop handler to use new service

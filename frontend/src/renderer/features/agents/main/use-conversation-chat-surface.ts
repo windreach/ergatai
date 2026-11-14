@@ -77,6 +77,7 @@ import { conversationAgentStorage } from "../lib/conversation-agent-storage"
  * changed-files tracking, scroll, rollback/fork, composer state) so that main
  * and side chats consume one implementation instead of duplicating it.
  */
+// react-doctor-disable-next-line no-high-complexity-react-function
 export function useConversationChatSurface({
   conversation,
   chatId,
@@ -582,8 +583,10 @@ export function useConversationChatSurface({
     textContext.clearTextContexts()
     scrollToBottom()
   }, [
-    upload,
-    textContext,
+    upload.images,
+    upload.files,
+    upload.clearAll,
+    textContext.clearTextContexts,
     scrollToBottom,
     sendUserMessage,
     runtimeConversationId,

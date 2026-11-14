@@ -91,14 +91,20 @@ pub fn resolve(id: Option<&str>, agent_id: Option<&str>) -> Result<Option<Provid
     if let Some(id) = id.filter(|id| !id.trim().is_empty()) {
         let connection = get(id.trim())?;
         if let Some(agent_id) = agent_id.filter(|agent| !agent.trim().is_empty()) {
-            if !connection.agent_id.is_empty() && connection.agent_id != agent_id {
+            if connection.agent_id.is_empty() || connection.agent_id != agent_id {
                 return Err(anyhow!(
-                    "Provider connection '{}' belongs to agent '{}', not '{}'",
+                    "Provider connection '{}' has no owning agent (or belongs to '{}', not '{}')",
                     connection.name,
                     connection.agent_id,
                     agent_id
                 ));
             }
+        } else if connection.agent_id.is_empty() {
+            // An unowned connection must never be resolved.
+            return Err(anyhow!(
+                "Provider connection '{}' has no owning agent",
+                connection.name
+            ));
         }
         return Ok(Some(connection));
     }
@@ -108,7 +114,7 @@ pub fn resolve(id: Option<&str>, agent_id: Option<&str>) -> Result<Option<Provid
         .into_iter()
         .filter(|connection| match agent_filter {
             Some(agent_id) => connection.agent_id == agent_id,
-            None => true,
+            None => !connection.agent_id.is_empty(),
         })
         .collect();
     candidates.sort_by_key(|b| std::cmp::Reverse(b.is_default));

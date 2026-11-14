@@ -30,6 +30,7 @@ futures.workspace = true
 which = "6.0"
 dirs.workspace = true
 regex.workspace = true
+toml = "0.8"
 
 [dev-dependencies]
 tempfile.workspace = true

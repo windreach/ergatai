@@ -391,9 +391,7 @@ async fn async_main(args: Args) -> Result<()> {
         {
             std::sync::Arc::new(ergatai_runtime::YoloPermissionHandler)
         } else {
-            std::sync::Arc::new(ergatai_runtime::InteractivePermissionHandler::new(Some(
-                lock_handler,
-            )))
+            std::sync::Arc::new(ergatai_runtime::InteractivePermissionHandler::new())
         };
 
     // Configure MCP-over-ACP if enabled (create separate factories for stdio and HTTP backends)
@@ -730,6 +728,16 @@ async fn async_main(args: Args) -> Result<()> {
             ergatai_runtime::set_global_persist_callback(persist_callback);
             tracing::info!("✅ Global accumulator registry and persistence callback initialized");
 
+            // Initialize chunk buffer for out-of-turn durable events
+            let chunk_buffer =
+                std::sync::Arc::new(ergatai_runtime::output_accumulator::ChunkBuffer::new());
+            ergatai_runtime::output_accumulator::set_global_chunk_buffer(chunk_buffer.clone());
+            ergatai_runtime::output_accumulator::spawn_chunk_flush_task(
+                chunk_buffer,
+                mcp_cancellation_token.clone(),
+            );
+            tracing::info!("✅ Chunk buffer and flush task initialized");
+
             // Recover and dispatch initial chat prompts. This is started after
             // AppContext because a worker may need to spawn an agent.
             ergatai_api::services::initial_prompt_turns::spawn_worker(
@@ -749,9 +757,9 @@ async fn async_main(args: Args) -> Result<()> {
                 mcp_cancellation_token.clone(),
             );
 
-            // Register existing workspaces with the permission handler so file access control
-            // works after server restart. Without this, pre-existing workspaces would have no
-            // lock manager initialized and file writes would fall back to auto-approve.
+            // Register existing projects (from the workspace project array) so their
+            // paths become lock-managed roots. This keeps the frontend's project
+            // list authoritative instead of treating every workspace dir as a root.
             if let Some(permission_handler) = ergatai_api::get_permission_handler() {
                 let list_result = tokio::task::spawn_blocking(|| {
                     ergatai_api::user_data_db::workspaces::list(None, None)
@@ -760,15 +768,40 @@ async fn async_main(args: Args) -> Result<()> {
 
                 match list_result {
                     Ok(Ok(workspaces)) => {
-                        let ws_count = workspaces.len();
+                        let mut project_count = 0usize;
                         for ws in workspaces {
+                            // Still register the workspace itself for legacy paths.
                             permission_handler
-                                .register_workspace(ws.workspace_id.as_i64(), ws.work_dir.into())
+                                .register_workspace(
+                                    ws.workspace_id.as_i64(),
+                                    ws.work_dir.clone().into(),
+                                )
                                 .await;
+
+                            // Register each project path as a lock-managed root.
+                            let ws_id = ws.workspace_id.as_i64();
+                            let projects_result = tokio::task::spawn_blocking(move || {
+                                ergatai_api::user_data_db::projects::list(ws_id)
+                            })
+                            .await;
+                            if let Ok(Ok(projects)) = projects_result {
+                                for p in projects {
+                                    let pid = p.project_id.to_string();
+                                    let path = std::path::PathBuf::from(&p.path);
+                                    let _ = ergatai_lock::register_project_root(&pid, &path);
+                                    if let Err(e) =
+                                        ergatai_lock::init_file_access(&pid, &path).await
+                                    {
+                                        tracing::warn!(error = %e, project_id = %pid, "Failed to init file access for project");
+                                    } else {
+                                        project_count += 1;
+                                    }
+                                }
+                            }
                         }
                         tracing::info!(
-                            "✅ Registered {} existing workspace(s) with permission handler",
-                            ws_count
+                            "✅ Registered {} existing project root(s) with permission handler",
+                            project_count
                         );
                     }
                     Ok(Err(e)) => {

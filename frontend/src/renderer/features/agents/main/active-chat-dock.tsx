@@ -30,6 +30,7 @@ export function ActiveChatDock(props: any) {
     isCompacting,
     changedFilesForConversation,
     projectPath,
+    allowedPaths,
     handleStop,
     editorRef,
     fileInputRef,
@@ -169,6 +170,7 @@ export function ActiveChatDock(props: any) {
         repository={repository}
         sandboxId={sandboxId}
         projectPath={projectPath}
+        allowedPaths={allowedPaths}
         changedFiles={changedFilesForConversation}
         isMobile={isMobile}
         queueLength={queue.length}

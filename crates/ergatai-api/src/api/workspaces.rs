@@ -274,9 +274,17 @@ pub async fn register_managed_workspace_project(
     Path(id): Path<String>,
     Json(request): Json<manager::RegisterWorkspaceProjectRequest>,
 ) -> impl IntoResponse {
-    let id_owned = id;
+    let id_owned = id.clone();
     match tokio::task::spawn_blocking(move || manager::register_project(&id_owned, request)).await {
-        Ok(Ok(project)) => (StatusCode::CREATED, Json(project)).into_response(),
+        Ok(Ok(project)) => {
+            // Initialize lock manager for the new project root (async).
+            let pid = project.project_id.clone();
+            let path = std::path::PathBuf::from(&project.path);
+            tokio::spawn(async move {
+                let _ = ergatai_lock::init_file_access(&pid, &path).await;
+            });
+            (StatusCode::CREATED, Json(project)).into_response()
+        }
         Ok(Err(error)) => managed_error(error, "register_managed_workspace_project"),
         Err(e) => crate::http_error::internal(e, "register_managed_workspace_project_join")
             .into_response(),
@@ -310,7 +318,14 @@ pub async fn update_managed_workspace_project(
     })
     .await
     {
-        Ok(Ok(project)) => (StatusCode::OK, Json(project)).into_response(),
+        Ok(Ok(project)) => {
+            let pid = project.project_id.clone();
+            let path = std::path::PathBuf::from(&project.path);
+            tokio::spawn(async move {
+                let _ = ergatai_lock::init_file_access(&pid, &path).await;
+            });
+            (StatusCode::OK, Json(project)).into_response()
+        }
         Ok(Err(error)) => managed_error(error, "update_managed_workspace_project"),
         Err(e) => {
             crate::http_error::internal(e, "update_managed_workspace_project_join").into_response()

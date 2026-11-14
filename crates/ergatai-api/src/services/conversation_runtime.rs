@@ -541,11 +541,24 @@ impl ConversationRuntimeStore {
             }
         }
 
-        // A runtime event after a completed turn starts a new turn. Old turn
-        // events are already durable in the messages table and do not need to
-        // remain in the hot cache. Durable conversation messages must not reset
+        // Turn boundaries are explicit: only TurnStarted (or a durable
+        // user/request message) opens a new turn. Finished turns keep their
+        // events; late events are appended to them instead of reopening a
+        // phantom streaming turn. Durable conversation messages must not reset
         // an active/completed turn; they are appended to the runtime log so a
         // UI attached to the conversation can render them immediately.
+        //
+        // Metadata-only events (context usage, session title updates, agent
+        // status/stderr lines) never constitute a new turn and must not flip a
+        // completed turn back into the streaming state, even when they arrive
+        // late (e.g. a title/status update published after the turn already
+        // finished).
+        let is_metadata_only_event = matches!(
+            event,
+            AgentOutputEvent::ContextUsage { .. }
+                | AgentOutputEvent::SessionTitleUpdate { .. }
+                | AgentOutputEvent::Status { .. }
+        );
         if let AgentOutputEvent::TurnStarted { turn_id, .. } = &event {
             // TurnStarted is the authoritative boundary emitted by the
             // accumulator. Use its ID verbatim so persisted messages can be
@@ -555,21 +568,19 @@ impl ConversationRuntimeStore {
             runtime.started_at_ms = Some(now);
             runtime.status = RuntimeStatus::Streaming;
         } else if let Some((message_id, _, _)) = durable_message {
-            if matches!(
-                runtime.status,
-                RuntimeStatus::Completed | RuntimeStatus::Error
-            ) {
-                // A durable message is the boundary of a new logical turn. Keep
-                // it in the hot cache so request and generated reply stream in
-                // the same runtime window.
+            if durable_starts_work
+                && matches!(
+                    runtime.status,
+                    RuntimeStatus::Completed | RuntimeStatus::Error
+                )
+            {
+                // A durable user/request message is the boundary of a new
+                // logical turn. Keep it in the hot cache so the request and its
+                // generated reply stream in the same runtime window.
                 runtime.events.clear();
                 runtime.turn_id = Some(format!("message-{}-{}", message_id, runtime.next_sequence));
                 runtime.started_at_ms = Some(now);
-                runtime.status = if durable_starts_work {
-                    RuntimeStatus::Streaming
-                } else {
-                    RuntimeStatus::Completed
-                };
+                runtime.status = RuntimeStatus::Streaming;
             } else if runtime.status == RuntimeStatus::Idle {
                 runtime.turn_id = Some(format!("message-{}-{}", message_id, runtime.next_sequence));
                 runtime.started_at_ms = Some(now);
@@ -577,23 +588,17 @@ impl ConversationRuntimeStore {
                     runtime.status = RuntimeStatus::Streaming;
                 }
             }
-        } else if !matches!(event, AgentOutputEvent::ContextUsage { .. })
-            && !matches!(
-                runtime.status,
-                RuntimeStatus::Idle | RuntimeStatus::Streaming
-            )
-        {
-            runtime.events.clear();
-            runtime.turn_id = Some(format!(
-                "turn-{}-{}",
-                runtime_epoch(),
-                runtime.next_sequence
-            ));
-            runtime.started_at_ms = Some(now);
-            runtime.status = RuntimeStatus::Streaming;
-        } else if !matches!(event, AgentOutputEvent::ContextUsage { .. })
-            && runtime.status == RuntimeStatus::Idle
-        {
+            // Non-starting durable messages (assistant/broadcast copies) are
+            // appended to the current turn. They must not reset a completed
+            // turn's live projection while its canonical copy is still being
+            // fetched and persisted.
+        } else if !is_metadata_only_event && runtime.status == RuntimeStatus::Idle {
+            // No explicit TurnStarted yet (legacy/out-of-turn producer): the
+            // first content event opens the turn. Finished turns do not reopen
+            // from stray content: a new turn must be announced by TurnStarted
+            // or by a durable starting message above. This prevents a late
+            // text/tool/stderr event from racing with Done and leaving a
+            // phantom streaming turn behind.
             runtime.status = RuntimeStatus::Streaming;
             runtime.turn_id = Some(format!(
                 "turn-{}-{}",
@@ -1026,6 +1031,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_broadcast_after_done_does_not_reset_completed_turn() {
+        let store = ConversationRuntimeStore::ephemeral();
+        store
+            .ingest("conv_1".to_string(), test_agent_event("answer"))
+            .await;
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::Done {
+                    role: "assistant".to_string(),
+                    stop_reason: "end_turn".to_string(),
+                },
+            )
+            .await;
+        let completed_turn_id = store
+            .snapshot("conv_1", None)
+            .await
+            .turn_id
+            .expect("turn id");
+
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::ConversationMessage {
+                    message_id: "msg_broadcast".to_string(),
+                    role: "agent".to_string(),
+                    message_type: Some("broadcast".to_string()),
+                    content: "peer update".to_string(),
+                    parts: None,
+                    metadata: None,
+                    timestamp_ms: 1_000,
+                    sender_agent_id: Some("agent_1".to_string()),
+                    sender_agent_name: Some("Claude Code".to_string()),
+                },
+            )
+            .await;
+
+        let snapshot = store.snapshot("conv_1", None).await;
+        assert_eq!(snapshot.status, RuntimeStatus::Completed);
+        assert_eq!(
+            snapshot.turn_id.as_deref(),
+            Some(completed_turn_id.as_str())
+        );
+        assert_eq!(snapshot.events.len(), 3);
+        assert!(matches!(
+            snapshot.events.last().expect("event").event,
+            AgentOutputEvent::ConversationMessage { ref message_id, .. }
+                if message_id == "msg_broadcast"
+        ));
+    }
+
+    #[tokio::test]
     async fn starts_new_runtime_turn_for_agent_request() {
         let store = ConversationRuntimeStore::ephemeral();
         store
@@ -1101,6 +1158,156 @@ mod tests {
         assert!(matches!(
             snapshot.events.last().expect("event").event,
             AgentOutputEvent::ContextUsage { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn status_line_does_not_restart_a_completed_turn() {
+        let store = ConversationRuntimeStore::ephemeral();
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::Done {
+                    role: "assistant".to_string(),
+                    stop_reason: "end_turn".to_string(),
+                },
+            )
+            .await;
+        let completed_turn_id = store
+            .snapshot("conv_1", None)
+            .await
+            .turn_id
+            .expect("turn id");
+
+        // ACP agents can emit a late stderr line (e.g. idle-compaction) right
+        // after the prompt response. It is diagnostic metadata, not a new turn.
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::Status {
+                    message: "[idle-compaction] skip: cache TTL is unknown".to_string(),
+                },
+            )
+            .await;
+
+        let snapshot = store.snapshot("conv_1", None).await;
+        assert_eq!(snapshot.status, RuntimeStatus::Completed);
+        assert_eq!(
+            snapshot.turn_id.as_deref(),
+            Some(completed_turn_id.as_str())
+        );
+        assert_eq!(snapshot.events.len(), 2);
+        assert!(matches!(
+            snapshot.events.last().expect("event").event,
+            AgentOutputEvent::Status { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn late_text_does_not_restart_a_completed_turn() {
+        let store = ConversationRuntimeStore::ephemeral();
+        store
+            .ingest("conv_1".to_string(), test_agent_event("answer"))
+            .await;
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::Done {
+                    role: "assistant".to_string(),
+                    stop_reason: "end_turn".to_string(),
+                },
+            )
+            .await;
+        let completed_turn_id = store
+            .snapshot("conv_1", None)
+            .await
+            .turn_id
+            .expect("turn id");
+
+        // A notification handler can publish a content delta after the prompt
+        // response won the race. It belongs to the finished turn, not a new one.
+        store
+            .ingest("conv_1".to_string(), test_agent_event("late delta"))
+            .await;
+
+        let snapshot = store.snapshot("conv_1", None).await;
+        assert_eq!(snapshot.status, RuntimeStatus::Completed);
+        assert_eq!(
+            snapshot.turn_id.as_deref(),
+            Some(completed_turn_id.as_str())
+        );
+        assert_eq!(snapshot.events.len(), 3);
+        assert!(matches!(
+            snapshot.events.last().expect("event").event,
+            AgentOutputEvent::Text { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn turn_started_opens_a_new_turn_after_completion() {
+        let store = ConversationRuntimeStore::ephemeral();
+        store
+            .ingest("conv_1".to_string(), test_agent_event("first"))
+            .await;
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::Done {
+                    role: "assistant".to_string(),
+                    stop_reason: "end_turn".to_string(),
+                },
+            )
+            .await;
+
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::TurnStarted {
+                    role: "assistant".to_string(),
+                    turn_id: "turn_2".to_string(),
+                },
+            )
+            .await;
+
+        let snapshot = store.snapshot("conv_1", None).await;
+        assert_eq!(snapshot.status, RuntimeStatus::Streaming);
+        assert_eq!(snapshot.turn_id.as_deref(), Some("turn_2"));
+        assert_eq!(snapshot.events.len(), 1);
+        assert!(matches!(
+            snapshot.events[0].event,
+            AgentOutputEvent::TurnStarted { ref turn_id, .. } if turn_id == "turn_2"
+        ));
+    }
+
+    #[tokio::test]
+    async fn session_title_update_does_not_restart_a_completed_turn() {
+        let store = ConversationRuntimeStore::ephemeral();
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::Done {
+                    role: "assistant".to_string(),
+                    stop_reason: "end_turn".to_string(),
+                },
+            )
+            .await;
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::SessionTitleUpdate {
+                    role: "assistant".to_string(),
+                    title: "New title".to_string(),
+                },
+            )
+            .await;
+
+        let snapshot = store.snapshot("conv_1", None).await;
+        assert_eq!(snapshot.status, RuntimeStatus::Completed);
+        assert!(snapshot.turn_id.is_some());
+        assert_eq!(snapshot.events.len(), 2);
+        assert!(matches!(
+            snapshot.events.last().expect("event").event,
+            AgentOutputEvent::SessionTitleUpdate { .. }
         ));
     }
 }

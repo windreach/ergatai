@@ -137,6 +137,8 @@ pub struct OutputMetadata {
     /// ACP context window usage snapshot (from UsageUpdate)
     pub context_used: Option<u64>,
     pub context_window: Option<u64>,
+    /// ACP extension quota detail (from UsageUpdate _meta), serialized as JSON.
+    pub context_quota: Option<serde_json::Value>,
 }
 
 /// Delivery context for an incoming prompt.
@@ -446,9 +448,12 @@ impl TurnAccumulator {
     }
 
     /// Set ACP context window usage snapshot
-    pub fn set_context_usage(&mut self, used: u64, window: u64) {
+    pub fn set_context_usage(&mut self, used: u64, window: u64, quota: Option<serde_json::Value>) {
         self.metadata.context_used = Some(used);
         self.metadata.context_window = Some(window);
+        if quota.is_some() {
+            self.metadata.context_quota = quota;
+        }
     }
 
     /// Convert to AgentOutputData (intermediate representation)
@@ -741,6 +746,285 @@ pub fn set_global_persist_callback(callback: PersistCallback) {
 /// Get the global persistence callback, if set.
 pub fn get_global_persist_callback() -> Option<&'static Arc<PersistCallback>> {
     GLOBAL_PERSIST_CALLBACK.get()
+}
+
+// ── Chunk buffer for out-of-turn (streaming-originated) events ────────────────
+//
+// Persists durable events that occur outside an active turn (early output,
+// async task results, subagent updates, out-of-turn errors, ...) in chunks
+// rather than per-event, to avoid write amplification.
+
+use std::time::{Duration, Instant};
+
+/// Event-count threshold before a chunk is flushed.
+const CHUNK_EVENT_THRESHOLD: usize = 20;
+/// Byte-size threshold before a chunk is flushed.
+const CHUNK_BYTE_THRESHOLD: usize = 4096;
+/// Idle duration after which a chunk is flushed by the background task.
+const CHUNK_IDLE_TIMEOUT_SECS: u64 = 5;
+
+/// Returns true if the event is "durable" (should be persisted) vs transient.
+pub fn is_durable_event(event: &crate::backends::acp::AgentOutputEvent) -> bool {
+    use crate::backends::acp::AgentOutputEvent;
+    matches!(
+        event,
+        AgentOutputEvent::Text { .. }
+            | AgentOutputEvent::Thinking { .. }
+            | AgentOutputEvent::ToolCallStart { .. }
+            | AgentOutputEvent::ToolCallComplete { .. }
+            | AgentOutputEvent::ToolCallError { .. }
+            | AgentOutputEvent::Error { .. }
+            | AgentOutputEvent::SessionTitleUpdate { .. }
+            | AgentOutputEvent::SubagentSpawned { .. }
+            | AgentOutputEvent::SubagentStateUpdate { .. }
+            | AgentOutputEvent::ExtensionUpdate { .. }
+            | AgentOutputEvent::Done { .. }
+            | AgentOutputEvent::TurnStarted { .. }
+            | AgentOutputEvent::ConversationMessage { .. }
+    )
+}
+
+/// Rough byte size of an event for threshold accounting.
+fn event_byte_size(event: &crate::backends::acp::AgentOutputEvent) -> usize {
+    // Serialize to JSON to estimate size; fall back to a small constant.
+    serde_json::to_string(event).map(|s| s.len()).unwrap_or(64)
+}
+
+/// Accumulate a single durable event into a TurnAccumulator (reused as chunk
+/// accumulator). Mirrors the per-event handling in send_output_event_internal.
+fn accumulate_chunk_event(
+    acc: &mut TurnAccumulator,
+    event: &crate::backends::acp::AgentOutputEvent,
+) {
+    use crate::backends::acp::AgentOutputEvent;
+    match event {
+        AgentOutputEvent::Text { delta, .. } => acc.accumulate_text(delta),
+        AgentOutputEvent::Thinking { delta, .. } => acc.accumulate_thinking(delta),
+        AgentOutputEvent::ToolCallStart {
+            id,
+            name,
+            input,
+            locations,
+            ..
+        } => {
+            let acc_locations: Vec<ToolCallLocation> = locations
+                .iter()
+                .map(|loc| ToolCallLocation {
+                    path: loc.path.to_string_lossy().into_owned(),
+                    line: loc.line.map(|l| l as u64),
+                })
+                .collect();
+            acc.record_tool_call_start(
+                id.clone(),
+                name.clone(),
+                None,
+                input.clone().unwrap_or(serde_json::json!({})),
+                acc_locations,
+            );
+        }
+        AgentOutputEvent::ToolCallComplete {
+            id, input, output, ..
+        } => {
+            acc.record_tool_call_update(
+                id,
+                input.clone(),
+                output.clone(),
+                "completed".to_string(),
+                None,
+            );
+        }
+        AgentOutputEvent::ToolCallError { id, error, .. } => {
+            acc.record_tool_call_update(id, None, None, "failed".to_string(), Some(error.clone()));
+        }
+        AgentOutputEvent::SessionTitleUpdate { title, .. } => {
+            acc.metadata.session_title = Some(title.clone());
+        }
+        AgentOutputEvent::Error { message, .. } => {
+            acc.accumulate_text(message);
+        }
+        AgentOutputEvent::SubagentSpawned { name, task, .. } => {
+            acc.accumulate_text(&format!("[subagent spawned: {} - {}]", name, task));
+        }
+        AgentOutputEvent::SubagentStateUpdate {
+            subagent_session_id,
+            state,
+            ..
+        } => {
+            acc.accumulate_text(&format!("[subagent {} -> {}]", subagent_session_id, state));
+        }
+        AgentOutputEvent::ExtensionUpdate { kind, payload, .. } => {
+            acc.accumulate_text(&format!("[{}: {}]", kind, payload));
+        }
+        _ => {}
+    }
+}
+
+/// Per-conversation chunk state.
+struct ChunkState {
+    accumulator: TurnAccumulator,
+    event_count: usize,
+    total_bytes: usize,
+    last_activity: Instant,
+}
+
+/// Chunk buffer holding durable out-of-turn events per conversation.
+pub struct ChunkBuffer {
+    buffers: RwLock<HashMap<String, ChunkState>>,
+}
+
+impl Default for ChunkBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ChunkBuffer {
+    pub fn new() -> Self {
+        Self {
+            buffers: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Push a durable event into the chunk buffer. Returns true if the chunk
+    /// should be flushed immediately (threshold exceeded).
+    pub async fn push(
+        &self,
+        conversation_id: &str,
+        event: &crate::backends::acp::AgentOutputEvent,
+    ) -> bool {
+        let conv_id_i64 = ergatai_error::id::parse_to_i64(conversation_id).unwrap_or(0);
+        let mut buffers = self.buffers.write().await;
+        let state = buffers
+            .entry(conversation_id.to_string())
+            .or_insert_with(|| ChunkState {
+                accumulator: TurnAccumulator::new(conv_id_i64),
+                event_count: 0,
+                total_bytes: 0,
+                last_activity: Instant::now(),
+            });
+        accumulate_chunk_event(&mut state.accumulator, event);
+        state.event_count += 1;
+        state.total_bytes += event_byte_size(event);
+        state.last_activity = Instant::now();
+        state.event_count >= CHUNK_EVENT_THRESHOLD || state.total_bytes >= CHUNK_BYTE_THRESHOLD
+    }
+
+    /// Flush the chunk for a conversation, returning the accumulated data if any.
+    pub async fn flush(&self, conversation_id: &str) -> Option<AgentOutputData> {
+        let mut buffers = self.buffers.write().await;
+        let state = buffers.remove(conversation_id)?;
+        let mut acc = state.accumulator;
+        if state.event_count == 0 {
+            return None;
+        }
+        acc.seal();
+        acc.flush_thinking_buffer();
+        Some(acc.into_output_data())
+    }
+
+    /// Flush all pending chunks. Returns (conversation_id, data) pairs.
+    pub async fn flush_all(&self) -> Vec<(String, AgentOutputData)> {
+        let mut buffers = self.buffers.write().await;
+        let keys: Vec<String> = buffers.keys().cloned().collect();
+        let mut out = Vec::new();
+        for key in keys {
+            if let Some(state) = buffers.remove(&key) {
+                if state.event_count == 0 {
+                    continue;
+                }
+                let mut acc = state.accumulator;
+                acc.seal();
+                acc.flush_thinking_buffer();
+                out.push((key, acc.into_output_data()));
+            }
+        }
+        out
+    }
+
+    /// Flush chunks that have been idle longer than the threshold.
+    pub async fn flush_stale(&self, idle: Duration) -> Vec<(String, AgentOutputData)> {
+        let now = Instant::now();
+        let mut buffers = self.buffers.write().await;
+        let stale_keys: Vec<String> = buffers
+            .iter()
+            .filter(|(_, s)| now.duration_since(s.last_activity) >= idle)
+            .map(|(k, _)| k.clone())
+            .collect();
+        let mut out = Vec::new();
+        for key in stale_keys {
+            if let Some(state) = buffers.remove(&key) {
+                if state.event_count == 0 {
+                    continue;
+                }
+                let mut acc = state.accumulator;
+                acc.seal();
+                acc.flush_thinking_buffer();
+                out.push((key, acc.into_output_data()));
+            }
+        }
+        out
+    }
+
+    /// Whether there is a pending chunk for a conversation.
+    pub async fn has_pending(&self, conversation_id: &str) -> bool {
+        self.buffers.read().await.contains_key(conversation_id)
+    }
+}
+
+// ── Global chunk buffer ───────────────────────────────────────────────────────
+
+static GLOBAL_CHUNK_BUFFER: std::sync::Mutex<Option<Arc<ChunkBuffer>>> =
+    std::sync::Mutex::new(None);
+
+pub fn set_global_chunk_buffer(buffer: Arc<ChunkBuffer>) {
+    let mut guard = GLOBAL_CHUNK_BUFFER.lock().unwrap();
+    *guard = Some(buffer);
+}
+
+pub fn get_global_chunk_buffer() -> Option<Arc<ChunkBuffer>> {
+    GLOBAL_CHUNK_BUFFER.lock().unwrap().clone()
+}
+
+/// Spawn a background task that periodically flushes stale chunks.
+pub fn spawn_chunk_flush_task(
+    buffer: Arc<ChunkBuffer>,
+    cancellation_token: tokio_util::sync::CancellationToken,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(CHUNK_IDLE_TIMEOUT_SECS));
+        loop {
+            tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    // Flush everything on shutdown
+                    let flushed = buffer.flush_all().await;
+                    if let Some(cb) = get_global_persist_callback() {
+                        for (conv_id, data) in flushed {
+                            let cb = cb.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = cb(conv_id, data).await {
+                                    tracing::error!(error = %e, "Failed to persist final chunk");
+                                }
+                            });
+                        }
+                    }
+                    break;
+                }
+                _ = interval.tick() => {
+                    let flushed = buffer.flush_stale(Duration::from_secs(CHUNK_IDLE_TIMEOUT_SECS)).await;
+                    if let Some(cb) = get_global_persist_callback() {
+                        for (conv_id, data) in flushed {
+                            let cb = cb.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = cb(conv_id, data).await {
+                                    tracing::error!(error = %e, "Failed to persist stale chunk");
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -1112,7 +1396,7 @@ mod tests {
         acc.set_stop_reason("done".to_string());
         acc.set_session_title("title".to_string());
         acc.set_token_usage(10, 20);
-        acc.set_context_usage(5, 100);
+        acc.set_context_usage(5, 100, None);
         // no panic; fields stored in metadata? Just ensure no panic
     }
 }

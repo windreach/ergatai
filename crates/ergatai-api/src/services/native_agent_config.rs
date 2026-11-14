@@ -101,7 +101,7 @@ pub fn opencode_config_path() -> Option<PathBuf> {
 
 /// Strip `//` and `/* */` comments from a JSONC document so it can be parsed
 /// by serde_json. String literals are preserved verbatim.
-fn strip_json_comments(input: &str) -> String {
+pub fn strip_json_comments(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let bytes = input.as_bytes();
     let mut i = 0;

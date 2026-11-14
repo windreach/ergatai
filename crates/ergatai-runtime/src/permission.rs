@@ -10,7 +10,6 @@
 //! - Integrators can implement [`PermissionHandler`] to plug in custom policy
 //!   (e.g., `ergatai-lock` file access control).
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
@@ -19,8 +18,6 @@ use agent_client_protocol::schema::v1::{
 };
 use async_trait::async_trait;
 use tracing::debug;
-
-use crate::runtime::get_agent_runtime;
 
 /// Decision returned by a [`PermissionHandler`].
 ///
@@ -180,13 +177,17 @@ fn select_allow_option(request: &RequestPermissionRequest) -> PermissionDecision
 ///
 /// An optional inner handler (e.g. lock-based checks) is consulted after the
 /// user allows an operation, so workspace file-locking policies still apply.
-pub struct InteractivePermissionHandler {
-    inner: Option<Arc<dyn PermissionHandler>>,
+pub struct InteractivePermissionHandler;
+
+impl Default for InteractivePermissionHandler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InteractivePermissionHandler {
-    pub fn new(inner: Option<Arc<dyn PermissionHandler>>) -> Self {
-        Self { inner }
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -216,31 +217,47 @@ impl PermissionHandler for InteractivePermissionHandler {
             })
             .unwrap_or_default();
 
-        if is_auto_approve_kind(&kind) {
-            debug!(agent_id = %agent_id, kind = ?kind, "InteractivePermissionHandler: auto-approving read-class request");
-            return select_allow_option(request);
-        }
+        let raw_input = request.tool_call.fields.raw_input.as_ref();
 
         let mode = get_permission_mode();
-        if mode != PermissionMode::Ask {
+
+        // Determine whether this request touches anything outside the workspace
+        // project root. This drives the path-aware ask/auto policy below.
+        let outside = is_outside_workspace(agent_id, &kind, &locations, raw_input).await;
+
+        // Bash / shell (Execute) is never auto-approved in Auto mode — it always
+        // goes through ask, even when all paths are inside the workspace.
+        let force_ask = match mode {
+            PermissionMode::FullAccess => false,
+            PermissionMode::Auto => {
+                outside
+                    || kind == ToolKind::Execute
+                    || kind == ToolKind::Search
+                    || kind == ToolKind::Fetch
+            }
+            PermissionMode::Ask => outside || !is_auto_approve_kind(&kind),
+        };
+
+        if !force_ask {
             debug!(agent_id = %agent_id, ?mode, "InteractivePermissionHandler: auto-approving per permission mode");
             if mode == PermissionMode::FullAccess {
-                // Lock pre-shift: acquire WRITE lock BEFORE the tool executes.
-                // If another agent holds the lock, reject the tool call so we
-                // get real mutual exclusion instead of post-hoc audit.
-                if let Err(reason) = try_pre_lock_files(
-                    agent_id,
-                    session_id,
-                    &kind,
-                    &locations,
-                    request.tool_call.fields.raw_input.as_ref(),
-                )
-                .await
+                // FullAccess: allow everything. Best-effort pre-lock only for
+                // in-workspace paths; never reject on lock failure.
+                if !outside {
+                    let _ = try_pre_lock_files(agent_id, session_id, &kind, &locations, raw_input)
+                        .await;
+                }
+                return select_allow_option(request);
+            }
+            // Auto or Ask auto path (inside project, non-execute).
+            if matches!(kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move) {
+                if let Err(reason) =
+                    try_pre_lock_files(agent_id, session_id, &kind, &locations, raw_input).await
                 {
                     debug!(
                         agent_id = %agent_id,
                         reason = %reason,
-                        "Pre-lock failed in FullAccess mode, rejecting"
+                        "Pre-lock failed in auto-approve mode, rejecting"
                     );
                     return select_decision_option(
                         request,
@@ -248,28 +265,6 @@ impl PermissionHandler for InteractivePermissionHandler {
                     );
                 }
                 return select_allow_option(request);
-            }
-            if let Some(inner) = &self.inner {
-                return inner.evaluate(agent_id, session_id, request).await;
-            }
-            if let Err(reason) = try_pre_lock_files(
-                agent_id,
-                session_id,
-                &kind,
-                &locations,
-                request.tool_call.fields.raw_input.as_ref(),
-            )
-            .await
-            {
-                debug!(
-                    agent_id = %agent_id,
-                    reason = %reason,
-                    "Pre-lock failed in auto-approve mode, rejecting"
-                );
-                return select_decision_option(
-                    request,
-                    crate::permission_service::PermissionDecisionKind::RejectOnce,
-                );
             }
             return select_allow_option(request);
         }
@@ -315,6 +310,14 @@ impl PermissionHandler for InteractivePermissionHandler {
         };
 
         if decision.is_allow() {
+            // Paths outside the workspace project root cannot be locked by the
+            // lock manager (it only governs in-workspace paths). When the user
+            // explicitly approves such a request, allow it without attempting to
+            // acquire a lock (mirrors FullAccess for out-of-workspace paths).
+            if outside {
+                return select_allow_option(request);
+            }
+
             // Lock pre-shift: even when the user explicitly allows, refuse the
             // tool if another agent holds the WRITE lock. The user's "allow"
             // grants permission-to-try, not permission-to-stomp.
@@ -338,9 +341,9 @@ impl PermissionHandler for InteractivePermissionHandler {
                 );
             }
 
-            if let Some(inner) = &self.inner {
-                return inner.evaluate(agent_id, session_id, request).await;
-            }
+            // Locking already handled by try_pre_lock_files above using the
+            // project's lock manager; do not fall through to the legacy
+            // workspace-based inner handler.
         }
         select_decision_option(request, decision)
     }
@@ -432,83 +435,41 @@ async fn try_pre_lock_files(
         return Ok(());
     }
 
-    // Derive workspace_id from agent_id by querying the AgentRegistry.
-    // The legacy `-agent-` substring parsing no longer works because agent_id
-    // now uses snowflake format `agent_{snowflake}` (see acp.rs).
-    let runtime = get_agent_runtime();
-    let workspace_id_formatted = match runtime.get_agent(agent_id).await {
-        Some(info) => info.workspace_id,
-        None => {
-            tracing::warn!(
-                agent_id = %agent_id,
-                "try_pre_lock_files: agent not found in registry, degrading to no-op"
-            );
-            return Ok(());
-        }
-    };
-
-    // Convert formatted workspace ID to Snowflake ID for lock manager lookup.
-    // The lock manager is initialized with Snowflake IDs, but AgentInfo stores
-    // the formatted ID (e.g., "ws_503168454928_000_0000").
-    let workspace_id = ergatai_error::id::parse_to_i64(&workspace_id_formatted)
-        .map(|id| id.to_string())
-        .unwrap_or(workspace_id_formatted.clone());
-
-    // Resolve the lock manager for this workspace. Failure means the lock
-    // subsystem is not initialized for this project — degrade gracefully
-    // rather than blocking all edits.
-    let lock_mgr = match ergatai_lock::get_lock_manager(&workspace_id).await {
-        Ok(mgr) => mgr,
-        Err(e) => {
-            tracing::info!(
-                agent_id = %agent_id,
-                workspace_id = %workspace_id,
-                workspace_id_formatted = %workspace_id_formatted,
-                error = %e,
-                "try_pre_lock_files: lock manager unavailable, degrading to no-op"
-            );
-            return Ok(());
-        }
-    };
-
-    // SECURITY: Validate all paths are within workspace boundary before locking.
-    // This prevents agents from locking system files (e.g., /etc/passwd) by passing
-    // absolute paths outside the workspace.
-    let project_root = lock_mgr.project_root();
+    // Resolve the owning project/lock-manager for each path using the global
+    // project registry (populated from the workspace's project array). A path
+    // is allowed only if it lives under a registered project root.
+    let mut resolved: Vec<(
+        String,
+        String,
+        std::sync::Arc<ergatai_lock::FileLockManager>,
+    )> = Vec::with_capacity(paths_to_lock.len());
     for path in &paths_to_lock {
         let path_buf = std::path::Path::new(path);
-        // If path is relative, join it with project_root first
         let absolute_path_buf = if path_buf.is_absolute() {
             path_buf.to_path_buf()
         } else {
-            project_root.join(path_buf)
+            std::env::current_dir().unwrap_or_default().join(path_buf)
         };
-        // Canonicalize the path to resolve any .. or symlinks
         let canonical_path = match absolute_path_buf.canonicalize() {
             Ok(p) => p,
             Err(_) => {
-                // If canonicalization fails (e.g., file doesn't exist yet), try to
-                // canonicalize the parent directory and append the filename
                 if let Some(parent) = absolute_path_buf.parent() {
                     if let Ok(canonical_parent) = parent.canonicalize() {
                         if let Some(filename) = absolute_path_buf.file_name() {
                             canonical_parent.join(filename)
                         } else {
-                            // Cannot determine canonical path, reject to be safe
                             return Err(ergatai_error::ErgataiError::PermissionDenied(format!(
                                 "Path {} cannot be resolved and is rejected for safety",
                                 path
                             )));
                         }
                     } else {
-                        // Parent directory doesn't exist or can't be canonicalized
                         return Err(ergatai_error::ErgataiError::PermissionDenied(format!(
                             "Path {} parent directory cannot be resolved",
                             path
                         )));
                     }
                 } else {
-                    // No parent directory (e.g., root path)
                     return Err(ergatai_error::ErgataiError::PermissionDenied(format!(
                         "Path {} has no parent directory",
                         path
@@ -517,38 +478,55 @@ async fn try_pre_lock_files(
             }
         };
 
-        // Check if the canonical path is within the project root
-        if !canonical_path.starts_with(project_root) {
-            tracing::warn!(
-                agent_id = %agent_id,
-                path = %path,
-                canonical_path = %canonical_path.display(),
-                project_root = %project_root.display(),
-                "try_pre_lock_files: path is outside workspace boundary, rejecting"
-            );
-            return Err(ergatai_error::ErgataiError::PermissionDenied(format!(
-                "Path {} is outside workspace boundary",
-                path
-            )));
-        }
+        let project_id = match ergatai_lock::find_project_for_path(&canonical_path) {
+            Some(pid) => pid,
+            None => {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    path = %path,
+                    canonical_path = %canonical_path.display(),
+                    "try_pre_lock_files: path is outside all registered projects, rejecting"
+                );
+                return Err(ergatai_error::ErgataiError::PermissionDenied(format!(
+                    "Path {} is outside workspace boundary",
+                    path
+                )));
+            }
+        };
+
+        let lock_mgr = match ergatai_lock::get_lock_manager(&project_id).await {
+            Ok(mgr) => mgr,
+            Err(e) => {
+                tracing::info!(
+                    agent_id = %agent_id,
+                    project_id = %project_id,
+                    error = %e,
+                    "try_pre_lock_files: lock manager unavailable, degrading to no-op"
+                );
+                return Ok(());
+            }
+        };
+
+        resolved.push((path.clone(), project_id, lock_mgr));
     }
 
-    // Attempt a pre-emptive acquire on each path. Track acquired locks so we can
-    // release them on failure to prevent lock leaks.
-    let mut acquired_locks = Vec::with_capacity(paths_to_lock.len());
-    for path in &paths_to_lock {
+    let mut acquired: Vec<(
+        std::sync::Arc<ergatai_lock::FileLockManager>,
+        String,
+        String,
+    )> = Vec::with_capacity(resolved.len());
+    for (path, project_id, lock_mgr) in &resolved {
         match lock_mgr
-            .try_acquire_write_lock_preemptive(path, agent_id, session_id, &workspace_id)
+            .try_acquire_write_lock_preemptive(path, agent_id, session_id, project_id)
             .await
         {
             Ok(_token) => {
-                acquired_locks.push(path.clone());
+                acquired.push((lock_mgr.clone(), path.clone(), project_id.clone()));
             }
             Err(e) => {
-                // Release all previously acquired locks before returning error
-                for locked_path in acquired_locks {
+                for (mgr, locked_path, _) in &acquired {
                     if let Err(release_err) =
-                        lock_mgr.release_lock_on_tool_complete(&locked_path, agent_id, session_id)
+                        mgr.release_lock_on_tool_complete(locked_path, agent_id, session_id)
                     {
                         tracing::warn!(
                             path = %locked_path,
@@ -582,6 +560,79 @@ fn extract_command_from_raw_input(raw_input: &serde_json::Value) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string()
+}
+
+/// Collect candidate file paths from a permission request, mirroring the logic
+/// in `try_pre_lock_files`. Returns an empty vec when no paths can be derived
+/// (in which case the request is treated as "not outside").
+fn collect_candidate_paths(
+    kind: &ToolKind,
+    locations: &[String],
+    raw_input: Option<&serde_json::Value>,
+) -> Vec<String> {
+    match kind {
+        ToolKind::Edit | ToolKind::Delete | ToolKind::Move => locations.to_vec(),
+        ToolKind::Execute => {
+            let Some(input) = raw_input else {
+                return Vec::new();
+            };
+            let command = extract_command_from_raw_input(input);
+            if command.is_empty() {
+                return Vec::new();
+            }
+            crate::bash_path_extractor::extract_bash_write_targets(&command)
+        }
+        _ => locations.to_vec(),
+    }
+}
+
+/// Whether any candidate path of this request resolves outside the workspace
+/// project root. Returns `false` when the workspace / lock manager cannot be
+/// resolved (degrade-open, matching existing behavior).
+async fn is_outside_workspace(
+    _agent_id: &str,
+    kind: &ToolKind,
+    locations: &[String],
+    raw_input: Option<&serde_json::Value>,
+) -> bool {
+    let paths = collect_candidate_paths(kind, locations, raw_input);
+    if paths.is_empty() {
+        return false;
+    }
+
+    for path in &paths {
+        let path_buf = std::path::Path::new(path);
+        // Resolve relative paths against cwd for the containment check; the
+        // definitive check is whether *any* registered project root owns it.
+        let absolute_path_buf = if path_buf.is_absolute() {
+            path_buf.to_path_buf()
+        } else {
+            std::env::current_dir().unwrap_or_default().join(path_buf)
+        };
+        let canonical_path = match absolute_path_buf.canonicalize() {
+            Ok(p) => p,
+            Err(_) => {
+                if let Some(parent) = absolute_path_buf.parent() {
+                    if let Ok(canonical_parent) = parent.canonicalize() {
+                        if let Some(filename) = absolute_path_buf.file_name() {
+                            canonical_parent.join(filename)
+                        } else {
+                            // Cannot resolve; treat as outside to be safe.
+                            return true;
+                        }
+                    } else {
+                        return true;
+                    }
+                } else {
+                    return true;
+                }
+            }
+        };
+        if ergatai_lock::find_project_for_path(&canonical_path).is_none() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Helper: respond to a permission request using a `PermissionDecision`.

@@ -7,6 +7,8 @@ export interface DiscoveryGroupItem {
   source?: string
   group: string
   type: "skill" | "command" | "mcp" | "plugin" | "agent"
+  /** Explicit routing markers stamped at discovery/read time (preferred over dynamic trigger inference). */
+  targetTriggers?: string[]
 }
 
 export interface DiscoveryGroup {
@@ -25,15 +27,33 @@ const TYPE_LABELS: Record<string, string> = {
 
 /**
  * Generic hook: fetch agent discovery and group items by backend-provided `group`.
- * Both `/` and `@` can consume this; insertion semantics stay in the caller.
- *
- * Degradation: when `agentId` is undefined (new chat / no agent), falls back to
- * static discovery (convention_skills + plugins only).
+ * Items carry explicit type/targetTriggers markers from discovery sources when available.
  */
 export interface DiscoveryTrigger {
   char: string
   position?: string
   types?: string[]
+}
+
+type RawDiscoveryItem = {
+  name: string
+  description?: string
+  source?: string
+  group?: string
+  type?: string
+  targetTriggers?: unknown
+  status?: string
+}
+
+function normalizeTargetTriggers(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out = raw.filter((x): x is string => typeof x === "string" && x.length > 0)
+  return out.length ? out : undefined
+}
+
+function normalizeItemType(raw: string | undefined, fallback: DiscoveryGroupItem["type"]): DiscoveryGroupItem["type"] {
+  if (raw === "skill" || raw === "command" || raw === "mcp" || raw === "plugin" || raw === "agent") return raw
+  return fallback
 }
 
 export function useDiscoveryGroups(agentId: string | undefined, cwd?: string, agentKind?: string) {
@@ -61,28 +81,30 @@ export function useDiscoveryGroups(agentId: string | undefined, cwd?: string, ag
   const groups = useMemo<DiscoveryGroup[]>(() => {
     const d = data as
       | {
-          skills?: Array<{ name: string; description?: string; source?: string; group?: string }>
-          commands?: Array<{ name: string; description?: string; source?: string; group?: string }>
-          mcp?: Array<{ name: string; description?: string; source?: string; group?: string; status?: string }>
-          plugins?: Array<{ name: string; description?: string; source?: string; group?: string }>
-          agents?: Array<{ name: string; description?: string; source?: string; group?: string }>
+          skills?: RawDiscoveryItem[]
+          commands?: RawDiscoveryItem[]
+          mcp?: RawDiscoveryItem[]
+          plugins?: RawDiscoveryItem[]
+          agents?: RawDiscoveryItem[]
         }
       | undefined
 
     const items: DiscoveryGroupItem[] = []
-    const push = (raw: { name: string; description?: string; source?: string; group?: string }, type: DiscoveryGroupItem["type"], fallback: string) => {
+    const push = (raw: RawDiscoveryItem, fallbackType: DiscoveryGroupItem["type"], fallbackGroup: string) => {
+      const type = normalizeItemType(raw.type, fallbackType)
       items.push({
         name: raw.name,
-        description: raw.description,
+        description: raw.status || raw.description,
         source: raw.source || "agent-sdk",
-        group: raw.group || fallback,
+        group: raw.group || fallbackGroup,
         type,
+        targetTriggers: normalizeTargetTriggers(raw.targetTriggers),
       })
     }
 
     for (const s of d?.skills ?? []) push(s, "skill", "Skills")
     for (const c of d?.commands ?? []) push(c, "command", "Commands")
-    for (const m of d?.mcp ?? []) push({ name: m.name, description: m.status || m.description, source: m.source, group: m.group }, "mcp", "MCP")
+    for (const m of d?.mcp ?? []) push(m, "mcp", "MCP")
     for (const p of d?.plugins ?? []) push(p, "plugin", "Plugins")
     for (const a of d?.agents ?? []) push(a, "agent", "Agents")
 

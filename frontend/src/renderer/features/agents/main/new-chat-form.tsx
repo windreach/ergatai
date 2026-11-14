@@ -35,6 +35,7 @@ import {
   lastSelectedCodexThinkingAtom,
   lastSelectedBranchesAtom,
   lastSelectedModelIdAtom,
+  conversationModelIdAtomFamily,
   agentModelIdAtomFamily,
   lastSelectedWorkModeAtom,
   type WorkMode,
@@ -88,6 +89,8 @@ import {
   type AgentsMentionsEditorHandle,
   type FileMentionOption,
 } from "../mentions"
+import { AgentsSkillTrigger } from "../mentions/agents-skill-trigger"
+import { AgentsHashTrigger } from "../mentions/agents-hash-trigger"
 import { buildPastedMentionToken } from "../mentions/mentions-utils"
 import { promptToTitle } from "../../../../shared/mention-title"
 import { useEditorTriggerConfigs } from "../discovery/use-registered-triggers"
@@ -582,6 +585,8 @@ export function NewChatForm({
   )
 
   // react-doctor-disable-next-line rerender-state-only-in-handlers
+  const userSelectedModelRef = useRef(false)
+
   const [selectedModel, setSelectedModel] = useState<
     (typeof availableModels.models)[number] | undefined
   >(
@@ -636,6 +641,12 @@ export function NewChatForm({
   // Sync selectedModel when backend current model or atom value changes
   // react-doctor-disable-next-line no-effect-chain
   useEffect(() => {
+    // Once the user has manually selected a model, do not override it with
+    // backend/current model updates.
+    if (userSelectedModelRef.current) {
+      return
+    }
+
     // 安全检查：如果 selectedModel 未定义，跳过同步
     if (!selectedModel) {
       return
@@ -662,6 +673,7 @@ export function NewChatForm({
   // Avoid stale model selections leaking across agents (e.g. Claude Code -> opencode).
   // react-doctor-disable-next-line no-effect-chain
   useEffect(() => {
+    userSelectedModelRef.current = false
     setSelectedModel(undefined)
   }, [selectedAgent.id])
 
@@ -862,6 +874,24 @@ export function NewChatForm({
   // Mention subpage navigation state
   const [showingFilesList, setShowingFilesList] = useState(false)
   const [showingAgentsList, setShowingAgentsList] = useState(false)
+
+  // Skill trigger state ($)
+  const [showSkillDropdown, setShowSkillDropdown] = useState(false)
+  const [skillSearchText, setSkillSearchText] = useState("")
+  const [skillPosition, setSkillPosition] = useState({ top: 0, left: 0 })
+
+  // Hash/reference trigger state (#)
+  const [showHashDropdown, setShowHashDropdown] = useState(false)
+  const [hashSearchText, setHashSearchText] = useState("")
+  const [hashPosition, setHashPosition] = useState({ top: 0, left: 0 })
+
+  const closeAllMentionTriggers = useCallback(() => {
+    setShowMentionDropdown(false)
+    setShowSkillDropdown(false)
+    setShowHashDropdown(false)
+    setShowingFilesList(false)
+    setShowingAgentsList(false)
+  }, [])
 
   const [showSlashDropdown, setShowSlashDropdown] = useState(false)
   const [slashSearchText, setSlashSearchText] = useState("")
@@ -1292,6 +1322,12 @@ export function NewChatForm({
         conversationAgentStorage.set(firstConversationId, variables.agentCommand!)
       }
 
+      // Persist the user-selected model for this conversation so the chat view
+      // does not fall back to the backend current/default model.
+      if (firstConversationId && variables.model) {
+        appStore.set(conversationModelIdAtomFamily(firstConversationId), variables.model)
+      }
+
       if (data.initialPromptTurn?.conversationId) {
         appStore.set(
           pendingInitialPromptAtomFamily(data.initialPromptTurn.conversationId),
@@ -1456,6 +1492,8 @@ export function NewChatForm({
         effectiveWorkMode === "worktree" ? selectedBranch || undefined : undefined,
       branchType:
         effectiveWorkMode === "worktree" ? selectedBranchType : undefined,
+      branchMode:
+        effectiveWorkMode === "worktree" ? "existing" : undefined,
       useWorktree: effectiveWorkMode === "worktree",
       mode: agentMode,
       collaborationMode,
@@ -1574,26 +1612,54 @@ export function NewChatForm({
 
   // Memoized callbacks to prevent re-renders
   const handleMentionTrigger = useCallback(
-    ({ searchText, rect }: { searchText: string; rect: DOMRect }) => {
-      if (validatedProject) {
-        setMentionScope("agents")
-        setMentionSearchText(searchText)
-        setMentionPosition({ top: rect.top, left: rect.left })
-        setInputContainerWidth(inputContainerRef.current?.getBoundingClientRect().width ?? 0)
-        // Reset subpage state when opening dropdown
-        setShowingFilesList(false)
-        setShowingAgentsList(false)
-        setShowMentionDropdown(true)
+    ({ searchText, rect, triggerChar }: { searchText: string; rect: DOMRect; triggerChar?: string }) => {
+      const ch = triggerChar || "@"
+      setInputContainerWidth(inputContainerRef.current?.getBoundingClientRect().width ?? 0)
+
+      if (ch === "$") {
+        setSkillSearchText(searchText)
+        setSkillPosition({ top: rect.top, left: rect.left })
+        setShowSkillDropdown(true)
+        setShowMentionDropdown(false)
+        setShowHashDropdown(false)
+        return
       }
+
+      if (ch === "#") {
+        setHashSearchText(searchText)
+        setHashPosition({ top: rect.top, left: rect.left })
+        setShowHashDropdown(true)
+        setShowMentionDropdown(false)
+        setShowSkillDropdown(false)
+        return
+      }
+
+      // Allow @ in new-chat even before project validation for agents/MCP/discovery refs;
+      // file results will be limited until a project is selected.
+      setMentionScope("agents")
+      setMentionSearchText(searchText)
+      setMentionPosition({ top: rect.top, left: rect.left })
+      setShowingFilesList(false)
+      setShowingAgentsList(false)
+      setShowMentionDropdown(true)
+      setShowSkillDropdown(false)
+      setShowHashDropdown(false)
     },
     [validatedProject],
   )
 
   const handleCloseTrigger = useCallback(() => {
-    setShowMentionDropdown(false)
-    // Reset subpage state when closing
-    setShowingFilesList(false)
-    setShowingAgentsList(false)
+    closeAllMentionTriggers()
+  }, [closeAllMentionTriggers])
+
+  const handleSkillSelect = useCallback((mention: FileMentionOption) => {
+    editorRef.current?.insertMention(mention)
+    setShowSkillDropdown(false)
+  }, [])
+
+  const handleHashSelect = useCallback((mention: FileMentionOption) => {
+    editorRef.current?.insertMention(mention)
+    setShowHashDropdown(false)
   }, [])
 
   // Slash command handlers
@@ -2030,7 +2096,7 @@ export function NewChatForm({
                       onContentChange={handleContentChange}
                       onSubmit={handleSend}
                       onShiftTab={toggleMode}
-                      placeholder="Plan, @ for agent, / for commands"
+                      placeholder="Plan, / command, @ context, $ skill, # ref"
                       className={cn(
                         "bg-transparent max-h-[240px] overflow-y-auto p-1",
                         isMobileFullscreen ? "min-h-[56px]" : "min-h-[44px]",
@@ -2102,10 +2168,10 @@ export function NewChatForm({
                                   availableModels.models.find((item) => item.id === modelId) ||
                                   availableModels.models[0]
                                 if (!m) return
+                                userSelectedModelRef.current = true
                                 setSelectedModel(m)
-                                if (selectedAgent.id === "claude-code") {
-                                  _setLastSelectedModelId(m.id)
-                                }
+                                // Persist the user's choice for both Claude and OpenCode.
+                                _setLastSelectedModelId(m.id)
                               },
                               hasCustomModelConfig: hasCustomClaudeConfig,
                               isOffline: availableModels.isOffline && availableModels.hasOllama,
@@ -2256,7 +2322,7 @@ export function NewChatForm({
                   </PromptInputActions>
                 </PromptInput>
 
-                {/* Slash command dropdown */}
+                {/* / command dropdown */}
                 <AgentsSlashCommand
                   isOpen={showSlashDropdown}
                   onClose={handleCloseSlashTrigger}
@@ -2270,6 +2336,30 @@ export function NewChatForm({
                   mode={agentMode}
                   disabledCommands={["clear"]}
                   agentKind={selectedAgentKind}
+                />
+
+                {/* $ skill/template trigger dropdown */}
+                <AgentsSkillTrigger
+                  isOpen={showSkillDropdown}
+                  onClose={() => setShowSkillDropdown(false)}
+                  onSelect={handleSkillSelect}
+                  searchText={skillSearchText}
+                  position={skillPosition}
+                  containerWidth={inputContainerWidth || undefined}
+                  agentId={undefined}
+                  cwd={validatedProject?.path}
+                  agentKind={selectedAgentKind}
+                />
+
+                {/* # reference trigger dropdown */}
+                <AgentsHashTrigger
+                  isOpen={showHashDropdown}
+                  onClose={() => setShowHashDropdown(false)}
+                  onSelect={handleHashSelect}
+                  searchText={hashSearchText}
+                  position={hashPosition}
+                  containerWidth={inputContainerWidth || undefined}
+                  changedFiles={[]}
                 />
 
                 {/* Project, Work Mode, and Branch selectors - directly under input */}
@@ -2441,16 +2531,10 @@ export function NewChatForm({
 
                 {/* Worktree config banner - moved to corner banner below */}
 
-                {/* File mention dropdown */}
-                {/* Desktop: use projectPath for local file search */}
+                {/* @ context mention dropdown */}
                 <AgentsFileMention
-                  isOpen={showMentionDropdown && !!validatedProject}
-                  onClose={() => {
-                    setShowMentionDropdown(false)
-                    // Reset subpage state when dropdown closes
-                    setShowingFilesList(false)
-                    setShowingAgentsList(false)
-                  }}
+                  isOpen={showMentionDropdown}
+                  onClose={handleCloseTrigger}
                   onSelect={handleMentionSelect}
                   searchText={mentionSearchText}
                   position={mentionPosition}

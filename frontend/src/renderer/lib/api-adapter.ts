@@ -572,22 +572,29 @@ export const api = {
           sandboxId?: string
           branch?: string
           projectPath?: string
+          projectPaths?: string[]
           collapseChains?: boolean
           collapseRoot?: string
         },
         opts?: AnyObj,
       ) => {
+        const paths =
+          args?.projectPaths && args.projectPaths.length > 0
+            ? args.projectPaths
+            : args?.projectPath
+              ? [args.projectPath]
+              : []
         // Use real tRPC to search local files
         const result = trpc.files.search.useQuery(
           {
-            projectPath: args?.projectPath || "",
+            projectPaths: paths,
             query: args?.query || "",
             limit: args?.limit || 50,
             collapseChains: args?.collapseChains ?? false,
             collapseRoot: args?.collapseRoot,
           },
           {
-            enabled: !!args?.projectPath && opts?.enabled !== false,
+            enabled: paths.length > 0 && opts?.enabled !== false,
             staleTime: opts?.staleTime ?? 5000,
             refetchOnWindowFocus: opts?.refetchOnWindowFocus ?? false,
             placeholderData: opts?.placeholderData,

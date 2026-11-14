@@ -691,6 +691,7 @@ fn migrate_conversation_context_columns(conn: &Connection) -> Result<()> {
         ("context_used", "INTEGER DEFAULT 0"),
         ("context_window", "INTEGER DEFAULT 0"),
         ("context_updated_at", "INTEGER DEFAULT 0"),
+        ("context_quota_json", "TEXT"),
     ] {
         if !existing_columns.contains(column) {
             conn.execute(
@@ -2502,6 +2503,7 @@ pub mod conversations {
         conversation_id: ConversationId,
         context_used: i64,
         context_window: i64,
+        context_quota_json: Option<&str>,
     ) -> Result<()> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
@@ -2512,12 +2514,33 @@ pub mod conversations {
 
         conn.execute(
             "UPDATE conversations
-             SET context_used = ?1, context_window = ?2, context_updated_at = ?3
+             SET context_used = ?1, context_window = ?2, context_updated_at = ?3,
+                 context_quota_json = ?5
              WHERE conversation_id = ?4",
-            params![context_used, context_window, now, conversation_id],
+            params![
+                context_used,
+                context_window,
+                now,
+                conversation_id,
+                context_quota_json
+            ],
         )?;
 
         Ok(())
+    }
+
+    /// Read persisted ACP extension quota JSON for a conversation.
+    pub fn get_context_quota_json(conversation_id: ConversationId) -> Result<Option<String>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT context_quota_json FROM conversations WHERE conversation_id = ?1")?;
+        let mut rows = stmt.query(params![conversation_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(row.get(0)?)
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn delete(conversation_id: ConversationId) -> Result<()> {
