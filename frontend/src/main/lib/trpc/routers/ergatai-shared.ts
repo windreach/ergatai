@@ -279,6 +279,7 @@ export type Message = {
   messageType: string | null
   content: string | null
   turnId: string | null
+  stopReason?: string | null
   projectionKind: string | null
   originMessageId: string | null
   createdAt: Date
@@ -465,19 +466,24 @@ export function mapConversation(conversation: BackendConversation): Conversation
 }
 
 export function mapMessage(message: BackendMessage): Message {
+  const metadata = parseMessageMetadata(message.metadata)
+  const stopReason = message.stop_reason ?? undefined
   return {
     id: String(message.message_id),
     conversationId: String(message.conversation_id),
     sequence: message.sequence,
     role: message.role,
     parts: parseMessageParts(message.parts),
-    metadata: parseMessageMetadata(message.metadata),
+    metadata: stopReason
+      ? { ...(metadata ?? {}), stopReason }
+      : metadata,
     // Agent消息专用字段
     fromAgentId: message.from_agent_id,
     fromAgentName: message.from_agent_name,
     messageType: message.message_type,
     content: message.content,
     turnId: message.turn_id,
+    stopReason,
     projectionKind: message.projection_kind,
     originMessageId: message.origin_message_id,
     createdAt: new Date(message.created_at * 1000),

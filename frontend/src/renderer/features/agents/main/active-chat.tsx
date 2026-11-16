@@ -173,6 +173,7 @@ import { TextSelectionPopover } from "../ui/text-selection-popover"
 import { ActiveChatDock } from "./active-chat-dock"
 import { ActiveChatMessages } from "./active-chat-messages"
 import { ChatSurfaceShell } from "./chat-surface-shell"
+import { RetryStatusRow } from "../ui/retry-status-row"
 const clearConversationSelectionAtom = atom(null, () => {})
 const isConversationMultiSelectModeAtom = atom(false)
 const selectedConversationIdsAtom = atom(new Set<string>())
@@ -691,6 +692,15 @@ const ChatViewInner = memo(function ChatViewInner(props: {
               handleRollback={chatSurface.handleRollback}
               handleForkFromMessage={chatSurface.handleForkFromMessage}
             />
+          }
+          afterMessagesSlot={
+            chatSurface.runtimeRetry ? (
+              <RetryStatusRow
+                retry={chatSurface.runtimeRetry}
+                onStop={chatSurface.handleStopRetry}
+                stopDisabled={chatSurface.isStoppingRetry}
+              />
+            ) : null
           }
         footerSlot={
       <ActiveChatDock

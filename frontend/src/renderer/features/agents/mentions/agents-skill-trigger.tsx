@@ -1,13 +1,11 @@
 "use client"
 
-import { cn } from "../../../lib/utils"
 import { useEffect, useMemo, memo } from "react"
-import { createPortal } from "react-dom"
 import type { FileMentionOption } from "./agents-mentions-editor"
 import { MENTION_PREFIXES } from "./mentions-utils"
 import { useDiscoveryGroups } from "../discovery/use-discovery-groups"
-import { useRegisteredTriggers } from "../discovery/use-registered-triggers"
-import { useDropdownShell, getDropdownContainerStyle } from "../discovery/use-dropdown-shell"
+import { useDropdownShell } from "../discovery/use-dropdown-shell"
+import { MentionTriggerDropdown } from "./mention-trigger-dropdown"
 
 interface AgentsSkillTriggerProps {
   isOpen: boolean
@@ -38,38 +36,33 @@ export const AgentsSkillTrigger = memo(function AgentsSkillTrigger({
   agentKind,
 }: AgentsSkillTriggerProps) {
   const { groups, isLoading } = useDiscoveryGroups(isOpen ? agentId : undefined, cwd, agentKind)
-  const { getTriggerTypes } = useRegisteredTriggers(isOpen ? agentId : undefined, cwd)
 
   const options = useMemo<FileMentionOption[]>(() => {
     const q = searchText.trim().toLowerCase()
-    const allowedFallback = new Set(getTriggerTypes("$").length ? getTriggerTypes("$") : ["skill"])
     const out: FileMentionOption[] = []
     for (const g of groups) {
       for (const item of g.items) {
-        // Prefer deterministic routing markers stamped at read/discovery time.
-        const targeted = item.targetTriggers?.includes("$")
-        const fallbackByType = !item.targetTriggers?.length && allowedFallback.has(item.type)
-        if (!targeted && !fallbackByType) continue
+        // Routing is authoritative via backend-stamped targetTriggers.
+        if (!item.targetTriggers?.includes("$")) continue
         // $ trigger is primarily for skills/templates (keep a narrow, stable set).
-        if (item.type !== "skill" && !(targeted && (item.type === "command" || item.type === "plugin"))) continue
+        if (item.type !== "skill" && item.type !== "command") continue
         if (q && !item.name.toLowerCase().includes(q) && !(item.description || "").toLowerCase().includes(q)) continue
         const prefix =
           item.type === "skill" ? MENTION_PREFIXES.SKILL :
-          item.type === "command" ? MENTION_PREFIXES.COMMAND :
-          MENTION_PREFIXES.PLUGIN
+          MENTION_PREFIXES.COMMAND
         out.push({
           id: `${prefix}${item.name}`,
           label: item.name,
           path: item.name,
           repository: "",
-          type: item.type === "skill" ? "skill" : item.type === "command" ? "command" : "plugin",
+          type: item.type,
           group: g.label || g.id,
           description: item.description || "",
         })
       }
     }
     return out
-  }, [groups, getTriggerTypes, searchText])
+  }, [groups, searchText])
 
   const {
     dropdownRef,
@@ -113,46 +106,23 @@ export const AgentsSkillTrigger = memo(function AgentsSkillTrigger({
 
   if (!isOpen) return null
 
-  return createPortal(
-    <div
-      ref={dropdownRef}
-      className="fixed z-[99999] overflow-y-auto rounded-[10px] border border-border bg-popover py-1 text-xs text-popover-foreground shadow-lg [&::-webkit-scrollbar]:hidden"
-      style={{
-        ...getDropdownContainerStyle(finalTop, finalLeft, computedMaxHeight, transformY, containerWidth, dropdownWidth),
-        scrollbarWidth: "none",
-        msOverflowStyle: "none",
-      } as React.CSSProperties}
-    >
-      {options.length > 0 ? (
-        <>
-          <div className="px-2.5 py-1.5 mx-1 text-xs font-bold text-muted-foreground">Skills & Templates ($)</div>
-          {options.map((option, index) => (
-            <div
-              role="button"
-              tabIndex={0}
-              key={option.id}
-              data-option-index={index}
-              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onSelect(option) }}
-              onMouseEnter={() => setSelectedIndex(index)}
-              className={cn(
-                "group inline-flex w-[calc(100%-8px)] mx-1 items-center whitespace-nowrap outline-none",
-                "h-7 px-1.5 justify-start text-xs rounded-md transition-colors cursor-pointer select-none",
-                selectedIndex === index ? "dark:bg-neutral-800 bg-accent text-foreground" : "text-muted-foreground dark:hover:bg-neutral-800 hover:bg-accent hover:text-foreground",
-              )}
-            >
-              <span className="flex items-center gap-1 w-full min-w-0">
-                <span className="shrink-0 whitespace-nowrap font-medium">${option.label}</span>
-                {option.description && <span className="text-muted-foreground flex-1 min-w-0 ml-2 overflow-hidden text-[10px] truncate">{option.description}</span>}
-              </span>
-            </div>
-          ))}
-        </>
-      ) : (
-        <div className="h-7 px-1.5 mx-1 flex items-center text-xs text-muted-foreground">
-          {debouncedSearchText ? `No skills matching "${debouncedSearchText}"` : "No skills available"}
-        </div>
-      )}
-    </div>,
-    document.body,
+  return (
+    <MentionTriggerDropdown
+      dropdownRef={dropdownRef}
+      finalTop={finalTop}
+      finalLeft={finalLeft}
+      computedMaxHeight={computedMaxHeight}
+      transformY={transformY}
+      containerWidth={containerWidth}
+      dropdownWidth={dropdownWidth}
+      options={options}
+      selectedIndex={selectedIndex}
+      setSelectedIndex={setSelectedIndex}
+      onSelect={onSelect}
+      header="Skills & Templates ($)"
+      prefix="$"
+      noun="skills"
+      debouncedSearchText={debouncedSearchText}
+    />
   )
 })

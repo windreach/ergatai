@@ -1,6 +1,5 @@
 "use client"
 
-import { cn } from "../../../lib/utils"
 import { api } from "../../../lib/api-adapter"
 import { trpc } from "../../../lib/trpc"
 import { keepPreviousData } from "@tanstack/react-query"
@@ -12,13 +11,17 @@ import {
   useState,
   memo,
 } from "react"
-import { createPortal } from "react-dom"
 import type { FileMentionOption } from "./agents-mentions-editor"
 import { MENTION_PREFIXES } from "./mentions-utils"
 import type { CoreAgentOption } from "../lib/agent-contract-api"
 import { useDiscoveryGroups } from "../discovery/use-discovery-groups"
-import { useRegisteredTriggers } from "../discovery/use-registered-triggers"
-import { useDropdownShell, getDropdownContainerStyle } from "../discovery/use-dropdown-shell"
+import { useDropdownShell } from "../discovery/use-dropdown-shell"
+import {
+  DropdownEmptyState,
+  DropdownOption,
+  DropdownPanel,
+  DropdownSectionHeader,
+} from "../discovery/dropdown-ui"
 
 
 interface ChangedFile {
@@ -59,6 +62,73 @@ const CATEGORY_OPTIONS: FileMentionOption[] = [
   { id: "files", label: "Files & Folders", type: "category", path: "", repository: "" },
   { id: "agents", label: "Agents", type: "category", path: "", repository: "" },
 ]
+
+// Human-readable labels keyed by mention item kind.
+// MCP tools and plugins are intentionally absent: the backend no longer
+// surfaces them as composer mentions.
+const MENTION_TYPE_LABELS: Record<string, string> = {
+  file: "Files",
+  folder: "Files",
+  agent: "Agents",
+  skill: "Skills",
+  command: "Commands",
+  category: "Mentions",
+}
+
+function getMentionTypeKey(option: FileMentionOption): string {
+  return option.type === "folder" ? "file" : option.type ?? "file"
+}
+
+function getMentionGroupLabel(option: FileMentionOption): string {
+  if (option.group) return option.group
+  return MENTION_TYPE_LABELS[getMentionTypeKey(option)] ?? "Mentions"
+}
+
+/**
+ * Insert section headers when the result set mixes item kinds (for example
+ * files plus agents returned by discovery). Single-kind lists keep the flat
+ * layout and rely on the dropdown title instead.
+ */
+function applyMentionGroupHeaders(items: FileMentionOption[]): FileMentionOption[] {
+  if (items.some((item) => item.type === "group-header" || item.type === "category")) {
+    return items
+  }
+
+  const typeKeys = new Set(items.map(getMentionTypeKey))
+  if (typeKeys.size <= 1) return items
+
+  const groups = new Map<string, FileMentionOption[]>()
+  for (const item of items) {
+    const label = getMentionGroupLabel(item)
+    const bucket = groups.get(label)
+    if (bucket) bucket.push(item)
+    else groups.set(label, [item])
+  }
+
+  const flat: FileMentionOption[] = []
+  for (const [label, groupItems] of groups) {
+    flat.push({ id: `group:${label}`, label, path: "", repository: "", type: "group-header" })
+    flat.push(...groupItems)
+  }
+  return flat
+}
+
+/**
+ * Title for the dropdown section, derived from the visible items instead of
+ * being hardcoded. A mixed result set falls back to the generic "Mentions".
+ */
+function getMentionSectionLabel(options: FileMentionOption[]): string {
+  const items = options.filter(
+    (option) => option.type !== "group-header" && option.type !== "category",
+  )
+  if (items.length === 0) return "Mentions"
+
+  const typeKeys = new Set(items.map(getMentionTypeKey))
+  if (typeKeys.size === 1) {
+    return MENTION_TYPE_LABELS[[...typeKeys][0]] ?? "Mentions"
+  }
+  return "Mentions"
+}
 
 /**
  * Check if a string matches all search words (multi-word search)
@@ -197,16 +267,11 @@ export const AgentsFileMention = memo(function AgentsFileMention({
 
   // Generic discovery aggregation (shared abstraction for trigger dropdowns).
   const { groups: discoveryGroups, isLoading: discoveryLoading } = useDiscoveryGroups(isOpen ? agentId : undefined, projectPath, agentKind)
-  const { getTriggerTypes } = useRegisteredTriggers(isOpen ? agentId : undefined, projectPath)
 
-  // Fetch custom agents from filesystem (cached for 5 minutes)
-  const { data: customAgents = [] } = trpc.agents.listEnabled.useQuery(
-    projectPath ? { cwd: projectPath } : undefined,
-    {
-      enabled: isOpen,
-      staleTime: 5 * 60 * 1000, // 5 minutes - agents don't change frequently
-    },
-  )
+  // `@` surfaces prompt-addressable convention agents (currently Codex).
+  // Claude Code and OpenCode subagents are tool-driven, so discovery does not
+  // expose them as @ candidates.
+  const customAgents = useMemo(() => [] as any[], [])
 
   // For multi-word search, send only first word to API (server filters by that),
   // then filter results on client by all words
@@ -270,6 +335,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
           path: displayPath,
           repository: repository || "",
           truncatedPath: dirPath,
+          type: "file" as const,
           additions: file.additions,
           deletions: file.deletions,
           group: "Changed Files",
@@ -317,28 +383,16 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   // Generic discovery -> mention options (shared abstraction).
   const discoveryMentionOptions: FileMentionOption[] = useMemo(() => {
     const searchLower = debouncedSearchText.toLowerCase()
-    const mentionTypes = getTriggerTypes("@")
-    const allowedTypesFallback =
-      mentionTypes && mentionTypes.length > 0 ? new Set(mentionTypes) : null
     const out: FileMentionOption[] = []
     for (const g of discoveryGroups) {
       for (const it of g.items) {
-        if (it.type === "agent") continue // agents handled separately
-        // Prefer deterministic routing markers stamped at read/discovery time.
-        const targeted = it.targetTriggers?.includes("@")
-        const fallbackByType = !it.targetTriggers?.length && !!allowedTypesFallback?.has(it.type)
-        if (!targeted && !fallbackByType) continue
-        const mentionType =
-          it.type === "mcp" ? "tool" :
-          it.type === "skill" ? "skill" :
-          it.type === "command" ? "command" :
-          it.type === "plugin" ? "plugin" : "skill"
-        const prefix =
-          mentionType === "skill" ? MENTION_PREFIXES.SKILL :
-          mentionType === "command" ? MENTION_PREFIXES.COMMAND :
-          mentionType === "tool" ? MENTION_PREFIXES.TOOL :
-          mentionType === "plugin" ? MENTION_PREFIXES.PLUGIN :
-          MENTION_PREFIXES.SKILL
+        // Only skills route to @ mentions. MCP tools are model-invoked and
+        // plugins are agent-native, so neither is surfaced in the composer.
+        if (it.type !== "skill") continue
+        // Routing is authoritative via backend-stamped targetTriggers.
+        if (!it.targetTriggers?.includes("@")) continue
+        const mentionType = "skill"
+        const prefix = MENTION_PREFIXES.SKILL
         if (!matchesMultiWordSearch(it.name, searchLower) && !matchesMultiWordSearch(it.description || "", searchLower)) continue
         out.push({
           id: `${prefix}${it.name}`,
@@ -352,7 +406,36 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       }
     }
     return out
-  }, [discoveryGroups, debouncedSearchText, getTriggerTypes])
+  }, [discoveryGroups, debouncedSearchText])
+
+  // Agents can also arrive through backend discovery, not only through the
+  // profile list, so surface them under the same "Agents" group.
+  const discoveryAgentOptions: FileMentionOption[] = useMemo(() => {
+    const searchLower = debouncedSearchText.toLowerCase()
+    const out: FileMentionOption[] = []
+    for (const g of discoveryGroups) {
+      for (const it of g.items) {
+        if (it.type !== "agent") continue
+        // Respect explicit routing markers, but don't drop agents that the
+        // backend returned without trigger metadata.
+        if (it.targetTriggers && !it.targetTriggers.includes("@")) continue
+        if (
+          !matchesMultiWordSearch(it.name, searchLower) &&
+          !matchesMultiWordSearch(it.description || "", searchLower)
+        ) continue
+        out.push({
+          id: `${MENTION_PREFIXES.AGENT}${it.name}`,
+          label: it.name,
+          path: it.name,
+          repository: "",
+          type: "agent",
+          group: g.label || "Agents",
+          description: it.description || "",
+        })
+      }
+    }
+    return out
+  }, [discoveryGroups, debouncedSearchText])
 
   // Convert custom agents to mention options
   const agentOptions: FileMentionOption[] = useMemo(() => {
@@ -393,10 +476,27 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       }))
   }, [customAgents, debouncedSearchText, scope, boundAgents])
 
+  // Merge profile agents with discovery agents, keeping profile metadata when
+  // both sources report the same agent. Group mode is restricted to the agents
+  // bound to the group, so don't append discovery agents there.
+  const allAgentOptions: FileMentionOption[] = useMemo(() => {
+    const sources =
+      scope === "agents" && boundAgents
+        ? agentOptions
+        : [...agentOptions, ...discoveryAgentOptions]
+    const byName = new Map<string, FileMentionOption>()
+    for (const option of sources) {
+      if (!byName.has(option.label)) byName.set(option.label, option)
+    }
+    return [...byName.values()]
+  }, [agentOptions, discoveryAgentOptions, scope, boundAgents])
+
   // Keep only files and agents
   const hasSkills = discoveryMentionOptions.some((o) => o.type === "skill")
-  const hasAgents = customAgents.length > 0
-  const hasTools = discoveryMentionOptions.some((o) => o.type === "tool")
+  const hasDiscoveryAgents = discoveryGroups.some((g) =>
+    g.items.some((it) => it.type === "agent" && (!it.targetTriggers || it.targetTriggers.includes("@"))),
+  )
+  const hasAgents = customAgents.length > 0 || hasDiscoveryAgents
   const hasOnlyFiles = discoveryMentionOptions.length === 0 && !hasAgents
 
   // Filter category options based on available data
@@ -407,24 +507,25 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       if (category.id === "files") return true // Always show files
       if (category.id === "skills") return hasSkills
       if (category.id === "agents") return hasAgents
-      if (category.id === "tools") return hasTools
       return true
     })
-  }, [scope, hasSkills, hasAgents, hasTools])
+  }, [scope, hasSkills, hasAgents])
 
   // Combined options for keyboard navigation
   const options: FileMentionOption[] = useMemo(() => {
-    // agents scope: show the file list directly (no drill-down category)
+    // agents scope: show files directly, plus any agents the backend reports.
     if (scope === "agents") {
-      const allFiles = [...changedFileOptions, ...repoFileOptions]
+      const allItems = [...allAgentOptions, ...changedFileOptions, ...repoFileOptions]
       if (debouncedSearchText) {
-        return sortFilesByRelevance(allFiles, debouncedSearchText)
+        return applyMentionGroupHeaders(
+          sortFilesByRelevance(allItems, debouncedSearchText),
+        )
       }
-      return allFiles
+      return applyMentionGroupHeaders(allItems)
     }
     // agents scope now falls through so files can be shown; skills/tools excluded below
 
-    // SUBPAGE: Files (or if no skills/agents/tools, show files directly)
+    // SUBPAGE: Files (or if no skills/agents, show files directly)
     if (showingFilesList || hasOnlyFiles) {
       const allFiles = [...changedFileOptions, ...repoFileOptions]
       if (debouncedSearchText) {
@@ -435,37 +536,30 @@ export const AgentsFileMention = memo(function AgentsFileMention({
 
     // SUBPAGE: Agents
     if (showingAgentsList) {
-      return agentOptions // already filtered by search in agentOptions memo
+      return allAgentOptions // already filtered by search in agentOptions memo
     }
 
     // ROOT VIEW
     if (debouncedSearchText) {
-      // Global search: search across changed files + categories + skills + agents + tools + repo files
+      // Global search: search across changed files + categories + skills + agents + repo files
       const searchLower = debouncedSearchText.toLowerCase()
       const filteredCategories = availableCategoryOptions.filter(c =>
         c.label.toLowerCase().includes(searchLower)
       )
-      const allowedCategoryIds = new Set(["agents", "files", "skills", "tools"])
+      const allowedCategoryIds = new Set(["agents", "files", "skills"])
       const allItems = [
         ...changedFileOptions,
         ...filteredCategories.filter(c => allowedCategoryIds.has(c.id)),
-        ...(scope === "all" ? agentOptions : []),
+        ...(scope === "all" ? allAgentOptions : []),
         ...discoveryMentionOptions,
         ...repoFileOptions,
       ]
-      return sortFilesByRelevance(allItems, debouncedSearchText)
+      return applyMentionGroupHeaders(
+        sortFilesByRelevance(allItems, debouncedSearchText),
+      )
     }
 
     // No search: Flat grouped list with category headers (no drill-down).
-    const TYPE_LABELS: Record<string, string> = {
-      agent: "Agents",
-      file: "Files",
-      folder: "Files",
-      skill: "Skills",
-      command: "Commands",
-      plugin: "Plugins",
-      tool: "MCP Tools",
-    }
     const groups = new Map<string, FileMentionOption[]>()
     const groupOrder: string[] = []
     const addToGroup = (item: FileMentionOption) => {
@@ -477,7 +571,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       groups.get(key)!.push(item)
     }
     if (scope !== "resources") {
-      agentOptions.forEach(addToGroup)
+      allAgentOptions.forEach(addToGroup)
     }
     discoveryMentionOptions.forEach(addToGroup)
     changedFileOptions.forEach(addToGroup)
@@ -485,7 +579,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
     for (const key of groupOrder) {
       const items = groups.get(key) || []
       if (items.length === 0) continue
-      const label = TYPE_LABELS[key] || key
+      const label = MENTION_TYPE_LABELS[key] || key
       flat.push({ id: `group:${key}`, label, path: "", repository: "", type: "group-header" })
       flat.push(...items)
     }
@@ -500,7 +594,14 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       return availableCategoryOptions
     }
     return flat
-  }, [scope, showingFilesList, showingAgentsList, debouncedSearchText, changedFileOptions, repoFileOptions, agentOptions, hasOnlyFiles, availableCategoryOptions, discoveryMentionOptions])
+  }, [scope, showingFilesList, showingAgentsList, debouncedSearchText, changedFileOptions, repoFileOptions, allAgentOptions, hasOnlyFiles, availableCategoryOptions, discoveryMentionOptions])
+
+  // Derive the dropdown title from the visible items so file-only lists show
+  // "Files" and agent lists show "Agents" instead of a generic "Mentions".
+  // Group headers already act as section titles, so don't repeat them on top.
+  const sectionLabel = getMentionSectionLabel(options)
+  const groupHeaderOptions = options.filter((option) => option.type === "group-header")
+  const showSectionLabel = groupHeaderOptions.length === 0
 
   // Shared dropdown shell (keyboard nav, placement, auto-scroll, click outside)
   // Note: we use local debounce (above) for memos, and pass debounceMs: 0 to skip
@@ -585,17 +686,16 @@ export const AgentsFileMention = memo(function AgentsFileMention({
 
   if (!isOpen) return null
 
-  return createPortal(
-    <div
-      ref={dropdownRef}
-      className="fixed z-[99999] overflow-y-auto rounded-[10px] border border-border bg-popover py-1 text-xs text-popover-foreground shadow-lg [&::-webkit-scrollbar]:hidden"
-      style={{
-        ...getDropdownContainerStyle(finalTop, finalLeft, computedMaxHeight, transformY, containerWidth, dropdownWidth),
-        scrollbarWidth: "none",
-        msOverflowStyle: "none",
-      } as React.CSSProperties}
+  return (
+    <DropdownPanel
+      dropdownRef={dropdownRef}
+      finalTop={finalTop}
+      finalLeft={finalLeft}
+      computedMaxHeight={computedMaxHeight}
+      transformY={transformY}
+      containerWidth={containerWidth}
+      dropdownWidth={dropdownWidth}
     >
-
       {/* Browse root indicator */}
       {browseRoot && (
         <div className="flex items-center gap-2 px-2.5 py-1.5 mx-1 text-xs text-muted-foreground border-b border-border/50">
@@ -614,84 +714,72 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       {/* All mentions in one section */}
       {options.length > 0 && (
         <>
-          <div className="px-2.5 py-1.5 mx-1 text-xs font-medium text-muted-foreground">
-            Mentions
-          </div>
+          {showSectionLabel && (
+            <DropdownSectionHeader>{sectionLabel}</DropdownSectionHeader>
+          )}
           {error && (
-            <div className="h-7 px-1.5 mx-1 flex items-center text-xs text-red-500">
+            <DropdownEmptyState className="text-red-500">
               Failed to load files
-            </div>
+            </DropdownEmptyState>
           )}
           {options.map((option, index) => {
             const isSelected = selectedIndex === index
             const isGroupHeader = option.type === "group-header"
             if (isGroupHeader) {
               return (
-                <div
-                  key={option.id}
-                  data-option-index={index}
-                  className="px-2.5 py-1.5 mx-1 text-xs font-bold text-foreground"
-                >
+                <DropdownSectionHeader key={option.id} optionIndex={index}>
                   {option.label}
-                </div>
+                </DropdownSectionHeader>
               )
             }
             return (
-              <div
-                // react-doctor-disable-next-line prefer-tag-over-role
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault()
-                    ;(e.currentTarget as HTMLElement).click()
-                  }
-                }}
+              <DropdownOption
                 key={option.id}
-                data-option-index={index}
-                onClick={() => onSelect(option)}
+                optionIndex={index}
+                selected={isSelected}
+                onSelect={() => onSelect(option)}
                 onMouseEnter={() => setSelectedIndex(index)}
-                className={cn(
-                  "group inline-flex w-[calc(100%-8px)] mx-1 items-center whitespace-nowrap outline-none",
-                  "h-7 px-1.5 justify-start text-xs rounded-md",
-                  "transition-colors cursor-pointer select-none",
-                  isSelected
-                    ? "dark:bg-neutral-800 bg-accent text-foreground"
-                    : "text-muted-foreground dark:hover:bg-neutral-800 hover:bg-accent hover:text-foreground",
-                )}
                 style={{ contentVisibility: "auto", containIntrinsicSize: "0 28px" }}
               >
-                <span className="flex items-center gap-1 w-full min-w-0">
-                  <span className="shrink-0 whitespace-nowrap font-medium">
-                    {option.label}
+                {option.type === "file" || option.type === "folder" ? (
+                  /* Files and folders render the full path as a single line
+                     instead of "name + path". */
+                  <span
+                    className="flex-1 min-w-0 overflow-hidden truncate"
+                    title={option.path}
+                  >
+                    {option.path || option.label}
                   </span>
-                  {/* Show path for files, description for others */}
-                  {(option.path || option.description) && (
-                    <span
-                      className="text-muted-foreground flex-1 min-w-0 ml-2 overflow-hidden text-[10px] truncate"
-                    >
-                      {option.type === "file" || option.type === "folder"
-                        ? option.path
-                        : option.description}
+                ) : (
+                  <>
+                    <span className="shrink-0 whitespace-nowrap font-medium">
+                      {option.label}
                     </span>
-                  )}
-                  {/* Diff stats for changed files */}
-                  {(option.additions || option.deletions) && (
-                    <span className="shrink-0 flex items-center gap-1 text-[10px] font-mono ml-2">
-                      {option.additions ? (
-                        <span className="text-green-500">
-                          +{option.additions}
-                        </span>
-                      ) : null}
-                      {option.deletions ? (
-                        <span className="text-red-500">
-                          -{option.deletions}
-                        </span>
-                      ) : null}
-                    </span>
-                  )}
-                </span>
-              </div>
+                    {option.description && (
+                      <span
+                        className="text-muted-foreground flex-1 min-w-0 ml-2 overflow-hidden text-[10px] truncate"
+                      >
+                        {option.description}
+                      </span>
+                    )}
+                  </>
+                )}
+                {/* Diff stats for changed files */}
+                {(option.additions || option.deletions) && (
+                  <span className="shrink-0 flex items-center gap-1 text-[10px] font-mono ml-2">
+                    {option.additions ? (
+                      <span className="text-green-500">
+                        +{option.additions}
+                      </span>
+                    ) : null}
+                    {option.deletions ? (
+                      <span className="text-red-500">
+                        -{option.deletions}
+                      </span>
+                    ) : null}
+                  </span>
+                )}
+              </DropdownOption>
             )
           })}
         </>
@@ -699,15 +787,14 @@ export const AgentsFileMention = memo(function AgentsFileMention({
 
       {/* Empty state */}
       {options.length === 0 && (
-        <div className="h-7 px-1.5 mx-1 flex items-center text-xs text-muted-foreground">
+        <DropdownEmptyState>
           {error
             ? `Error loading files: ${error.message}`
             : debouncedSearchText
             ? `No items matching "${debouncedSearchText}"`
             : "No items available"}
-        </div>
+        </DropdownEmptyState>
       )}
-    </div>,
-    document.body
+    </DropdownPanel>
   )
 })

@@ -25,6 +25,7 @@ pub mod initial_prompt_turns;
 pub mod job_queue_worker;
 pub mod lock_service;
 pub mod mcp_convention;
+pub mod mcp_health;
 pub mod message_service;
 pub mod model_file_reader;
 pub mod native_agent_config;

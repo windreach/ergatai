@@ -20,6 +20,18 @@ pub enum AgentKind {
     Unknown,
 }
 
+impl AgentKind {
+    /// Stable identifier used by agent-specific prompt-token conversion rules.
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            Self::Claude => Some("claude"),
+            Self::Codex => Some("codex"),
+            Self::OpenCode => Some("opencode"),
+            Self::Unknown => None,
+        }
+    }
+}
+
 pub struct DiscoveredModels {
     pub details: Vec<profile_service::ProfileModelDetail>,
     /// Primary source (kept for backwards compatibility).
@@ -136,6 +148,17 @@ pub fn list_skills(
         AgentKind::Codex => codex::list_skills(cwd),
         AgentKind::OpenCode => opencode::list_skills(cwd),
         AgentKind::Unknown => crate::services::skills_service::list_skills(cwd, None),
+    }
+}
+
+/// Shell dispatcher for agent-specific skill mention conversion rules.
+/// Currently a no-op; will be filled in per agent.
+pub fn convert_skill_mentions(kind: AgentKind, message: &str) -> String {
+    match kind {
+        AgentKind::Claude => claude::convert_skill_mentions(message),
+        AgentKind::Codex => codex::convert_skill_mentions(message),
+        AgentKind::OpenCode => opencode::convert_skill_mentions(message),
+        AgentKind::Unknown => message.to_string(),
     }
 }
 

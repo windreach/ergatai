@@ -192,7 +192,10 @@ export function useMainChatInvocation({
 
     const completedRuntimeMessage = [...runtimeMessages]
       .reverse()
-      .find((message) => message.metadata?.runtimeStatus === "completed")
+      .find((message) => {
+        const status = message.metadata?.runtimeStatus
+        return status === "completed" || status === "error"
+      })
     if (!completedRuntimeMessage) return
 
     const metadata = completedRuntimeMessage.metadata as {

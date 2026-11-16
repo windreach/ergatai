@@ -17,6 +17,13 @@
 
 import type { Message, MessagePart, MessageRole } from "../../agents"
 import { LOCAL_TRANSPORT_STREAM_SOURCE } from "./message-correlation"
+import {
+  chatErrorFromMetadata,
+  chatErrorFromPart,
+  cleanErrorMessage,
+  normalizeChatError,
+  type ChatErrorInfo,
+} from "../../../../shared/chat-error"
 
 export type ConversationProjectionRawMessage = {
   id: string
@@ -25,6 +32,7 @@ export type ConversationProjectionRawMessage = {
   metadata?: unknown
   sequence?: number
   turnId?: string | null
+  stopReason?: string | null
   createdAt?: string | number | Date
 }
 
@@ -110,6 +118,117 @@ function compareMessages(a: Message, b: Message): number {
   return a.id.localeCompare(b.id)
 }
 
+/** Move the provider's raw error text out of the stream and into an error part. */
+function normalizePartsWithError(
+  parts: MessagePart[],
+  metadata: ProjectionMetadata,
+): MessagePart[] {
+  const source = Array.isArray(parts) ? parts : []
+  const existingError = source.find((part) => part.type === "error") as
+    | (MessagePart & { error?: unknown })
+    | undefined
+  const metadataError = chatErrorFromMetadata(metadata)
+  const stopReason = metadata.stopReason ?? metadata.stop_reason
+  if (!existingError && !metadataError && stopReason !== "error") {
+    return source
+  }
+
+  const textParts = source.filter(
+    (part) => part.type === "text" && typeof part.text === "string" && part.text.trim(),
+  )
+  const rawText = textParts
+    .map((part) => part.text)
+    .filter((text): text is string => Boolean(text))
+    .join("\n\n")
+  const nonText = source.filter((part) => part.type !== "text")
+
+  if (existingError) {
+    const current = existingError.error
+    if (
+      current &&
+      typeof current === "object" &&
+      rawText &&
+      !(current as { rawText?: unknown }).rawText
+    ) {
+      ;(current as { rawText?: string }).rawText = rawText
+    }
+    return nonText
+  }
+
+  const error =
+    metadataError ??
+    normalizeChatError({ message: rawText || "本轮执行失败" })
+  if (rawText) error.rawText = rawText
+  return [{ type: "error", error }, ...nonText]
+}
+
+function getMessageError(message: Message): ChatErrorInfo | null {
+  for (const part of message.parts ?? []) {
+    const error = chatErrorFromPart(part)
+    if (error) return error
+  }
+  return null
+}
+
+function isPureErrorMessage(message: Message): boolean {
+  const parts = message.parts ?? []
+  return (
+    parts.length > 0 &&
+    parts.some((part) => part.type === "error") &&
+    parts.every((part) => part.type === "error" || part.type === "step-start")
+  )
+}
+
+function errorKey(error: ChatErrorInfo): string {
+  return [
+    error.errorName ?? "",
+    error.errorType ?? "",
+    error.code ?? "",
+    cleanErrorMessage(error.message),
+  ].join("|")
+}
+
+/** Collapse consecutive identical failed turns into one card with a repeat count. */
+function collapseConsecutiveErrors(messages: Message[]): Message[] {
+  const result: Message[] = []
+
+  for (const message of messages) {
+    const error = getMessageError(message)
+    if (!error || !isPureErrorMessage(message)) {
+      result.push(message)
+      continue
+    }
+
+    const previous = result[result.length - 1]
+    const previousError = previous ? getMessageError(previous) : null
+    if (
+      previous &&
+      previousError &&
+      isPureErrorMessage(previous) &&
+      errorKey(previousError) === errorKey(error)
+    ) {
+      const repeatCount = (previousError.repeatCount ?? 1) + 1
+      const mergedError: ChatErrorInfo = {
+        ...error,
+        repeatCount,
+        rawText:
+          [previousError.rawText, error.rawText].filter(Boolean).join("\n\n") ||
+          undefined,
+      }
+      result[result.length - 1] = {
+        ...message,
+        parts: [{ type: "error", error: mergedError }],
+        metadata: { ...(message.metadata ?? {}), repeatCount },
+      }
+      continue
+    }
+
+    result.push(message)
+  }
+
+  return result
+}
+
 class ConversationProjectionServiceImpl implements ConversationProjectionService {
   // Per-conversation cache so concurrent conversations don't evict each other's
   // cached projection (the previous single-slot cache caused cache misses and
@@ -160,12 +279,22 @@ class ConversationProjectionServiceImpl implements ConversationProjectionService
     ) {
       normalizedMetadata.turnId = message.turnId
     }
+    if (
+      typeof message.stopReason === "string" &&
+      message.stopReason &&
+      !normalizedMetadata.stopReason
+    ) {
+      normalizedMetadata.stopReason = message.stopReason
+    }
 
     const runtimeSequence = normalizedMetadata.runtimeSequence
     return {
       id: message.id,
       role: message.role as MessageRole,
-      parts: (message.parts ?? []) as MessagePart[],
+      parts: normalizePartsWithError(
+        (message.parts ?? []) as MessagePart[],
+        normalizedMetadata,
+      ),
       metadata: normalizedMetadata,
       sequence:
         typeof message.sequence === "number"
@@ -328,7 +457,9 @@ class ConversationProjectionServiceImpl implements ConversationProjectionService
     }
 
     const result = {
-      visibleMessages: Array.from(messageById.values()).sort(compareMessages),
+      visibleMessages: collapseConsecutiveErrors(
+        Array.from(messageById.values()).sort(compareMessages),
+      ),
     }
 
     if (this.projectionCache.size >= ConversationProjectionServiceImpl.MAX_PROJECTION_CACHE_SIZE) {

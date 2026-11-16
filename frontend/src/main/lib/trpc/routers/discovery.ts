@@ -25,15 +25,18 @@ async function fetchAgentDiscovery(agentId: string, cwd?: string, refresh?: bool
     skills: Array.isArray(data.skills) ? data.skills : [],
     commands: Array.isArray(data.commands) ? data.commands : [],
     mcp: Array.isArray(data.mcp) ? data.mcp : [],
+    agentNativeMcp: Array.isArray(data.agentNativeMcp) ? data.agentNativeMcp : [],
     plugins: Array.isArray(data.plugins) ? data.plugins : [],
+    agents: Array.isArray(data.agents) ? data.agents : [],
     errors: Array.isArray(data.errors) ? data.errors : [],
     triggers: Array.isArray(data.triggers) ? data.triggers : [],
   }
 }
 
 /**
- * Static discovery: filesystem-based sources only (convention_skills + plugins).
- * Does not require an agent_id — usable in new-chat / no-agent scenarios.
+ * Static discovery: filesystem-based sources (skills, plugins, agent
+ * definitions) plus SDK-provided built-in agents and commands. Does not
+ * require an agent_id — usable in new-chat / no-agent scenarios.
  */
 async function fetchStaticDiscovery(cwd?: string, refresh?: boolean, agent?: string) {
   const params = new URLSearchParams()
@@ -50,6 +53,7 @@ async function fetchStaticDiscovery(cwd?: string, refresh?: boolean, agent?: str
   return {
     skills: Array.isArray(data.skills) ? data.skills : [],
     plugins: Array.isArray(data.plugins) ? data.plugins : [],
+    agents: Array.isArray(data.agents) ? data.agents : [],
     triggers: Array.isArray(data.triggers) ? data.triggers : [],
   }
 }

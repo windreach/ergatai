@@ -15,6 +15,8 @@ import { MessageGroup } from "./message-group"
 import type { UIMessage } from "@ai-sdk/react"
 import { cn } from "@/lib/utils"
 import { ChatMarkdownRenderer } from "../../../components/chat-markdown-renderer"
+import { ChatErrorCard } from "../ui/chat-error-card"
+import { chatErrorFromPart } from "../../../../shared/chat-error"
 
 interface ChatMessagesRendererProps {
   messages: UIMessage<unknown>[]
@@ -183,6 +185,16 @@ export const ChatMessagesRenderer = memo(function ChatMessagesRenderer({
             // Assistant/system messages
             return (
               <div key={message.id} className="space-y-2">
+                {message.parts?.map((part: unknown, index: number) => {
+                  const chatError = chatErrorFromPart(part)
+                  return chatError ? (
+                    <ChatErrorCard
+                      // react-doctor-disable-next-line no-array-index-as-key
+                      key={`${message.id}-error-${index}`}
+                      error={chatError}
+                    />
+                  ) : null
+                })}
                 {text ? <ChatMarkdownRenderer content={text} size="sm" /> : null}
               </div>
             )

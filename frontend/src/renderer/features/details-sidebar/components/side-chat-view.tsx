@@ -214,6 +214,7 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange, 
           isLoadingMessages={isSideChatMessagesLoading}
           externalMessages={runtimeMessages}
           runtimeStatus={runtime?.status}
+          runtimeRetry={runtime?.retry}
           runtimeConnectionStatus={runtime?.connectionStatus}
         />
         )

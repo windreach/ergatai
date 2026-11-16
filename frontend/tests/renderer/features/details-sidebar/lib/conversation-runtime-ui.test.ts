@@ -33,4 +33,35 @@ describe("buildRuntimeMessages", () => {
     const reasoning = (messages[1]?.parts as any[]).find((part) => part.type === "reasoning")
     expect(reasoning?.input?.text).toBe("thinking")
   })
+
+  it("turns runtime error events into an error part instead of assistant text", () => {
+    const messages = buildRuntimeMessages({
+      conversationId: "conv-1",
+      turnId: "turn-1",
+      status: "error",
+      lastSequence: 2,
+      events: [
+        { sequence: 0, event: { type: "text", role: "assistant", delta: "partial answer" } },
+        {
+          sequence: 1,
+          event: {
+            type: "error",
+            role: "assistant",
+            message:
+              'Internal error: There\'s an issue with the selected model (qwen3.7-plus).: {"errorKind": "model_not_found"} [code=model_not_found]',
+            error_name: "model_not_found",
+            error_type: "model_not_found",
+          },
+        },
+      ],
+    } as any)
+
+    expect(messages).toHaveLength(1)
+    const parts = messages[0]?.parts as any[]
+    const errorPart = parts.find((part) => part.type === "error")
+    expect(errorPart).toBeTruthy()
+    expect(errorPart.error.errorName).toBe("model_not_found")
+    expect(errorPart.error.rawText).toBe("partial answer")
+    expect(parts.some((part) => part.type === "text")).toBe(false)
+  })
 })

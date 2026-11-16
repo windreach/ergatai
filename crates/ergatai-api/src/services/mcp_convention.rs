@@ -43,6 +43,39 @@ pub fn scan_claude_mcp(cwd: Option<&str>) -> Vec<ConventionMcp> {
         }
     }
 
+    // Managed MCP: platform-specific path.
+    let managed_paths: Vec<PathBuf> = if cfg!(target_os = "macos") {
+        vec![PathBuf::from(
+            "/Library/Application Support/ClaudeCode/managed-mcp.json",
+        )]
+    } else if cfg!(target_os = "windows") {
+        std::env::var("PROGRAMDATA")
+            .ok()
+            .map(|p| PathBuf::from(p).join("ClaudeCode").join("managed-mcp.json"))
+            .into_iter()
+            .collect()
+    } else {
+        vec![PathBuf::from("/etc/claude-code/managed-mcp.json")]
+    };
+    for managed_path in managed_paths {
+        if managed_path.is_file() {
+            if let Ok(raw) = fs::read_to_string(&managed_path) {
+                if let Ok(v) = serde_json::from_str::<Value>(&raw) {
+                    if let Some(servers) = v.get("mcpServers").and_then(|x| x.as_object()) {
+                        for (name, cfg) in servers {
+                            out.push(ConventionMcp {
+                                name: name.clone(),
+                                config: cfg.clone(),
+                                source: "managed".to_string(),
+                                path: managed_path.to_string_lossy().to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Project-level: <cwd>/.mcp.json
     if let Some(c) = cwd {
         let proj_path = Path::new(c).join(".mcp.json");
@@ -128,8 +161,17 @@ pub fn scan_opencode_mcp(cwd: Option<&str>) -> Vec<ConventionMcp> {
         }
     }
 
-    if let Ok(home) = std::env::var("HOME") {
-        let base = PathBuf::from(home).join(".config").join("opencode");
+    let config_base = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".config"))
+        });
+    if let Some(base) = config_base {
+        let base = base.join("opencode");
         candidates.push((base.join("opencode.json"), "user".to_string()));
         candidates.push((base.join("opencode.jsonc"), "user".to_string()));
     }

@@ -90,10 +90,7 @@ import {
 } from "../mentions"
 import { AgentsSkillTrigger } from "../mentions/agents-skill-trigger"
 import { AgentsHashTrigger } from "../mentions/agents-hash-trigger"
-import {
-  type AgentTriggerMatch,
-  normalizeAgentTriggers,
-} from "../../mentions"
+// Native agent trigger hints removed.
 import { useEditorTriggerConfigs } from "../discovery/use-registered-triggers"
 import { AgentContextIndicator, type MessageTokenData } from "../ui/agent-context-indicator"
 import { AgentDiffTextContextItem } from "../ui/agent-diff-text-context-item"
@@ -133,33 +130,6 @@ const TEXT_FILE_EXTENSIONS = new Set([
   ".sql", ".graphql", ".gql", ".prisma", ".dockerfile", ".makefile",
   ".gitignore", ".gitattributes", ".editorconfig", ".eslintrc", ".prettierrc",
 ])
-
-/** Non-blocking hint for an explicitly declared native entry point. */
-type NativeTriggerHintPayload = AgentTriggerMatch & { rect: DOMRect }
-
-const AgentNativeTriggerHint = memo(function AgentNativeTriggerHint({
-  match,
-}: {
-  match: NativeTriggerHintPayload | null
-}) {
-  if (!match) return null
-
-  return createPortal(
-    <div
-      className="fixed z-[999] max-w-xs rounded-md border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md"
-      style={{
-        left: match.rect.left,
-        top: match.rect.top + match.rect.height + 6,
-      }}
-    >
-      <div className="font-medium">{match.query || match.trigger.char}</div>
-      <div className="mt-0.5 text-muted-foreground">
-        {match.trigger.description || "Agent-native syntax will be sent as-is."}
-      </div>
-    </div>,
-    document.body,
-  )
-})
 
 export interface ChatInputAreaProps {
   // Editor ref - passed from parent for external access
@@ -609,7 +579,7 @@ export const ChatInputArea = memo(function ChatInputArea({
     setShowingAgentsList(false)
   }, [])
 
-  const [nativeTriggerMatch, setNativeTriggerMatch] = useState<NativeTriggerHintPayload | null>(null)
+
 
   // Model dropdown state
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
@@ -704,23 +674,6 @@ const availableModels = useAvailableModels(agentId, profileHint)
     return activeAgent?.profile ?? (isRuntimeModelProvider ? provider : null)
   }, [agentId, runtimeAgents, isRuntimeModelProvider, provider])
 
-  // Native triggers are opt-in metadata. Absent metadata means unknown syntax,
-  // which is intentionally not scanned and is passed through to the agent.
-  const { data: profileTriggerData } = trpc.ergatai.listProfilesWithStatus.useQuery(
-    undefined,
-    {
-      enabled: !isGroupMode,
-      staleTime: 60_000,
-      refetchOnWindowFocus: false,
-    },
-  )
-  const nativeTriggers = useMemo(() => {
-    const profileName = runtimeProfileName ?? provider
-    const profile = profileTriggerData?.profiles?.find(
-      (candidate) => candidate.name === profileName,
-    )
-    return normalizeAgentTriggers(profile?.native_triggers)
-  }, [profileTriggerData, provider, runtimeProfileName])
   const runtimeAgentIsAlive = runtimeAgents?.find(
     (agent) => agent.agent_id === agentId,
   )?.is_alive === true
@@ -1738,11 +1691,8 @@ const availableModels = useAvailableModels(agentId, profileHint)
                     setShowHashDropdown(false)
                   }}
                   onCloseTrigger={closeAllMentionTriggers}
-                  nativeTriggers={nativeTriggers}
                   onSlashTrigger={handleSlashTrigger}
                   onCloseSlashTrigger={handleCloseSlashTrigger}
-                  onNativeTrigger={setNativeTriggerMatch}
-                  onCloseNativeTrigger={() => setNativeTriggerMatch(null)}
                   mentionTrigger={mentionTrigger}
                   slashTrigger={slashTriggerConfig}
                   discoveryTriggers={discoveryTriggers}
@@ -2039,11 +1989,12 @@ const availableModels = useAvailableModels(agentId, profileHint)
         containerWidth={inputContainerWidth}
         containerLeft={inputContainerLeft}
         chatId={parentChatId}
+        agentId={agentId}
         cwd={projectPath}
         mode={conversationMode}
+        agentKind={provider}
       />
 
-      <AgentNativeTriggerHint match={nativeTriggerMatch} />
     </div>
   )
 }, arePropsEqual)

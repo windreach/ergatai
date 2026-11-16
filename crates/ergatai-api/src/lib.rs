@@ -665,6 +665,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::user_conversations::stream_conversation_runtime),
         )
         .route(
+            "/api/v1/conversations/{conversation_id}/retry/cancel",
+            post(api::user_conversations::cancel_conversation_retry),
+        )
+        .route(
             "/api/v1/conversations/{conversation_id}/file-changes",
             get(api::user_conversations::list_conversation_file_changes),
         )

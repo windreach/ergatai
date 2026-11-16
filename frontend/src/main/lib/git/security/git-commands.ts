@@ -25,6 +25,11 @@ const BATCH_SIZE = 100;
  * Uses `git switch` (unambiguous branch operation, git 2.23+).
  * Falls back to `git checkout <branch>` for older git versions.
  *
+ * Passes `--ignore-other-worktrees` so a branch that is already checked out in
+ * another worktree can still be switched to. Git's default safeguard is 1:1
+ * (one branch per worktree), but Ergatai allows the same branch to be bound to
+ * multiple worktrees/chats.
+ *
  * Note: `git checkout -- <branch>` is WRONG - that's file checkout syntax.
  */
 export async function gitSwitchBranch(
@@ -48,7 +53,7 @@ export async function gitSwitchBranch(
 	await withLockRetry(worktreePath, async () => {
 		try {
 			// Prefer `git switch` - unambiguous branch operation (git 2.23+)
-			await git.raw(["switch", branch]);
+			await git.raw(["switch", "--ignore-other-worktrees", branch]);
 		} catch (switchError) {
 			// Check if it's because `switch` command doesn't exist (old git < 2.23)
 			// Git outputs: "git: 'switch' is not a git command. See 'git --help'."
@@ -56,7 +61,7 @@ export async function gitSwitchBranch(
 			if (errorMessage.includes("is not a git command")) {
 				// Fallback for older git versions
 				// Note: checkout WITHOUT -- is correct for branches
-				await git.checkout(branch);
+				await git.checkout(["--ignore-other-worktrees", branch]);
 			} else {
 				throw switchError;
 			}

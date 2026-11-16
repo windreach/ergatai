@@ -232,16 +232,39 @@ pub fn detect_native_config(
     ))
 }
 
+/// Agent-specific skill mention conversion rules.
+/// OpenCode: skill mentions become `@name` mentions, which OpenCode resolves
+/// to the matching skill (and loads it) in both CLI and ACP modes.
+pub fn convert_skill_mentions(message: &str) -> String {
+    use regex::Regex;
+    let mut result = message.to_string();
+    for trig in ["@", "$", "#"] {
+        if let Ok(re) = Regex::new(&format!(r"{}\[(skill):([^\]]+)\]", regex::escape(trig))) {
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    format!("@{}", caps.get(2).unwrap().as_str())
+                })
+                .to_string();
+        }
+    }
+    result
+}
+
 pub fn list_skills(cwd: Option<&str>) -> Vec<crate::services::skills_service::SkillInfo> {
     use std::path::Path;
     let mut out = Vec::new();
     let home = std::env::var("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    let config_base = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
     // OpenCode reads skills from its own directories plus Claude-compatible
     // and agent-ecosystem-compatible locations.
     crate::services::skills_service::scan_dir(
-        &home.join(".config").join("opencode").join("skills"),
+        &config_base.join("opencode").join("skills"),
         "user",
         &mut out,
     );

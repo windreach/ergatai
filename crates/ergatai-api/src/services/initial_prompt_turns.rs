@@ -17,6 +17,144 @@ use tracing::{error, info, warn};
 use ergatai_error::{ChatId, ConversationId, MessageId, WorkspaceId};
 use ergatai_runtime::types::AgentImage;
 
+/// Convert Ergatai discovery mention tokens into agent-native prompt text.
+///
+/// This is the single conversion point between the UI's mention serialization
+/// and what an agent actually receives. Both the durable initial-prompt
+/// scheduler and live NATS delivery call it immediately before injection, so
+/// raw tokens remain in storage and can still render as mention chips.
+///
+/// - skill/command tokens become the agent's native slash form
+/// - file/folder tokens become `@path`
+/// - agent tokens become `@name`
+/// - quote/diff payloads are decoded; pasted/chatHistory become their file path
+/// - tool/plugin/mcp tokens are preserved as-is for now
+///
+/// Handles `@`, `$` and `#` trigger chars.
+pub fn convert_prompt_tokens(text: &str, agent_kind: Option<&str>) -> String {
+    use regex::Regex;
+
+    let triggers = ["@", "$", "#"];
+
+    // Apply per-trigger conversions using a unified approach.
+    let mut result = text.to_string();
+    for trig in triggers {
+        let t = regex::escape(trig);
+        // file/folder with path
+        if let Ok(re) = Regex::new(&format!(
+            r"{}\[(file|folder):(local|external):([^\]]+)\]",
+            t
+        )) {
+            result = re.replace_all(&result, "@$3").to_string();
+        }
+        // file/folder without path -> drop
+        if let Ok(re) = Regex::new(&format!(r"{}\[(file|folder):[^\]]*\]", t)) {
+            result = re.replace_all(&result, "").to_string();
+        }
+        // agent -> @name
+        if let Ok(re) = Regex::new(&format!(r"{}\[(agent):([^\]]+)\]", t)) {
+            result = re.replace_all(&result, "@$2").to_string();
+        }
+        // quote -> decoded full text (content-bearing mention)
+        if let Ok(re) = Regex::new(&format!(r"{}\[(quote):([^\]]+)\]", t)) {
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let payload = caps.get(2).unwrap().as_str();
+                    if let Some(idx) = payload.find(':') {
+                        let encoded = &payload[idx + 1..];
+                        use base64::Engine;
+                        match base64::engine::general_purpose::STANDARD.decode(encoded) {
+                            Ok(bytes) => String::from_utf8(bytes)
+                                .unwrap_or_else(|_| payload[..idx].to_string()),
+                            Err(_) => payload[..idx].to_string(),
+                        }
+                    } else {
+                        payload.to_string()
+                    }
+                })
+                .to_string();
+        }
+        // diff -> decoded full diff text (content-bearing mention)
+        if let Ok(re) = Regex::new(&format!(r"{}\[(diff):([^\]]+)\]", t)) {
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let payload = caps.get(2).unwrap().as_str();
+                    let parts: Vec<&str> = payload.splitn(4, ':').collect();
+                    if parts.len() >= 4 {
+                        let encoded = parts[3];
+                        use base64::Engine;
+                        match base64::engine::general_purpose::STANDARD.decode(encoded) {
+                            Ok(bytes) => {
+                                String::from_utf8(bytes).unwrap_or_else(|_| parts[2].to_string())
+                            }
+                            Err(_) => parts[2].to_string(),
+                        }
+                    } else if parts.len() == 3 {
+                        parts[2].to_string()
+                    } else {
+                        payload.to_string()
+                    }
+                })
+                .to_string();
+        }
+        // pasted -> saved file path (content is already persisted, like uploaded files)
+        if let Ok(re) = Regex::new(&format!(r"{}\[(pasted):([^\]]+)\]", t)) {
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let payload = caps.get(2).unwrap().as_str();
+                    if let Some(pipe_idx) = payload.rfind('|') {
+                        let path = payload[pipe_idx + 1..].trim();
+                        if path.is_empty() {
+                            payload.to_string()
+                        } else {
+                            path.to_string()
+                        }
+                    } else {
+                        payload.to_string()
+                    }
+                })
+                .to_string();
+        }
+        // chatHistory -> saved file path (same as pasted)
+        if let Ok(re) = Regex::new(&format!(r"{}\[(chatHistory):([^\]]+)\]", t)) {
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let payload = caps.get(2).unwrap().as_str();
+                    if let Some(pipe_idx) = payload.rfind('|') {
+                        let path = payload[pipe_idx + 1..].trim();
+                        if path.is_empty() {
+                            payload.to_string()
+                        } else {
+                            path.to_string()
+                        }
+                    } else {
+                        payload.to_string()
+                    }
+                })
+                .to_string();
+        }
+        // command -> /name (generic)
+        if let Ok(re) = Regex::new(&format!(r"{}\[(command):([^\]]+)\]", t)) {
+            result = re.replace_all(&result, "/$2").to_string();
+        }
+        // tool / plugin / mcp are intentionally left unhandled for now
+        // (raw token is preserved) so a new calling rule can be designed later.
+    }
+    // Agent-specific skill mention conversion shell (Claude/Codex/OpenCode rules).
+    let kind = match agent_kind {
+        Some("claude") => crate::services::agent::AgentKind::Claude,
+        Some("codex") => crate::services::agent::AgentKind::Codex,
+        Some("opencode") => crate::services::agent::AgentKind::OpenCode,
+        _ => crate::services::agent::AgentKind::Unknown,
+    };
+    result = crate::services::agent::convert_skill_mentions(kind, &result);
+
+    // Deliberately do not collapse whitespace here: prompts can contain
+    // multi-line text and indented code blocks that must reach the agent
+    // unchanged (the previous `\s{2,}` collapse also ate newlines).
+    result.trim().to_string()
+}
+
 const MAX_ATTEMPTS: i64 = 3;
 const WORKER_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -533,15 +671,25 @@ async fn dispatch_turn(mut turn: InitialPromptTurn) -> Result<()> {
                 Some(turn.conversation_id.clone()),
             );
             let runtime = crate::context::get_app_context().agent_runtime.clone();
+            // Convert Ergatai discovery tokens to agent-native prompt text before
+            // delivery (see frontend transport's extractPrompt). Keeps raw tokens in storage.
+            let agent_kind = crate::services::agent::resolve_kind_parts(
+                &turn.agent_command,
+                &turn.agent_command,
+                "",
+            );
+            let agent_kind_str = agent_kind.as_str();
+            let converted_prompt = convert_prompt_tokens(&turn.prompt, agent_kind_str);
+
             let delivery = if turn.images.is_empty() {
                 runtime
-                    .inject_message_to_conversation(&turn.conversation_id, &turn.prompt)
+                    .inject_message_to_conversation(&turn.conversation_id, &converted_prompt)
                     .await
             } else {
                 runtime
                     .inject_message_to_conversation_with_images(
                         &turn.conversation_id,
-                        &turn.prompt,
+                        &converted_prompt,
                         turn.images.clone(),
                     )
                     .await
@@ -738,6 +886,40 @@ mod tests {
     use super::*;
     use ergatai_error::{ChatId, ConversationId, MessageId, WorkspaceId};
     use std::sync::Mutex;
+
+    #[test]
+    fn test_convert_prompt_tokens() {
+        assert_eq!(
+            convert_prompt_tokens("@[skill:foo] and @[command:bar]", Some("claude")),
+            "/foo and /bar"
+        );
+        assert_eq!(
+            convert_prompt_tokens("$[skill:baz] and @[file:local:src/x.rs]", Some("claude")),
+            "/baz and @src/x.rs"
+        );
+        assert_eq!(
+            convert_prompt_tokens(
+                "@[agent:alice] @[tool:x] @[plugin:y] @[mcp:z] tail",
+                Some("claude")
+            ),
+            "@alice @[tool:x] @[plugin:y] @[mcp:z] tail"
+        );
+        assert_eq!(convert_prompt_tokens("plain text", None), "plain text");
+        // Multi-line prompts keep their line breaks and indentation.
+        assert_eq!(
+            convert_prompt_tokens("@[agent:General] 第一行\n\n    缩进代码", Some("opencode")),
+            "@General 第一行\n\n    缩进代码"
+        );
+    }
+
+    #[test]
+    fn test_agent_kind_as_str() {
+        use crate::services::agent::AgentKind;
+        assert_eq!(AgentKind::Claude.as_str(), Some("claude"));
+        assert_eq!(AgentKind::Codex.as_str(), Some("codex"));
+        assert_eq!(AgentKind::OpenCode.as_str(), Some("opencode"));
+        assert_eq!(AgentKind::Unknown.as_str(), None);
+    }
 
     static TEST_DB_MUTEX: Mutex<()> = Mutex::new(());
     static TEST_DB_DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();

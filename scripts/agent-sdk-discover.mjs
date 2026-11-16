@@ -49,12 +49,14 @@ async function claude() {
      fs.existsSync("/usr/bin/claude") ? "/usr/bin/claude" : "claude");
   const q = query({ prompt: "", options: { maxTurns: 1, cwd, pathToClaudeCodeExecutable: claudePath } });
   try {
-    const [skillsResp, commands, models, mcp, agents, pluginsResp] = await Promise.all([
+    // Claude subagents are deliberately not discovered: they are invoked by the
+    // model through the Task tool and have no user-facing @ / command syntax,
+    // so surfacing them in the composer only produces unresolvable text.
+    const [skillsResp, commands, models, mcp, pluginsResp] = await Promise.all([
       safe(() => q.reloadSkills(), { skills: [] }),
       safe(() => q.supportedCommands(), []),
       safe(() => q.supportedModels(), []),
       safe(() => q.mcpServerStatus(), []),
-      safe(() => q.supportedAgents(), []),
       safe(() => q.reloadPlugins(), { plugins: [] }),
     ]);
     const skills = (skillsResp?.skills || []).map((c) => ({
@@ -84,11 +86,6 @@ async function claude() {
       name: s.name,
       status: s.status || "pending",
       config: s.config || null,
-      source: "agent-sdk",
-    }));
-    const agentList = (agents || []).map((a) => ({
-      name: a.name,
-      description: a.description || "",
       source: "agent-sdk",
     }));
     const pluginList = (pluginsResp?.plugins || []).map((p) => ({
@@ -142,7 +139,7 @@ async function claude() {
       } catch {}
     }
 
-    return { skills, commands: cmds, models: modelList, mcp: mcpList, agents: agentList, plugins: pluginList };
+    return { skills, commands: cmds, models: modelList, mcp: mcpList, plugins: pluginList };
   } finally {
     try { await q.close?.(); } catch {}
   }
@@ -277,6 +274,11 @@ async function opencode() {
     const mm = configInfo.model;
     modelList.push({ id: (mm.providerID || "") + "/" + (mm.model || ""), name: mm.model || "", description: "" });
   }
+
+  // OpenCode subagents (including built-ins such as general/explore) are
+  // launched by the primary agent through the `subagent` tool. They have no
+  // prompt-level trigger, so surfacing them as @ mentions would only produce
+  // text the agent cannot resolve. They are intentionally not discovered here.
 
   // Degraded fallback: read opencode config file when the server is unavailable.
   if (modelList.length === 0) {

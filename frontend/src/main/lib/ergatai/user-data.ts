@@ -158,6 +158,8 @@ export type BackendMessage = {
   turn_id: string | null
   projection_kind: string | null
   origin_message_id: string | null
+  /** Backend turn stop reason ("end_turn" | "error" | ...). */
+  stop_reason?: string | null
   created_at: number
   updated_at: number
 }
@@ -247,6 +249,8 @@ function normalizePersistedMessageParts(
  */
 export function mapBackendMessageToUiMessage(message: BackendMessage) {
   const parts = normalizePersistedMessageParts(message)
+  const metadata = parseJsonOr<Record<string, unknown> | null>(message.metadata, null)
+  const stopReason = message.stop_reason ?? undefined
 
   return {
     id: String(message.message_id),
@@ -254,12 +258,15 @@ export function mapBackendMessageToUiMessage(message: BackendMessage) {
     sequence: message.sequence,
     role: message.role,
     parts,
-    metadata: parseJsonOr<Record<string, unknown> | null>(message.metadata, null),
+    metadata: stopReason
+      ? { ...(metadata ?? {}), stopReason }
+      : metadata,
     fromAgentId: message.from_agent_id ?? undefined,
     fromAgentName: message.from_agent_name ?? undefined,
     messageType: message.message_type ?? undefined,
     content: message.content ?? undefined,
     turnId: message.turn_id ?? undefined,
+    stopReason,
     projectionKind: message.projection_kind ?? undefined,
     originMessageId: message.origin_message_id ?? undefined,
     createdAt: message.created_at,

@@ -22,6 +22,7 @@ import { appStore } from "../../../lib/jotai-store"
 import { agentStatusLineAtom } from "../atoms"
 import { isPersistedMessageId } from "../../../../shared/id"
 import { promptToTitle, mentionsToReadableText } from "../../../../shared/mention-title"
+import { normalizeChatError } from "../../../../shared/chat-error"
 
 // ── Rust backend event types (snake_case JSON) ──
 
@@ -237,22 +238,35 @@ function transformEvent(
       return [{ type: "finish" }]
 
     case "error": {
-      const parts: string[] = []
-      if (event.code != null && event.code !== "") parts.push(`[${event.code}]`)
-      const typeName = event.error_type ?? event.error_name
-      if (typeName) parts.push(String(typeName))
-      if (event.service) parts.push(`(${event.service})`)
-      const prefix = parts.join(" ")
-      const errorText = prefix ? `${prefix}: ${event.message}` : event.message
+      const error = normalizeChatError({
+        message: event.message,
+        errorName: event.error_name,
+        errorType: event.error_type,
+        service: event.service,
+        code: event.code,
+        data: event.error_data,
+      })
       console.log("[ErgataiChatTransport][transformEvent] mapped error event", {
         event,
-        errorText,
+        error,
       })
       return [
-        { type: "error", errorText },
+        {
+          type: "error",
+          errorText: error.message,
+          // Preserve the structured payload for the renderer. AI SDK's chunk
+          // type only declares `errorText`, but the extra field is carried
+          // through to the message part unchanged.
+          error,
+        } as unknown as UIMessageChunk,
         { type: "finish" },
       ]
     }
+
+    case "retry":
+      // Retry status is rendered by the conversation runtime surface, not as a
+      // message part. The transport only needs to ignore it here.
+      return []
 
     default:
       return []
@@ -296,6 +310,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
       .reverse()
       .find((m) => m.role === "user" || (m.role as string) === "agent")
     const prompt = this.extractPrompt(lastUser)
+    const expandedPrompt = prompt
     // Conversation titles are generated from the raw text (before mention
     // tokens are unwrapped) so they stay human-readable.
     const titleSource =
@@ -325,7 +340,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
     // Use local variable to prevent mutation leaking across calls (HIGH severity bug fix)
     const effectiveCorrelationId = messageCorrelationId || this.config.correlationId
 
-    if (!prompt && images.length === 0 && files.length === 0) {
+    if (!expandedPrompt && images.length === 0 && files.length === 0) {
       throw new Error("No prompt, images, or files found in last user message")
     }
 
@@ -740,7 +755,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               const clientRequestId = persistedMessageId
               await trpcClient.ergatai.sendMessage.mutate({
                 agentId: effectiveAgentId,
-                message: prompt,
+                message: expandedPrompt,
                 from: this.config.fromAgentId,
                 messageType: "request",
                 targetAgentCommand: this.config.targetAgentCommand,
@@ -756,7 +771,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               const clientRequestId = persistedMessageId
               const promptResult = await trpcClient.ergatai.promptAgent.mutate({
                 agentId: effectiveAgentId,
-                message: prompt,
+                message: expandedPrompt,
                 conversationId: effectiveConversationId,
                 images: images.map((image) => ({
                   base64Data: image.base64Data,
@@ -843,24 +858,14 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
       if (part.type === "text" && "text" in part) {
         const textPart = part as TextPart
         if (textPart.text) {
-          // Ergatai mention tokens (e.g. @[file:...], @[agent:...]) are a UI
-          // serialization format. Unwrap them before sending so the agent only
-          // sees clean text; referenced content is attached separately below.
-          // Content-bearing mentions (quote/diff/pasted/chatHistory) are kept
-          // because their payload is the content carrier.
-          const cleaned = textPart.text
-            .replace(/@\[(file|folder):(local|external):([^\]]+)\]/g, "@$3")
-            .replace(/@\[file:[^\]]*\]/g, "")
-            .replace(/@\[folder:[^\]]*\]/g, "")
-            .replace(/@\[agent:([^\]]+)\]/g, "@$1")
-            .replace(/@\[skill:([^\]]+)\]/g, "/$1")
-            .replace(/@\[command:([^\]]+)\]/g, "/$1")
-            .replace(/@\[tool:[^\]]*\]/g, "")
-            .replace(/@\[plugin:[^\]]*\]/g, "")
-            .replace(/\s{2,}/g, " ")
-            .trim()
-          if (cleaned) {
-            textParts.push(cleaned)
+          // Ergatai mention tokens (e.g. @[file:...], @[agent:...], $[...])
+          // are a UI serialization format. Keep them verbatim here so the raw
+          // prompt is stored and can be re-rendered as mention chips; the
+          // backend converts them to agent-native text at delivery time
+          // (see initial_prompt_turns::convert_prompt_tokens).
+          const raw = textPart.text.trim()
+          if (raw) {
+            textParts.push(raw)
           }
         }
       } else if (part.type === "file-content" && "content" in part) {

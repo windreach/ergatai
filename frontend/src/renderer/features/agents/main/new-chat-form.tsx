@@ -1645,7 +1645,7 @@ export function NewChatForm({
       setShowSkillDropdown(false)
       setShowHashDropdown(false)
     },
-    [validatedProject],
+    [],
   )
 
   const handleCloseTrigger = useCallback(() => {

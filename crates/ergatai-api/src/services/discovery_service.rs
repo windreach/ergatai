@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
@@ -173,8 +173,13 @@ fn invalidate_agent(agent_id: &str, cwd: Option<&str>) {
             let third = parts.next().unwrap_or("");
 
             if is_static_source(source) {
-                // Static key: `{source}::{cwd}` — second is cwd
-                second != cwd_str
+                // Static key may be `{source}::{cwd}` (2 parts) or
+                // `{source}::{kind}::{cwd}` (3 parts, scoped by agent kind).
+                if third.is_empty() {
+                    second != cwd_str
+                } else {
+                    third != cwd_str
+                }
             } else {
                 // Runtime key: `{source}::{agent_id}::{cwd}` — second is agent_id, third is cwd
                 !(second == agent_id && third == cwd_str)
@@ -188,7 +193,11 @@ fn invalidate_agent(agent_id: &str, cwd: Option<&str>) {
             let third = parts.next().unwrap_or("");
 
             if is_static_source(source) {
-                second != cwd_str
+                if third.is_empty() {
+                    second != cwd_str
+                } else {
+                    third != cwd_str
+                }
             } else {
                 !(second == agent_id && third == cwd_str)
             }
@@ -268,7 +277,22 @@ async fn resolve_context(
         })
     });
 
-    let profile_name = agent_info.as_ref().and_then(|i| i.profile.clone());
+    let mut profile_name = agent_info.as_ref().and_then(|i| i.profile.clone());
+
+    // Suspended agents are not in the runtime registry; fall back to the persisted
+    // profile mapping so discovery (and SDK command detection) still works.
+    if profile_name.is_none() {
+        profile_name = load_agent_profile(agent_id);
+    }
+    // The discovery-cache mapping may be missing for agents suspended before it
+    // was persisted; the suspend store is authoritative for their profile.
+    if profile_name.is_none() {
+        if let Ok(suspended) = runtime.suspend_store().list_suspended() {
+            if let Some(record) = suspended.into_iter().find(|r| r.id == agent_id) {
+                profile_name = Some(record.profile_name);
+            }
+        }
+    }
 
     // Resolve agent kind via profile registry (agent_type/command), fallback to name contains.
     // Profile registry access can touch disk/DB, so run it off the async executor.
@@ -308,14 +332,268 @@ async fn resolve_context(
 // Source fetchers
 // ---------------------------------------------------------------------------
 
+async fn fetch_convention_agents(kind: &str, cwd: Option<&str>) -> Vec<Value> {
+    let cwd_owned = cwd.map(PathBuf::from);
+    let kind_owned = kind.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut out: Vec<Value> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let home = home_dir();
+        let cwd_path = cwd_owned.as_deref();
+
+        if agent_scan_kinds(&kind_owned).contains(&"codex") {
+            collect_codex_agents(&home, cwd_path, &mut out, &mut seen);
+        }
+        out
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Normalize profile names / provider ids / commands to the canonical agent kind.
+///
+/// The UI and profile registry use aliases such as `claude-code`, `Claude Code`
+/// or a full command path. Matching only the exact strings `claude`/`codex`/
+/// `opencode` made discovery return almost nothing when the agent was not
+/// running (static discovery passes the provider id through verbatim).
+fn normalize_agent_kind(raw: &str) -> &'static str {
+    match crate::services::agent::resolve_kind_parts(raw, "", "") {
+        crate::services::agent::AgentKind::Claude => "claude",
+        crate::services::agent::AgentKind::Codex => "codex",
+        crate::services::agent::AgentKind::OpenCode => "opencode",
+        crate::services::agent::AgentKind::Unknown => "",
+    }
+}
+
+/// Kinds to scan for convention agents. An unknown/empty kind means the caller
+/// has no running agent (new chat, quick composer, suspended agent without a
+/// profile mapping), so scan every supported ecosystem instead of returning [].
+///
+/// Claude Code and OpenCode are intentionally excluded: their subagents are
+/// invoked by the model through the Task / subagent tool and have no
+/// prompt-level trigger, so exposing them in the composer would produce text
+/// mentions the agent cannot resolve.
+fn agent_scan_kinds(raw: &str) -> Vec<&'static str> {
+    match normalize_agent_kind(raw) {
+        "" | "codex" => vec!["codex"],
+        _ => vec![],
+    }
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/"))
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Parse the small subset of YAML frontmatter used by agent definitions.
+/// Supports quoted values and simple `description: >` / `|` blocks.
+fn parse_agent_frontmatter(content: &str) -> (Option<String>, Option<String>) {
+    let trimmed = content.trim_start();
+    let Some(rest) = trimmed.strip_prefix("---") else {
+        return (None, None);
+    };
+    let Some(end) = rest.find("\n---") else {
+        return (None, None);
+    };
+    let frontmatter = &rest[..end];
+
+    let mut name: Option<String> = None;
+    let mut description: Option<String> = None;
+    let mut lines = frontmatter.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
+        let key = k.trim();
+        let raw_value = v.trim();
+        let mut value = raw_value.trim_matches('"').trim_matches('\'').to_string();
+
+        if key == "description" && (raw_value.starts_with('>') || raw_value.starts_with('|')) {
+            let mut block: Vec<String> = Vec::new();
+            while let Some(next) = lines.peek() {
+                if next.starts_with(' ') || next.starts_with('\t') {
+                    block.push(next.trim().to_string());
+                    lines.next();
+                } else {
+                    break;
+                }
+            }
+            value = block.join(" ").trim().to_string();
+        }
+
+        match key {
+            "name" if !value.is_empty() => name = Some(value),
+            "description" => description = Some(value),
+            _ => {}
+        }
+    }
+
+    (name, description)
+}
+
+fn push_agent(
+    out: &mut Vec<Value>,
+    seen: &mut HashSet<String>,
+    name: String,
+    description: String,
+    source: &str,
+) {
+    let name = name.trim().to_string();
+    if name.is_empty() || !seen.insert(name.clone()) {
+        return;
+    }
+    out.push(json!({
+        "name": name,
+        "description": description,
+        "source": source,
+        "group": "Agents",
+        "type": "agent",
+        "targetTriggers": ["@"],
+    }));
+}
+
+/// Recursively scan markdown agent files under `root`.
+///
+/// `id_from_path` controls the fallback name: OpenCode derives the agent id from
+/// the path below `agents/` (nested dirs become `team/reviewer`), while Codex
+/// uses the file stem.
+fn scan_markdown_agents(
+    root: &Path,
+    base: &Path,
+    source: &str,
+    id_from_path: bool,
+    out: &mut Vec<Value>,
+    seen: &mut HashSet<String>,
+    depth: usize,
+) {
+    if depth > 8 {
+        return;
+    }
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let dir_name = entry.file_name().to_string_lossy().to_string();
+            if dir_name.starts_with('.') || dir_name == "node_modules" {
+                continue;
+            }
+            scan_markdown_agents(&path, base, source, id_from_path, out, seen, depth + 1);
+            continue;
+        }
+        if path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+        let (fm_name, fm_description) = parse_agent_frontmatter(&content);
+        let fallback_name = if id_from_path {
+            path.strip_prefix(base)
+                .unwrap_or(&path)
+                .with_extension("")
+                .to_string_lossy()
+                .replace('\\', "/")
+        } else {
+            path.file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
+        };
+        let name = fm_name
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or(fallback_name);
+        push_agent(out, seen, name, fm_description.unwrap_or_default(), source);
+    }
+}
+
+fn collect_codex_agents(
+    home: &Path,
+    cwd: Option<&Path>,
+    out: &mut Vec<Value>,
+    seen: &mut HashSet<String>,
+) {
+    let codex_home = env_path("CODEX_HOME").unwrap_or_else(|| home.join(".codex"));
+    let mut dirs: Vec<PathBuf> = vec![codex_home.join("agents")];
+    if let Some(c) = cwd {
+        let mut cur = Some(c.to_path_buf());
+        while let Some(dir) = cur {
+            dirs.push(dir.join(".codex").join("agents"));
+            if dir.join(".git").exists() {
+                break;
+            }
+            cur = dir.parent().map(Path::to_path_buf);
+        }
+    }
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    for dir in dirs {
+        let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        if !visited.insert(canonical) {
+            continue;
+        }
+        scan_codex_agents_dir(&dir, out, seen);
+    }
+}
+
+fn scan_codex_agents_dir(dir: &Path, out: &mut Vec<Value>, seen: &mut HashSet<String>) {
+    // Markdown definitions are also accepted by some Codex-compatible setups.
+    scan_markdown_agents(dir, dir, "convention", false, out, seen, 0);
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("toml") {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let parsed: toml::Value = match content.parse() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let mut name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let mut description = String::new();
+        if let Some(t) = parsed.get("name").and_then(|v| v.as_str()) {
+            if !t.is_empty() {
+                name = t.to_string();
+            }
+        }
+        if let Some(t) = parsed.get("description").and_then(|v| v.as_str()) {
+            description = t.to_string();
+        }
+        push_agent(out, seen, name, description, "convention");
+    }
+}
+
 async fn fetch_convention_skills(cwd: Option<&str>, agent_kind: Option<&str>) -> Value {
     let cwd_owned = cwd.map(|s| s.to_string());
     let agent_kind_owned = agent_kind.map(|s| s.to_string());
     let skills = tokio::task::spawn_blocking(move || {
-        let kind = match agent_kind_owned.as_deref() {
-            Some("claude") => crate::services::agent::AgentKind::Claude,
-            Some("codex") => crate::services::agent::AgentKind::Codex,
-            Some("opencode") => crate::services::agent::AgentKind::OpenCode,
+        let kind = match normalize_agent_kind(agent_kind_owned.as_deref().unwrap_or("")) {
+            "claude" => crate::services::agent::AgentKind::Claude,
+            "codex" => crate::services::agent::AgentKind::Codex,
+            "opencode" => crate::services::agent::AgentKind::OpenCode,
             _ => crate::services::agent::AgentKind::Unknown,
         };
         crate::services::agent::list_skills(kind, cwd_owned.as_deref())
@@ -629,15 +907,22 @@ fn merge_sources(
     }
     dedup_by_name(&mut commands, "name");
 
-    // MCP: from SDK only
-    let mut mcp: Vec<Value> = sdk_bundle
+    // MCP runtime/declared list is owned by Ergatai (registry + convention),
+    // not by the agent SDK. The SDK only reports the agent's own/native MCP
+    // servers, which we surface separately as `agentNativeMcp`.
+    let mut agent_native_mcp: Vec<Value> = sdk_bundle
         .get("mcp")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    for m in &mut mcp {
-        normalize_discovery_item(m, "mcp", None);
+    for m in &mut agent_native_mcp {
+        normalize_discovery_item(m, "mcp", Some("agent-sdk"));
     }
+
+    // Keep `mcp` empty here; it is populated from Ergatai registry + convention
+    // after merge so ACP-injected/runtime MCP status is not conflated with the
+    // agent's own local MCP configuration.
+    let mcp: Vec<Value> = Vec::new();
 
     // Plugins: backend marketplace scan + SDK (Claude reloadPlugins)
     let scan_plugins: Vec<Value> = plugins.as_array().cloned().unwrap_or_default();
@@ -695,6 +980,31 @@ fn merge_sources(
     dedup_by_name(&mut plugins_out, "name");
     let plugins = plugins_out;
 
+    // Agents explicitly exposed by an agent SDK for prompt addressing.
+    // Claude Code and OpenCode subagents are launched by the model through the
+    // Task / subagent tool and have no prompt-level trigger, so their SDK
+    // adapters do not emit them here. Anything present is surfaced under @.
+    let mut agents: Vec<Value> = Vec::new();
+    if let Some(arr) = sdk_bundle.get("agents").and_then(|v| v.as_array()) {
+        for a in arr {
+            let mut a = a.clone();
+            normalize_discovery_item(&mut a, "agent", Some("agent-sdk"));
+            if a.get("targetTriggers").is_none() {
+                a["targetTriggers"] = json!(["@"]);
+            }
+            if a.get("group").is_none()
+                || a.get("group")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .is_empty()
+            {
+                a["group"] = json!("Agents");
+            }
+            agents.push(a);
+        }
+    }
+    dedup_by_name(&mut agents, "name");
+
     // Propagate SDK errors to the errors array
     if let Some(err) = sdk_bundle.get("error").and_then(|v| v.as_str()) {
         errors.push(json!({
@@ -707,7 +1017,9 @@ fn merge_sources(
         "skills": skills,
         "commands": commands,
         "mcp": mcp,
+        "agentNativeMcp": agent_native_mcp,
         "plugins": plugins,
+        "agents": agents,
         "errors": errors,
         "triggers": json!([]),
     })
@@ -726,12 +1038,7 @@ fn merge_sources(
 fn persistent_cache_path() -> PathBuf {
     let base = std::env::var("ERGATAI_DATA_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            // Fall back to user data dir if available, else temp.
-            std::env::var("HOME")
-                .map(|h| PathBuf::from(h).join(".ergatai"))
-                .unwrap_or_else(|_| std::env::temp_dir().join("ergatai"))
-        });
+        .unwrap_or_else(|_| ergatai_runtime::dirs::user_data_dir());
     let _ = std::fs::create_dir_all(&base);
     base.join("discovery-cache.json")
 }
@@ -756,10 +1063,17 @@ fn load_agent_profile(agent_id: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+const DISCOVERY_CACHE_VERSION: i64 = 2;
+
 fn load_persistent(agent_id: &str, profile_name: Option<&str>, cwd: Option<&str>) -> Option<Value> {
     let path = persistent_cache_path();
     let content = std::fs::read_to_string(&path).ok()?;
     let parsed: Value = serde_json::from_str(&content).ok()?;
+
+    // Ignore caches written by older schemas (e.g. before agent-kind scoping).
+    if parsed.get("__cache_version__").and_then(|v| v.as_i64()) != Some(DISCOVERY_CACHE_VERSION) {
+        return None;
+    }
 
     // Try canonical keys first.
     for key in canonical_keys(agent_id, profile_name, cwd) {
@@ -799,6 +1113,11 @@ fn save_persistent(agent_id: &str, profile_name: Option<&str>, cwd: Option<&str>
         .and_then(|c| serde_json::from_str::<Value>(&c).ok())
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
+
+    root.insert(
+        "__cache_version__".to_string(),
+        Value::Number(DISCOVERY_CACHE_VERSION.into()),
+    );
 
     // Persist under all canonical keys so both agent-id and profile lookups work.
     for key in canonical_keys(agent_id, profile_name, cwd) {
@@ -848,7 +1167,9 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
     let (resolved_cwd, kind, profile_name) = resolve_context(agent_id, cwd).await;
     let kind = kind.as_str();
     let cwd_opt = resolved_cwd.as_deref();
-
+    // Scope static sources (convention_skills, plugins) by agent kind so that
+    // Claude-only plugin skills/plugins do not leak into OpenCode/Codex.
+    let agent_kind_opt: Option<&str> = if kind.is_empty() { None } else { Some(kind) };
     // refresh=1 → invalidate all cached sources for this agent.
     if refresh {
         invalidate_agent(agent_id, cwd_opt);
@@ -860,7 +1181,7 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
     let mut miss_sources: Vec<&str> = Vec::new();
 
     for &source in ALL_SOURCES {
-        let key = cache_key(source, agent_id, cwd_opt, None);
+        let key = cache_key(source, agent_id, cwd_opt, agent_kind_opt);
         match check_cache(&key) {
             CacheStatus::Fresh(v) => {
                 fresh_values.insert(source, v);
@@ -878,7 +1199,15 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
                     if let Some(cached) =
                         load_persistent(agent_id, profile_name.as_deref(), cwd_opt)
                     {
-                        fresh_values.insert(source, cached);
+                        // The persistent cache stores a full discovery result, not
+                        // a raw SDK bundle. Only carry over agent-provided fields
+                        // (commands/models); skills/plugins/agents must be
+                        // re-discovered so agent-kind scoping is respected.
+                        let sdk_only = json!({
+                            "commands": cached.get("commands").cloned().unwrap_or(json!([])),
+                            "models": cached.get("models").cloned().unwrap_or(json!([])),
+                        });
+                        fresh_values.insert(source, sdk_only);
                         stale_sources.push(source);
                         continue;
                     }
@@ -890,7 +1219,7 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
 
     // Synchronous fetch for miss sources.
     for &source in &miss_sources {
-        let value = fetch_source_dedup(source, kind, agent_id, cwd_opt, None).await;
+        let value = fetch_source_dedup(source, kind, agent_id, cwd_opt, agent_kind_opt).await;
         fresh_values.insert(source, value);
     }
 
@@ -905,6 +1234,23 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
         fresh_values.get(SRC_PLUGINS).unwrap_or(&json!([])),
     );
 
+    // Static (filesystem/config) subagents, independent of the running agent service.
+    let static_agents = fetch_convention_agents(kind, cwd_opt).await;
+    if !static_agents.is_empty() {
+        let mut agents: Vec<Value> = result
+            .get("agents")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for a in static_agents {
+            agents.push(a);
+        }
+        dedup_by_name(&mut agents, "name");
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert("agents".to_string(), json!(agents));
+        }
+    }
+
     // Populate triggers from agent-aware registry.
     if let Some(obj) = result.as_object_mut() {
         obj.insert(
@@ -913,49 +1259,56 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
         );
     }
 
-    // Merge convention MCP configs (project/user .mcp.json, ~/.claude.json, codex config)
-    // as static, type-tagged MCP items routed to @.
+    // Runtime/declared MCP list is owned by Ergatai: registry + convention scan.
+    // The agent SDK's own MCP servers are surfaced separately as agentNativeMcp.
     let convention_mcp = fetch_convention_mcp_items(cwd_opt).await;
-    let mut merged_mcp = result
-        .get("mcp")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let mut merged_mcp: Vec<Value> = Vec::new();
 
-    // MCP fallback: if SDK did not provide runtime MCP status, include Ergatai registry.
-    if merged_mcp.is_empty() {
-        if let Ok(registry_mcp) = tokio::task::spawn_blocking(|| -> Vec<Value> {
-            crate::user_data_db::mcp_servers::list()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|s| {
-                    json!({
-                        "name": s.name,
-                        "status": if s.enabled { "pending" } else { "failed" },
-                        "config": {
-                            "type": s.server_type,
-                            "command": s.command,
-                            "args": s.args,
-                            "url": s.url,
-                        },
-                        "source": "registry",
-                        "group": "MCP",
-                        "type": "mcp",
-                        "targetTriggers": ["@"],
-                    })
-                })
-                .collect()
-        })
-        .await
-        {
-            merged_mcp.extend(registry_mcp);
-        }
+    // Ergatai registry MCP servers (user-configured, injected via ACP).
+    // Status is probed by Ergatai itself (MCP initialize + tools/list), not
+    // inferred from the enabled flag.
+    let registry_servers = tokio::task::spawn_blocking(|| {
+        crate::user_data_db::mcp_servers::list().unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default();
+
+    // Probe all registry servers concurrently to avoid serial 5s timeouts.
+    let mut probe_futures = Vec::new();
+    for s in registry_servers {
+        probe_futures.push(async move {
+            let health = crate::services::mcp_health::check(&s).await;
+            (s, health)
+        });
+    }
+    let probe_results = futures::future::join_all(probe_futures).await;
+    for (s, health) in probe_results {
+        merged_mcp.push(json!({
+            "name": s.name,
+            "status": health.status,
+            "tools": health.tools,
+            "error": health.error,
+            "config": {
+                "type": s.server_type,
+                "command": s.command,
+                "args": s.args,
+                "url": s.url,
+            },
+            "source": "registry",
+            "group": "MCP",
+            "type": "mcp",
+            "targetTriggers": ["@"],
+        }));
     }
 
+    // Convention MCP configs (project/user .mcp.json, ~/.claude.json, codex config).
     merged_mcp = merge_mcp_items(merged_mcp, convention_mcp);
     if let Some(obj) = result.as_object_mut() {
         obj.insert("mcp".to_string(), json!(merged_mcp));
     }
+
+    // MCP prompts are not surfaced as composer slash commands; MCP stays
+    // model-driven (no @mcp / /mcp trigger in the composer).
 
     // Persistent cache: prefer last-known-good data when the live fetch is
     // degraded (e.g. agent suspended / not registered), so the UI keeps
@@ -971,10 +1324,24 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
         .map(|a| a.is_empty())
         .unwrap_or(true);
 
+    // Fill commands independently when the live fetch came back empty, so a
+    // non-empty MCP list (e.g. registry servers) does not mask missing commands.
+    if live_commands_empty {
+        if let Some(cached) = load_persistent(agent_id, profile_name.as_deref(), cwd_opt) {
+            if let Some(arr) = cached.get("commands").cloned() {
+                if arr.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
+                    if let Some(obj) = result.as_object_mut() {
+                        obj.insert("commands".to_string(), arr);
+                    }
+                }
+            }
+        }
+    }
+
     if live_commands_empty && live_mcp_empty {
         if let Some(cached) = load_persistent(agent_id, profile_name.as_deref(), cwd_opt) {
             // Fill empty fields from the cached (last good) result.
-            for field in ["commands", "mcp", "models"] {
+            for field in ["mcp", "models"] {
                 let cached_arr = cached.get(field).cloned();
                 if let Some(arr) = cached_arr {
                     if arr.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
@@ -983,8 +1350,20 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
                 }
             }
         }
-    } else {
-        // Rich result: persist for future degraded runs.
+    }
+
+    // Persist rich results (commands present OR mcp present) for future degraded runs.
+    let result_commands_empty = result
+        .get("commands")
+        .and_then(|v| v.as_array())
+        .map(|a| a.is_empty())
+        .unwrap_or(true);
+    let result_mcp_empty = result
+        .get("mcp")
+        .and_then(|v| v.as_array())
+        .map(|a| a.is_empty())
+        .unwrap_or(true);
+    if !(result_commands_empty && result_mcp_empty) {
         save_persistent(agent_id, profile_name.as_deref(), cwd_opt, &result);
     }
 
@@ -994,14 +1373,20 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
         let kind_owned = kind.to_string();
         let agent_id_owned = agent_id.to_string();
         let cwd_owned = resolved_cwd.clone();
+        let scoped_kind_owned: Option<String> = if kind_owned.is_empty() {
+            None
+        } else {
+            Some(kind_owned.clone())
+        };
         tokio::spawn(async move {
             for source in stale {
+                let scoped_ref = scoped_kind_owned.as_deref();
                 let _ = fetch_source_dedup(
                     source,
                     &kind_owned,
                     &agent_id_owned,
                     cwd_owned.as_deref(),
-                    None,
+                    scoped_ref,
                 )
                 .await;
             }
@@ -1020,14 +1405,22 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
 // Static discovery (no agent required)
 // ---------------------------------------------------------------------------
 
-/// Static discovery: returns only filesystem-based sources (convention_skills + plugins).
-/// Does not require an agent_id — usable in new-chat / no-agent scenarios.
+/// Static discovery: returns filesystem-based sources (skills, plugins, agents)
+/// plus SDK-provided commands/built-in agents. Does not require an agent_id —
+/// usable in new-chat / no-agent scenarios.
 ///
-/// Cache keys for static sources use `{source}::{cwd}` format, shared across agents.
+/// Cache keys for static sources use `{source}::{kind}::{cwd}` format.
 pub async fn discover_static(cwd: Option<&str>, agent_kind: Option<&str>, refresh: bool) -> Value {
     let started = Instant::now();
     let cwd_opt = cwd;
-    let agent_kind_opt = agent_kind;
+    // Accept aliases such as `claude-code` / `Claude Code` and use the same
+    // canonical kind for cache scoping and convention scans.
+    let normalized_kind = normalize_agent_kind(agent_kind.unwrap_or(""));
+    let agent_kind_opt: Option<&str> = if normalized_kind.is_empty() {
+        None
+    } else {
+        Some(normalized_kind)
+    };
 
     if refresh {
         // Invalidate static entries for this cwd + agent_kind.
@@ -1107,6 +1500,39 @@ pub async fn discover_static(cwd: Option<&str>, agent_kind: Option<&str>, refres
         .cloned()
         .unwrap_or_else(|| json!([]));
 
+    // Static discovery can still surface Claude's SDK-provided slash commands
+    // even without a running agent session.
+    let sdk_bundle = if normalized_kind == "claude" {
+        Some(crate::services::agent_sdk_service::discover("claude", cwd_opt).await)
+    } else {
+        None
+    };
+
+    let static_commands: Vec<Value> = sdk_bundle
+        .as_ref()
+        .and_then(|sdk| sdk.get("commands"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut c| {
+            // normalize targetTriggers/group/source
+            if c.get("type").is_none() {
+                c["type"] = json!("command");
+            }
+            if c.get("targetTriggers").is_none() {
+                c["targetTriggers"] = json!(["/"]);
+            }
+            if c.get("group").is_none() {
+                c["group"] = json!("Commands");
+            }
+            if c.get("source").is_none() {
+                c["source"] = json!("agent-sdk");
+            }
+            c
+        })
+        .collect();
+
     // Include convention + registry MCP in static discovery so @ can show MCP
     // without a running agent session (project .mcp.json, ~/.claude.json, codex config, registry).
     let mut mcp: Vec<Value> = fetch_convention_mcp_items(cwd_opt).await;
@@ -1142,10 +1568,15 @@ pub async fn discover_static(cwd: Option<&str>, agent_kind: Option<&str>, refres
         "static discovery completed"
     );
 
+    let mut static_agents = fetch_convention_agents(normalized_kind, cwd_opt).await;
+    dedup_by_name(&mut static_agents, "name");
+
     json!({
         "skills": skills,
+        "commands": static_commands,
         "plugins": plugins,
         "mcp": mcp,
+        "agents": static_agents,
         "triggers": get_triggers(None, cwd_opt).await,
     })
 }
@@ -1207,32 +1638,20 @@ fn default_trigger_types_for_kind(
     is_static: bool,
 ) -> (Vec<&'static str>, Vec<&'static str>) {
     if is_static {
-        // Static discovery only provides convention skills/plugins (and files handled by UI).
-        // No agent-specific rule applies; use a neutral default.
-        return (vec![], vec!["skill", "plugin", "file", "folder"]);
+        // Static discovery only provides convention files/folders (and files handled by UI).
+        // Skills/plugins are not surfaced as composer mentions.
+        return (vec![], vec!["file", "folder"]);
     }
 
     match agent_kind {
-        // Claude Code: @ 引用文件/agent/MCP 资源；/ 为控制指令与可调用技能/插件能力
-        "claude" => (
-            vec!["command", "skill", "plugin"],
-            vec!["file", "folder", "agent", "mcp"],
-        ),
-        // Codex: @ 引用文件/agent/插件/MCP 资源；/ 为控制指令；skill 通过 $skill-name（独立触发）
-        "codex" => (
-            vec!["command"],
-            vec!["file", "folder", "agent", "plugin", "mcp"],
-        ),
-        // OpenCode: @ 引用文件/agent/skill 等上下文；/ 为 agent 自带/自定义命令
-        "opencode" => (
-            vec!["command"],
-            vec!["skill", "agent", "file", "folder", "mcp", "plugin"],
-        ),
+        // Claude Code: @ 只引用文件/目录；子代理由 Task 工具调用，没有提示词入口
+        "claude" => (vec!["command"], vec!["file", "folder"]),
+        // Codex: @ 引用文件/agent 资源；/ 为控制指令；skill 通过 $skill-name（独立触发）
+        "codex" => (vec!["command"], vec!["file", "folder", "agent"]),
+        // OpenCode: @ 只引用文件/目录；子代理由 subagent 工具调用，没有提示词入口
+        "opencode" => (vec!["command"], vec!["file", "folder"]),
         // Fallback: keep slash for commands, mentions for resources.
-        _ => (
-            vec!["command"],
-            vec!["skill", "mcp", "plugin", "agent", "file", "folder"],
-        ),
+        _ => (vec!["command"], vec!["agent", "file", "folder"]),
     }
 }
 
@@ -1272,6 +1691,12 @@ pub async fn get_triggers(agent_id: Option<&str>, _cwd: Option<&str>) -> Value {
             "types": mention_types,
             "kind": "mention",
         }),
+        serde_json::json!({
+            "char": "$",
+            "position": "standalone",
+            "types": ["skill"],
+            "kind": "mention",
+        }),
     ];
 
     // Agent-specific discovery triggers (only when agent is present).
@@ -1285,7 +1710,7 @@ pub async fn get_triggers(agent_id: Option<&str>, _cwd: Option<&str>) -> Value {
                     }
                     // Prevent overriding default chars.
                     let ch = item.get("char").and_then(|v| v.as_str()).unwrap();
-                    if ch == "/" || ch == "@" {
+                    if ch == "/" || ch == "@" || ch == "$" {
                         continue;
                     }
                     // Apply defaults when fields are omitted.
@@ -1299,9 +1724,7 @@ pub async fn get_triggers(agent_id: Option<&str>, _cwd: Option<&str>) -> Value {
                             // Agent-provided custom triggers: default to full mentionable/command set.
                             obj.insert(
                                 "types".to_string(),
-                                serde_json::json!([
-                                    "skill", "command", "mcp", "plugin", "agent", "file", "folder"
-                                ]),
+                                serde_json::json!(["command", "agent", "file", "folder"]),
                             );
                         }
                     }
@@ -1574,5 +1997,93 @@ mod tests {
 
         cache_set(&key_a, json!([{"name": "shared-skill"}]));
         assert!(matches!(check_cache(&key_b), CacheStatus::Fresh(_)));
+    }
+
+    #[tokio::test]
+    async fn test_get_triggers_skill_not_in_slash_or_mention() {
+        // Static (no agent): slash types empty, mention types exclude "skill".
+        let static_triggers = get_triggers(None, None).await;
+        let arr = static_triggers.as_array().expect("triggers array");
+        for t in arr {
+            let ch = t.get("char").and_then(|v| v.as_str()).unwrap_or("");
+            let types: Vec<&str> = t
+                .get("types")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                .unwrap_or_default();
+            if ch == "/" || ch == "@" {
+                assert!(
+                    !types.contains(&"skill"),
+                    "{} trigger must not include skill (routes to $)",
+                    ch
+                );
+            }
+        }
+
+        // Note: agent-aware path requires initialized AppContext (not available in
+        // unit tests); covered by integration tests instead. The static path plus
+        // default_trigger_types_for_kind already encodes the "skill -> $" rule.
+    }
+
+    #[test]
+    fn test_normalize_agent_kind_accepts_aliases() {
+        // Static discovery used to receive the UI provider id (`claude-code`)
+        // and match it against only the literal `claude`, returning no agents.
+        assert_eq!(normalize_agent_kind("claude-code"), "claude");
+        assert_eq!(normalize_agent_kind("Claude Code"), "claude");
+        assert_eq!(normalize_agent_kind("/usr/local/bin/claude"), "claude");
+        assert_eq!(normalize_agent_kind("codex-cli"), "codex");
+        assert_eq!(normalize_agent_kind("opencode acp"), "opencode");
+        assert_eq!(normalize_agent_kind("custom-agent"), "");
+
+        assert!(agent_scan_kinds("claude-code").is_empty());
+        // OpenCode subagents are subagent-tool driven, not @-addressed.
+        assert!(agent_scan_kinds("opencode").is_empty());
+        assert_eq!(agent_scan_kinds(""), vec!["codex"]);
+    }
+
+    #[test]
+    fn test_parse_agent_frontmatter_block_description() {
+        let content = "---\nname: reviewer\ndescription: >\n  Reviews changes\n  for regressions\n---\nbody\n";
+        let (name, description) = parse_agent_frontmatter(content);
+        assert_eq!(name.as_deref(), Some("reviewer"));
+        assert_eq!(
+            description.as_deref(),
+            Some("Reviews changes for regressions")
+        );
+    }
+
+    #[test]
+    fn test_scan_markdown_agents_nested_paths() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("agents");
+        std::fs::create_dir_all(root.join("team")).unwrap();
+        std::fs::write(
+            root.join("reviewer.md"),
+            "---\ndescription: Reviews code\n---\nbody",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("team").join("helper.md"),
+            "---\ndescription: Helps the team\n---\nbody",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("team").join("planner.md"),
+            "---\nname: planner-x\ndescription: Plans work\n---\nbody",
+        )
+        .unwrap();
+
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        scan_markdown_agents(&root, &root, "convention", true, &mut out, &mut seen, 0);
+
+        let names: Vec<&str> = out
+            .iter()
+            .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+            .collect();
+        assert!(names.contains(&"reviewer"));
+        assert!(names.contains(&"team/helper"));
+        assert!(names.contains(&"planner-x"));
     }
 }

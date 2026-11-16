@@ -238,6 +238,7 @@ const chatSurface = useConversationChatSurface({
     persistedMessagesLoading,
     runtimeMessages: backendRuntimeMessages as unknown as Parameters<typeof useConversationChatSurface>[0]["runtimeMessages"],
     runtimeStatus: conversationRuntime?.status,
+    runtimeRetry: conversationRuntime?.retry,
     source: "main",
     refreshDiff,
     onProviderChange,

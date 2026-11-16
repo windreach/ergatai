@@ -322,43 +322,53 @@ pub async fn persist_agent_output(
             // Note: thinking/tool_calls/text_chunks are already JSON strings in AgentOutputData,
             // so we pass them through directly without re-encoding
             // Parse metadata to extract stop_reason, duration_ms, and context usage
-            let (stop_reason, duration_ms, context_used, context_window, context_quota_json) =
-                if let Some(ref metadata_json) = output_data.metadata {
-                    if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(metadata_json) {
-                        let sr = metadata
-                            .get("stop_reason")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let dm = metadata
-                            .get("duration_ms")
-                            .and_then(|v| v.as_u64())
-                            .map(|d| d as i64);
-                        let cu = metadata
-                            .get("context_used")
-                            .and_then(|v| v.as_u64())
-                            .map(|v| v as i64);
-                        let cw = metadata
-                            .get("context_window")
-                            .and_then(|v| v.as_u64())
-                            .map(|v| v as i64);
-                        let cq = metadata.get("context_quota").map(|v| v.to_string());
-                        (sr, dm, cu, cw, cq)
-                    } else {
-                        tracing::warn!(
-                            conversation_id = %output_data.conversation_id,
-                            "Failed to parse metadata JSON"
-                        );
-                        (None, None, None, None, None)
-                    }
+            let (
+                stop_reason,
+                duration_ms,
+                context_used,
+                context_window,
+                context_quota_json,
+                turn_error,
+            ) = if let Some(ref metadata_json) = output_data.metadata {
+                if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(metadata_json) {
+                    let sr = metadata
+                        .get("stop_reason")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let dm = metadata
+                        .get("duration_ms")
+                        .and_then(|v| v.as_u64())
+                        .map(|d| d as i64);
+                    let cu = metadata
+                        .get("context_used")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as i64);
+                    let cw = metadata
+                        .get("context_window")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as i64);
+                    let cq = metadata.get("context_quota").map(|v| v.to_string());
+                    let te = metadata
+                        .get("error")
+                        .filter(|value| !value.is_null())
+                        .cloned();
+                    (sr, dm, cu, cw, cq, te)
                 } else {
-                    (None, None, None, None, None)
-                };
+                    tracing::warn!(
+                        conversation_id = %output_data.conversation_id,
+                        "Failed to parse metadata JSON"
+                    );
+                    (None, None, None, None, None, None)
+                }
+            } else {
+                (None, None, None, None, None, None)
+            };
 
             let output_fields = AgentOutputFields {
                 thinking: output_data.thinking.clone(),
                 tool_calls: output_data.tool_calls.clone(),
                 text_chunks: output_data.text_chunks.clone(),
-                stop_reason,
+                stop_reason: stop_reason.clone(),
                 duration_ms,
             };
 
@@ -366,12 +376,18 @@ pub async fn persist_agent_output(
             // This ensures the frontend can render all content from the parts array
             let parts = build_complete_parts_array(&output_data);
 
-            let metadata = serde_json::json!({
+            let mut metadata = serde_json::json!({
                 "turnId": output_data.turn_id,
                 "replyToMessageId": output_data.reply_to_message_id,
                 "correlationId": output_data.correlation_id,
                 "sourceConversationId": output_data.source_conversation_id,
             });
+            if let Some(reason) = stop_reason.as_deref() {
+                metadata["stopReason"] = serde_json::json!(reason);
+            }
+            if let Some(error) = turn_error {
+                metadata["error"] = error;
+            }
 
             // Insert into messages table with agent output fields
             messages::append_with_output(

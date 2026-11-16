@@ -25,6 +25,22 @@ export type RuntimeAgentEvent = {
   state?: string
   stop_reason?: string
   message?: string
+  attempt?: number
+  max_attempts?: number
+  delay_ms?: number
+  next_retry_at_ms?: number
+  message_id?: string | null
+  cancelled?: boolean
+}
+
+export type ConversationRetryState = {
+  attempt: number
+  maxAttempts: number
+  delayMs: number
+  nextRetryAtMs: number
+  errorName?: string | null
+  message?: string
+  messageId?: string | null
 }
 
 export type ConversationRuntimeEvent = {
@@ -44,6 +60,7 @@ export type ConversationRuntimeState = {
   lastSequence: number
   firstSequence?: number
   events: ConversationRuntimeEvent[]
+  retry?: ConversationRetryState
   startedAtMs?: number
   updatedAtMs?: number
   error?: string
@@ -95,8 +112,12 @@ function resolveRuntimeStatusAfterEvent(
     stop_reason?: string | null
     role?: string | null
     message_type?: string | null
+    cancelled?: boolean
   },
 ): ConversationRuntimeState["status"] {
+  if (event.type === "retry") {
+    return event.cancelled ? currentStatus : "streaming"
+  }
   if (event.type === "error") return "error"
   if (event.type === "done") {
     return event.stop_reason === "error" ? "error" : "completed"
@@ -132,93 +153,8 @@ function notify(channel: RuntimeChannel) {
   }
 }
 
-export function shouldResnapshot(
-  previous: ConversationRuntimeState | undefined,
-  snapshot: {
-    epoch: string
-    turnId?: string | null
-    firstSequence?: number | null
-  },
-): boolean {
-  if (!previous || previous.epoch !== snapshot.epoch) return true
-  if (snapshot.firstSequence == null) return previous.events.length > 0
-  return snapshot.firstSequence > previous.lastSequence + 1
-}
-
-export function mergeSnapshot(
-  conversationId: string,
-  previous: ConversationRuntimeState | undefined,
-  snapshot: {
-    epoch: string
-    turnId?: string | null
-    status: ConversationRuntimeState["status"]
-    lastSequence: number
-    firstSequence?: number | null
-    events: ConversationRuntimeEvent[]
-    startedAtMs?: number | null
-    updatedAtMs?: number | null
-  },
-): ConversationRuntimeState {
-  const reset = shouldResnapshot(previous, snapshot)
-  const turnId = snapshot.turnId ?? undefined
-  const base = reset
-    ? []
-    : (previous?.events ?? []).filter(event => !turnId || event.turnId === turnId)
-
-  const events = [...base]
-  const firstEventSequence =
-    snapshot.events.length > 0
-      ? snapshot.events[0].sequence
-      : (snapshot.firstSequence ?? null)
-  let lastSequence = reset
-    ? (snapshot.events.length > 0 && firstEventSequence != null
-        ? firstEventSequence - 1
-        : snapshot.lastSequence)
-    : (previous?.lastSequence ?? 0)
-  for (const event of snapshot.events) {
-    if (event.conversationId !== conversationId) continue
-    if (event.sequence <= lastSequence) continue
-    if (event.sequence > lastSequence + 1) {
-      // A gap cannot be repaired incrementally. The next snapshot will become
-      // the source of truth.
-      const gapEvents = [...snapshot.events]
-      const gapHasError = gapEvents.some(
-        (e) => e.event.type === "error" || (e.event.type === "done" && e.event.stop_reason === "error"),
-      )
-      return {
-        conversationId,
-        status: gapHasError && snapshot.status === "completed" ? "error" : snapshot.status,
-        connectionStatus: "reconnecting",
-        epoch: snapshot.epoch,
-        turnId,
-        lastSequence: snapshot.lastSequence,
-        firstSequence: snapshot.firstSequence ?? undefined,
-        events: gapEvents,
-        startedAtMs: snapshot.startedAtMs ?? undefined,
-        updatedAtMs: snapshot.updatedAtMs ?? undefined,
-      }
-    }
-    events.push(event)
-    lastSequence = event.sequence
-  }
-
-  const hasError = events.some(
-    (e) => e.event.type === "error" || (e.event.type === "done" && e.event.stop_reason === "error"),
-  )
-
-  return {
-    conversationId,
-    status: hasError && snapshot.status === "completed" ? "error" : snapshot.status,
-    connectionStatus: "connected",
-    epoch: snapshot.epoch,
-    turnId,
-    lastSequence,
-    firstSequence: snapshot.firstSequence ?? undefined,
-    events,
-    startedAtMs: snapshot.startedAtMs ?? undefined,
-    updatedAtMs: snapshot.updatedAtMs ?? undefined,
-  }
-}
+export { mergeSnapshot, shouldResnapshot } from "./conversation-runtime-merge"
+import { mergeSnapshot } from "./conversation-runtime-merge"
 
 function connect(conversationId: string) {
   const channel = channels.get(conversationId)
@@ -266,10 +202,68 @@ function connect(conversationId: string) {
         } else {
           const event = message.event
           if (event.conversationId !== conversationId) return
+
+          // Retry status is ephemeral and lives outside the replayable turn
+          // events. Update it in place so each attempt does not create a new
+          // error message.
+          if (event.event.type === "retry") {
+            if (event.sequence <= channel.state.lastSequence) return
+            if (event.sequence > channel.state.lastSequence + 1) {
+              channel.forceSnapshot = true
+              removePersistedSequence(conversationId)
+              channel.state = {
+                ...channel.state,
+                connectionStatus: "reconnecting",
+                error: "Runtime event gap detected",
+              }
+              notify(channel)
+              reconnect(conversationId, 0)
+              return
+            }
+
+            const retry = event.event
+            const nextRetry =
+              retry.cancelled || !retry.next_retry_at_ms
+                ? undefined
+                : {
+                    attempt: retry.attempt ?? 1,
+                    maxAttempts: retry.max_attempts ?? 20,
+                    delayMs: retry.delay_ms ?? 0,
+                    nextRetryAtMs:
+                      retry.next_retry_at_ms ?? Date.now() + (retry.delay_ms ?? 0),
+                    errorName: retry.error_name ?? undefined,
+                    message: retry.message,
+                    messageId: retry.message_id ?? undefined,
+                  }
+
+            channel.state = {
+              ...channel.state,
+              status: retry.cancelled
+                ? channel.state.status === "streaming"
+                  ? "error"
+                  : channel.state.status
+                : "streaming",
+              retry: nextRetry,
+              lastSequence: event.sequence,
+              updatedAtMs: event.timestampMs,
+            }
+            if (channel.state.status === "completed" || channel.state.status === "error") {
+              removePersistedSequence(conversationId)
+            } else {
+              persistSequence(conversationId, channel.state.lastSequence)
+            }
+            notify(channel)
+            return
+          }
+
           if (event.turnId !== channel.state.turnId) {
             channel.state = {
               ...channel.state,
               status: resolveRuntimeStatusAfterEvent(channel.state.status, event.event),
+              retry:
+                event.event.type === "done" && event.event.stop_reason !== "error"
+                  ? undefined
+                  : channel.state.retry,
               turnId: event.turnId,
               lastSequence: event.sequence,
               events: [event],
@@ -309,6 +303,10 @@ function connect(conversationId: string) {
           channel.state = {
             ...channel.state,
             status: resolveRuntimeStatusAfterEvent(channel.state.status, event.event),
+            retry:
+              event.event.type === "done" && event.event.stop_reason !== "error"
+                ? undefined
+                : channel.state.retry,
             lastSequence: event.sequence,
             events: [...channel.state.events, event].slice(-MAX_EVENTS),
             updatedAtMs: event.timestampMs,
@@ -382,6 +380,17 @@ function scheduleStop(conversationId: string) {
     // across many conversations in long-running sessions.
     channels.delete(conversationId)
   }, STOP_DELAY_MS)
+}
+
+export function clearConversationRetry(conversationId: string) {
+  const channel = channels.get(conversationId)
+  if (!channel || !channel.state.retry) return
+  channel.state = {
+    ...channel.state,
+    retry: undefined,
+    status: channel.state.status === "streaming" ? "error" : channel.state.status,
+  }
+  notify(channel)
 }
 
 export function subscribeConversationRuntime(

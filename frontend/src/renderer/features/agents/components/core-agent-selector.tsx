@@ -95,6 +95,7 @@ export function CoreAgentSelector({
   onChangeGroupAgents,
 }: CoreAgentSelectorProps) {
   const [agents, setAgents] = useState<CoreAgentOption[]>([])
+  const [open, setOpen] = useState(false)
   const [selectedAgent, setSelectedAgent] = useState<CoreAgentOption>({
     id: value,
     name: getCoreAgentDisplayName(value),
@@ -155,7 +156,7 @@ export function CoreAgentSelector({
   }
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -183,6 +184,7 @@ export function CoreAgentSelector({
               type="button"
               onClick={() => {
                 setSelectedAgent(agent)
+                setOpen(false)
                 onChange?.(agent)
               }}
               className={cn(

@@ -1,6 +1,7 @@
 import type { UIMessage } from "@ai-sdk/react"
 import type { ConversationRuntimeState } from "./conversation-runtime-gateway"
 import { PROJECTION_KINDS } from "@/lib/projection-kinds"
+import { normalizeChatError, type ChatErrorInfo } from "../../../../shared/chat-error"
 
 type RuntimeEvent = {
   sequence: number
@@ -65,6 +66,8 @@ type RuntimePart = {
   errorText?: string
   text?: string
   reasoning?: string
+  error?: ChatErrorInfo
+  rawText?: string
 }
 
 function normalizeRuntimeMessageRole(role: string): RuntimeUIMessageRole {
@@ -110,7 +113,7 @@ function normalizeRuntimeToolName(name: string | undefined): string {
   return raw
 }
 
-type RuntimeStreamMessage = UIMessage & { parts: RuntimePart[] }
+type RuntimeStreamMessage = Omit<UIMessage, "parts"> & { parts: RuntimePart[] }
 
 export function buildRuntimeMessages(
   snapshot: ConversationRuntimeState | undefined,
@@ -120,7 +123,7 @@ export function buildRuntimeMessages(
   const runtimeEvents = (snapshot?.events ?? []) as unknown as RuntimeEvent[]
   if (!runtimeEvents.length) return []
 
-  const messages: UIMessage[] = []
+  const messages: RuntimeStreamMessage[] = []
   let currentMessage: RuntimeStreamMessage | null = null
   let currentRole: RuntimeUIMessageRole = "assistant"
   let streamMessageIndex = 0
@@ -261,23 +264,36 @@ export function buildRuntimeMessages(
         closeStreamingReasoning(currentMessage)
       }
 
-      const parts: string[] = []
-      if (event.code != null && event.code !== "") parts.push(`[${event.code}]`)
-      const typeName = event.error_type ?? event.error_name
-      if (typeName) parts.push(String(typeName))
-      if (event.service) parts.push(`(${event.service})`)
-      const prefix = parts.join(" ")
-      const errorText = prefix ? `${prefix}: ${event.message}` : event.message
+      const error = normalizeChatError({
+        message: event.message,
+        errorName: event.error_name,
+        errorType: event.error_type,
+        service: event.service,
+        code: event.code,
+        data: event.error_data,
+      })
 
       const message = ensureStreamMessage(event.role ?? undefined)
       closeStreamingReasoning(message)
       const msgParts = message.parts
-      const lastPart = msgParts.length > 0 ? msgParts[msgParts.length - 1] : null
-      if (lastPart && lastPart.type === "text") {
-        const prev = lastPart.text ?? ""
-        lastPart.text = prev ? `${prev}\n\n${errorText}` : errorText
+      const existingError = msgParts.find((part) => part.type === "error")
+      if (existingError) {
+        existingError.error = error
       } else {
-        msgParts.push({ type: "text", text: errorText })
+        // The ACP agent often prints the provider error as a normal text
+        // chunk before the structured `error` event. Keep that text available
+        // in the details panel, but do not render it as assistant prose.
+        const textParts = msgParts.filter(
+          (part) => part.type === "text" && part.text?.trim(),
+        )
+        if (textParts.length > 0) {
+          error.rawText = textParts
+            .map((part) => part.text)
+            .filter((text): text is string => Boolean(text))
+            .join("\n\n")
+          message.parts = msgParts.filter((part) => part.type !== "text")
+        }
+        message.parts.push({ type: "error", error })
       }
 
       finalizeStreamMessage()
@@ -297,20 +313,32 @@ export function buildRuntimeMessages(
         const hasRenderedError = messages.some((m) =>
           (m as RuntimeStreamMessage).parts?.some(
             (p) =>
-              p.type === "text" &&
-              typeof p.text === "string" &&
-              (p.text.includes("provider.free-limit") ||
-                p.text.includes("Free usage limit") ||
-                p.text.toLowerCase().includes("error")),
+              p.type === "error" ||
+              (p.type === "text" &&
+                typeof p.text === "string" &&
+                (p.text.includes("provider.free-limit") ||
+                  p.text.includes("Free usage limit") ||
+                  p.text.toLowerCase().includes("error"))),
           ),
         )
         if (!hasRenderedError) {
           const message = ensureStreamMessage()
           closeStreamingReasoning(message)
-          message.parts.push({
-            type: "text",
-            text: "Request failed (stop_reason=error). Please check provider/model limits and retry.",
+          const textParts = message.parts.filter(
+            (part) => part.type === "text" && part.text?.trim(),
+          )
+          const error = normalizeChatError({
+            message:
+              "Request failed (stop_reason=error). Please check provider/model limits and retry.",
           })
+          if (textParts.length > 0) {
+            error.rawText = textParts
+              .map((part) => part.text)
+              .filter((text): text is string => Boolean(text))
+              .join("\n\n")
+            message.parts = message.parts.filter((part) => part.type !== "text")
+          }
+          message.parts.push({ type: "error", error })
         }
       }
 
@@ -413,5 +441,5 @@ export function buildRuntimeMessages(
   }
 
   finalizeStreamMessage()
-  return messages
+  return messages as UIMessage[]
 }

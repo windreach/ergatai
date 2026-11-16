@@ -108,6 +108,27 @@ function CircularProgress({
   )
 }
 
+function ContextQuotaDetails({ quota }: { quota: MessageTokenData["contextQuota"] }) {
+  if (!quota) return null
+  return (
+    <div className="mt-1 text-muted-foreground space-y-0.5">
+      {quota.inputTokens != null && (
+        <div>input: {formatTokens(quota.inputTokens)}</div>
+      )}
+      {quota.outputTokens != null && (
+        <div>output: {formatTokens(quota.outputTokens)}</div>
+      )}
+      {quota.cachedInputTokens != null && (
+        <div>cached: {formatTokens(quota.cachedInputTokens)}</div>
+      )}
+      {quota.reasoningOutputTokens != null && (
+        <div>reasoning: {formatTokens(quota.reasoningOutputTokens)}</div>
+      )}
+      {quota.modelUsage != null && <div>model usage reported</div>}
+    </div>
+  )
+}
+
 export const AgentContextIndicator = memo(function AgentContextIndicator({
   tokenData,
   modelId = "sonnet",
@@ -160,7 +181,7 @@ export const AgentContextIndicator = memo(function AgentContextIndicator({
         </div>
       </TooltipTrigger>
       <TooltipContent side="top" sideOffset={8}>
-        <p className="text-xs">
+        <div className="text-xs">
           {isEmpty ? (
             <span className="text-muted-foreground">
               Context: 0 / {formatTokens(contextWindow)}
@@ -175,28 +196,10 @@ export const AgentContextIndicator = memo(function AgentContextIndicator({
                 {formatTokens(contextTokens)} /{" "}
                 {formatTokens(contextWindow)} context
               </span>
-              {tokenData.contextQuota && (
-                <div className="mt-1 text-muted-foreground space-y-0.5">
-                  {tokenData.contextQuota.inputTokens != null && (
-                    <div>input: {formatTokens(tokenData.contextQuota.inputTokens)}</div>
-                  )}
-                  {tokenData.contextQuota.outputTokens != null && (
-                    <div>output: {formatTokens(tokenData.contextQuota.outputTokens)}</div>
-                  )}
-                  {tokenData.contextQuota.cachedInputTokens != null && (
-                    <div>cached: {formatTokens(tokenData.contextQuota.cachedInputTokens)}</div>
-                  )}
-                  {tokenData.contextQuota.reasoningOutputTokens != null && (
-                    <div>reasoning: {formatTokens(tokenData.contextQuota.reasoningOutputTokens)}</div>
-                  )}
-                  {tokenData.contextQuota.modelUsage != null && (
-                    <div>model usage reported</div>
-                  )}
-                </div>
-              )}
+              <ContextQuotaDetails quota={tokenData.contextQuota} />
             </>
           )}
-        </p>
+        </div>
         {!tokenData.contextUsed && !tokenData.contextQuota && (
           <p className="text-xs text-muted-foreground mt-1">adapter 未上报 usage</p>
         )}

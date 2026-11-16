@@ -63,7 +63,8 @@ export function useDiscoveryGroups(agentId: string | undefined, cwd?: string, ag
     { enabled: !!agentId, staleTime: 30 * 1000, refetchOnWindowFocus: false },
   )
 
-  // Static fallback: convention_skills + plugins only, no agentId needed
+  // Static fallback: filesystem conventions + SDK built-in agents/commands,
+  // available without an agentId (new chat / suspended agent).
   const { data: staticData, isLoading: staticLoading } = trpc.discovery.getStaticDiscovery.useQuery(
     { cwd, agent: agentKind },
     { enabled: !agentId, staleTime: 5 * 60 * 1000, refetchOnWindowFocus: false },

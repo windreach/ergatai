@@ -60,6 +60,7 @@ use utoipa::OpenApi;
         crate::api::user_conversations::create_conversation_messages,
         crate::api::user_conversations::get_conversation_runtime,
         crate::api::user_conversations::stream_conversation_runtime,
+        crate::api::user_conversations::cancel_conversation_retry,
         crate::api::user_conversations::list_conversation_file_changes,
         // User conversations - additional handlers
         crate::api::user_conversations::list_conversations,

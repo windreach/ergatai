@@ -511,32 +511,37 @@ export const filesRouter = router({
 
       try {
         // Collect entries from all roots, tagging each with its root.
-        const taggedEntries: Array<FileEntry & { root: string }> = []
-        for (const root of roots) {
-          try {
-            const pathStat = await stat(root)
-            if (!pathStat.isDirectory()) {
-              console.warn(`[files] Not a directory: ${root}`)
-              continue
+        // Scan roots concurrently; results are flattened in input order.
+        const rootResults = await Promise.all(
+          roots.map(async (root) => {
+            const tagged: Array<FileEntry & { root: string }> = []
+            try {
+              const pathStat = await stat(root)
+              if (!pathStat.isDirectory()) {
+                console.warn(`[files] Not a directory: ${root}`)
+                return tagged
+              }
+              const rawEntries = await getEntryList(root)
+              const entries =
+                collapseChains && !query
+                  ? collapseEntries(rawEntries, collapseRoot || "")
+                  : collapseRoot
+                    ? rawEntries.filter(
+                        (e) =>
+                          e.path !== collapseRoot &&
+                          e.path.startsWith(`${collapseRoot}/`),
+                      )
+                    : rawEntries
+              for (const e of entries) {
+                tagged.push({ ...e, root })
+              }
+            } catch (error) {
+              console.error(`[files] Error scanning ${root}:`, error)
             }
-            const rawEntries = await getEntryList(root)
-            const entries =
-              collapseChains && !query
-                ? collapseEntries(rawEntries, collapseRoot || "")
-                : collapseRoot
-                  ? rawEntries.filter(
-                      (e) =>
-                        e.path !== collapseRoot &&
-                        e.path.startsWith(`${collapseRoot}/`),
-                    )
-                  : rawEntries
-            for (const e of entries) {
-              taggedEntries.push({ ...e, root })
-            }
-          } catch (error) {
-            console.error(`[files] Error scanning ${root}:`, error)
-          }
-        }
+            return tagged
+          }),
+        )
+        const taggedEntries = rootResults.flat()
 
         const rawEntries = taggedEntries
 

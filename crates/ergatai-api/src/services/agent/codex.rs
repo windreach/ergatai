@@ -229,6 +229,23 @@ pub fn detect_native_config(
     ))
 }
 
+/// Agent-specific skill mention conversion rules.
+/// Codex: normalize skill mentions to native `$name` form.
+pub fn convert_skill_mentions(message: &str) -> String {
+    use regex::Regex;
+    let mut result = message.to_string();
+    for trig in ["@", "$", "#"] {
+        if let Ok(re) = Regex::new(&format!(r"{}\[(skill):([^\]]+)\]", regex::escape(trig))) {
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    format!("${}", caps.get(2).unwrap().as_str())
+                })
+                .to_string();
+        }
+    }
+    result
+}
+
 pub fn list_skills(cwd: Option<&str>) -> Vec<crate::services::skills_service::SkillInfo> {
     use std::path::Path;
     let mut out = Vec::new();

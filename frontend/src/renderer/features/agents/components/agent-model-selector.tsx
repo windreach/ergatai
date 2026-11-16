@@ -490,7 +490,7 @@ export function AgentModelSelector({
     }
   }
 
-  const isItemSelected = (item: FlatModelItem): boolean => {
+  const isItemSelected = useCallback((item: FlatModelItem): boolean => {
     switch (item.type) {
       case "claude":
         return selectedAgentId === "claude-code" && claude.selectedModelId === item.model.id
@@ -501,7 +501,7 @@ export function AgentModelSelector({
       case "custom":
         return selectedAgentId === "claude-code"
     }
-  }
+  }, [selectedAgentId, claude.selectedModelId, claude.selectedOllamaModel, codex.selectedModelId])
 
   const recentItems = useMemo(() => {
     const byKey = new Map(filteredModels.map((item) => [getItemKey(item), item]))
@@ -527,6 +527,7 @@ export function AgentModelSelector({
     claude.selectedModelId,
     claude.selectedOllamaModel,
     codex.selectedModelId,
+    isItemSelected,
   ])
 
   const recentKeySet = useMemo(

@@ -787,35 +787,9 @@ impl ProfileRegistry {
             }
         }
 
-        // Existing installations get the safe Codex declaration on startup, but
-        // only when the profile has no user-provided trigger metadata.
-        let codex_native_triggers = default_codex_native_triggers_json()?;
-        conn.execute(
-            "UPDATE agent_registrations SET native_triggers_json = ?1
-             WHERE name = 'codex' AND native_triggers_json IS NULL",
-            params![codex_native_triggers],
-        )
-        .map_err(|e| {
-            ErgataiError::internal(format!(
-                "Failed to set default Codex native triggers: {}",
-                e
-            ))
-        })?;
-
-        // Existing installations get the safe Claude Code declaration on startup,
-        // but only when the profile has no user-provided trigger metadata.
-        let claude_native_triggers = default_claude_native_triggers_json()?;
-        conn.execute(
-            "UPDATE agent_registrations SET native_triggers_json = ?1
-             WHERE (name = 'claude' OR name = 'claude-code') AND native_triggers_json IS NULL",
-            params![claude_native_triggers],
-        )
-        .map_err(|e| {
-            ErgataiError::internal(format!(
-                "Failed to set default Claude native triggers: {}",
-                e
-            ))
-        })?;
+        // Native trigger defaults are set at profile registration time (see
+        // register_*_default_profiles). No startup backfill: dev environments
+        // are expected to re-register cleanly.
 
         // The Claude adapter package was renamed. Keep profile metadata in sync
         // immediately; command migration is handled by the managed release
@@ -844,21 +818,6 @@ impl ProfileRegistry {
                 "Migrated Claude adapter package metadata"
             );
         }
-
-        // Existing installations get the safe OpenCode declaration on startup,
-        // but only when the profile has no user-provided trigger metadata.
-        let opencode_native_triggers = default_opencode_native_triggers_json()?;
-        conn.execute(
-            "UPDATE agent_registrations SET native_triggers_json = ?1
-             WHERE name = 'opencode' AND native_triggers_json IS NULL",
-            params![opencode_native_triggers],
-        )
-        .map_err(|e| {
-            ErgataiError::internal(format!(
-                "Failed to set default OpenCode native triggers: {}",
-                e
-            ))
-        })?;
 
         // Fix-up migration: opencode ACP uses stdio, not HTTP.
         // Earlier versions incorrectly registered it with transport="http",

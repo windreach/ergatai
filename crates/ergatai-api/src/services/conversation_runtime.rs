@@ -82,6 +82,18 @@ impl RuntimeStatus {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RuntimeRetryState {
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub delay_ms: u64,
+    pub next_retry_at_ms: i64,
+    pub error_name: Option<String>,
+    pub message: String,
+    pub message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationRuntimeSnapshot {
     pub epoch: String,
     pub conversation_id: String,
@@ -90,6 +102,7 @@ pub struct ConversationRuntimeSnapshot {
     pub last_sequence: u64,
     pub first_sequence: Option<u64>,
     pub events: Vec<RuntimeEvent>,
+    pub retry: Option<RuntimeRetryState>,
     pub started_at_ms: Option<i64>,
     pub updated_at_ms: Option<i64>,
 }
@@ -100,6 +113,7 @@ struct ConversationRuntime {
     turn_id: Option<String>,
     next_sequence: u64,
     events: VecDeque<RuntimeEvent>,
+    retry: Option<RuntimeRetryState>,
     started_at_ms: Option<i64>,
     updated_at_ms: Option<i64>,
 }
@@ -528,7 +542,9 @@ impl ConversationRuntimeStore {
         let mut conversations = self.conversations.write().await;
         let runtime = conversations.entry(conversation_id.clone()).or_default();
 
-        // Restore the monotonic cursor and active turn after a process restart.
+        // Restore the monotonic cursor and active turn after a process restart
+        // before handling any event so retry/status sequences cannot collide
+        // with the persisted high-water mark.
         if runtime.next_sequence == 0 && runtime.turn_id.is_none() {
             if let Some(event_log) = self.event_log.as_ref() {
                 if let Some(persisted) = event_log.load_state(&conversation_id) {
@@ -539,6 +555,64 @@ impl ConversationRuntimeStore {
                     runtime.updated_at_ms = persisted.updated_at_ms;
                 }
             }
+        }
+
+        // Retry events are ephemeral status, not turn content. They are kept in
+        // the in-memory event queue for cursor monotonicity, but are never
+        // persisted to the event log and do not reset the turn on TurnStarted.
+        if let AgentOutputEvent::Retry {
+            attempt,
+            max_attempts,
+            delay_ms,
+            next_retry_at_ms,
+            message,
+            error_name,
+            message_id,
+            cancelled,
+            ..
+        } = &event
+        {
+            if *cancelled {
+                let had_retry = runtime.retry.take().is_some();
+                if had_retry && matches!(runtime.status, RuntimeStatus::Streaming) {
+                    runtime.status = RuntimeStatus::Error;
+                }
+            } else {
+                runtime.retry = Some(RuntimeRetryState {
+                    attempt: *attempt,
+                    max_attempts: *max_attempts,
+                    delay_ms: *delay_ms,
+                    next_retry_at_ms: *next_retry_at_ms,
+                    error_name: error_name.clone(),
+                    message: message.clone(),
+                    message_id: message_id.clone(),
+                });
+                runtime.status = RuntimeStatus::Streaming;
+            }
+            runtime.updated_at_ms = Some(now);
+
+            let turn_id = runtime
+                .turn_id
+                .clone()
+                .unwrap_or_else(|| format!("turn-{}-{}", runtime_epoch(), runtime.next_sequence));
+            let runtime_event = RuntimeEvent {
+                conversation_id: conversation_id.clone(),
+                turn_id,
+                sequence: runtime.next_sequence,
+                timestamp_ms: now,
+                event,
+            };
+            runtime.next_sequence += 1;
+            // Keep the retry status in the replayable queue so snapshot
+            // cursors stay monotonic. It is intentionally not persisted to the
+            // event log; the live `retry` state is ephemeral.
+            runtime.events.push_back(runtime_event.clone());
+            while runtime.events.len() > MAX_EVENTS_PER_CONVERSATION {
+                runtime.events.pop_front();
+            }
+            drop(conversations);
+            let _ = self.events.send(runtime_event);
+            return;
         }
 
         // Turn boundaries are explicit: only TurnStarted (or a durable
@@ -581,12 +655,14 @@ impl ConversationRuntimeStore {
                 runtime.turn_id = Some(format!("message-{}-{}", message_id, runtime.next_sequence));
                 runtime.started_at_ms = Some(now);
                 runtime.status = RuntimeStatus::Streaming;
+                runtime.retry = None;
             } else if runtime.status == RuntimeStatus::Idle {
                 runtime.turn_id = Some(format!("message-{}-{}", message_id, runtime.next_sequence));
                 runtime.started_at_ms = Some(now);
                 if durable_starts_work {
                     runtime.status = RuntimeStatus::Streaming;
                 }
+                runtime.retry = None;
             }
             // Non-starting durable messages (assistant/broadcast copies) are
             // appended to the current turn. They must not reset a completed
@@ -631,6 +707,11 @@ impl ConversationRuntimeStore {
             } else {
                 RuntimeStatus::Completed
             };
+            if let AgentOutputEvent::Done { stop_reason, .. } = &runtime_event.event {
+                if stop_reason != "error" {
+                    runtime.retry = None;
+                }
+            }
         }
 
         runtime.events.push_back(runtime_event.clone());
@@ -675,6 +756,7 @@ impl ConversationRuntimeStore {
                         last_sequence: persisted.last_sequence,
                         first_sequence,
                         events,
+                        retry: None,
                         started_at_ms: persisted.started_at_ms,
                         updated_at_ms: persisted.updated_at_ms,
                     };
@@ -688,6 +770,7 @@ impl ConversationRuntimeStore {
                 last_sequence: 0,
                 first_sequence: None,
                 events: Vec::new(),
+                retry: None,
                 started_at_ms: None,
                 updated_at_ms: None,
             };
@@ -717,9 +800,56 @@ impl ConversationRuntimeStore {
                 .unwrap_or(runtime.next_sequence.saturating_sub(1)),
             first_sequence,
             events,
+            retry: runtime.retry.clone(),
             started_at_ms: runtime.started_at_ms,
             updated_at_ms: runtime.updated_at_ms,
         }
+    }
+
+    /// Clear the in-place retry indicator for a conversation and notify live
+    /// subscribers. Used when the user stops an automatic retry loop.
+    pub async fn clear_retry(&self, conversation_id: &str) {
+        let now = timestamp_ms();
+        let mut conversations = self.conversations.write().await;
+        let Some(runtime) = conversations.get_mut(conversation_id) else {
+            return;
+        };
+        if runtime.retry.take().is_none() {
+            return;
+        }
+        if matches!(runtime.status, RuntimeStatus::Streaming) {
+            runtime.status = RuntimeStatus::Error;
+        }
+        runtime.updated_at_ms = Some(now);
+
+        let turn_id = runtime
+            .turn_id
+            .clone()
+            .unwrap_or_else(|| format!("turn-{}-{}", runtime_epoch(), runtime.next_sequence));
+        let runtime_event = RuntimeEvent {
+            conversation_id: conversation_id.to_string(),
+            turn_id,
+            sequence: runtime.next_sequence,
+            timestamp_ms: now,
+            event: AgentOutputEvent::Retry {
+                role: "assistant".to_string(),
+                attempt: 0,
+                max_attempts: 0,
+                delay_ms: 0,
+                next_retry_at_ms: 0,
+                message: "Automatic retry stopped".to_string(),
+                error_name: None,
+                message_id: None,
+                cancelled: true,
+            },
+        };
+        runtime.next_sequence += 1;
+        runtime.events.push_back(runtime_event.clone());
+        while runtime.events.len() > MAX_EVENTS_PER_CONVERSATION {
+            runtime.events.pop_front();
+        }
+        drop(conversations);
+        let _ = self.events.send(runtime_event);
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<RuntimeEvent> {
@@ -986,6 +1116,104 @@ mod tests {
         let tail = store.snapshot("conv_1", Some(0)).await;
         assert_eq!(tail.events.len(), 1);
         assert_eq!(tail.events[0].sequence, 1);
+    }
+
+    #[tokio::test]
+    async fn tracks_retry_state_across_attempt_turns() {
+        let store = ConversationRuntimeStore::ephemeral();
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::Retry {
+                    role: "assistant".to_string(),
+                    attempt: 2,
+                    max_attempts: 20,
+                    delay_ms: 4_000,
+                    next_retry_at_ms: 10_000,
+                    message: "upstream timeout".to_string(),
+                    error_name: Some("timeout".to_string()),
+                    message_id: Some("msg_1".to_string()),
+                    cancelled: false,
+                },
+            )
+            .await;
+
+        let snapshot = store.snapshot("conv_1", None).await;
+        assert_eq!(snapshot.status, RuntimeStatus::Streaming);
+        let retry = snapshot.retry.expect("retry state");
+        assert_eq!(retry.attempt, 2);
+        assert_eq!(retry.max_attempts, 20);
+        assert_eq!(retry.delay_ms, 4_000);
+        assert_eq!(retry.next_retry_at_ms, 10_000);
+
+        // A new attempt starts a fresh turn but must not hide the retry row.
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::TurnStarted {
+                    role: "assistant".to_string(),
+                    turn_id: "turn_2".to_string(),
+                },
+            )
+            .await;
+        let snapshot = store.snapshot("conv_1", None).await;
+        assert_eq!(snapshot.status, RuntimeStatus::Streaming);
+        assert!(snapshot.retry.is_some());
+
+        // Success clears the retry indicator.
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::Done {
+                    role: "assistant".to_string(),
+                    stop_reason: "end_turn".to_string(),
+                },
+            )
+            .await;
+        let snapshot = store.snapshot("conv_1", None).await;
+        assert_eq!(snapshot.status, RuntimeStatus::Completed);
+        assert!(snapshot.retry.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelled_retry_clears_retry_state() {
+        let store = ConversationRuntimeStore::ephemeral();
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::Retry {
+                    role: "assistant".to_string(),
+                    attempt: 3,
+                    max_attempts: 20,
+                    delay_ms: 8_000,
+                    next_retry_at_ms: 20_000,
+                    message: "rate limited".to_string(),
+                    error_name: Some("rate_limit".to_string()),
+                    message_id: Some("msg_1".to_string()),
+                    cancelled: false,
+                },
+            )
+            .await;
+        store
+            .ingest(
+                "conv_1".to_string(),
+                AgentOutputEvent::Retry {
+                    role: "assistant".to_string(),
+                    attempt: 3,
+                    max_attempts: 20,
+                    delay_ms: 0,
+                    next_retry_at_ms: 0,
+                    message: "stopped".to_string(),
+                    error_name: None,
+                    message_id: Some("msg_1".to_string()),
+                    cancelled: true,
+                },
+            )
+            .await;
+
+        let snapshot = store.snapshot("conv_1", None).await;
+        assert!(snapshot.retry.is_none());
+        assert_eq!(snapshot.status, RuntimeStatus::Error);
     }
 
     #[tokio::test]

@@ -85,27 +85,12 @@ export {
 // Providers
 export {
   filesProvider,
-  agentsProvider,
   builtInProviders,
   registerBuiltInProviders,
   registerProvider,
 } from "./providers"
 
-export type { FileData, AgentData, AgentModel } from "./providers"
-
-// Agent-native trigger allowlists
-export {
-  agentTriggerChars,
-  matchAgentTriggers,
-  normalizeAgentTriggers,
-} from "./native-triggers"
-export type {
-  AgentNativeTrigger,
-  AgentTriggerExecution,
-  AgentTriggerKind,
-  AgentTriggerMatch,
-  AgentTriggerSource,
-} from "./native-triggers"
+export type { FileData } from "./providers"
 
 // Search
 export {

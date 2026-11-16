@@ -47,6 +47,11 @@ pub struct ConversationRuntimeQuery {
     pub after_sequence: Option<u64>,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CancelConversationRetryRequest {
+    pub message_id: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateInitialPromptRequest {
@@ -982,6 +987,42 @@ pub async fn stream_conversation_runtime(
                 .text("keep-alive"),
         )
         .into_response()
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/conversations/{conversation_id}/retry/cancel",
+    tag = "Conversations",
+    params(("conversation_id" = String, Path, description = "Conversation ID")),
+    request_body = CancelConversationRetryRequest,
+    responses(
+        (status = 200, description = "Automatic retry cancelled"),
+        (status = 400, description = "Invalid request", body = crate::api::ApiError),
+    )
+)]
+pub async fn cancel_conversation_retry(
+    Path(conversation_id): Path<String>,
+    Json(request): Json<CancelConversationRetryRequest>,
+) -> Response {
+    if request.message_id.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "message_id cannot be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    crate::mcp::message_delivery::cancel_delivery_retry(&request.message_id);
+
+    // Clear the live retry indicator immediately. The delivery consumer will
+    // also ack the pending redelivery when it next sees this message id.
+    if let Some(store) = crate::services::conversation_runtime::runtime_store() {
+        store.clear_retry(&conversation_id).await;
+    }
+
+    Json(serde_json::json!({ "success": true })).into_response()
 }
 
 #[utoipa::path(

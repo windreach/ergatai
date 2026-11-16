@@ -106,8 +106,7 @@ describe("ConversationProjectionService", () => {
     expect(result.visibleMessages[0]?.id).toBe("msg-canonical-user")
   })
 
-  it("memoizes projection results for identical source references", () => {
-    const service = getConversationProjectionService()
+  it("memoizes projection results for identical source references", () => {    const service = getConversationProjectionService()
     const persisted: Message[] = [
       {
         id: "msg-1",
@@ -178,5 +177,63 @@ describe("ConversationProjectionService", () => {
 
     expect(second).not.toBe(first)
     expect(second.visibleMessages[0]?.id).toBe("msg-2")
+  })
+
+  it("turns a persisted failed turn into a single error part", () => {
+    const message = getConversationProjectionService().normalizeRawMessage({
+      id: "msg-error",
+      role: "assistant",
+      parts: [{ type: "text", text: "There's an issue with the selected model (qwen3.7-plus)." }],
+      metadata: {
+        turnId: "turn-1",
+        stopReason: "error",
+        error: {
+          message: "There's an issue with the selected model (qwen3.7-plus).",
+          errorName: "model_not_found",
+          errorType: "model_not_found",
+        },
+      },
+    })
+
+    const parts = message.parts as Array<Record<string, unknown>>
+    expect(parts).toHaveLength(1)
+    expect(parts[0]?.type).toBe("error")
+    expect((parts[0]?.error as { errorName?: string }).errorName).toBe("model_not_found")
+    expect((parts[0]?.error as { rawText?: string }).rawText).toContain("qwen3.7-plus")
+  })
+
+  it("recognizes legacy failed turns from the top-level stopReason field", () => {
+    const message = getConversationProjectionService().normalizeRawMessage({
+      id: "msg-legacy-error",
+      role: "assistant",
+      parts: [{ type: "text", text: "There's an issue with the selected model (qwen3.7-plus)." }],
+      metadata: { turnId: "turn-1" },
+      stopReason: "error",
+    })
+
+    const parts = message.parts as Array<Record<string, unknown>>
+    expect(parts).toHaveLength(1)
+    expect(parts[0]?.type).toBe("error")
+    expect((parts[0]?.error as { message?: string }).message).toContain("selected model")
+  })
+
+  it("collapses consecutive identical failed turns into one error card", () => {
+    const service = getConversationProjectionService()
+    const makeError = (id: string, sequence: number): Message =>
+      ({
+        id,
+        role: "assistant",
+        sequence,
+        parts: [{ type: "error", error: { message: "rate limited", errorName: "rate_limit" } }],
+        metadata: { turnId: `turn-${id}`, stopReason: "error" },
+      }) as Message
+
+    const result = service.project({
+      persistedMessages: [makeError("msg-1", 1), makeError("msg-2", 2), makeError("msg-3", 3)],
+    })
+
+    expect(result.visibleMessages).toHaveLength(1)
+    const error = (result.visibleMessages[0]?.parts?.[0] as { error?: { repeatCount?: number } }).error
+    expect(error?.repeatCount).toBe(3)
   })
 })

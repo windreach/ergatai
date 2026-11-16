@@ -12,11 +12,8 @@ import {
 } from "react"
 import { createFileIconElement } from "./file-icon-utils"
 import { buildGenericMentionToken, MENTION_PREFIXES } from "./mentions-utils"
-import {
-  type AgentNativeTrigger,
-  type AgentTriggerMatch,
-  matchAgentTriggers,
-} from "../../mentions"
+// Native agent trigger hints removed; prompt text (with discovery tokens) is
+// passed straight to the agent.
 
 // Threshold for skipping expensive trigger detection (characters)
 // Should be >= MAX_PASTE_LENGTH from paste-text.ts to avoid processing large pasted content
@@ -95,10 +92,6 @@ type TriggerPayload = {
 // Export SlashTriggerPayload for slash commands
 export type SlashTriggerPayload = TriggerPayload
 
-export type NativeTriggerPayload = AgentTriggerMatch & {
-  rect: DOMRect
-}
-
 /**
  * Trigger configuration from backend.
  * Used by walkTreeOnce to detect trigger characters dynamically.
@@ -133,10 +126,6 @@ type AgentsMentionsEditorProps = {
   onCloseTrigger: () => void
   onSlashTrigger?: (payload: TriggerPayload) => void // Slash command trigger
   onCloseSlashTrigger?: () => void // Close slash command dropdown
-  /** Explicit native trigger allowlist; unregistered syntax stays raw. */
-  nativeTriggers?: AgentNativeTrigger[]
-  onNativeTrigger?: (payload: NativeTriggerPayload) => void
-  onCloseNativeTrigger?: () => void
   /** Trigger config for mention dropdown (default: @ standalone) */
   mentionTrigger?: EditorTriggerConfig
   /** Trigger config for slash command dropdown (default: / start-of-line) */
@@ -306,7 +295,6 @@ interface TreeWalkResult {
   discoveryPosition: { node: Node; offset: number } | null
   discoveryIndex: number
   discoveryTrigger: EditorTriggerConfig | null
-  nativeTriggerMatches: AgentTriggerMatch[]
 }
 
 /**
@@ -335,7 +323,6 @@ function matchesTriggerPosition(
 function walkTreeOnce(
   root: HTMLElement,
   range: Range | null,
-  nativeTriggers: readonly AgentNativeTrigger[] = [],
   discoveryTriggers: readonly EditorTriggerConfig[] = [DEFAULT_MENTION_TRIGGER, DEFAULT_SLASH_TRIGGER],
 ): TreeWalkResult {
   let serialized = ""
@@ -517,7 +504,6 @@ function walkTreeOnce(
     discoveryPosition,
     discoveryIndex,
     discoveryTrigger,
-    nativeTriggerMatches: matchAgentTriggers(textBeforeCursor, nativeTriggers),
   }
 }
 
@@ -532,10 +518,6 @@ export const AgentsMentionsEditor = memo(
         onCloseTrigger,
         onSlashTrigger,
         onCloseSlashTrigger,
-        // react-doctor-disable-next-line rerender-memo-with-default-value
-        nativeTriggers = [],
-        onNativeTrigger,
-        onCloseNativeTrigger,
         mentionTrigger,
         slashTrigger,
         discoveryTriggers,
@@ -882,7 +864,6 @@ export const AgentsMentionsEditor = memo(
               activeDiscoveryTrigger.current = null
               onCloseSlashTrigger?.()
             }
-            onCloseNativeTrigger?.()
             return
           }
 
@@ -898,11 +879,9 @@ export const AgentsMentionsEditor = memo(
             discoveryPosition,
             discoveryIndex,
             discoveryTrigger,
-            nativeTriggerMatches,
           } = walkTreeOnce(
             editorRef.current,
             range,
-            nativeTriggers,
             allDiscoveryTriggers,
           )
 
@@ -966,28 +945,6 @@ export const AgentsMentionsEditor = memo(
             onCloseSlashTrigger?.()
           }
 
-          // Native triggers have lower priority than Ergatai's explicit
-          // route/slash entry points. Unknown syntax reaches this branch only
-          // when it is registered; otherwise it remains ordinary raw text.
-          const nativeTriggerMatch = nativeTriggerMatches[0]
-          if (nativeTriggerMatch && range && onNativeTrigger) {
-            const tempRange = document.createRange()
-            tempRange.setStart(range.endContainer, range.endOffset)
-            tempRange.setEnd(range.endContainer, range.endOffset)
-            const cursorRect = tempRange.getBoundingClientRect()
-            const rect = new DOMRect(
-              cursorRect.left,
-              cursorRect.top,
-              0,
-              cursorRect.height,
-            )
-            onNativeTrigger({ ...nativeTriggerMatch, rect })
-            return
-          }
-
-          if (!nativeTriggerMatch) {
-            onCloseNativeTrigger?.()
-          }
         }
 
         // Always use requestAnimationFrame to avoid blocking input rendering
@@ -998,15 +955,12 @@ export const AgentsMentionsEditor = memo(
         }
         triggerDetectionTimeout.current = requestAnimationFrame(runTriggerDetection)
       }, [
-        nativeTriggers,
         mentionTrigger,
         slashTrigger,
         discoveryTriggers,
         onContentChange,
-        onCloseNativeTrigger,
         onCloseSlashTrigger,
         onCloseTrigger,
-        onNativeTrigger,
         onSlashTrigger,
         onTrigger,
         debouncedSaveUndoState,

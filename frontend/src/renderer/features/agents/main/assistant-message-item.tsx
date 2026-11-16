@@ -32,6 +32,8 @@ import { AgentPlanFileTool } from "../ui/agent-plan-file-tool"
 import { isPlanFile } from "../ui/agent-tool-utils"
 import { messageTypeVariantClass } from "../lib/message-type-styles"
 import type { CoreAgentId } from "../lib/agent-contract-api"
+import { ChatErrorCard } from "../ui/chat-error-card"
+import { chatErrorFromPart } from "../../../../shared/chat-error"
 import {
   AgentMessageUsage,
   type AgentMessageMetadata,
@@ -720,6 +722,16 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
           messageId={message.id}
           partIndex={idx}
           isStreaming={isTextStreaming}
+        />
+      )
+    }
+
+    const chatError = chatErrorFromPart(part)
+    if (chatError) {
+      return (
+        <ChatErrorCard
+          key={`${messageRenderKey}-${idx}`}
+          error={chatError}
         />
       )
     }

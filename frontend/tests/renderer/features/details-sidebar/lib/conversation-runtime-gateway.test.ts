@@ -58,8 +58,7 @@ describe("conversation-runtime-gateway merge logic", () => {
     expect(next.events.length).toBe(1)
   })
 
-  it("mergeSnapshot marks reconnecting on sequence gap", () => {
-    const previous: ConversationRuntimeState = {
+  it("mergeSnapshot marks reconnecting on sequence gap", () => {    const previous: ConversationRuntimeState = {
       conversationId: "c1",
       status: "streaming",
       connectionStatus: "connected",
@@ -93,5 +92,40 @@ describe("conversation-runtime-gateway merge logic", () => {
     }
     const next = mergeSnapshot("c1", previous, snapshot)
     expect(next.connectionStatus).toBe("reconnecting")
+  })
+
+  it("mergeSnapshot preserves the in-place retry state", () => {
+    const previous: ConversationRuntimeState = {
+      conversationId: "c1",
+      status: "streaming",
+      connectionStatus: "connected",
+      epoch: "e1",
+      lastSequence: 1,
+      events: [],
+    }
+    const snapshot = {
+      epoch: "e1",
+      turnId: "t1",
+      status: "streaming" as const,
+      lastSequence: 1,
+      firstSequence: 1,
+      events: [],
+      retry: {
+        attempt: 3,
+        maxAttempts: 20,
+        delayMs: 4_000,
+        nextRetryAtMs: 10_000,
+        errorName: "rate_limit",
+        message: "rate limited",
+        messageId: "msg_1",
+      },
+    }
+    const next = mergeSnapshot("c1", previous, snapshot)
+    expect(next.retry).toMatchObject({
+      attempt: 3,
+      maxAttempts: 20,
+      delayMs: 4_000,
+      nextRetryAtMs: 10_000,
+    })
   })
 })

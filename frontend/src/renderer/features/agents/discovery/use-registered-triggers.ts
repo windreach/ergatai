@@ -25,9 +25,13 @@ export interface EditorTriggerConfig {
  * Kept stable across agents/providers: agents contribute capabilities, not syntax.
  */
 export const BUILTIN_EDITOR_TRIGGERS: readonly EditorTriggerConfig[] = [
-  { char: "/", position: "start-of-line", kind: "slash", types: ["command", "skill", "plugin"] },
-  { char: "@", position: "standalone", kind: "mention", types: ["file", "folder", "agent", "mcp", "skill", "command", "plugin", "tool"] },
-  { char: "$", position: "standalone", kind: "mention", types: ["skill", "command", "plugin"] },
+  // Backend-registered discovery triggers (char/position/kind agreed with
+  // discovery_service::get_triggers; types are capability hints only).
+  { char: "/", position: "start-of-line", kind: "slash", types: ["command"] },
+  { char: "@", position: "standalone", kind: "mention", types: ["file", "folder", "agent"] },
+  { char: "$", position: "standalone", kind: "mention", types: ["skill"] },
+  // Frontend-only editor affordance: "#" surfaces changed-file references
+  // (git diff), which are not backend discovery items.
   { char: "#", position: "standalone", kind: "mention", types: ["file", "folder", "issue", "pr", "task"] },
 ] as const
 
@@ -95,23 +99,6 @@ export function useRegisteredTriggers(
     getTriggerTypes,
     getTriggerPosition,
   }
-}
-
-/**
- * Extract trigger config for a specific character.
- * Retained for compatibility; prefers built-in editor grammar.
- */
-export function extractTriggerConfig(
-  triggers: RegisteredTrigger[],
-  char: string,
-  defaultPosition: "standalone" | "start-of-line" | "anywhere",
-): { char: string; position: "standalone" | "start-of-line" | "anywhere" } | undefined {
-  const builtIn = BUILTIN_EDITOR_TRIGGERS.find((t) => t.char === char)
-  if (builtIn) return { char: builtIn.char, position: builtIn.position }
-  const trigger = triggers.find((t) => t.char === char)
-  return trigger
-    ? { char: trigger.char, position: trigger.position ?? defaultPosition }
-    : undefined
 }
 
 /**

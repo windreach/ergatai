@@ -348,6 +348,19 @@ pub fn detect_native_config(
     ))
 }
 
+/// Agent-specific skill mention conversion rules.
+/// Claude: skill mentions become slash commands (`$[skill:name]` -> `/name`).
+pub fn convert_skill_mentions(message: &str) -> String {
+    use regex::Regex;
+    let mut result = message.to_string();
+    for trig in ["@", "$", "#"] {
+        if let Ok(re) = Regex::new(&format!(r"{}\[(skill):([^\]]+)\]", regex::escape(trig))) {
+            result = re.replace_all(&result, "/$2").to_string();
+        }
+    }
+    result
+}
+
 pub fn list_skills(cwd: Option<&str>) -> Vec<crate::services::skills_service::SkillInfo> {
     use std::path::Path;
     let mut out = Vec::new();
@@ -366,7 +379,8 @@ pub fn list_skills(cwd: Option<&str>) -> Vec<crate::services::skills_service::Sk
             &mut out,
         );
     }
-    crate::services::skills_service::scan_marketplaces(&home, &mut out);
+    crate::services::skills_service::scan_claude_plugin_skills(&home, cwd, &mut out);
+    crate::services::skills_service::apply_claude_skill_overrides(&home, cwd, &mut out);
     out
 }
 

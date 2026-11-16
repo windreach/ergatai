@@ -139,6 +139,9 @@ pub struct OutputMetadata {
     pub context_window: Option<u64>,
     /// ACP extension quota detail (from UsageUpdate _meta), serialized as JSON.
     pub context_quota: Option<serde_json::Value>,
+    /// Structured terminal error for the turn, when the prompt failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<serde_json::Value>,
 }
 
 /// Delivery context for an incoming prompt.
@@ -432,6 +435,14 @@ impl TurnAccumulator {
             return; // Silently discard data after seal
         }
         self.metadata.stop_reason = Some(reason);
+    }
+
+    /// Record a structured terminal error for this turn.
+    pub fn set_error(&mut self, error: serde_json::Value) {
+        if self.sealed {
+            return;
+        }
+        self.metadata.error = Some(error);
     }
 
     /// Set session title

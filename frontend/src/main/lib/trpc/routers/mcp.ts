@@ -162,6 +162,15 @@ export const mcpRouter = router({
       return { mcpServers: [] }
     }),
 
+  /** List all MCP servers from the backend (for name->id resolution). */
+  listMcpServers: publicProcedure.query(async () => {
+    const data = await ergataiFetch<{ servers: Array<{ id: number | string; name: string }> }>(
+      "/api/v1/mcp-servers",
+      { method: "GET" },
+    )
+    return data.servers ?? []
+  }),
+
   /** Add a new MCP server */
   addMcpServer: publicProcedure
     .input(

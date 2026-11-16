@@ -194,6 +194,19 @@ const agentOutputEventSchema = z.discriminatedUnion("type", [
     error_data: z.unknown().nullish(),
     conversation_id: z.string().nullish(),
   }),
+  z.object({
+    type: z.literal("retry"),
+    role: z.string().nullish(),
+    attempt: z.number(),
+    max_attempts: z.number(),
+    delay_ms: z.number(),
+    next_retry_at_ms: z.number(),
+    message: z.string(),
+    error_name: z.string().nullish(),
+    message_id: z.string().nullish(),
+    cancelled: z.boolean().optional().default(false),
+    conversation_id: z.string().nullish(),
+  }),
   z.object({ type: z.literal("status"), message: z.string(), conversation_id: z.string().nullish() }),
   z.object({
     type: z.literal("extension_update"),
@@ -270,6 +283,16 @@ const conversationRuntimeEventSchema = z.object({
   event: agentOutputEventSchema,
 })
 
+const conversationRuntimeRetrySchema = z.object({
+  attempt: z.number(),
+  maxAttempts: z.number(),
+  delayMs: z.number(),
+  nextRetryAtMs: z.number(),
+  errorName: z.string().nullish(),
+  message: z.string(),
+  messageId: z.string().nullish(),
+})
+
 const conversationRuntimeSnapshotSchema = z.object({
   epoch: z.string(),
   conversationId: z.string(),
@@ -278,6 +301,7 @@ const conversationRuntimeSnapshotSchema = z.object({
   lastSequence: z.number(),
   firstSequence: z.number().nullish(),
   events: z.array(conversationRuntimeEventSchema).default([]),
+  retry: conversationRuntimeRetrySchema.nullish(),
   startedAtMs: z.number().nullish(),
   updatedAtMs: z.number().nullish(),
 })
@@ -327,6 +351,18 @@ export type AgentOutputEvent =
       service?: string | null
       code?: number | string | null
       error_data?: unknown
+    } & AgentOutputEventContext)
+  | ({
+      type: "retry"
+      role?: string | null
+      attempt: number
+      max_attempts: number
+      delay_ms: number
+      next_retry_at_ms: number
+      message: string
+      error_name?: string | null
+      message_id?: string | null
+      cancelled?: boolean
     } & AgentOutputEventContext)
   | ({ type: "status"; message: string } & AgentOutputEventContext)
   | ({

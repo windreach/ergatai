@@ -530,16 +530,31 @@ pub async fn prompt_agent_with_images(
     files: Vec<ergatai_runtime::AgentFile>,
     conversation_id: Option<String>,
 ) -> anyhow::Result<()> {
+    // Resolve agent kind for agent-specific skill conversion rules.
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    let agent_kind = if let Some(info) = runtime.get_agent(agent_id).await {
+        if let Some(profile_name) = info.profile.as_deref() {
+            crate::services::agent::resolve_kind_by_name(profile_name).await
+        } else {
+            crate::services::agent::AgentKind::Unknown
+        }
+    } else {
+        crate::services::agent::AgentKind::Unknown
+    };
+    let agent_kind_str = agent_kind.as_str();
+
+    // Backend prompt-processing hook: convert Ergatai discovery/mention tokens
+    // (e.g. @[file:...], @[skill:...]) into agent-native prompt text before
+    // delivery. Raw tokens are kept in storage; transformation happens here.
+    let message =
+        crate::services::initial_prompt_turns::convert_prompt_tokens(message, agent_kind_str);
     let message = if files.is_empty() {
-        message.to_string()
+        message
     } else {
         let saved_paths = save_file_attachments(&files, conversation_id.as_deref())?;
         let mut msg = message.to_string();
-        for (filename, path) in &saved_paths {
-            msg.push_str(&format!(
-                "\n\n[用户上传了文件: {}，已保存到路径 {}，请用文件工具读取]",
-                filename, path
-            ));
+        for (_filename, path) in &saved_paths {
+            msg.push_str(&format!("\n{}", path));
         }
         msg
     };
@@ -1279,9 +1294,26 @@ pub async fn prompt_agent(
         .await
         .ok_or_else(|| anyhow::anyhow!("Agent not found or not running: {}", agent_id))?;
 
+    // Resolve agent kind for agent-specific skill conversion rules.
+    let runtime_for_kind = crate::context::get_app_context().agent_runtime.clone();
+    let agent_kind = if let Some(info) = runtime_for_kind.get_agent(agent_id).await {
+        if let Some(profile_name) = info.profile.as_deref() {
+            crate::services::agent::resolve_kind_by_name(profile_name).await
+        } else {
+            crate::services::agent::AgentKind::Unknown
+        }
+    } else {
+        crate::services::agent::AgentKind::Unknown
+    };
+    let agent_kind_str = agent_kind.as_str();
+
+    // Backend prompt-processing hook (see prompt_agent_with_images).
+    let message =
+        crate::services::initial_prompt_turns::convert_prompt_tokens(message, agent_kind_str);
+
     let runtime = crate::context::get_app_context().agent_runtime.clone();
     runtime
-        .inject_message_with_images(&runtime_id, message, images)
+        .inject_message_with_images(&runtime_id, &message, images)
         .await?;
     Ok(())
 }

@@ -348,6 +348,26 @@ export const conversationsRouter = router({
 
 
 
+  /** Cancel an automatic delivery retry loop for a conversation. */
+  cancelConversationRetry: publicProcedure
+    .input(
+      z.object({
+        conversationId: conversationKeySchema,
+        messageId: z.string().min(1),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      return ergataiFetch(
+        `/api/v1/conversations/${encodeURIComponent(input.conversationId)}/retry/cancel`,
+        {
+          method: "POST",
+          body: JSON.stringify({ message_id: input.messageId }),
+        },
+      )
+    }),
+
+
+
   // ── Conversation Related (5 endpoints) ─────────────────────────────────
 
   /** Get conversation outputs */

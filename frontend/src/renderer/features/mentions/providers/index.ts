@@ -9,13 +9,11 @@
  */
 
 export { filesProvider, type FileData } from "./files-provider"
-export { agentsProvider, type AgentData, type AgentModel } from "./agents-provider"
 
 // Re-export types
 export type { MentionProvider } from "../types"
 
 import { filesProvider } from "./files-provider"
-import { agentsProvider } from "./agents-provider"
 import { mentionRegistry } from "../registry"
 import type { MentionProvider } from "../types"
 
@@ -24,7 +22,6 @@ import type { MentionProvider } from "../types"
  */
 export const builtInProviders: MentionProvider[] = [
   filesProvider,
-  agentsProvider,
 ]
 
 /**

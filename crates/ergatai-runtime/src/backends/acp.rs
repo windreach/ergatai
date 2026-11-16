@@ -521,6 +521,7 @@ fn event_type_name(event: &AgentOutputEvent) -> &'static str {
         AgentOutputEvent::Done { .. } => "Done",
         AgentOutputEvent::TurnStarted { .. } => "TurnStarted",
         AgentOutputEvent::Error { .. } => "Error",
+        AgentOutputEvent::Retry { .. } => "Retry",
         AgentOutputEvent::Status { .. } => "Status",
         AgentOutputEvent::ConversationMessage { .. } => "ConversationMessage",
         _ => "Unknown",
@@ -625,11 +626,11 @@ async fn flush_and_persist_output(
 async fn persist_out_of_turn_error(
     conversation_id: &str,
     enriched: &str,
-    _error_name: Option<String>,
-    _error_type: Option<String>,
-    _service: Option<String>,
-    _code: Option<i64>,
-    _error_data: Option<serde_json::Value>,
+    error_name: Option<String>,
+    error_type: Option<String>,
+    service: Option<String>,
+    code: Option<i64>,
+    error_data: Option<serde_json::Value>,
 ) {
     if enriched.trim().is_empty() {
         return;
@@ -644,6 +645,17 @@ async fn persist_out_of_turn_error(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
+    let metadata = serde_json::json!({
+        "stop_reason": "error",
+        "error": {
+            "message": enriched,
+            "errorName": error_name,
+            "errorType": error_type,
+            "service": service,
+            "code": code,
+            "data": error_data,
+        },
+    });
     let output_data = crate::output_accumulator::AgentOutputData {
         conversation_id: 0, // overwritten by callback's parsed id
         turn_id: format!("error-{}", now),
@@ -660,7 +672,7 @@ async fn persist_out_of_turn_error(
         text_chunks: None,
         timeline: None,
         final_text: Some(enriched.to_string()),
-        metadata: None,
+        metadata: Some(metadata.to_string()),
         created_at: now,
         updated_at: now,
     };
@@ -867,6 +879,24 @@ async fn send_output_event_internal(
                 }
                 AgentOutputEvent::Done { stop_reason, .. } => {
                     acc.set_stop_reason(stop_reason.clone());
+                }
+                AgentOutputEvent::Error {
+                    message,
+                    error_name,
+                    error_type,
+                    service,
+                    code,
+                    error_data,
+                    ..
+                } => {
+                    acc.set_error(serde_json::json!({
+                        "message": message,
+                        "errorName": error_name,
+                        "errorType": error_type,
+                        "service": service,
+                        "code": code,
+                        "data": error_data,
+                    }));
                 }
                 AgentOutputEvent::SessionTitleUpdate { title, .. } => {
                     acc.set_session_title(title.clone());
@@ -1984,6 +2014,35 @@ pub enum AgentOutputEvent {
         /// Raw structured error payload from the protocol/adapter (e.g. JSON-RPC `error.data`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error_data: Option<serde_json::Value>,
+    },
+    /// A transient delivery failure is being retried automatically.
+    ///
+    /// This is emitted by the message-delivery layer, not by ACP itself. It
+    /// carries enough information for the UI to render an in-place retry
+    /// indicator without creating a new assistant message per attempt.
+    Retry {
+        /// Message role: "assistant" for local agent, "agent" for inter-agent
+        role: String,
+        /// 1-based delivery attempt that just failed.
+        attempt: u32,
+        /// Maximum number of delivery attempts configured for the consumer.
+        max_attempts: u32,
+        /// Delay before the next attempt, in milliseconds.
+        delay_ms: u64,
+        /// Absolute wall-clock time of the next attempt, in Unix milliseconds.
+        next_retry_at_ms: i64,
+        /// Human-readable failure summary for the details panel.
+        message: String,
+        /// Structured error type name when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_name: Option<String>,
+        /// Correlation/message id used to stop the retry.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        /// True when the retry loop was stopped or exhausted. The UI clears the
+        /// in-place retry indicator in that case.
+        #[serde(default)]
+        cancelled: bool,
     },
     /// Conversation ID for persistence (emitted at prompt start so SSE stream
     /// can associate output with the correct conversation thread).

@@ -1,18 +1,21 @@
 "use client"
 
-import { cn } from "../../../lib/utils"
 import { trpc } from "../../../lib/trpc"
 import {
   useEffect,
   useMemo,
   memo,
 } from "react"
-import { createPortal } from "react-dom"
 import type { SlashCommandOption } from "./types"
 import type { AgentMode } from "../atoms"
 import { useDiscoveryGroups } from "../discovery/use-discovery-groups"
-import { useRegisteredTriggers } from "../discovery/use-registered-triggers"
-import { useDropdownShell, getDropdownContainerStyle } from "../discovery/use-dropdown-shell"
+import { useDropdownShell } from "../discovery/use-dropdown-shell"
+import {
+  DropdownEmptyState,
+  DropdownOption,
+  DropdownPanel,
+  DropdownSectionHeader,
+} from "../discovery/dropdown-ui"
 
 interface AgentsSlashCommandProps {
   isOpen: boolean
@@ -23,6 +26,8 @@ interface AgentsSlashCommandProps {
   containerWidth?: number
   containerLeft?: number
   chatId?: string
+  /** Runtime agent ID (preferred over resolving via chat bindings). */
+  agentId?: string | null
   cwd?: string
   mode?: AgentMode
   disabledCommands?: string[]
@@ -41,39 +46,33 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
   containerWidth,
   containerLeft,
   chatId,
+  agentId: agentIdProp,
   cwd,
   mode,
   disabledCommands,
   agentKind,
 }: AgentsSlashCommandProps) {
   // Fetch agent bindings to get the agentId for the current chat
-  const { data: bindings } = trpc.ergatai.getAgentBindings.useQuery(
+  const { data: bindings, isLoading: bindingsLoading } = trpc.ergatai.getAgentBindings.useQuery(
     { chatId: chatId ?? "" },
     {
-      enabled: isOpen && !!chatId,
+      enabled: isOpen && !!chatId && !agentIdProp,
       staleTime: 60_000, // Cache for 1 minute - bindings don't change often
     },
   )
 
-  // Use the first binding's agentId (or the one matching the chat)
-  const agentId = bindings?.[0]?.agentId
+  // Prefer the explicitly provided runtime agentId; fall back to chat bindings.
+  const agentId = agentIdProp ?? bindings?.[0]?.agentId
 
   // Generic discovery aggregation (shared abstraction for trigger dropdowns).
   const { groups: discoveryGroups, isLoading: discoveryLoading } = useDiscoveryGroups(isOpen ? agentId : undefined, cwd, agentKind)
-  const { getTriggerTypes } = useRegisteredTriggers(isOpen ? agentId : undefined, cwd)
 
   const agentCommands: SlashCommandOption[] = useMemo(() => {
-    const slashTypes = getTriggerTypes("/")
-    const allowedTypesFallback =
-      slashTypes && slashTypes.length > 0 ? new Set(slashTypes) : null
     return discoveryGroups.flatMap((g) =>
       g.items
         .filter((it) => {
-          // Prefer deterministic routing markers stamped at read/discovery time.
-          if (it.targetTriggers?.includes("/")) return true
-          if (it.targetTriggers?.length) return false
-          // Legacy fallback: dynamic type filtering (fragile, kept for compatibility).
-          return allowedTypesFallback ? allowedTypesFallback.has(it.type) : it.type === "command"
+          // Routing is authoritative via backend-stamped targetTriggers.
+          return it.targetTriggers?.includes("/") === true
         })
         .map((it) => ({
           id: `${it.source ?? "agent"}:${it.name}`,
@@ -82,9 +81,10 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
           description: it.description || "",
           category: "agent" as const,
           group: g.id,
+          serverId: (it as { serverId?: string | number }).serverId,
         })),
     )
-  }, [discoveryGroups, getTriggerTypes])
+  }, [discoveryGroups])
 
   // Filter options with raw searchText for option count (used by shell for keyboard nav)
   const filteredOptions: SlashCommandOption[] = useMemo(() => {
@@ -165,75 +165,54 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
     if (!isOpen) return
     if (debouncedSearchText) return
     if (discoveryLoading) return
+    // Wait for an async agent binding (if any) before deciding there are no commands.
+    if (!agentId && bindingsLoading) return
     if (filteredOptions.length === 0) {
       onClose()
     }
-  }, [isOpen, debouncedSearchText, discoveryLoading, filteredOptions.length, onClose])
+  }, [isOpen, debouncedSearchText, discoveryLoading, filteredOptions.length, onClose, agentId, bindingsLoading])
 
   if (!isOpen) return null
 
-  return createPortal(
-    <div
-      ref={dropdownRef}
-      className="fixed z-[99999] overflow-y-auto rounded-[10px] border border-border bg-popover py-1 text-xs text-popover-foreground shadow-lg [&::-webkit-scrollbar]:hidden"
-      style={{
-        ...getDropdownContainerStyle(finalTop, finalLeft, computedMaxHeight, transformY, containerWidth, dropdownWidth),
-        scrollbarWidth: "none",
-        msOverflowStyle: "none",
-      } as React.CSSProperties}
+  return (
+    <DropdownPanel
+      dropdownRef={dropdownRef}
+      finalTop={finalTop}
+      finalLeft={finalLeft}
+      computedMaxHeight={computedMaxHeight}
+      transformY={transformY}
+      containerWidth={containerWidth}
+      dropdownWidth={dropdownWidth}
     >
       {/* Grouped commands by source/group */}
       {displayOptions.length > 0 && (
         <>
           {Array.from(new Set(displayOptions.map((o) => o.group || "commands"))).map((group) => (
             <div key={group}>
-              <div className="px-2.5 py-1.5 mx-1 text-xs font-bold text-muted-foreground">
-                {group}
-              </div>
+              <DropdownSectionHeader>{group}</DropdownSectionHeader>
               {displayOptions
                 .filter((option) => (option.group || "commands") === group)
                 .map((option) => {
                   const index = displayOptions.indexOf(option)
                   const isSelected = selectedIndex === index
                   return (
-                    <div
-                      // react-doctor-disable-next-line prefer-tag-over-role
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault()
-                          ;(e.currentTarget as HTMLElement).click()
-                        }
-                      }}
+                    <DropdownOption
                       key={option.id}
-                      data-option-index={index}
-                      onMouseDown={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        onSelect(option)
-                      }}
+                      optionIndex={index}
+                      selected={isSelected}
+                      selectOnMouseDown
+                      onSelect={() => onSelect(option)}
                       onMouseEnter={() => setSelectedIndex(index)}
-                      className={cn(
-                        "group inline-flex w-[calc(100%-8px)] mx-1 items-center whitespace-nowrap outline-none",
-                        "h-7 px-1.5 justify-start text-xs rounded-md",
-                        "transition-colors cursor-pointer select-none",
-                        isSelected
-                          ? "dark:bg-neutral-800 bg-accent text-foreground"
-                          : "text-muted-foreground dark:hover:bg-neutral-800 hover:bg-accent hover:text-foreground",
-                      )}
                     >
-                      <span className="flex items-center gap-1 w-full min-w-0">
-                        <span className="shrink-0 whitespace-nowrap font-medium">
-                          {option.command}
-                        </span>
-                        <span
-                          className="text-muted-foreground flex-1 min-w-0 ml-2 overflow-hidden text-[10px] truncate"
-                        >
-                          {option.description}
-                        </span>
+                      <span className="shrink-0 whitespace-nowrap font-medium">
+                        {option.command}
                       </span>
-                    </div>
+                      <span
+                        className="text-muted-foreground flex-1 min-w-0 ml-2 overflow-hidden text-[10px] truncate"
+                      >
+                        {option.description}
+                      </span>
+                    </DropdownOption>
                   )
                 })}
             </div>
@@ -243,13 +222,12 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
 
       {/* Empty state */}
       {displayOptions.length === 0 && (
-        <div className="h-7 px-1.5 mx-1 flex items-center text-xs text-muted-foreground">
+        <DropdownEmptyState>
           {debouncedSearchText
             ? `No commands matching "${debouncedSearchText}"`
             : "No commands available"}
-        </div>
+        </DropdownEmptyState>
       )}
-    </div>,
-    document.body
+    </DropdownPanel>
   )
 })

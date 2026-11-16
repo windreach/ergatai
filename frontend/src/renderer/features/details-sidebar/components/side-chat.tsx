@@ -1,11 +1,12 @@
  
 import { useCallback, useRef, useState } from "react"
 import { type UIMessage } from "@ai-sdk/react"
-import { ActiveChatDock } from "../../agents"
+import { ActiveChatDock, RetryStatusRow } from "../../agents"
 import { TextSelectionProvider, TextSelectionPopover, QuickCommentInput, useTextContextSelection, useQuickComment, useMessageQueueStore } from "../../agents"
 import type { AgentsMentionsEditorHandle } from "../../agents"
 import type { MessageTokenData } from "../../agents"
 import type { ChatConversation } from "../lib/chat-contract-api"
+import type { ConversationRetryState } from "../lib/conversation-runtime-gateway"
 import { ActiveChatMessages, useChatInstance } from "../../agents"
 import { useAgentRuntimeAgents } from "../../agents/public"
 import { useConversationChatSurface } from "@/features/agents"
@@ -25,6 +26,7 @@ interface SideChatProps {
   /** Live events from the backend runtime cache, used when attaching mid-turn. */
   externalMessages?: UIMessage[]
   runtimeStatus?: "idle" | "streaming" | "completed" | "error"
+  runtimeRetry?: ConversationRetryState | null
   runtimeConnectionStatus?: "connecting" | "connected" | "reconnecting" | "stopped"
 }
 
@@ -53,6 +55,7 @@ export function SideChat({
   isLoadingMessages = false,
   externalMessages = [],
   runtimeStatus,
+  runtimeRetry,
   runtimeConnectionStatus,
   projectPath,
   repository,
@@ -85,6 +88,7 @@ export function SideChat({
     persistedMessagesLoading: isLoadingMessages,
     runtimeMessages: externalMessages as any,
     runtimeStatus,
+    runtimeRetry,
     projectPath,
     repository,
     sandboxId,
@@ -259,7 +263,15 @@ export function SideChat({
             contentClassName="pt-4"
           />
         }
-        afterMessagesSlot={null}
+        afterMessagesSlot={
+          surface.runtimeRetry ? (
+            <RetryStatusRow
+              retry={surface.runtimeRetry}
+              onStop={surface.handleStopRetry}
+              stopDisabled={surface.isStoppingRetry}
+            />
+          ) : null
+        }
         footerSlot={
           <div className="w-full flex-shrink-0">
             {!isBoundAgentAlive && !isStreaming && !isBoundAgentSuspended && (

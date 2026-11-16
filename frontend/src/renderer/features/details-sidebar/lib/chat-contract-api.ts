@@ -28,6 +28,8 @@ export interface ChatMessage {
   parts?: unknown[]
   /** Backend-assigned turn identifier for deduplication across sources. */
   turnId?: string | null
+  /** Backend turn stop reason ("end_turn" | "error" | ...). */
+  stopReason?: string | null
 }
 
 export interface ChatConversation {

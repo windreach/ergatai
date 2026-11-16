@@ -60,6 +60,103 @@ const DEDUP_TTL: Duration = Duration::from_secs(300);
 /// Maximum cache size before forced cleanup
 const MAX_CACHE_SIZE: usize = 10000;
 
+/// Maximum JetStream delivery attempts for agent messages.
+pub const MAX_DELIVER: usize = 20;
+const MAX_DELIVER_U32: u32 = MAX_DELIVER as u32;
+
+/// Exponential backoff bounds for transient delivery failures.
+const RETRY_BASE_DELAY_MS: u64 = 1_000;
+const RETRY_MAX_DELAY_MS: u64 = 30_000;
+
+/// How long a user-initiated retry cancellation remains valid.
+const CANCELLED_DELIVERY_TTL: Duration = Duration::from_secs(600);
+
+static CANCELLED_DELIVERIES: once_cell::sync::OnceCell<Mutex<HashMap<String, Instant>>> =
+    once_cell::sync::OnceCell::new();
+
+fn cancelled_deliveries() -> &'static Mutex<HashMap<String, Instant>> {
+    CANCELLED_DELIVERIES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Cancel automatic redelivery for a specific agent message.
+///
+/// The delivery consumer checks this set before every attempt, so a message
+/// that is already waiting for its next backoff interval is acked and dropped
+/// instead of being delivered again.
+pub fn cancel_delivery_retry(message_id: &str) {
+    let Ok(mut guard) = cancelled_deliveries().lock() else {
+        tracing::error!("Cancelled delivery lock poisoned; cannot cancel retry");
+        return;
+    };
+    let now = Instant::now();
+    guard.retain(|_, timestamp| now.duration_since(*timestamp) < CANCELLED_DELIVERY_TTL);
+    guard.insert(message_id.to_string(), now);
+}
+
+/// Check whether a delivery retry was cancelled by the user.
+fn is_delivery_cancelled(message_id: &str) -> bool {
+    let Ok(mut guard) = cancelled_deliveries().lock() else {
+        return false;
+    };
+    let now = Instant::now();
+    guard.retain(|_, timestamp| now.duration_since(*timestamp) < CANCELLED_DELIVERY_TTL);
+    guard.contains_key(message_id)
+}
+
+fn retry_delay_ms(attempt: u32) -> u64 {
+    let exponent = attempt.saturating_sub(1).min(5);
+    (RETRY_BASE_DELAY_MS << exponent).min(RETRY_MAX_DELAY_MS)
+}
+
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+/// Errors that cannot succeed by retrying the exact same prompt. These are
+/// acked immediately so a permanent provider/model configuration problem does
+/// not flood the conversation with duplicate error turns.
+fn is_permanent_delivery_error(error: &ErgataiError) -> bool {
+    if matches!(error, ErgataiError::AgentNotFound(_)) {
+        return true;
+    }
+
+    let text = error.to_string().to_ascii_lowercase();
+    [
+        "free usage limit",
+        "free-limit",
+        "provider.free-limit",
+        "model_not_found",
+        "invalid_api_key",
+        "authentication_error",
+        "invalid authentication",
+        "permission_denied",
+        "unauthorized",
+        "context_length_exceeded",
+        "invalid_request_error",
+        "bad request",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
+/// Publish a retry status event to the target conversation so the UI can show
+/// an in-place counter instead of one error message per attempt.
+async fn publish_retry_event(conversation_id: &str, event: ergatai_runtime::AgentOutputEvent) {
+    let Some(publisher) = ergatai_runtime::get_global_output_publisher() else {
+        return;
+    };
+    if let Err(error) = publisher.publish(conversation_id, event).await {
+        warn!(
+            conversation_id = %conversation_id,
+            error = %error,
+            "Failed to publish retry status event"
+        );
+    }
+}
+
 /// Initialize or get the processed messages cache
 fn get_processed_messages() -> &'static Mutex<HashMap<String, Instant>> {
     PROCESSED_MESSAGES.get_or_init(|| Mutex::new(HashMap::new()))
@@ -107,6 +204,27 @@ fn unmark_message_processed(message_id: &str) {
 fn cleanup_stale_entries(cache: &mut HashMap<String, Instant>) {
     let now = Instant::now();
     cache.retain(|_, timestamp| now.duration_since(*timestamp) < DEDUP_TTL);
+}
+
+/// Convert a user-origin delivery payload into agent-native prompt text.
+///
+/// Ergatai discovery/mention tokens (e.g. `@[agent:name]`, `@[file:...]`,
+/// `$[skill:...]`) are a UI serialization format. Messages are persisted with
+/// the raw tokens so the composer can re-render them as mentions, but agents
+/// must receive plain text. Agent-to-agent payloads are structured JSON and are
+/// passed through untouched.
+fn prepare_delivery_message<'a>(
+    from: &str,
+    message: &'a str,
+    agent_kind: Option<&str>,
+) -> std::borrow::Cow<'a, str> {
+    if from == "user" {
+        std::borrow::Cow::Owned(
+            crate::services::initial_prompt_turns::convert_prompt_tokens(message, agent_kind),
+        )
+    } else {
+        std::borrow::Cow::Borrowed(message)
+    }
 }
 
 /// Background task to periodically clean up stale entries
@@ -234,7 +352,7 @@ async fn init_pull_consumer(
         CONSUMER_NAME,
         "ergatai.agent.message.*", // Only receive agent messages, not receipts or timeouts
         30,                        // ack_wait: 30s
-        20,                        // max_deliver: 20 attempts
+        MAX_DELIVER,               // max_deliver: bounded retry attempts
     )
     .await
     .map_err(ErgataiError::NatsError)
@@ -350,6 +468,20 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
     let from = &payload.from_agent;
     let to = &payload.to_agent;
+
+    // A user-requested stop must win over any pending NATS redelivery.
+    if is_delivery_cancelled(&payload.message_id) {
+        info!(
+            from = from,
+            to = to,
+            message_id = %payload.message_id,
+            "Delivery retry cancelled by user — acking to discard"
+        );
+        if let Err(ack_err) = msg.ack().await {
+            warn!("Failed to ack cancelled message: {}", ack_err);
+        }
+        return;
+    }
 
     // Use the message_type from the payload (now available after adding the field)
     // Fall back to inference for backward compatibility with old messages
@@ -720,11 +852,24 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
         }
     } // end of else block (not already_persisted)
 
+    // ── Mention-token conversion (user messages only) ──
+    // Convert Ergatai discovery/mention tokens (e.g. @[agent:name], @[file:...])
+    // into agent-native text right before injection. Persistence above already
+    // stored the raw tokens, so conversations keep rendering them as mentions.
+    let agent_kind = match runtime.get_agent(&to_runtime_id).await {
+        Some(info) => match info.profile.as_deref() {
+            Some(profile_name) => crate::services::agent::resolve_kind_by_name(profile_name).await,
+            None => crate::services::agent::AgentKind::Unknown,
+        },
+        None => crate::services::agent::AgentKind::Unknown,
+    };
+    let delivery_message = prepare_delivery_message(from, formatted_message, agent_kind.as_str());
+
     // ── Deliver via AgentRuntime injection (ACP protocol) ──
     // Choose delivery method based on whether images are present
     let mut delivery_result = if payload.images.is_empty() {
         runtime
-            .inject_message_to_conversation(&conversation_id.to_string(), formatted_message)
+            .inject_message_to_conversation(&conversation_id.to_string(), &delivery_message)
             .await
     } else {
         // Convert NATS AgentImage to runtime AgentImage
@@ -741,7 +886,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
         runtime
             .inject_message_to_conversation_with_images(
                 &conversation_id.to_string(),
-                formatted_message,
+                &delivery_message,
                 runtime_images.clone(),
             )
             .await
@@ -782,7 +927,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                     runtime
                         .inject_message_to_conversation(
                             &conversation_id.to_string(),
-                            formatted_message,
+                            &delivery_message,
                         )
                         .await
                 } else {
@@ -799,7 +944,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                     runtime
                         .inject_message_to_conversation_with_images(
                             &conversation_id.to_string(),
-                            formatted_message,
+                            &delivery_message,
                             runtime_images,
                         )
                         .await
@@ -926,45 +1071,137 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
             // Check if this is a permanent error vs transient error.
             // "agent not found" is permanently undeliverable.
-            // Provider free-usage-limit errors are also effectively permanent for
-            // this message: retrying the same prompt cannot succeed until the
-            // user changes model/provider, and redelivery only floods the stream
-            // with duplicate errors.
-            let is_agent_not_found = matches!(e, ergatai_error::ErgataiError::AgentNotFound(_));
+            // Provider configuration errors (model_not_found, auth, quota) are
+            // also effectively permanent for this message: retrying the same
+            // prompt cannot succeed until the user changes model/provider, and
+            // redelivery only floods the stream with duplicate errors.
             let err_text = e.to_string();
-            let is_permanent_provider_limit = err_text.contains("Free usage limit")
-                || err_text.contains("free-limit")
-                || err_text.contains("provider.free-limit");
+            let attempt = msg
+                .info()
+                .map(|info| info.delivered as u32)
+                .unwrap_or(1)
+                .max(1);
 
-            if is_agent_not_found || is_permanent_provider_limit {
+            if is_permanent_delivery_error(&e) {
                 // Permanently undeliverable (or not retryable) — ack to discard,
                 // no point retrying. The ACP layer already surfaced the concrete
                 // error to the conversation stream.
                 warn!(
                     from = from,
                     to = to,
+                    attempt = attempt,
                     error = %e,
                     "Message not retryable — acking to discard (no retry)"
                 );
+                publish_retry_event(
+                    &conversation_id.to_string(),
+                    ergatai_runtime::AgentOutputEvent::Retry {
+                        role: "assistant".to_string(),
+                        attempt,
+                        max_attempts: MAX_DELIVER_U32,
+                        delay_ms: 0,
+                        next_retry_at_ms: 0,
+                        message: err_text,
+                        error_name: extract_error_name(&e.to_string()),
+                        message_id: Some(payload.message_id.clone()),
+                        cancelled: true,
+                    },
+                )
+                .await;
                 if let Err(ack_err) = msg.ack().await {
                     error!("Failed to ack undeliverable message: {}", ack_err);
                 }
-            } else {
-                // Transient error — nak for retry
-                // Remove from processed cache so the retry is not blocked by dedup.
-                unmark_message_processed(&payload.message_id);
+                return;
+            }
+
+            if is_delivery_cancelled(&payload.message_id) || attempt >= MAX_DELIVER_U32 {
+                // The user stopped retrying, or the consumer exhausted its
+                // delivery budget. The last ACP error remains visible; clear
+                // the in-place retry indicator.
+                let cancelled_by_user = is_delivery_cancelled(&payload.message_id);
                 warn!(
                     from = from,
                     to = to,
-                    error = %e,
-                    "AgentRuntime injection failed — naking for retry"
+                    attempt = attempt,
+                    cancelled_by_user = cancelled_by_user,
+                    "Delivery retry loop stopped"
                 );
-                if let Err(nak_err) = msg.ack_with(AckKind::Nak(None)).await {
-                    error!("Failed to nak message: {}", nak_err);
+                publish_retry_event(
+                    &conversation_id.to_string(),
+                    ergatai_runtime::AgentOutputEvent::Retry {
+                        role: "assistant".to_string(),
+                        attempt,
+                        max_attempts: MAX_DELIVER_U32,
+                        delay_ms: 0,
+                        next_retry_at_ms: 0,
+                        message: err_text,
+                        error_name: extract_error_name(&e.to_string()),
+                        message_id: Some(payload.message_id.clone()),
+                        cancelled: true,
+                    },
+                )
+                .await;
+                if let Err(ack_err) = msg.ack().await {
+                    error!("Failed to ack stopped delivery: {}", ack_err);
                 }
+                return;
+            }
+
+            // Transient error — nak with exponential backoff and publish an
+            // in-place retry indicator so the UI does not render one red error
+            // bubble per attempt.
+            unmark_message_processed(&payload.message_id);
+            let delay_ms = retry_delay_ms(attempt);
+            let next_retry_at_ms = now_unix_ms() + delay_ms as i64;
+            warn!(
+                from = from,
+                to = to,
+                attempt = attempt,
+                delay_ms = delay_ms,
+                error = %e,
+                "AgentRuntime injection failed — retrying with backoff"
+            );
+            publish_retry_event(
+                &conversation_id.to_string(),
+                ergatai_runtime::AgentOutputEvent::Retry {
+                    role: "assistant".to_string(),
+                    attempt,
+                    max_attempts: MAX_DELIVER_U32,
+                    delay_ms,
+                    next_retry_at_ms,
+                    message: err_text,
+                    error_name: extract_error_name(&e.to_string()),
+                    message_id: Some(payload.message_id.clone()),
+                    cancelled: false,
+                },
+            )
+            .await;
+            if let Err(nak_err) = msg
+                .ack_with(AckKind::Nak(Some(Duration::from_millis(delay_ms))))
+                .await
+            {
+                error!("Failed to nak message with backoff: {}", nak_err);
             }
         }
     }
+}
+
+/// Best-effort structured error kind extraction for retry/error UI copy.
+fn extract_error_name(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    [
+        "model_not_found",
+        "invalid_api_key",
+        "authentication_error",
+        "permission_denied",
+        "rate_limit",
+        "overloaded",
+        "timeout",
+        "context_length_exceeded",
+    ]
+    .iter()
+    .find(|kind| lower.contains(**kind))
+    .map(|kind| (*kind).to_string())
 }
 
 // ── Tests ──
@@ -976,6 +1213,30 @@ mod tests {
     #[test]
     fn test_consumer_name_is_durable() {
         assert_eq!(CONSUMER_NAME, "message_delivery");
+    }
+
+    #[test]
+    fn test_prepare_delivery_message_converts_user_tokens() {
+        let converted = prepare_delivery_message(
+            "user",
+            "@[agent:General] 这个是什么agentz",
+            Some("opencode"),
+        );
+        assert_eq!(converted.as_ref(), "@General 这个是什么agentz");
+    }
+
+    #[test]
+    fn test_prepare_delivery_message_preserves_newlines_and_indentation() {
+        let converted =
+            prepare_delivery_message("user", "@[agent:General]\n\n    indented code", None);
+        assert_eq!(converted.as_ref(), "@General\n\n    indented code");
+    }
+
+    #[test]
+    fn test_prepare_delivery_message_passes_non_user_payloads_through() {
+        let payload = r#"{"instruction":"send_message","content":"@[agent:x]"}"#;
+        let delivered = prepare_delivery_message("agent_1", payload, Some("opencode"));
+        assert_eq!(delivered.as_ref(), payload);
     }
 
     #[test]
@@ -1004,10 +1265,46 @@ mod tests {
 
     #[test]
     fn test_max_deliver_is_twenty() {
-        // The consumer config uses max_deliver: 20.
-        // Document the expected value so changes are visible.
-        let expected_max_deliver: i64 = 20;
-        assert_eq!(expected_max_deliver, 20);
+        // The consumer config uses the shared MAX_DELIVER constant.
+        assert_eq!(MAX_DELIVER, 20);
+    }
+
+    #[test]
+    fn test_retry_delay_uses_exponential_backoff() {
+        assert_eq!(retry_delay_ms(1), 1_000);
+        assert_eq!(retry_delay_ms(2), 2_000);
+        assert_eq!(retry_delay_ms(3), 4_000);
+        assert_eq!(retry_delay_ms(4), 8_000);
+        assert_eq!(retry_delay_ms(5), 16_000);
+        assert_eq!(retry_delay_ms(6), RETRY_MAX_DELAY_MS);
+        assert_eq!(retry_delay_ms(20), RETRY_MAX_DELAY_MS);
+    }
+
+    #[test]
+    fn test_permanent_provider_errors_are_not_retried() {
+        let model_error = ErgataiError::internal(
+            "ACP queued prompt failed: Internal error: There's an issue with the selected model (qwen3.7-plus).: {\"errorKind\": \"model_not_found\"}",
+        );
+        assert!(is_permanent_delivery_error(&model_error));
+
+        let auth_error = ErgataiError::internal("invalid_api_key: bad key");
+        assert!(is_permanent_delivery_error(&auth_error));
+
+        let transient = ErgataiError::internal("upstream request timed out");
+        assert!(!is_permanent_delivery_error(&transient));
+    }
+
+    #[test]
+    fn test_extract_error_name() {
+        assert_eq!(
+            extract_error_name("... \"errorKind\": \"model_not_found\" ...").as_deref(),
+            Some("model_not_found")
+        );
+        assert_eq!(
+            extract_error_name("upstream timeout").as_deref(),
+            Some("timeout")
+        );
+        assert_eq!(extract_error_name("plain failure"), None);
     }
 
     #[test]

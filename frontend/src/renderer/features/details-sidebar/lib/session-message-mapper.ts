@@ -11,6 +11,7 @@ type PersistedSessionMessage = {
   content?: string | null
   metadata?: Record<string, unknown> | null
   turnId?: string | null
+  stop_reason?: string | null
   projectionKind?: string | null
   originMessageId?: string | null
 }
@@ -67,6 +68,12 @@ export function mapSessionMessage(message: PersistedSessionMessage): ChatMessage
     const value = metadata?.[key]
     return typeof value === "string" && value.length > 0 ? value : undefined
   }
+  const stopReason =
+    message.stop_reason ??
+    (typeof metadata?.stopReason === "string" ? metadata.stopReason : undefined)
+  const mergedMetadata = stopReason
+    ? { ...(metadata ?? {}), stopReason }
+    : metadata
 
   return {
     id: message.id,
@@ -76,9 +83,10 @@ export function mapSessionMessage(message: PersistedSessionMessage): ChatMessage
     senderAgentId: readString("senderAgentId") ?? readString("agentId"),
     senderAgentName: readString("senderAgentName") ?? readString("agentName"),
     messageType: readString("messageType"),
-    metadata,
+    metadata: mergedMetadata,
     parts: displayParts,
     turnId: message.turnId ?? null,
+    stopReason: stopReason ?? null,
   }
 }
 

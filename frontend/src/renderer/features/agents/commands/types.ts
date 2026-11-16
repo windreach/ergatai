@@ -12,6 +12,8 @@ export interface SlashCommand {
   group?: string
   // For custom commands - hint for expected arguments (e.g. "[file_path]")
   argumentHint?: string
+  // For MCP prompt commands: the backend MCP server id
+  serverId?: string | number
 }
 
 export interface SlashCommandOption extends SlashCommand {

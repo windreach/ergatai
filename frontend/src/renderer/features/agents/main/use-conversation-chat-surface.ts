@@ -64,7 +64,7 @@ import { useStreamingStatusStore } from "../stores/streaming-status-store"
 import { syncMessagesWithStatusAtom } from "../stores/message-store"
 import { clearLoading, loadingConversationsAtom, setLoading } from "../atoms"
 import { clearConversationRuntimeCaches } from "../stores/conversation-runtime-cleanup"
-import type { ChatConversation } from "@/features/details-sidebar"
+import { clearConversationRetry, type ChatConversation, type ConversationRetryState } from "@/features/details-sidebar"
 import type { AgentsMentionsEditorHandle } from "../mentions"
 import { trpcClient } from "../../../lib/trpc"
 import { api } from "../../../lib/api-adapter"
@@ -90,6 +90,7 @@ export function useConversationChatSurface({
   persistedMessagesLoading = false,
   runtimeMessages = [],
   runtimeStatus,
+  runtimeRetry,
   projectPath,
   repository,
   sandboxId,
@@ -115,6 +116,7 @@ export function useConversationChatSurface({
   persistedMessagesLoading?: boolean
   runtimeMessages?: UIMessage[]
   runtimeStatus?: "idle" | "streaming" | "completed" | "error"
+  runtimeRetry?: ConversationRetryState | null
   projectPath?: string | null
   repository?: string
   sandboxId?: string
@@ -617,6 +619,31 @@ export function useConversationChatSurface({
     await stop()
   }, [stop, runtimeConversationId, setLoadingConversations, agentId])
 
+  const [isStoppingRetry, setIsStoppingRetry] = useState(false)
+  const handleStopRetry = useCallback(async () => {
+    const messageId = runtimeRetry?.messageId
+    if (!messageId || !runtimeConversationId || isStoppingRetry) return
+    setIsStoppingRetry(true)
+    try {
+      await trpcClient.ergatai.cancelConversationRetry.mutate({
+        conversationId: runtimeConversationId,
+        messageId,
+      })
+      clearConversationRetry(runtimeConversationId)
+      if (agentId) {
+        await trpcClient.ergatai.cancelPrompt
+          .mutate({ agentId })
+          .catch((error) => {
+            console.warn("[ConversationChatSurface] Failed to cancel active retry prompt:", error)
+          })
+      }
+    } catch (error) {
+      console.warn("[ConversationChatSurface] Failed to stop retry:", error)
+    } finally {
+      setIsStoppingRetry(false)
+    }
+  }, [runtimeRetry?.messageId, runtimeConversationId, isStoppingRetry, agentId])
+
   const handleCompact = useCallback(() => {
     if (isStreaming) return
     sendUserMessage([{ type: "text", text: "/compact" }] as any)
@@ -649,6 +676,9 @@ export function useConversationChatSurface({
     stop: handleStop,
     handleForceSend,
     handleCompact,
+    runtimeRetry: runtimeRetry ?? undefined,
+    handleStopRetry,
+    isStoppingRetry,
     // changed files
     changedFiles,
     recomputeChangedFiles,

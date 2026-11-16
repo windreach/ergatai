@@ -4,7 +4,7 @@
  * helpers convert them into short, human-readable text.
  */
 
-const MENTION_TOKEN_PATTERN = /@\[((?:[^\]\\]|\\.)+)\]/g
+const MENTION_TOKEN_PATTERN = /[@$#]\[((?:[^\]\\]|\\.)+)\]/g
 
 function basename(path: string): string {
   const normalized = path.replace(/\\/g, "/")

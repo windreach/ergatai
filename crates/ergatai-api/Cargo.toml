@@ -27,6 +27,7 @@ ergatai-nats = { path = "../ergatai-nats" }
 ergatai-error = { path = "../ergatai-error" }
 # Agent runtime (PTY backend for agent workspace management)
 ergatai-runtime = { path = "../ergatai-runtime" }
+regex.workspace = true
 # File access control (locks, tokens)
 ergatai-lock = { path = "../ergatai-lock" }
 
@@ -76,7 +77,7 @@ clap.workspace = true
 
 # MCP protocol (rmcp SDK)
 # Using rmcp 2.x for both HTTP MCP and ACP MCP (unified version)
-rmcp = { version = "2", features = ["server", "transport-streamable-http-server", "macros"] }
+rmcp = { version = "2", features = ["server", "client", "transport-streamable-http-server", "transport-streamable-http-client", "transport-streamable-http-client-reqwest", "transport-child-process", "transport-async-rw", "macros"] }
 schemars = "1.0"
 tokio-util.workspace = true
 
