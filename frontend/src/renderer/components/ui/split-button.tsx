@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import * as React from "react";
 import { ChevronDown } from "lucide-react";
 import { Button, type ButtonProps } from "./button";
@@ -85,7 +86,7 @@ export function SplitButton({
 						size="icon"
 						disabled={disabled}
 						className="rounded-l-none focus:z-10 h-7 w-7"
-						aria-label="More options"
+						aria-label={i18n.t('More options')}
 					>
 						<ChevronDown className="size-3.5" />
 					</Button>

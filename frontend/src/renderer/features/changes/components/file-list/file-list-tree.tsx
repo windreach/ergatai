@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useState } from "react";
 import type { ChangedFile } from "../../../../../shared/changes-types";
 import { FileItem } from "../file-item";

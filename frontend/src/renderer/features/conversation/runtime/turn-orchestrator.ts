@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 /**
  * Turn Orchestrator
  *
@@ -179,15 +180,15 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
           return await this.enqueue(input, conversation)
         }
 
-        throw new Error(`Cannot send message: ${runtime.reason ?? "agent not ready"}`)
+        throw new Error(i18n.t("Cannot send message: {{reason}}", { reason: runtime.reason ?? i18n.t("agent not ready") }))
       }
 
       // Step 5: Get adapter for this conversation
       const adapter = getAdapterRegistry().get(conversationId)
       if (!adapter) {
         throw new Error(
-          `No runtime adapter registered for conversation: ${conversationId}. ` +
-          `Please ensure the chat component has registered an adapter.`
+          i18n.t("No runtime adapter registered for conversation: {{id}}. ", { id: conversationId }) +
+          i18n.t("Please ensure the chat component has registered an adapter.")
         )
       }
 
@@ -304,12 +305,12 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
     const session = sessionStore.getSession(conversationId)
 
     if (!session) {
-      throw new Error(`Session not found for conversation: ${conversationId}`)
+      throw new Error(i18n.t("Session not found for conversation: {{id}}", { id: conversationId }))
     }
 
     const queueItem = session.queue.find((item) => item.id === itemId)
     if (!queueItem) {
-      throw new Error(`Queue item not found: ${itemId}`)
+      throw new Error(i18n.t("Queue item not found: {{id}}", { id: itemId }))
     }
 
     // Fix: Try to send first, only remove from queue if successful

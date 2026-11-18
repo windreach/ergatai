@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useAtomValue } from "jotai"
 import { cn } from "@/lib/utils"
@@ -195,7 +196,7 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange, 
         !bindingLoadingTimedOut &&
         chatId.startsWith("chat_") ? (
           <div className="flex flex-1 items-center justify-center">
-            <div className="text-xs text-muted-foreground">Loading agent binding…</div>
+            <div className="text-xs text-muted-foreground">{i18n.t('Loading agent binding…')}</div>
           </div>
         ) : (
         <SideChat
@@ -221,7 +222,7 @@ export function SideChatView({ chatId, isActive = true, onActiveSideChatChange, 
       ) : (
         <div className="flex flex-1 items-center justify-center">
           <div className="w-full max-w-64 px-6 text-center">
-            <p className="text-sm font-medium">Click an agent in the rail to start chatting</p>
+            <p className="text-sm font-medium">{i18n.t('Click an agent in the rail to start chatting')}</p>
           </div>
         </div>
       )}

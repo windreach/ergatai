@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState } from "react"
@@ -113,7 +114,7 @@ export function AgentRail({
           >
             {isExpanded
               ? "Show less"
-              : `View more${hiddenParticipantCount > 0 ? ` (${hiddenParticipantCount})` : ""}`}
+              : i18n.t("View more{{suffix}}", { suffix: hiddenParticipantCount > 0 ? ` (${hiddenParticipantCount})` : "" })}
           </button>
         )}
       </div>

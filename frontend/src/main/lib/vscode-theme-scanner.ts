@@ -6,6 +6,7 @@
  */
 
 import * as fs from "fs/promises"
+import { t } from "./i18n"
 import * as path from "path"
 import { execSync } from "child_process"
 import * as os from "os"
@@ -285,7 +286,7 @@ export function registerThemeScannerIPC(): void {
       })
 
       if (!isAllowedPath) {
-        throw new Error("Theme path is not within allowed directories")
+        throw new Error(t("Theme path is not within allowed directories"))
       }
 
       return await loadThemeFromPath(normalizedPath)

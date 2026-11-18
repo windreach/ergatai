@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 /**
  * @deprecated This component has been replaced by WorkspaceChatsSidebar
  *
@@ -200,7 +201,8 @@ export function AgentsConversationsSidebar({
       // Clear ephemeral subagent buffers for agents bound to this chat.
       void (async () => {
         try {
-          const agents = await trpcClient.ergatai.getChatAgents.query({ chatId: variables.id })
+          const agentsResponse = await trpcClient.ergatai.getChatAgents.query({ chatId: variables.id })
+           const agents = agentsResponse.agents ?? []
           for (const agent of agents ?? []) {
             clearSubagentState(agent.agent_id)
           }
@@ -962,12 +964,12 @@ export function AgentsConversationsSidebar({
             onClick={onClose}
             tabIndex={-1}
             className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
-            aria-label="Close sidebar"
+            aria-label={i18n.t('Close sidebar')}
           >
             <IconDoubleChevronLeft className="h-4 w-4" />
           </Button>
         </TooltipTrigger>
-        <TooltipContent side="bottom">Close chats pane</TooltipContent>
+        <TooltipContent side="bottom">{i18n.t('Close chats pane')}</TooltipContent>
       </Tooltip>
     </div>
   )
@@ -1163,7 +1165,7 @@ export function AgentsConversationsSidebar({
                   >
                     <TypewriterText
                       text={conversation?.name || ""}
-                      placeholder="New Chat"
+                      placeholder={i18n.t('New Chat')}
                       id={conversation?.id}
                       isJustCreated={justCreatedIds.has(conversation?.id)}
                       showPlaceholder={true}
@@ -1194,7 +1196,7 @@ export function AgentsConversationsSidebar({
                 <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60 min-w-0">
                   {draftText ? (
                     <span className="truncate flex-1 min-w-0">
-                      <span className="text-blue-500">Draft:</span>{" "}
+                      <span className="text-blue-500">{i18n.t('Draft:')}</span>{" "}
                       {draftText}
                     </span>
                   ) : (
@@ -1241,8 +1243,8 @@ export function AgentsConversationsSidebar({
                   }
                 >
                   {areAllSelectedPinned
-                    ? `Unpin ${selectedConversationIds.size} ${pluralize(selectedConversationIds.size, "conversation")}`
-                    : `Pin ${selectedConversationIds.size} ${pluralize(selectedConversationIds.size, "conversation")}`}
+                    ? i18n.t("Unpin {{count}} {{plural}}", { count: selectedConversationIds.size, plural: pluralize(selectedConversationIds.size, "conversation") })
+                    : i18n.t("Pin {{count}} {{plural}}", { count: selectedConversationIds.size, plural: pluralize(selectedConversationIds.size, "conversation") })}
                 </ContextMenuItem>
                 <ContextMenuSeparator />
               </>
@@ -1360,7 +1362,7 @@ export function AgentsConversationsSidebar({
                       onClick={onBackToChats}
                       tabIndex={-1}
                       className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md"
-                      aria-label="Toggle agents sidebar"
+                      aria-label={i18n.t('Toggle agents sidebar')}
                       style={{
                         // @ts-expect-error - WebKit-specific property
                         WebkitAppRegion: "no-drag",
@@ -1369,7 +1371,7 @@ export function AgentsConversationsSidebar({
                       <AlignJustify className="h-4 w-4" />
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent>Open chats sidebar</TooltipContent>
+                  <TooltipContent>{i18n.t('Open chats sidebar')}</TooltipContent>
                 </Tooltip>
               )}
               <div className="flex-1" />
@@ -1424,6 +1426,7 @@ export function AgentsConversationsSidebar({
                 }
 
                 if (e.key === "Enter") {
+                  if (e.nativeEvent.isComposing) return
                   e.preventDefault()
                   if (focusedChatIndex >= 0) {
                     const focusedChat = filteredConversations[focusedChatIndex]
@@ -1504,7 +1507,7 @@ export function AgentsConversationsSidebar({
                 <div
                   className={cn("mb-4", isMultiSelectMode ? "px-0" : "-mx-1")}
                 >
-                  <ConversationSection title="Pinned Chats" items={pinnedChats} bottomMargin />
+                  <ConversationSection title={i18n.t('Pinned Chats')} items={pinnedChats} bottomMargin />
                   <ConversationSection
                     title={pinnedChats.length > 0 ? "Recent Chats" : "Chats"}
                     items={unpinnedChats}
@@ -1581,7 +1584,7 @@ export function AgentsConversationsSidebar({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Archive chat</AlertDialogTitle>
+            <AlertDialogTitle>{i18n.t('Archive chat')}</AlertDialogTitle>
           </AlertDialogHeader>
           <AlertDialogDescription className="px-5 pb-5">
             Do you want to archive chat{" "}
@@ -1591,7 +1594,7 @@ export function AgentsConversationsSidebar({
             ? You can restore it from history later.
           </AlertDialogDescription>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{i18n.t('Cancel')}</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmArchiveAgent}
               autoFocus

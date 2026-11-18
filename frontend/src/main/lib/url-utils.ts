@@ -1,3 +1,4 @@
+import { t } from "./i18n"
 /**
  * URL validation utilities
  */
@@ -13,7 +14,7 @@ export function validateHttpUrl(url: string): void {
   try {
     const parsed = new URL(url)
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error(`Blocked unsafe URL scheme: ${parsed.protocol}`)
+      throw new Error(t('Blocked unsafe URL scheme: {{parsed.protocol}}'))
     }
   } catch (err) {
     if (err instanceof TypeError) {

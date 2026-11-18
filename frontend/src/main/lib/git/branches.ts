@@ -1,4 +1,5 @@
 import { simpleGit } from "simple-git";
+import { t } from "../i18n"
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import {
@@ -114,7 +115,7 @@ export const createBranchesRouter = () => {
 			.mutation(async ({ input }): Promise<{ success: boolean }> => {
 				// Validate branch name
 				if (!BRANCH_NAME_REGEX.test(input.branch)) {
-					throw new Error("Invalid branch name");
+					throw new Error(t("Invalid branch name"));
 				}
 
 				const chat = await getRegisteredChat(input.worktreePath);
@@ -140,16 +141,16 @@ export const createBranchesRouter = () => {
 				// Validate branch name
 				if (!BRANCH_NAME_REGEX.test(input.branchName)) {
 					throw new Error(
-						"Branch name can only contain letters, numbers, dots, hyphens, underscores, and slashes"
+						t("Branch name can only contain letters, numbers, dots, hyphens, underscores, and slashes")
 					);
 				}
 				for (const pattern of INVALID_BRANCH_PATTERNS) {
 					if (pattern.test(input.branchName)) {
-						throw new Error(`Invalid branch name: '${input.branchName}'`);
+						throw new Error(t("Invalid branch name: '{{input.branchName}}'"));
 					}
 				}
 				if (input.branchName.length > 250) {
-					throw new Error("Branch name too long (max 250 characters)");
+					throw new Error(t("Branch name too long (max 250 characters)"));
 				}
 
 				return withGitLock(input.projectPath, async () => {
@@ -160,7 +161,7 @@ export const createBranchesRouter = () => {
 					const allBranches = Object.keys(branchSummary.branches);
 
 					if (allBranches.includes(input.branchName)) {
-						throw new Error(`Branch '${input.branchName}' already exists`);
+						throw new Error(t("Branch '{{input.branchName}}' already exists"));
 					}
 
 					// Determine the start point (prefer remote, fallback to local)
@@ -200,7 +201,7 @@ export const createBranchesRouter = () => {
 					// Cannot delete current branch
 					if (input.branch === currentBranch) {
 						throw new Error(
-							`Cannot delete branch '${input.branch}' because it is currently checked out`
+							t("Cannot delete branch '{{branch}}' because it is currently checked out", { branch: input.branch })
 						);
 					}
 
@@ -211,7 +212,7 @@ export const createBranchesRouter = () => {
 					);
 					if (checkedOutBranches[input.branch]) {
 						throw new Error(
-							`Cannot delete branch '${input.branch}' because it is checked out in another worktree: ${checkedOutBranches[input.branch]}`
+							t("Cannot delete branch '{{branch}}' because it is checked out in another worktree: {{path}}", { branch: input.branch, path: checkedOutBranches[input.branch] })
 						);
 					}
 
@@ -232,7 +233,7 @@ export const createBranchesRouter = () => {
 							const message = error instanceof Error ? error.message : String(error);
 							// Ignore if remote branch doesn't exist
 							if (!message.includes("remote ref does not exist")) {
-								throw new Error(`Local branch deleted, but failed to delete remote: ${message}`);
+								throw new Error(t('Local branch deleted, but failed to delete remote: {{message}}'));
 							}
 						}
 					}

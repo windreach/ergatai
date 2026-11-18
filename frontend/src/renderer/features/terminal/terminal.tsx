@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useEffect, useRef, useState, useCallback, useMemo } from "react"
 import type { Terminal as XTerm } from "xterm"
 import type { FitAddon } from "@xterm/addon-fit"

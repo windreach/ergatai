@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useState } from "react"
 import { trpc } from "../../../lib/trpc"
 
@@ -42,7 +43,7 @@ export function useConversationHistoryImport({
       if (importState?.total_captured && importState.total_captured > IMPORT_LIMIT) {
         console.warn(
           `[History Import] Session has ${importState.total_captured} messages but only ${IMPORT_LIMIT} were imported. ` +
-          `Older messages will not be available.`,
+          i18n.t("Older messages will not be available."),
         )
       }
     } catch {

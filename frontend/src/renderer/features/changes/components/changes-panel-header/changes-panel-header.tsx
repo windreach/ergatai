@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { Button } from "../../../../components/ui/button";
 import {
 	DropdownMenu,
@@ -27,11 +28,11 @@ function formatTimeSince(date: Date): string {
 	const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
 	if (seconds < 60) return "just now";
 	const minutes = Math.floor(seconds / 60);
-	if (minutes < 60) return `${minutes}m ago`;
+	if (minutes < 60) return i18n.t("{{count}}m ago", { count: minutes });
 	const hours = Math.floor(minutes / 60);
-	if (hours < 24) return `${hours}h ago`;
+	if (hours < 24) return i18n.t("{{count}}h ago", { count: hours });
 	const days = Math.floor(hours / 24);
-	return `${days}d ago`;
+	return i18n.t("{{count}}d ago", { count: days });
 }
 
 // react-doctor-disable-next-line no-high-complexity-react-function
@@ -136,7 +137,7 @@ export function ChangesPanelHeader({
 							</Button>
 						</DropdownMenuTrigger>
 					</TooltipTrigger>
-					<TooltipContent side="bottom">Switch branch</TooltipContent>
+					<TooltipContent side="bottom">{i18n.t('Switch branch')}</TooltipContent>
 				</Tooltip>
 				<DropdownMenuContent align="start" className="w-48">
 					{branches.map((branchInfo) => (
@@ -228,7 +229,7 @@ export function ChangesPanelHeader({
 					</TooltipTrigger>
 					<TooltipContent side="bottom">
 						{lastFetchTime
-							? `Last fetched ${displayTime}`
+							? i18n.t("Last fetched {{time}}", { time: displayTime })
 							: "Fetch from remote"}
 					</TooltipContent>
 				</Tooltip>

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback, useState } from "react"
 import { useSetAtom } from "jotai"
 import { toast } from "sonner"
@@ -37,7 +38,7 @@ export function useGitOperations({
   // Handle Create PR (Direct) - pushes branch and opens GitHub compare URL
   const handleCreatePrDirect = useCallback(async () => {
     if (!worktreePath) {
-      toast.error("No workspace path available", { position: "top-center" })
+      toast.error(i18n.t('No workspace path available'), { position: "top-center" })
       return
     }
 
@@ -52,7 +53,7 @@ export function useGitOperations({
   // Handle Create PR with AI - sends a message to Claude to create the PR
   const handleCreatePr = useCallback(async () => {
     if (!chatId) {
-      toast.error("Chat ID is required", { position: "top-center" })
+      toast.error(i18n.t('Chat ID is required'), { position: "top-center" })
       return
     }
 
@@ -60,7 +61,7 @@ export function useGitOperations({
     try {
       const activeConversationId = useAgentConversationStore.getState().activeConversationId
       if (!activeConversationId) {
-        toast.error("No active chat available", { position: "top-center" })
+        toast.error(i18n.t('No active chat available'), { position: "top-center" })
         setIsCreatingPr(false)
         return
       }
@@ -73,7 +74,7 @@ export function useGitOperations({
       // Get PR context from backend
       const context = await trpcClient.chats.getPrContext.query({ chatId })
       if (!context) {
-        toast.error("Could not get git context", { position: "top-center" })
+        toast.error(i18n.t('Could not get git context'), { position: "top-center" })
         setIsCreatingPr(false)
         return
       }
@@ -84,7 +85,7 @@ export function useGitOperations({
       // Don't reset isCreatingPr here - it will be reset after message is sent
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "Failed to prepare PR request",
+        error instanceof Error ? error.message : i18n.t('Failed to prepare PR request'),
         { position: "top-center" },
       )
       setIsCreatingPr(false)
@@ -94,7 +95,7 @@ export function useGitOperations({
   // Handle Commit to existing PR - sends a message to Claude to commit and push
   const handleCommitToPr = useCallback(async (_selectedPaths?: string[]) => {
     if (!chatId) {
-      toast.error("Chat ID is required", { position: "top-center" })
+      toast.error(i18n.t('Chat ID is required'), { position: "top-center" })
       return
     }
 
@@ -102,7 +103,7 @@ export function useGitOperations({
       setIsCommittingToPr(true)
       const activeConversationId = useAgentConversationStore.getState().activeConversationId
       if (!activeConversationId) {
-        toast.error("No active chat available", { position: "top-center" })
+        toast.error(i18n.t('No active chat available'), { position: "top-center" })
         setIsCommittingToPr(false)
         return
       }
@@ -114,7 +115,7 @@ export function useGitOperations({
 
       const context = await trpcClient.chats.getPrContext.query({ chatId })
       if (!context) {
-        toast.error("Could not get git context", { position: "top-center" })
+        toast.error(i18n.t('Could not get git context'), { position: "top-center" })
         return
       }
 
@@ -122,7 +123,7 @@ export function useGitOperations({
       setPendingPrMessage({ message, conversationId: activeConversationId })
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "Failed to prepare commit request",
+        error instanceof Error ? error.message : i18n.t('Failed to prepare commit request'),
         { position: "top-center" },
       )
     } finally {
@@ -133,7 +134,7 @@ export function useGitOperations({
   // Handle Review - sends a message to Claude to review the diff
   const handleReview = useCallback(async () => {
     if (!chatId) {
-      toast.error("Chat ID is required", { position: "top-center" })
+      toast.error(i18n.t('Chat ID is required'), { position: "top-center" })
       return
     }
 
@@ -142,7 +143,7 @@ export function useGitOperations({
       // Get PR context from backend
       const context = await trpcClient.chats.getPrContext.query({ chatId })
       if (!context) {
-        toast.error("Could not get git context", { position: "top-center" })
+        toast.error(i18n.t('Could not get git context'), { position: "top-center" })
         return
       }
 
@@ -158,7 +159,7 @@ export function useGitOperations({
       }
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "Failed to start review",
+        error instanceof Error ? error.message : i18n.t('Failed to start review'),
         { position: "top-center" },
       )
     } finally {

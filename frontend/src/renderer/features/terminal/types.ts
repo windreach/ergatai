@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 export interface TerminalDataEvent {
   type: "data"
   data: string
@@ -38,7 +39,7 @@ export interface TerminalInstance {
   id: string
   /** Full paneId for TerminalManager: `${chatId}:term:${id}` */
   paneId: string
-  /** Display name: "Terminal 1", "Terminal 2", etc. */
+  /** Display name: i18n.t('Terminal 1'), i18n.t('Terminal 2'), etc. */
   name: string
   /** Creation timestamp */
   createdAt: number

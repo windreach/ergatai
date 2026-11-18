@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useState, useMemo, useCallback, useEffect, useRef } from "react"
 // react-doctor-disable-next-line prefer-dynamic-import
 import Editor from "@monaco-editor/react"
@@ -134,7 +135,7 @@ export function MarkdownViewer({
         <div className="flex-1 flex items-center justify-center">
           <div className="flex flex-col items-center gap-3 text-muted-foreground">
             <Loader2 className="h-8 w-8 animate-spin" />
-            <span className="text-sm">Loading file...</span>
+            <span className="text-sm">{i18n.t('Loading file...')}</span>
           </div>
         </div>
       </div>

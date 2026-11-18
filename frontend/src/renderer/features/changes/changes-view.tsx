@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { Checkbox } from "../../components/ui/checkbox";
 import { Button } from "../../components/ui/button";
 import {
@@ -31,7 +32,6 @@ import { cn } from "../../lib/utils";
 import { ChangesFileFilter, type ConversationFilterItem } from "./components/changes-file-filter";
 import { CommitInput } from "./components/commit-input";
 import { HistoryView, type CommitInfo } from "./components/history-view";
-import { DiffPageView } from "./diff-page-view";
 import { getStatusIndicator } from "./utils/status";
 import { Check } from "lucide-react";
 import type { ChangedFile as HistoryChangedFile } from "../../../shared/changes-types";
@@ -173,7 +173,7 @@ const ChangesFileItemWithContext = memo(function ChangesFileItemWithContext({
 					</Tooltip>
 					<div className="shrink-0 flex items-center gap-1.5">
 						{isViewed && (
-							<span className="flex items-center text-primary" title="已查看">
+							<span className="flex items-center text-primary" title={i18n.t("common.viewed")}>
 								<Check className="size-3" strokeWidth={2.5} />
 							</span>
 						)}
@@ -251,7 +251,7 @@ const ChangesFileItemWithContext = memo(function ChangesFileItemWithContext({
 interface ChangesViewProps {
 	worktreePath: string;
 	/** Controlled active tab (optional) */
-	activeTab?: "changes" | "diff" | "history";
+	activeTab?: "changes" | "history";
 	selectedFilePath?: string | null;
 	onFileSelect?: (
 		file: ChangedFile,
@@ -275,8 +275,6 @@ interface ChangesViewProps {
 	initialConversationFilter?: string | null;
 	/** Chat ID for AI-generated commit messages */
 	chatId?: string;
-	/** Sandbox ID for remote chats (used by the Diff tab) */
-	sandboxId?: string;
 	/** Selected commit hash for History tab */
 	selectedCommitHash?: string | null;
 	/** Callback when commit is selected in History tab */
@@ -284,7 +282,7 @@ interface ChangesViewProps {
 	/** Callback when file is selected in commit History */
 	onCommitFileSelect?: (file: HistoryChangedFile, commitHash: string) => void;
 	/** Callback when active tab changes (Changes/History) */
-	onActiveTabChange?: (tab: "changes" | "diff" | "history") => void;
+	onActiveTabChange?: (tab: "changes" | "history") => void;
 	/** Number of commits ahead of upstream (for unpushed indicator) */
 	pushCount?: number;
 }
@@ -303,7 +301,6 @@ export function ChangesView({
 	conversations = [],
 	initialConversationFilter = null,
 	chatId,
-	sandboxId,
 	selectedCommitHash,
 	onCommitSelect,
 	onCommitFileSelect,
@@ -390,7 +387,7 @@ export function ChangesView({
 			onDiscardSuccess?.();
 		},
 		onError: (error) => {
-			toast.error(`Failed to discard changes: ${error.message}`);
+			toast.error(i18n.t("Failed to discard changes: {{message}}", { message: error.message }));
 		},
 	});
 	const deleteUntrackedMutation = trpc.changes.deleteUntracked.useMutation({
@@ -400,7 +397,7 @@ export function ChangesView({
 			onDiscardSuccess?.();
 		},
 		onError: (error) => {
-			toast.error(`Failed to delete file: ${error.message}`);
+			toast.error(i18n.t("Failed to delete file: {{message}}", { message: error.message }));
 		},
 	});
 
@@ -412,7 +409,7 @@ export function ChangesView({
 			onDiscardSuccess?.();
 		},
 		onError: (error) => {
-			toast.error(`Failed to discard changes: ${error.message}`);
+			toast.error(i18n.t("Failed to discard changes: {{message}}", { message: error.message }));
 		},
 	});
 	const deleteMultipleUntrackedMutation = trpc.changes.deleteMultipleUntracked.useMutation({
@@ -422,7 +419,7 @@ export function ChangesView({
 			onDiscardSuccess?.();
 		},
 		onError: (error) => {
-			toast.error(`Failed to delete files: ${error.message}`);
+			toast.error(i18n.t("Failed to delete files: {{message}}", { message: error.message }));
 		},
 	});
 
@@ -445,12 +442,12 @@ export function ChangesView({
 
 	const [fileFilter, setFileFilter] = useState("");
 	const [conversationFilter, setConversationFilter] = useState<string | null>(initialConversationFilter);
-	const [internalActiveTab, setInternalActiveTab] = useState<"changes" | "diff" | "history">("changes");
+	const [internalActiveTab, setInternalActiveTab] = useState<"changes" | "history">("changes");
 	const activeTab = controlledActiveTab ?? internalActiveTab;
 	const fileListRef = useRef<HTMLDivElement>(null);
 	const prevAllPathsRef = useRef<Set<string>>(new Set());
 
-	const handleActiveTabChange = useCallback((newTab: "changes" | "diff" | "history") => {
+	const handleActiveTabChange = useCallback((newTab: "changes" | "history") => {
 		// Update internal state only in uncontrolled mode
 		if (controlledActiveTab === undefined) {
 			setInternalActiveTab(newTab);
@@ -713,13 +710,13 @@ export function ChangesView({
 	const handleCopySelectedPaths = useCallback((worktreePath: string) => {
 		const paths = highlightedPaths.map(p => `${worktreePath}/${p}`);
 		navigator.clipboard.writeText(paths.join("\n"));
-		toast.success(`Copied ${paths.length} paths`);
+		toast.success(i18n.t("Copied {{count}} paths", { count: paths.length }));
 	}, [highlightedPaths]);
 
 	// Copy relative paths of highlighted files
 	const handleCopySelectedRelativePaths = useCallback(() => {
 		navigator.clipboard.writeText(highlightedPaths.join("\n"));
-		toast.success(`Copied ${highlightedPaths.length} paths`);
+		toast.success(i18n.t("Copied {{count}} paths", { count: highlightedPaths.length }));
 	}, [highlightedPaths]);
 
 	// Toggle all files selection
@@ -957,7 +954,7 @@ export function ChangesView({
 					<Tabs
 						value={activeTab}
 						onValueChange={(v) => {
-							const newTab = v as "changes" | "diff" | "history";
+							const newTab = v as "changes" | "history";
 							handleActiveTabChange(newTab);
 						}}
 						className="flex flex-col h-full"
@@ -969,12 +966,6 @@ export function ChangesView({
 							className="h-6 px-2.5 text-xs rounded-md data-[state=active]:bg-muted data-[state=active]:shadow-none"
 						>
 							Changes
-						</TabsTrigger>
-						<TabsTrigger
-							value="diff"
-							className="h-6 px-2.5 text-xs rounded-md data-[state=active]:bg-muted data-[state=active]:shadow-none"
-						>
-							Diff
 						</TabsTrigger>
 						<TabsTrigger
 							value="history"
@@ -1013,8 +1004,21 @@ export function ChangesView({
 								No changes detected
 							</div>
 						) : filteredCount === 0 ? (
-							<div className="flex-1 flex items-center justify-center text-muted-foreground text-sm px-4 text-center">
-								No files match filter
+							<div className="flex-1 flex flex-col items-center justify-center gap-2 text-muted-foreground text-sm px-4 text-center">
+								<span>{i18n.t('No files match filter')}</span>
+								{(conversationFilter || fileFilter) && (
+									<Button
+										variant="secondary"
+										size="sm"
+										className="h-7 text-xs"
+										onClick={() => {
+											setFileFilter("");
+											setConversationFilter(null);
+										}}
+									>
+										Clear filters
+									</Button>
+								)}
 							</div>
 						) : (
 							<div
@@ -1086,17 +1090,6 @@ export function ChangesView({
 						/>
 					</TabsContent>
 
-					{/* Diff tab content */}
-					<TabsContent value="diff" className="flex-1 flex flex-col m-0 overflow-hidden data-[state=inactive]:hidden">
-						{worktreePath ? (
-							<DiffPageView
-								worktreePath={worktreePath}
-								chatId={chatId}
-								sandboxId={sandboxId}
-							/>
-						) : null}
-					</TabsContent>
-
 					{/* History tab content */}
 					<TabsContent value="history" className="flex-1 flex flex-col m-0 overflow-hidden data-[state=inactive]:hidden">
 						<HistoryView
@@ -1117,8 +1110,8 @@ export function ChangesView({
 					<AlertDialogHeader>
 						<AlertDialogTitle>
 							{discardFile?.status === "untracked" || discardFile?.status === "added"
-								? `Delete "${discardFile?.path.split("/").pop()}"?`
-								: `Discard changes to "${discardFile?.path.split("/").pop()}"?`}
+								? i18n.t('Delete "{{name}}"?', { name: discardFile?.path.split("/").pop() })
+								: i18n.t('Discard changes to "{{name}}"?', { name: discardFile?.path.split("/").pop() })}
 						</AlertDialogTitle>
 					</AlertDialogHeader>
 					<AlertDialogDescription className="px-5 pb-5">
@@ -1157,7 +1150,7 @@ export function ChangesView({
 					</AlertDialogHeader>
 					<AlertDialogDescription asChild>
 						<div className="px-5 pb-5">
-							<p className="mb-2">Are you sure you want to discard all changes to:</p>
+							<p className="mb-2">{i18n.t('Are you sure you want to discard all changes to:')}</p>
 							<ul className="max-h-40 overflow-y-auto text-xs font-mono bg-muted/50 rounded-md p-2 space-y-0.5">
 								{discardFiles?.map(f => (
 									<li key={f.path} className="truncate text-muted-foreground">

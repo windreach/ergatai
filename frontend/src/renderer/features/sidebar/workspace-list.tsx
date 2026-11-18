@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { memo, useState, useCallback } from "react"
 import { Archive, ChevronDown, MoreVertical, Pencil, Trash2 } from "lucide-react"
 import { toast } from "sonner"
@@ -111,7 +112,7 @@ const WorkspaceItem = memo(({
       >
         <div className="flex items-center justify-between gap-2">
           <div className="truncate text-sm font-medium">
-            {workspace.name || `Workspace ${workspace.id.slice(0, 8)}`}
+            {workspace.name || i18n.t("Workspace {{id}}", { id: workspace.id.slice(0, 8) })}
           </div>
           {status && (
             <span className="flex-shrink-0 text-[10px] text-muted-foreground/60">
@@ -121,7 +122,7 @@ const WorkspaceItem = memo(({
         </div>
 
         {status && !status.healthy && (
-          <div className="text-[10px] text-destructive">workdir missing</div>
+          <div className="text-[10px] text-destructive">{i18n.t('workdir missing')}</div>
         )}
       </button>
 
@@ -129,7 +130,7 @@ const WorkspaceItem = memo(({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            aria-label={`Manage workspace ${workspace.name || workspace.id}`}
+            aria-label={i18n.t("Manage workspace {{name}}", { name: workspace.name || workspace.id })}
             className="mt-2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus:opacity-100 group-hover:opacity-100"
           >
             <MoreVertical className="h-3.5 w-3.5" />
@@ -147,7 +148,7 @@ const WorkspaceItem = memo(({
             <>
               <DropdownMenuSeparator />
               <DropdownMenuSub>
-                <DropdownMenuSubTrigger>Set default project</DropdownMenuSubTrigger>
+                <DropdownMenuSubTrigger>{i18n.t('Set default project')}</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
                   {(workspace.projects ?? []).map((project) => (
                     <DropdownMenuItem
@@ -194,7 +195,7 @@ const WorkspaceItem = memo(({
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete workspace?</AlertDialogTitle>
+            <AlertDialogTitle>{i18n.t('Delete workspace?')}</AlertDialogTitle>
             <AlertDialogDescription>
               This removes the workspace record and its project registrations.
               It does not delete project directories or worktree files from disk.
@@ -211,7 +212,7 @@ const WorkspaceItem = memo(({
           )}
 
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{i18n.t('Cancel')}</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={deleteMutation.isPending}
@@ -226,7 +227,7 @@ const WorkspaceItem = memo(({
       <AlertDialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Archive workspace?</AlertDialogTitle>
+            <AlertDialogTitle>{i18n.t('Archive workspace?')}</AlertDialogTitle>
             <AlertDialogDescription>
               This will archive the workspace and hide it from the active list.
             </AlertDialogDescription>
@@ -242,7 +243,7 @@ const WorkspaceItem = memo(({
           )}
 
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{i18n.t('Cancel')}</AlertDialogCancel>
             <AlertDialogAction
               disabled={archiveMutation.isPending}
               onClick={() => {
@@ -311,7 +312,7 @@ export const WorkspaceList = memo(({
         aria-expanded={isOpen}
         className="flex h-7 w-full items-center justify-between rounded-lg px-2 text-left text-sm font-medium text-foreground/80 transition-colors hover:bg-foreground/5 hover:text-foreground"
       >
-        <span>Workspaces</span>
+        <span>{i18n.t('Workspaces')}</span>
         <ChevronDown
           className={cn(
             "h-3.5 w-3.5 flex-shrink-0 text-muted-foreground transition-transform duration-200",

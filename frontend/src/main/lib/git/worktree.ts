@@ -1,6 +1,7 @@
 import {
   execFile
 } from "node:child_process";
+import { t } from "../i18n"
 import {
   randomBytes
 } from "node:crypto";
@@ -14,7 +15,8 @@ import {
   homedir
 } from "node:os";
 import {
-  join
+  join,
+  resolve
 } from "node:path";
 import {
   promisify
@@ -31,6 +33,9 @@ import {
   checkGitLfsAvailable,
   getShellEnvironment
 } from "./shell-env";
+import {
+  getRepositoryState
+} from "./git-factory";
 import {
   executeWorktreeSetup
 } from "./worktree-config";
@@ -142,16 +147,70 @@ function isEnoent(error: unknown): boolean {
 	);
 }
 
-export function generateBranchName(): string {
-	const name = uniqueNamesGenerator({
-		dictionaries: [adjectives, animals],
-		separator: "-",
-		length: 2,
-		style: "lowerCase",
-	});
-	const suffix = randomBytes(3).toString("hex");
+function sanitizeBranchComponent(input: string): string {
+	let s = (input || "").trim();
+	if (!s) s = "base";
 
-	return `${name}-${suffix}`;
+	// Git ref format: strip consecutive dots and trailing slashes.
+	s = s.replace(/\.\.+/g, ".");
+	s = s.replace(/^\/+/, "").replace(/\/+$/, "");
+
+	// Replace characters that are invalid in ref names.
+	s = s.replace(/[ \t~^:?*\[\]\\]/g, "-");
+	s = s.replace(/@\{/g, "-");
+
+	// Per-component rules: no leading/trailing dots.
+	s = s
+		.split("/")
+		.map((part) => part.replace(/^\.+/, "").replace(/\.+$/, ""))
+		.join("/");
+
+	// Avoid .lock suffix on the final component.
+	if (s.endsWith(".lock")) {
+		s = s.slice(0, -5);
+	}
+
+	if (!s || s === "/" ) s = "base";
+	return s;
+}
+
+export function generateBranchName(baseBranch?: string, chatId?: string): string {
+	const base = sanitizeBranchComponent(baseBranch || "main");
+	const rawId = (chatId || randomBytes(4).toString("hex"))
+		.replace(/[^a-zA-Z0-9]/g, "")
+		.slice(0, 8);
+	const shortId = rawId || randomBytes(4).toString("hex").slice(0, 8);
+
+	const prefix = "chat/";
+	const maxTotal = 200;
+	let name = `${prefix}${base}-${shortId}`;
+	if (name.length > maxTotal) {
+		const allowedBase = Math.max(1, maxTotal - prefix.length - 1 - shortId.length);
+		name = `${prefix}${base.slice(0, allowedBase)}-${shortId}`;
+	}
+	return name;
+}
+
+export async function ensureUniqueBranchName(
+	mainRepoPath: string,
+	desired: string,
+): Promise<string> {
+	const git = simpleGit(mainRepoPath);
+	let candidate = desired;
+	let counter = 2;
+	// eslint-disable-next-line no-constant-condition
+	while (true) {
+		try {
+			await git.raw(["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]);
+			// exists -> try next
+			candidate = `${desired}-${counter}`;
+			counter += 1;
+			if (counter > 1000) break;
+		} catch {
+			return candidate;
+		}
+	}
+	return candidate;
 }
 
 export async function createWorktree(
@@ -173,8 +232,7 @@ export async function createWorktree(
 			const lfsAvailable = await checkGitLfsAvailable(env);
 			if (!lfsAvailable) {
 				throw new Error(
-					`This repository uses Git LFS, but git-lfs was not found. ` +
-						`Please install git-lfs (e.g., 'brew install git-lfs') and run 'git lfs install'.`,
+					t("This repository uses Git LFS, but git-lfs was not found. Please install git-lfs (e.g., 'brew install git-lfs') and run 'git lfs install'."),
 				);
 			}
 		}
@@ -239,10 +297,7 @@ export async function createWorktree(
 				`Git lock file error during worktree creation: ${errorMessage}`,
 			);
 			throw new Error(
-				`Failed to create worktree: The git repository is locked by another process. ` +
-					`This usually happens when another git operation is in progress, or a previous operation crashed. ` +
-					`Please wait for the other operation to complete, or manually remove the lock file ` +
-					`(e.g., .git/config.lock or .git/index.lock) if you're sure no git operations are running.`,
+				t("Failed to create worktree: The git repository is locked by another process. This usually happens when another git operation is in progress, or a previous operation crashed. Please wait for the other operation to complete, or manually remove the lock file (e.g., .git/config.lock or .git/index.lock) if you're sure no git operations are running."),
 			);
 		}
 
@@ -256,13 +311,12 @@ export async function createWorktree(
 		if (isLfsError) {
 			console.error(`Git LFS error during worktree creation: ${errorMessage}`);
 			throw new Error(
-				`Failed to create worktree: This repository uses Git LFS, but git-lfs was not found or failed. ` +
-					`Please install git-lfs (e.g., 'brew install git-lfs') and run 'git lfs install'.`,
+				t("Failed to create worktree: This repository uses Git LFS, but git-lfs was not found or failed. Please install git-lfs (e.g., 'brew install git-lfs') and run 'git lfs install'."),
 			);
 		}
 
 		console.error(`Failed to create worktree: ${errorMessage}`);
-		throw new Error(`Failed to create worktree: ${errorMessage}`);
+		throw new Error(t('Failed to create worktree: {{errorMessage}}'));
 	}
 }
 
@@ -293,7 +347,7 @@ export async function getGitRoot(path: string): Promise<string> {
 		const root = await git.revparse(["--show-toplevel"]);
 		return root.trim();
 	} catch {
-		throw new Error(`Not a git repository: ${path}`);
+		throw new Error(t('Not a git repository: {{path}}'));
 	}
 }
 
@@ -924,7 +978,7 @@ export async function safeCheckoutBranch(
 	const verifyBranch = await getCurrentBranch(repoPath);
 	if (verifyBranch !== branch) {
 		throw new Error(
-			`Branch checkout verification failed: expected "${branch}" but HEAD is on "${verifyBranch ?? "detached HEAD"}"`,
+			t("Branch checkout verification failed: expected \"{{branch}}\" but HEAD is on \"{{actual}}\"", { branch, actual: verifyBranch ?? "detached HEAD" }),
 		);
 	}
 }
@@ -1077,7 +1131,8 @@ export async function createWorktreeForChat(
 		// ------------------------------------------------------------------
 		// "new" mode (default): derive a brand-new branch from the selected base
 		// ------------------------------------------------------------------
-		const branch = generateBranchName();
+		let branch = generateBranchName(baseBranch, chatId);
+		branch = await ensureUniqueBranchName(projectPath, branch);
 		const worktreesDir = join(homedir(), ".ergatai", "worktrees");
 		const projectWorktreeDir = join(worktreesDir, projectSlug);
 		const folderName = generateWorktreeFolderName(projectWorktreeDir);
@@ -1133,7 +1188,7 @@ export async function createWorktreeForChat(
  * Find the worktree path that already has `branch` checked out, if any.
  * Returns null when the branch is not checked out in any worktree.
  */
-async function findCheckedOutWorktreePath(
+export async function findCheckedOutWorktreePath(
 	projectPath: string,
 	branch: string,
 ): Promise<string | null> {
@@ -1362,6 +1417,139 @@ export async function pushWorktreeBranch(
 /**
  * Get current git status summary
  */
+export interface MergeChatBranchResult {
+	status:
+		| "nothing_to_merge"
+		| "needs_manual_merge"
+		| "merged"
+		| "error";
+	reason?: string;
+	conflictedFiles?: string[];
+	error?: string;
+}
+
+export async function resolveProjectPathFromWorktree(
+	worktreePath: string,
+): Promise<string> {
+	const git = simpleGit(worktreePath);
+	try {
+		const commonDir = (await git.revparse(["--git-common-dir"])).trim();
+		// commonDir may be relative to worktreePath
+		const absoluteCommon = resolve(worktreePath, commonDir);
+		// commonDir is <project>/.git (or <project>/.git/worktrees/<name> for old layouts)
+		// The project path is the parent of the .git directory.
+		let projectPath = absoluteCommon;
+		// Strip trailing /worktrees/<name> if present
+		const idx = projectPath.lastIndexOf(".git");
+		if (idx !== -1) {
+			projectPath = projectPath.slice(0, idx);
+		}
+		return projectPath || worktreePath;
+	} catch {
+		return worktreePath;
+	}
+}
+
+export async function mergeChatBranchIntoBase(
+	projectPath: string,
+	chatBranch: string,
+	baseBranch: string,
+	options?: { push?: boolean },
+): Promise<MergeChatBranchResult> {
+	// Resolve base checkout location.
+	let baseRepoPath = await findCheckedOutWorktreePath(projectPath, baseBranch);
+	let needCheckout = false;
+	if (!baseRepoPath) {
+		baseRepoPath = projectPath;
+		needCheckout = true;
+	}
+
+	if (needCheckout) {
+		try {
+			await safeCheckoutBranch(baseRepoPath, baseBranch);
+		} catch (error) {
+			const dirty = await hasUncommittedChanges(baseRepoPath).catch(() => false);
+			if (dirty) {
+				return { status: "needs_manual_merge", reason: "base_dirty" };
+			}
+			return {
+				status: "error",
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+	}
+
+	// Dirty check.
+	if (await hasUncommittedChanges(baseRepoPath).catch(() => false)) {
+		return { status: "needs_manual_merge", reason: "base_dirty" };
+	}
+
+	// Repo state check.
+	const repoState = await getRepositoryState(baseRepoPath).catch(() => null);
+	if (
+		repoState &&
+		(repoState.isRebasing ||
+			repoState.isMerging ||
+			repoState.isCherryPicking ||
+			repoState.isReverting)
+	) {
+		return { status: "needs_manual_merge", reason: "repo_busy" };
+	}
+
+	const git = simpleGit(baseRepoPath);
+
+	// Ahead commits check.
+	let ahead = 0;
+	try {
+		const out = await git.raw(["rev-list", "--count", `${baseBranch}..${chatBranch}`]);
+		ahead = Number.parseInt(out.trim(), 10) || 0;
+	} catch {
+		// Fall back: try from projectPath's git namespace (branch may be registered).
+		try {
+			const g2 = simpleGit(projectPath);
+			const out = await g2.raw(["rev-list", "--count", `${baseBranch}..${chatBranch}`]);
+			ahead = Number.parseInt(out.trim(), 10) || 0;
+		} catch {
+			ahead = 0;
+		}
+	}
+
+	if (ahead === 0) {
+		return { status: "nothing_to_merge" };
+	}
+
+	// Attempt merge.
+	try {
+		await git.merge([chatBranch, "--no-edit"]);
+	} catch (error) {
+		const status = await git.status().catch(() => null);
+		const conflicted = status?.conflicted ?? [];
+		await git.merge(["--abort"]).catch(() => {});
+		if (conflicted.length > 0) {
+			return {
+				status: "needs_manual_merge",
+				reason: "conflict",
+				conflictedFiles: conflicted,
+			};
+		}
+		return {
+			status: "needs_manual_merge",
+			reason: "merge_failed",
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
+
+	if (options?.push) {
+		try {
+			await git.push();
+		} catch {
+			// Push is optional/best-effort.
+		}
+	}
+
+	return { status: "merged" };
+}
+
 export async function getGitStatus(worktreePath: string): Promise<{
 	hasUncommittedChanges: boolean;
 	hasUnpushedCommits: boolean;

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useState, useCallback, useRef, useEffect } from "react"
@@ -43,7 +44,7 @@ export const CopyButton = memo(function CopyButton({
 
   return (
     <button
-      aria-label="Copy"
+      aria-label={i18n.t('Copy')}
       onClick={handleCopy}
       className="p-1.5 rounded-md transition-[background-color,transform] duration-150 ease-out hover:bg-accent active:scale-[0.97]"
     >

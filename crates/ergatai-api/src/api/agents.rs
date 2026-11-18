@@ -349,19 +349,6 @@ pub struct AgentInfoResponse {
     pub state_history: Vec<ergatai_runtime::agent_record::StateTransition>,
 }
 
-/// A model selector successfully read from ACP session config options.
-///
-/// `current` is a runtime observation and is intentionally not written to the
-/// profile-level model cache.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct DetectedModels {
-    pub models: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub current: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub option_id: Option<String>,
-}
-
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub error: String,
@@ -759,6 +746,7 @@ pub async fn spawn_agent(
     }
 
     if let Some(conversation_id) = req.conversation_id.as_deref() {
+        let conversation_worktree_path: Option<String>;
         let conversation_id_typed = match crate::http_error::parse_typed_id::<ConversationId>(
             conversation_id,
             "Conversation",
@@ -767,11 +755,18 @@ pub async fn spawn_agent(
             Err((status, json)) => return (status, json).into_response(),
         };
         match tokio::task::spawn_blocking(move || {
-            crate::user_data_db::conversations::get(conversation_id_typed)
+            let conversation = crate::user_data_db::conversations::get(conversation_id_typed)?;
+            let worktree_path = match conversation.as_ref() {
+                Some(conversation) => crate::user_data_db::chats::get(conversation.chat_id)?
+                    .and_then(|chat| chat.worktree_path),
+                None => None,
+            };
+            Ok::<_, rusqlite::Error>((conversation, worktree_path))
         })
         .await
         {
-            Ok(Ok(Some(conversation))) => {
+            Ok(Ok((Some(conversation), chat_worktree_path))) => {
+                conversation_worktree_path = chat_worktree_path;
                 spawn_chat_id = Some(
                     conversation
                         .parent_id
@@ -779,7 +774,7 @@ pub async fn spawn_agent(
                         .unwrap_or_else(|| conversation.conversation_id.to_string()),
                 );
             }
-            Ok(Ok(None)) => {
+            Ok(Ok((None, _))) => {
                 return (
                     StatusCode::NOT_FOUND,
                     Json(ErrorResponse {
@@ -933,6 +928,7 @@ pub async fn spawn_agent(
 
         let resolved_work_dir = execution_context
             .and_then(|context| context.worktree_path)
+            .or(conversation_worktree_path)
             .unwrap_or(workspace.work_dir);
         raw_work_dir = Some(
             crate::expand_home_path(&resolved_work_dir)
@@ -4496,8 +4492,11 @@ pub fn spawn_model_detection(agent_id: String, profile_name: String) {
             return;
         }
 
-        let discovered = crate::services::agent::discover_models(kind, &profile_name, None).await;
-        if discovered.details.is_empty() {
+        let live_agent = (!agent_id.trim().is_empty()).then_some(agent_id.as_str());
+        let ctx = crate::services::agent::ModelReadContext::new(&profile_name)
+            .with_live_agent(live_agent);
+        let discovered = crate::services::agent::discover_models(kind, &ctx).await;
+        if !discovered.success || discovered.details.is_empty() {
             tracing::debug!(
                 profile = %profile_name,
                 "Model detection: no models discovered"
@@ -4525,98 +4524,7 @@ pub fn spawn_model_detection(agent_id: String, profile_name: String) {
     });
 }
 
-/// Extract model list from ACP session config options.
-///
-/// Handles both Ungrouped (flat list) and Grouped (provider-grouped) option formats:
-/// - Ungrouped: `[{"value": "opus", "name": "Opus"}, ...]`
-/// - Grouped: `[{"group": "anthropic", "name": "Anthropic", "options": [{"value": "opus", ...}]}, ...]`
-pub(crate) fn extract_models_from_config_options(
-    opts: &[agent_client_protocol::schema::v1::SessionConfigOption],
-) -> Option<DetectedModels> {
-    use agent_client_protocol::schema::v1::SessionConfigOptionCategory;
-
-    fn selector_identity(value: &str) -> String {
-        value
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .collect::<String>()
-            .to_lowercase()
-    }
-
-    // `category` is optional UX metadata in ACP. Prefer it, but a compliant
-    // agent can still identify the selector with `id = "model"` or `name`.
-    let model_option = opts
-        .iter()
-        .find(|o| matches!(o.category, Some(SessionConfigOptionCategory::Model)))
-        .or_else(|| {
-            opts.iter().find(|o| {
-                if matches!(
-                    o.category,
-                    Some(SessionConfigOptionCategory::Mode)
-                        | Some(SessionConfigOptionCategory::ModelConfig)
-                        | Some(SessionConfigOptionCategory::ThoughtLevel)
-                ) {
-                    return false;
-                }
-                let id = selector_identity(&o.id.to_string());
-                let name = selector_identity(&o.name);
-                matches!(id.as_str(), "model" | "modelselector")
-                    || matches!(name.as_str(), "model" | "modelselector")
-            })
-        })?;
-
-    // The kind field contains the select options
-    let kind_json = serde_json::to_value(&model_option.kind).ok()?;
-    if kind_json.get("type")?.as_str()? != "select" {
-        return None;
-    }
-
-    let current = kind_json
-        .get("currentValue")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let options = kind_json.get("options")?.as_array()?;
-
-    // Extract models from both Ungrouped and Grouped option formats.
-    // Ungrouped: each item has "value"/"id" directly.
-    // Grouped: each item has "group", "name", and nested "options" array.
-    let models: Vec<String> = options
-        .iter()
-        .flat_map(|o| {
-            // Direct value/id → Ungrouped option
-            if let Some(val) = o
-                .get("value")
-                .or_else(|| o.get("id"))
-                .and_then(|v| v.as_str())
-            {
-                return vec![val.to_string()];
-            }
-            // Nested options array → Grouped option
-            if let Some(nested) = o.get("options").and_then(|v| v.as_array()) {
-                return nested
-                    .iter()
-                    .filter_map(|n| {
-                        n.get("value")
-                            .or_else(|| n.get("id"))
-                            .and_then(|v| v.as_str())
-                            .map(String::from)
-                    })
-                    .collect();
-            }
-            vec![]
-        })
-        .collect();
-
-    if models.is_empty() {
-        None
-    } else {
-        Some(DetectedModels {
-            models,
-            current,
-            option_id: Some(model_option.id.to_string()),
-        })
-    }
-}
+pub(crate) use crate::services::agent::acp::extract_models_from_config_options;
 
 /// Response for `GET /api/v1/agents/:id/extension-meta`.
 #[derive(Serialize, ToSchema)]

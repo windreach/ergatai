@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { Button } from "@/components/ui/button"
 import {
   Tooltip,
@@ -22,7 +23,6 @@ const VIEW_TITLES: Record<DetailsSidebarTab, string> = {
   details: "Details",
   files: "Files",
   git: "Git",
-  "task-board": "Task Board",
 }
 
 interface DetailsSidebarHeaderProps {
@@ -57,7 +57,7 @@ export function DetailsSidebarHeader({
               size="icon"
               onClick={onClose}
               className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
-              aria-label="Close details"
+              aria-label={i18n.t('Close details')}
             >
               <IconDoubleChevronRight className="h-4 w-4" />
             </Button>

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -14,7 +15,6 @@ import {
   createPanelLinkScopeKey,
 } from "@/features/panel-link"
 import { FilesTab, type FilesTabHandle } from "./sections/files-tab"
-import { TaskBoardView } from "../task-board"
 import type { ParsedDiffFile } from "./types"
 import { fileViewerOpenAtomFamily, type AgentMode } from "../agents"
 import { DetailsSidebarHeader } from "./components/details-sidebar-header"
@@ -31,6 +31,8 @@ interface DetailsSidebarProps {
   worktreePath: string | null
   /** Chat branch - used to key terminal sessions (must match TerminalSidebar) */
   branch?: string | null
+  /** Terminal scope key - must match TerminalSidebar's scopeKey so rail/widget terminals share data */
+  terminalScopeKey?: string
   /** Plan path for plan section */
   planPath: string | null
   /** Current agent mode (plan or agent) */
@@ -91,6 +93,7 @@ export function DetailsSidebar({
   chatId,
   worktreePath,
   branch,
+  terminalScopeKey,
   planPath,
   mode,
   onBuildPlan,
@@ -121,10 +124,13 @@ export function DetailsSidebar({
   // Global sidebar open state
   const [isOpen, setIsOpen] = useAtom(detailsSidebarOpenAtom)
 
-  // Active tab state (Details / Files / Git). The side chat used to be a tab;
-  // a stale persisted "chat" value falls back to the Details page.
+  // Active tab state (Details / Files / Git). Stale persisted values from
+  // removed tabs ("chat", "task-board") fall back to the Details page.
   const [storedTab] = useAtom(detailsSidebarTabAtom)
-  const activeTab = storedTab === ("chat" as typeof storedTab) ? "details" : storedTab
+  const activeTab =
+    storedTab === "details" || storedTab === "files" || storedTab === "git"
+      ? storedTab
+      : "details"
   const panelLinkScopeKey = createPanelLinkScopeKey({ chatId })
   const dispatchPanelLink = useSetAtom(
     panelLinkCommandAtomFamily(panelLinkScopeKey),
@@ -225,6 +231,7 @@ export function DetailsSidebar({
             chatId={chatId}
             worktreePath={worktreePath}
             branch={branch}
+            terminalScopeKey={terminalScopeKey}
             planPath={planPath}
             activeConversationId={activeConversationId}
             mode={mode}
@@ -274,14 +281,6 @@ export function DetailsSidebar({
               />
             </>
           ) : null}
-        </div>
-        <div
-          className={cn(
-            "flex min-h-0 flex-1 flex-col overflow-hidden",
-            activeTab !== "task-board" && "hidden",
-          )}
-        >
-          <TaskBoardView />
         </div>
       </div>
     </ResizableSidebar>

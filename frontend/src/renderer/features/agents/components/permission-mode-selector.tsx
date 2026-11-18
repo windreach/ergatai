@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState } from "react"
@@ -20,6 +21,7 @@ import {
 } from "../../../components/ui/popover"
 import { IconChevronDown, CheckIcon } from "../../../components/ui/icons"
 import { cn } from "../../../lib/utils"
+import { useTranslation } from "react-i18next"
 import { trpc } from "../../../lib/trpc"
 
 type PermissionMode = "ask" | "auto" | "full_access"
@@ -30,12 +32,12 @@ const modeOptions: Array<{
   description: string
   danger?: boolean
 }> = [
-  { id: "ask", label: "Ask", description: "Ask before risky operations" },
-  { id: "auto", label: "Auto", description: "Auto-approve operations" },
+  { id: "ask", label: "Ask", description: "permissions.askDescription" },
+  { id: "auto", label: "Auto", description: "permissions.autoDescription" },
   {
     id: "full_access",
     label: "Full Access",
-    description: "这个可以完全访问电脑",
+    description: "permissions.fullAccessDescription",
     danger: true,
   },
 ]
@@ -45,6 +47,7 @@ export function PermissionModeSelector({
 }: {
   disabled?: boolean
 }) {
+  const { t } = useTranslation()
   const [optimisticMode, setOptimisticMode] = useState<PermissionMode | null>(
     null,
   )
@@ -135,7 +138,7 @@ export function PermissionModeSelector({
                     optionDanger && "text-red-400",
                   )}
                 >
-                  {option.description}
+                  {t(option.description)}
                 </div>
               </div>
               {isSelected && (
@@ -156,9 +159,7 @@ export function PermissionModeSelector({
             Enable Full Access?
           </AlertDialogTitle>
           <AlertDialogDescription>
-            Full Access 会自动批准所有操作并绕过文件锁检查——
-            <span className="text-red-500 font-medium">这个模式可以完全访问电脑</span>
-            。确定要开启吗？
+            {t("permissions.fullAccessWarning")}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogBody />

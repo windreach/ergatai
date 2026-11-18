@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import React from "react"
@@ -252,7 +253,7 @@ const _DraftItem = React.memo(function _DraftItem({
                 }}
                 tabIndex={-1}
                 className="flex-shrink-0 text-muted-foreground hover:text-foreground active:text-foreground transition-[opacity,transform,color] duration-150 ease-out opacity-0 scale-95 pointer-events-none group-hover:opacity-100 group-hover:scale-100 group-hover:pointer-events-auto active:scale-[0.97]"
-                aria-label="Delete draft"
+                aria-label={i18n.t('Delete draft')}
               >
                 <TrashIcon className="h-3.5 w-3.5" />
               </button>
@@ -260,7 +261,7 @@ const _DraftItem = React.memo(function _DraftItem({
           </div>
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] text-muted-foreground/60 truncate">
-              <span className="text-blue-500">Draft</span>
+              <span className="text-blue-500">{i18n.t('Draft')}</span>
               {projectGitRepo
                 ? ` • ${projectGitRepo}`
                 : projectName
@@ -334,7 +335,7 @@ const KanbanButton = memo(function KanbanButton() {
     <Tooltip delayDuration={500}>
       <TooltipTrigger asChild>
         <button
-          aria-label="Columns3"
+          aria-label={i18n.t('Columns3')}
           type="button"
           onClick={handleClick}
           className="flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-[background-color,color,transform] duration-150 ease-out active:scale-[0.97] outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70"
@@ -388,7 +389,7 @@ const ArchiveSection = memo(function ArchiveSection({ archivedChatsCount }: Arch
           />
         </div>
       </TooltipTrigger>
-      <TooltipContent>Archive</TooltipContent>
+      <TooltipContent>{i18n.t('Archive')}</TooltipContent>
     </Tooltip>
   )
 })
@@ -446,7 +447,7 @@ const SidebarHeader = memo(function SidebarHeader({
     <DropdownMenuSub>
       <DropdownMenuSubTrigger className="gap-2">
         <QuestionCircleIcon className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-        <span className="flex-1">Help</span>
+        <span className="flex-1">{i18n.t('Help')}</span>
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent
         className="w-36"
@@ -462,7 +463,7 @@ const SidebarHeader = memo(function SidebarHeader({
           className="gap-2"
         >
           <DiscordIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          <span className="flex-1">Discord</span>
+          <span className="flex-1">{i18n.t('Discord')}</span>
         </DropdownMenuItem>
         {!isMobileFullscreen && (
           <DropdownMenuItem
@@ -474,7 +475,7 @@ const SidebarHeader = memo(function SidebarHeader({
             className="gap-2"
           >
             <KeyboardIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-            <span className="flex-1">Shortcuts</span>
+            <span className="flex-1">{i18n.t('Shortcuts')}</span>
           </DropdownMenuItem>
         )}
       </DropdownMenuSubContent>
@@ -528,7 +529,7 @@ const SidebarHeader = memo(function SidebarHeader({
                 onClick={onToggleSidebar}
                 tabIndex={-1}
                 className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
-                aria-label="Close sidebar"
+                aria-label={i18n.t('Close sidebar')}
               >
                 <IconDoubleChevronLeft className="h-4 w-4" />
               </ButtonCustom>
@@ -737,7 +738,7 @@ const HelpSection = memo(function HelpSection({ isMobile }: HelpSectionProps) {
             isMobile={isMobile}
           >
             <button
-              aria-label="QuestionCircleIcon"
+              aria-label={i18n.t('QuestionCircleIcon')}
               ref={helpButtonRef}
               type="button"
               className="flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-[background-color,color,transform] duration-150 ease-out active:scale-[0.97] outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70"
@@ -748,7 +749,7 @@ const HelpSection = memo(function HelpSection({ isMobile }: HelpSectionProps) {
           </AgentsHelpPopover>
         </div>
       </TooltipTrigger>
-      <TooltipContent>Help</TooltipContent>
+      <TooltipContent>{i18n.t('Help')}</TooltipContent>
     </Tooltip>
   )
 })
@@ -923,18 +924,6 @@ export function AgentsSidebar({
 
   // Fetch chats for sidebar entries; UI labels these entries as workspaces, but their IDs are chat IDs.
   const { data: allChats } = trpc.chats.list.useQuery({})
-
-  // Log when chats are fetched
-  useEffect(() => {
-    if (allChats) {
-      console.log("[agents-sidebar] trpc.chats.list returned", allChats.length, "chats")
-    }
-  }, [allChats])
-
-  // Log when allChats changes
-  useEffect(() => {
-    console.log("[agents-sidebar] allChats changed:", allChats?.length ?? "undefined")
-  }, [allChats])
 
   // Prefetch individual chat data on hover
   const prefetchLocalChat = usePrefetchLocalChat()
@@ -2214,6 +2203,7 @@ export function AgentsSidebar({
                 }
 
                 if (e.key === "Enter") {
+                  if (e.nativeEvent.isComposing) return
                   e.preventDefault()
                   // Only open if something is focused (not -1)
                   if (focusedChatIndex >= 0) {
@@ -2241,7 +2231,7 @@ export function AgentsSidebar({
               isMobileFullscreen ? "h-10" : "h-8",
             )}
             role="tablist"
-            aria-label="Collaboration mode"
+            aria-label={i18n.t('Collaboration mode')}
           >
             <motion.span
               aria-hidden
@@ -2296,7 +2286,7 @@ export function AgentsSidebar({
               {newWorkspaceHotkey && (
                 <span className="flex items-center gap-1.5">
                   <Kbd>{newWorkspaceHotkey}</Kbd>
-                  {newWorkspaceAltHotkey && <><span className="text-[10px] opacity-50">or</span><Kbd>{newWorkspaceAltHotkey}</Kbd></>}
+                  {newWorkspaceAltHotkey && <><span className="text-[10px] opacity-50">{i18n.t('or')}</span><Kbd>{newWorkspaceAltHotkey}</Kbd></>}
                 </span>
               )}
             </TooltipContent>
@@ -2313,7 +2303,7 @@ export function AgentsSidebar({
               isMobileFullscreen ? "h-10" : "h-7",
             )}
           >
-            <span className="text-sm font-medium">Manage Agents</span>
+            <span className="text-sm font-medium">{i18n.t('Manage Agents')}</span>
           </ButtonCustom>
         </div>
       </div>
@@ -2420,7 +2410,7 @@ export function AgentsSidebar({
                 <Tooltip delayDuration={500}>
                   <TooltipTrigger asChild>
                     <button
-                      aria-label="Settings"
+                      aria-label={i18n.t('Settings')}
                       type="button"
                       onClick={() => {
                         setSettingsActiveTab("preferences")

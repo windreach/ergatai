@@ -23,6 +23,7 @@ import {
   tmpdir,
   z
 } from "./ergatai-shared"
+import { t } from "../../i18n"
 
 export const agentsRouter = router({
   /** List all agents from Ergatai backend */
@@ -403,7 +404,7 @@ export const agentsRouter = router({
 
           if (!response.ok) {
             const detail = await response.text().catch(() => "unknown error")
-            throw new Error(`Permission stream failed (${response.status}): ${detail}`)
+            throw new Error(t('Permission stream failed ({{response.status}}): {{detail}}'))
           }
           if (!response.body) {
             throw new Error("Permission stream response has no readable body")
@@ -565,7 +566,7 @@ export const agentsRouter = router({
       const agent = agents.find((a) => a.agent_id === input.agentId)
 
       if (!agent) {
-        throw new Error(`Agent ${input.agentId} not found`)
+        throw new Error(t('Agent {{input.agentId}} not found'))
       }
 
       // Get model snapshot manager
@@ -817,7 +818,7 @@ export const agentsRouter = router({
 
           if (!response.ok) {
             const detail = await response.text().catch(() => "unknown error")
-            throw new Error(`Permissions stream failed (${response.status}): ${detail}`)
+            throw new Error(t('Permissions stream failed ({{response.status}}): {{detail}}'))
           }
           if (!response.body) {
             throw new Error("Permissions stream has no readable body")

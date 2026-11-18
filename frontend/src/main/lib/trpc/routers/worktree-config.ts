@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { t } from "../../../lib/i18n"
 import { router, publicProcedure } from "../index"
 import { getProject } from "../../ergatai/user-data"
 import {
@@ -13,6 +14,7 @@ const WorktreeConfigSchema = z.object({
   "setup-worktree-unix": z.union([z.array(z.string()), z.string()]).optional(),
   "setup-worktree-windows": z.union([z.array(z.string()), z.string()]).optional(),
   "setup-worktree": z.union([z.array(z.string()), z.string()]).optional(),
+  "auto-merge": z.boolean().optional(),
 })
 
 export const worktreeConfigRouter = router({
@@ -26,7 +28,7 @@ export const worktreeConfigRouter = router({
       const project = await getProject(input.projectId)
 
       if (!project) {
-        throw new Error("Project not found")
+        throw new Error(t("Project not found"))
       }
 
       const detected = await detectWorktreeConfig(project.path)
@@ -57,7 +59,7 @@ export const worktreeConfigRouter = router({
       const project = await getProject(input.projectId)
 
       if (!project) {
-        throw new Error("Project not found")
+        throw new Error(t("Project not found"))
       }
 
       const result = await saveWorktreeConfig(
@@ -70,6 +72,25 @@ export const worktreeConfigRouter = router({
     }),
 
   /**
+   * Get worktree config for a project path (main-process path-based access)
+   */
+  getByPath: publicProcedure
+    .input(z.object({ projectPath: z.string() }))
+    .query(async ({ input }) => {
+      const [detected, available] = await Promise.all([
+        detectWorktreeConfig(input.projectPath),
+        getAvailableConfigPaths(input.projectPath),
+      ])
+      return {
+        config: detected.config,
+        path: detected.path,
+        source: detected.source,
+        available,
+        projectPath: input.projectPath,
+      }
+    }),
+
+  /**
    * Get available config paths for a project
    */
   getAvailablePaths: publicProcedure
@@ -78,7 +99,7 @@ export const worktreeConfigRouter = router({
       const project = await getProject(input.projectId)
 
       if (!project) {
-        throw new Error("Project not found")
+        throw new Error(t("Project not found"))
       }
 
       return getAvailableConfigPaths(project.path)

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useMemo, useEffect, useRef, useSyncExternalStore, useCallback } from "react"

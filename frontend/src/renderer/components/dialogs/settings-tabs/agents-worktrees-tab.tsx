@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useState, useEffect } from "react"
 import { useSetAtom } from "jotai"
 import { trpc } from "../../../lib/trpc"
@@ -59,7 +60,7 @@ export function AgentsWorktreesTab() {
       refetchConfig()
     },
     onError: (err) => {
-      toast.error(`Failed to save: ${err.message}`)
+      toast.error(i18n.t("Failed to save: {{message}}", { message: err.message }))
     },
   })
 
@@ -190,7 +191,7 @@ export function AgentsWorktreesTab() {
       {/* Header */}
       {!isNarrowScreen && (
         <div className="flex flex-col gap-1.5 text-center sm:text-left">
-          <h3 className="text-sm font-semibold text-foreground">Worktrees</h3>
+          <h3 className="text-sm font-semibold text-foreground">{i18n.t('Worktrees')}</h3>
           <p className="text-xs text-muted-foreground">
             Configure setup commands that run when a new worktree is created
           </p>
@@ -200,13 +201,13 @@ export function AgentsWorktreesTab() {
       {/* Project Selection */}
       <div className="space-y-2">
         <div className="pb-2">
-          <h4 className="text-sm font-medium text-foreground">Project</h4>
+          <h4 className="text-sm font-medium text-foreground">{i18n.t('Project')}</h4>
         </div>
 
         <div className="bg-background rounded-lg border border-border overflow-hidden">
           <div className="p-4 flex items-center justify-between gap-6">
             <div className="flex-1">
-              <Label className="text-sm font-medium">Select project</Label>
+              <Label className="text-sm font-medium">{i18n.t('Select project')}</Label>
               <p className="text-xs text-muted-foreground">
                 Choose which project to configure
               </p>
@@ -252,7 +253,7 @@ export function AgentsWorktreesTab() {
             <div className="bg-background rounded-lg border border-border overflow-hidden">
               <div className="p-4 flex items-center justify-between gap-6">
                 <div className="flex-1">
-                  <Label className="text-sm font-medium">Save to</Label>
+                  <Label className="text-sm font-medium">{i18n.t('Save to')}</Label>
                   <p className="text-xs text-muted-foreground">
                     Where to save the configuration file
                   </p>
@@ -322,7 +323,7 @@ export function AgentsWorktreesTab() {
             <div className="bg-background rounded-lg border border-border overflow-hidden">
               <div className="p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <Label className="text-sm font-medium">All Platforms</Label>
+                  <Label className="text-sm font-medium">{i18n.t('All Platforms')}</Label>
                   <span className="text-xs text-muted-foreground">
                     use <code className="font-mono bg-muted px-1 py-0.5 rounded">$ROOT_WORKTREE_PATH</code> for main repo path
                   </span>
@@ -336,7 +337,7 @@ export function AgentsWorktreesTab() {
                         onChange={(e) =>
                           updateCommand(i, e.target.value, commands, setCommands)
                         }
-                        placeholder="bun install && cp $ROOT_WORKTREE_PATH/.env .env"
+                        placeholder={i18n.t('bun install && cp $ROOT_WORKTREE_PATH/.env .env')}
                         className="flex-1 font-mono text-sm"
                       />
                       {commands.length > 1 && (
@@ -370,7 +371,7 @@ export function AgentsWorktreesTab() {
                   className="w-full p-3 flex items-center justify-between text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
                   onClick={() => setShowPlatformSpecific(!showPlatformSpecific)}
                 >
-                  <span>Platform-specific overrides</span>
+                  <span>{i18n.t('Platform-specific overrides')}</span>
                   <ChevronDown
                     className={`h-4 w-4 transition-transform ${
                       showPlatformSpecific ? "rotate-180" : ""
@@ -404,7 +405,7 @@ export function AgentsWorktreesTab() {
                                     setUnixCommands,
                                   )
                                 }
-                                placeholder="bun install"
+                                placeholder={i18n.t('bun install')}
                                 className="flex-1 font-mono text-sm"
                               />
                               <Button
@@ -456,7 +457,7 @@ export function AgentsWorktreesTab() {
                                     setWindowsCommands,
                                   )
                                 }
-                                placeholder="npm ci"
+                                placeholder={i18n.t('npm ci')}
                                 className="flex-1 font-mono text-sm"
                               />
                               <Button

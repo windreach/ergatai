@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import type { BuiltinCommandAction, SlashCommandOption } from "./types"
 
 /**
@@ -7,13 +8,13 @@ export const COMMAND_PROMPTS: Partial<
   Record<BuiltinCommandAction["type"], string>
 > = {
   review:
-    "Please review the code in the current context and provide feedback on code quality, potential bugs, and improvements.",
+    i18n.t('Please review the code in the current context and provide feedback on code quality, potential bugs, and improvements.'),
   "pr-comments":
-    "Generate detailed PR review comments for the changes in the current context.",
+    i18n.t('Generate detailed PR review comments for the changes in the current context.'),
   "release-notes":
-    "Generate release notes summarizing the changes in this codebase.",
+    i18n.t('Generate release notes summarizing the changes in this codebase.'),
   "security-review":
-    "Perform a security audit of the code in the current context. Identify vulnerabilities, security risks, and suggest fixes.",
+    i18n.t('Perform a security audit of the code in the current context. Identify vulnerabilities, security risks, and suggest fixes.'),
   commit:
     "Закоммить это аккуратно, не трогая больше ничего. Сделай коммит только для staged изменений, не добавляй никакие другие файлы и не вноси дополнительных изменений.",
   "worktree-setup": `Create a worktree setup script for this project.
@@ -51,4 +52,3 @@ export function isPromptCommand(
 ): type is "review" | "pr-comments" | "release-notes" | "security-review" | "commit" | "worktree-setup" {
   return type in COMMAND_PROMPTS
 }
-

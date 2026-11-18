@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useMemo, useCallback } from "react"
 import { Loader2, AlertCircle, Check, X } from "lucide-react"
 import { useAtom, useAtomValue } from "jotai"
@@ -140,14 +141,14 @@ export function ImageViewer({
         {isLoading && (
           <div className="flex flex-col items-center gap-3 text-muted-foreground">
             <Loader2 className="h-8 w-8 animate-spin" />
-            <span className="text-sm">Loading image...</span>
+            <span className="text-sm">{i18n.t('Loading image...')}</span>
           </div>
         )}
 
         {error && (
           <div className="flex flex-col items-center gap-3 text-center max-w-[300px]">
             <AlertCircle className="h-10 w-10 text-muted-foreground" />
-            <p className="font-medium text-foreground">Failed to load image</p>
+            <p className="font-medium text-foreground">{i18n.t('Failed to load image')}</p>
           </div>
         )}
 

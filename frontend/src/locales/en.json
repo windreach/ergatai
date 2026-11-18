@@ -1,0 +1,1294 @@
+{
+  "common": {
+    "retry": "Retry",
+    "stop": "Stop",
+    "uploadFile": "Upload file",
+    "uploadFolder": "Upload folder",
+    "viewed": "Viewed"
+  },
+  "chat": {
+    "executionFailed": "Execution failed",
+    "adapterNoUsage": "adapter did not report usage",
+    "fileChangeSummary": "File change summary",
+    "errors": {
+      "modelUnavailable": {
+        "title": "Model unavailable",
+        "description": "The selected model does not exist or your account has no access. Switch models in the model selector and retry."
+      },
+      "authenticationFailed": {
+        "title": "Authentication failed",
+        "description": "Please log in again or update your API Key, then retry."
+      },
+      "permissionDenied": {
+        "title": "Permission denied",
+        "description": "Your account does not have permission for this action. Check model or organization permissions."
+      },
+      "rateLimited": {
+        "title": "Rate limited",
+        "description": "Insufficient quota or rate limited. Retry later, or switch model/plan."
+      },
+      "contextTooLong": {
+        "title": "Context too long",
+        "description": "Conversation context exceeds the model limit. Compress context or start a new session."
+      },
+      "serviceUnavailable": {
+        "title": "Service temporarily unavailable",
+        "description": "Model service is temporarily unavailable. The system will retry automatically; you can also retry manually."
+      },
+      "repeated": "Repeated {{count}} times",
+      "technicalDetails": "Technical details",
+      "switchModel": "Switch model",
+      "copyErrorDetails": "Copy error details"
+    }
+  },
+  "migration": {
+    "notice": "Migration notice",
+    "noInstalledAgents": "No installed agents",
+    "detected": "Detected locally installed agents: {{agents}}. Migrate them now?",
+    "later": "Later",
+    "migrating": "Migrating…",
+    "start": "Start migration",
+    "progress": "Migration progress {{percent}}%",
+    "agentHistory": "Agent history migration",
+    "completed": "Completed",
+    "failed": "Failed",
+    "waiting": "Waiting to start"
+  },
+  "retry": {
+    "autoRetrying": "Automatically retrying {{attempt}}/{{max}}",
+    "retryIn": "· retrying in {{seconds}}s",
+    "retrying": "· retrying…"
+  },
+  "mock": {
+    "currentTask": "Current task",
+    "breakingDown": "{{agent}} is breaking down \"{{topic}}\". First confirm the goal, then check context and risks, and finally organize an actionable reply.",
+    "reply": "{{agent}} reply: around \"{{topic}}\", I will start with a conclusion, then add key steps and cautions.",
+    "receivedRunning": "{{agent}}: received, task is running. See details by clicking {{agent}} below.",
+    "receivedEmpty": "Received: {{prompt}}. This is a reply from the unified mock channel, used to verify the real message flow.",
+    "thinkingStyle": "The user wants to verify the thinking record display style. First confirm user intent, then organize the reply structure.",
+    "emptyMessage": "empty message"
+  },
+  "acknowledgment": "Received",
+  "settings": {
+    "language": "Language",
+    "system": "System",
+    "english": "English",
+    "chinese": "中文",
+    "preferences": {
+      "title": "Preferences",
+      "subtitle": "Configure Claude's behavior and features",
+      "extendedThinking": "Extended Thinking"
+    }
+  },
+  "permissions": {
+    "askDescription": "Ask before risky operations",
+    "autoDescription": "Auto-approve operations",
+    "fullAccessDescription": "This has full access to the computer",
+    "fullAccessWarning": "Full Access automatically approves all operations and bypasses file lock checks—this mode has full access to the computer. Are you sure you want to enable it?"
+  },
+  "API endpoint URL": "API endpoint URL",
+  "API key": "API key",
+  "API token": "API token",
+  "Aa": "Aa",
+  "Accepts PNG, JPG, WebP or SVG up to 2MB": "Accepts PNG, JPG, WebP or SVG up to 2MB",
+  "Account": "Account",
+  "Action": "Action",
+  "Active": "Active",
+  "Add Agent": "Add Agent",
+  "Add agent": "Add agent",
+  "Add from GitHub": "Add from GitHub",
+  "Add project folder": "Add project folder",
+  "Add your reply": {
+    "": {
+      "": {
+        "": "Add your reply..."
+      }
+    }
+  },
+  "Agent": "Agent",
+  "Agent Request": "Agent Request",
+  "Agents": "Agents",
+  "Agents interface": "Agents interface",
+  "All Platforms": "All Platforms",
+  "All projects": "All projects",
+  "Alt": "Alt",
+  "Appearance": "Appearance",
+  "Archive": "Archive",
+  "Archive chat": "Archive chat",
+  "Archive workspace": "Archive workspace",
+  "Archive workspace?": "Archive workspace?",
+  "Archived Workspaces": "Archived Workspaces",
+  "Are you sure you want to discard all changes to:": "Are you sure you want to discard all changes to:",
+  "ArrowUp": "ArrowUp",
+  "Async Tasks": "Async Tasks",
+  "Back": "Back",
+  "Back to chat": "Back to chat",
+  "Back to chats": "Back to chats",
+  "Base URL": "Base URL",
+  "Cancel": "Cancel",
+  "Cannot view this file": "Cannot view this file",
+  "Changes": "Changes",
+  "Chat": "Chat",
+  "Chat archived": "Chat archived",
+  "Chat name": "Chat name",
+  "Chats": "Chats",
+  "ChevronDown": "ChevronDown",
+  "ChevronLeft": "ChevronLeft",
+  "ChevronUp": "ChevronUp",
+  "Claude Code": "Claude Code",
+  "Clear browse root": "Clear browse root",
+  "Click": "Click",
+  "Click an agent in the rail to start chatting": "Click an agent in the rail to start chatting",
+  "Click to change icon": "Click to change icon",
+  "Click to copy": "Click to copy",
+  "Close": "Close",
+  "Close (Esc)": "Close (Esc)",
+  "Close (Escape)": "Close (Escape)",
+  "Close chat": "Close chat",
+  "Close chats pane": "Close chats pane",
+  "Close details": "Close details",
+  "Close fullscreen (Esc)": "Close fullscreen (Esc)",
+  "Close plan": "Close plan",
+  "Close sidebar": "Close sidebar",
+  "Close terminal": "Close terminal",
+  "Close workspace": "Close workspace",
+  "Collaboration mode": "Collaboration mode",
+  "Collapse all": "Collapse all",
+  "Columns3": "Columns3",
+  "Commit message": "Commit message",
+  "Config": "Config",
+  "Config file": "Config file",
+  "Connect Claude Code": "Connect Claude Code",
+  "Connect your Claude Code subscription": "Connect your Claude Code subscription",
+  "Connect your Claude Code subscription to get started": "Connect your Claude Code subscription to get started",
+  "Connected": "Connected",
+  "Connecting": "Connecting",
+  "Connection failed": "Connection failed",
+  "Copy": "Copy",
+  "Copy Path": "Copy Path",
+  "Copy path": "Copy path",
+  "CopyIcon": "CopyIcon",
+  "Create a Branch": "Create a Branch",
+  "Create branch based on": {
+    "": {
+      "": {
+        "": "Create branch based on..."
+      }
+    }
+  },
+  "Create session": "Create session",
+  "Creating diagram": {
+    "": {
+      "": {
+        "": "Creating diagram..."
+      }
+    }
+  },
+  "Ctrl+C": "Ctrl+C",
+  "Danger Zone": "Danger Zone",
+  "Debug": "Debug",
+  "Default model": "Default model",
+  "Delete archived workspace?": "Delete archived workspace?",
+  "Delete draft": "Delete draft",
+  "Delete registration only; the runtime binary remains installed": "Delete registration only; the runtime binary remains installed",
+  "Delete session": "Delete session",
+  "Delete workspace?": "Delete workspace?",
+  "Description": "Description",
+  "Detail": "Detail",
+  "Disables response streaming": {
+    "": "Disables response streaming."
+  },
+  "Discord": "Discord",
+  "Dismiss": "Dismiss",
+  "Display name for this project": "Display name for this project",
+  "Don": "Don",
+  "Download SVG": "Download SVG",
+  "Draft": "Draft",
+  "Draft:": "Draft:",
+  "Drag": "Drag",
+  "Duration:": "Duration:",
+  "Edit Workspace": "Edit Workspace",
+  "Email": "Email",
+  "English": "English",
+  "Enter the executable command": "Enter the executable command",
+  "Enter your name": "Enter your name",
+  "Ergatai Logo": "Ergatai Logo",
+  "Ergatai logo": "Ergatai logo",
+  "Expand all": "Expand all",
+  "Expand changes": "Expand changes",
+  "Expand to sidebar": "Expand to sidebar",
+  "ExpandIcon": "ExpandIcon",
+  "Export chat": "Export chat",
+  "Export workspace": "Export workspace",
+  "F1": "F1",
+  "Failed": "Failed",
+  "Failed to load image": "Failed to load image",
+  "Failed to load plan": "Failed to load plan",
+  "Falls back to commands above": "Falls back to commands above",
+  "Fetch origin": "Fetch origin",
+  "Fetched": "Fetched",
+  "Files": "Files",
+  "Find": {
+    "": {
+      "": {
+        "": "Find..."
+      }
+    }
+  },
+  "Fix Merge Conflicts": "Fix Merge Conflicts",
+  "Force push": "Force push",
+  "Forward": "Forward",
+  "Full Name": "Full Name",
+  "Full changelog": "Full changelog",
+  "General": "General",
+  "Git": "Git",
+  "Go to File": "Go to File",
+  "Go to file": {
+    "": {
+      "": {
+        "": "Go to file..."
+      }
+    }
+  },
+  "Go to next workspace": "Go to next workspace",
+  "Go to previous workspace": "Go to previous workspace",
+  "Goal": "Goal",
+  "Help": "Help",
+  "Icon": "Icon",
+  "IconTextUndo": "IconTextUndo",
+  "Image": "Image",
+  "Interrupted": "Interrupted",
+  "JetBrains": "JetBrains",
+  "Kotlin icon": "Kotlin icon",
+  "Load session": "Load session",
+  "Loading agent binding…": "Loading agent binding…",
+  "Loading conversation…": "Loading conversation…",
+  "Loading file": {
+    "": {
+      "": {
+        "": "Loading file..."
+      }
+    }
+  },
+  "Loading files": {
+    "": {
+      "": {
+        "": "Loading files..."
+      }
+    }
+  },
+  "Loading image": {
+    "": {
+      "": {
+        "": "Loading image..."
+      }
+    }
+  },
+  "Loading plan": {
+    "": {
+      "": {
+        "": "Loading plan..."
+      }
+    }
+  },
+  "Loading themes from editors": {
+    "": {
+      "": {
+        "": "Loading themes from editors..."
+      }
+    }
+  },
+  "Location": "Location",
+  "LuX": "LuX",
+  "MCP Servers": "MCP Servers",
+  "Manage Agents": "Manage Agents",
+  "Manage providers": "Manage providers",
+  "Mark all as unviewed": "Mark all as unviewed",
+  "Mark all as viewed": "Mark all as viewed",
+  "Mermaid Diagram Viewer": "Mermaid Diagram Viewer",
+  "Migration progress": "Migration progress",
+  "Minimize": "Minimize",
+  "Mock Chat Replies": "Mock Chat Replies",
+  "Model": "Model",
+  "Model name": "Model name",
+  "More": "More",
+  "More agents": "More agents",
+  "More git options": "More git options",
+  "More options": "More options",
+  "Name": "Name",
+  "Needs authentication": "Needs authentication",
+  "New Chat": "New Chat",
+  "New Task (DAG)": "New Task (DAG)",
+  "New agent": "New agent",
+  "New chat": "New chat",
+  "New name": "New name",
+  "New terminal": "New terminal",
+  "Next image (→)": "Next image (→)",
+  "Next match (Enter)": "Next match (Enter)",
+  "No branches found": {
+    "": "No branches found."
+  },
+  "No files match filter": "No files match filter",
+  "No messages yet": "No messages yet",
+  "No models found": {
+    "": "No models found."
+  },
+  "No plan content": "No plan content",
+  "No project open": "No project open",
+  "No projects": "No projects",
+  "No projects found": {
+    "": "No projects found."
+  },
+  "No results": "No results",
+  "No results found": "No results found",
+  "No saved sessions": "No saved sessions",
+  "No terminal data": "No terminal data",
+  "Not set": "Not set",
+  "Onboarding": "Onboarding",
+  "Open": "Open",
+  "Open chats pane": "Open chats pane",
+  "Open chats sidebar": "Open chats sidebar",
+  "Open details": "Open details",
+  "Open diff": "Open diff",
+  "Open in": "Open in",
+  "Open preview": "Open preview",
+  "Open sidebar": "Open sidebar",
+  "Open terminal": "Open terminal",
+  "Other:": "Other:",
+  "Paste your authentication code here": {
+    "": {
+      "": {
+        "": "Paste your authentication code here..."
+      }
+    }
+  },
+  "Path": "Path",
+  "Permanently delete agent": "Permanently delete agent",
+  "Permanently delete agent and its conversation": "Permanently delete agent and its conversation",
+  "Pinned Chats": "Pinned Chats",
+  "Plan": "Plan",
+  "Plan, / command, @ context, $ skill, # ref": "Plan, / command, @ context, $ skill, # ref",
+  "Platform-specific overrides": "Platform-specific overrides",
+  "Plugin": "Plugin",
+  "Preview": "Preview",
+  "Preview not available": "Preview not available",
+  "Preview setup": "Preview setup",
+  "Previous image (←)": "Previous image (←)",
+  "Previous match (Shift+Enter)": "Previous match (Shift+Enter)",
+  "Production key": "Production key",
+  "Project": "Project",
+  "Project avatar in sidebar": "Project avatar in sidebar",
+  "Project name": "Project name",
+  "Provider default": "Provider default",
+  "Providers": "Providers",
+  "Question": "Question",
+  "Question answered": "Question answered",
+  "QuestionCircleIcon": "QuestionCircleIcon",
+  "React Scan": "React Scan",
+  "Read task": "Read task",
+  "Refresh diff view": "Refresh diff view",
+  "Remove": "Remove",
+  "Remove Project": "Remove Project",
+  "Remove Project?": "Remove Project?",
+  "Remove text context": "Remove text context",
+  "Rename": "Rename",
+  "Replying to": "Replying to",
+  "Repository": "Repository",
+  "Reset to": "Reset to",
+  "Reset zoom (0)": "Reset zoom (0)",
+  "Resize": "Resize",
+  "Restore": "Restore",
+  "Restore chat": "Restore chat",
+  "Restore workspace": "Restore workspace",
+  "Resume": "Resume",
+  "Review": "Review",
+  "Review changes with AI": "Review changes with AI",
+  "Reviews code for quality and best practices": "Reviews code for quality and best practices",
+  "Save to": "Save to",
+  "Scroll to bottom": "Scroll to bottom",
+  "Search branches": {
+    "": {
+      "": {
+        "": "Search branches..."
+      }
+    }
+  },
+  "Search chats": {
+    "": {
+      "": {
+        "": "Search chats..."
+      }
+    }
+  },
+  "Search models": {
+    "": {
+      "": {
+        "": "Search models..."
+      }
+    }
+  },
+  "Search projects": {
+    "": {
+      "": {
+        "": "Search projects..."
+      }
+    }
+  },
+  "Search shortcuts": {
+    "": {
+      "": {
+        "": "Search shortcuts..."
+      }
+    }
+  },
+  "Search workspaces": {
+    "": {
+      "": {
+        "": "Search workspaces..."
+      }
+    }
+  },
+  "Search": {
+    "": {
+      "": {
+        "": "Search..."
+      }
+    }
+  },
+  "Searched": "Searched",
+  "Select project": "Select project",
+  "Select workspace": "Select workspace",
+  "Send": "Send",
+  "Send now": "Send now",
+  "Server": "Server",
+  "Set default project": "Set default project",
+  "Set up repository": "Set up repository",
+  "Settings": "Settings",
+  "Setup Commands": "Setup Commands",
+  "Shortcuts": "Shortcuts",
+  "Show Message JSON": "Show Message JSON",
+  "Side Chat": "Side Chat",
+  "Simulate Offline": "Simulate Offline",
+  "Something went wrong": "Something went wrong",
+  "Source Folders": "Source Folders",
+  "Split view": "Split view",
+  "Stage": "Stage",
+  "Status:": "Status:",
+  "Stop": "Stop",
+  "Stop (Ctrl+C)": "Stop (Ctrl+C)",
+  "Subagents temporarily disabled": "Subagents temporarily disabled",
+  "Submitting": {
+    "": {
+      "": {
+        "": "Submitting..."
+      }
+    }
+  },
+  "Switch branch": "Switch branch",
+  "System": "System",
+  "System preference": "System preference",
+  "Terminal": "Terminal",
+  "Thinking": "Thinking",
+  "To-dos": "To-dos",
+  "Toggle agents sidebar": "Toggle agents sidebar",
+  "Toggle sidebar": "Toggle sidebar",
+  "Tokens:": "Tokens:",
+  "Tools": "Tools",
+  "Trash2": "Trash2",
+  "Type your own answer": "Type your own answer",
+  "URL": "URL",
+  "Unified view": "Unified view",
+  "Unknown status": "Unknown status",
+  "Unstage": "Unstage",
+  "Update available": "Update available",
+  "Upload agent avatar": "Upload agent avatar",
+  "VS Code": "VS Code",
+  "View": "View",
+  "View fullscreen": "View fullscreen",
+  "Viewed": "Viewed",
+  "Voice input": "Voice input",
+  "Waiting for response": {
+    "": {
+      "": {
+        "": "Waiting for response..."
+      }
+    }
+  },
+  "Where worktree setup is stored": "Where worktree setup is stored",
+  "Windows": "Windows",
+  "Workspace name": "Workspace name",
+  "Workspaces": "Workspaces",
+  "Worktree": "Worktree",
+  "Worktrees": "Worktrees",
+  "Zoom in (+)": "Zoom in (+)",
+  "Zoom out (-)": "Zoom out (-)",
+  "bun install": "bun install",
+  "bun install && cp $ROOT_WORKTREE_PATH/": {
+    "env ": {
+      "env": "bun install && cp $ROOT_WORKTREE_PATH/.env .env"
+    }
+  },
+  "claude-sonnet-4-6": "claude-sonnet-4-6",
+  "code-reviewer": "code-reviewer",
+  "current": "current",
+  "feature/my-new-feature": "feature/my-new-feature",
+  "https://": {
+    "": {
+      "": {
+        "": "https://..."
+      }
+    }
+  },
+  "https://api": {
+    "anthropic": {
+      "com": "https://api.anthropic.com"
+    }
+  },
+  "macOS / Linux": "macOS / Linux",
+  "model usage reported": "model usage reported",
+  "npm ci": "npm ci",
+  "on": "on",
+  "or": "or",
+  "owner/repo": "owner/repo",
+  "owner/repo or https://github": {
+    "com/": {
+      "": {
+        "": {
+          "": "owner/repo or https://github.com/..."
+        }
+      }
+    }
+  },
+  "send_message": "send_message",
+  "sk-ant-": {
+    "": {
+      "": {
+        "": "sk-ant-..."
+      }
+    }
+  },
+  "userData": "userData",
+  "workdir missing": "workdir missing",
+  "Images": "Images",
+  "All Files": "All Files",
+  "Reload Anyway": "Reload Anyway",
+  "Active Sessions": "Active Sessions",
+  "There are active agent sessions running.": "There are active agent sessions running.",
+  "Reloading will interrupt them. The current progress will be saved. Are you sure you want to reload?": "Reloading will interrupt them. The current progress will be saved. Are you sure you want to reload?",
+  "Close Anyway": "Close Anyway",
+  "Closing this window will interrupt them. The current progress will be saved. Are you sure you want to close?": "Closing this window will interrupt them. The current progress will be saved. Are you sure you want to close?",
+  "Select Project Folder": "Select Project Folder",
+  "Select Folder": "Select Folder",
+  "Locate {{owner}}/{{repo}}": "Locate {{owner}}/{{repo}}",
+  "Choose where to clone": "Choose where to clone",
+  "Select Project Icon": "Select Project Icon",
+  "CLI command uninstalled": "CLI command uninstalled",
+  "The 'ergatai' command has been removed from your PATH.": "The 'ergatai' command has been removed from your PATH.",
+  "Uninstallation Failed": "Uninstallation Failed",
+  "Unknown error": "Unknown error",
+  "CLI command installed": "CLI command installed",
+  "You can now use 'ergatai .' in any terminal to open Ergatai in that directory.": "You can now use 'ergatai .' in any terminal to open Ergatai in that directory.",
+  "Installation Failed": "Installation Failed",
+  "Failed to save: {{message}}": "Failed to save: {{message}}",
+  "Failed to rename: {{message}}": "Failed to rename: {{message}}",
+  "Failed to upload icon: {{message}}": "Failed to upload icon: {{message}}",
+  "{{name}} moved to trash": "{{name}} moved to trash",
+  "Failed to delete {{label}}": "Failed to delete {{label}}",
+  "Renamed to {{name}}": "Renamed to {{name}}",
+  "Failed to switch model: {{message}}": "Failed to switch model: {{message}}",
+  "Failed to save provider: {{message}}": "Failed to save provider: {{message}}",
+  "Failed to set default: {{message}}": "Failed to set default: {{message}}",
+  "Provider \"{{name}}\" imported from {{agent}} config": "Provider \"{{name}}\" imported from {{agent}} config",
+  "Failed to import configuration: {{message}}": "Failed to import configuration: {{message}}",
+  "{{name}} installed": "{{name}} installed",
+  "{{name}} uninstalled": "{{name}} uninstalled",
+  "{{name}} registered": "{{name}} registered",
+  "{{name}} registration removed": "{{name}} registration removed",
+  "Branch '{{name}}' created successfully": "Branch '{{name}}' created successfully",
+  "Failed to create branch: {{message}}": "Failed to create branch: {{message}}",
+  "Failed to send to {{count}} agent(s)": "Failed to send to {{count}} agent(s)",
+  "Failed to process image \"{{name}}\"": "Failed to process image \"{{name}}\"",
+  "Failed to rollback: {{error}}": "Failed to rollback: {{error}}",
+  "Failed to discard: {{message}}": "Failed to discard: {{message}}",
+  "Failed to delete project: {{message}}": "Failed to delete project: {{message}}",
+  "Failed to delete provider: {{message}}": "Failed to delete provider: {{message}}",
+  "Failed to process file \"{{name}}\"": "Failed to process file \"{{name}}\"",
+  "Pull failed: {{message}}": "Pull failed: {{message}}",
+  "Force push failed: {{message}}": "Force push failed: {{message}}",
+  "Merge failed: {{message}}": "Merge failed: {{message}}",
+  "Push failed: {{message}}": "Push failed: {{message}}",
+  "Commit failed: {{message}}": "Commit failed: {{message}}",
+  "Pull ${pullCount} commit": "Pull ${pullCount} commit",
+  "Push ${pushCount} commit": "Push ${pushCount} commit",
+  "There are active agent sessions running": {
+    "": "There are active agent sessions running."
+  },
+  "Reloading will interrupt them": {
+    " The current progress will be saved": {
+      " Are you sure you want to reload?": "Reloading will interrupt them. The current progress will be saved. Are you sure you want to reload?"
+    }
+  },
+  "Closing this window will interrupt them": {
+    " The current progress will be saved": {
+      " Are you sure you want to close?": "Closing this window will interrupt them. The current progress will be saved. Are you sure you want to close?"
+    }
+  },
+  "The 'ergatai' command has been removed from your PATH": {
+    "": "The 'ergatai' command has been removed from your PATH."
+  },
+  "You can now use 'ergatai ": {
+    "' in any terminal to open Ergatai in that directory": {
+      "": "You can now use 'ergatai .' in any terminal to open Ergatai in that directory."
+    }
+  },
+  "A plan is ready for your approval": "A plan is ready for your approval",
+  "About Ergatai": "About Ergatai",
+  "Action {{id}} not available": "Action {{id}} not available",
+  "Action {{id}} not found": "Action {{id}} not found",
+  "Activity stream failed ({{response": {
+    "status}}): {{detail}}": "Activity stream failed ({{response.status}}): {{detail}}"
+  },
+  "Add to Chat Context": "Add to Chat Context",
+  "Add to Context": "Add to Context",
+  "Agent ": "Agent ",
+  "Agent Complete": "Agent Complete",
+  "Agent Error": "Agent Error",
+  "Agent ID is not available — cannot send message": "Agent ID is not available — cannot send message",
+  "Agent binding disabled - backend endpoint removed": "Agent binding disabled - backend endpoint removed",
+  "Agent error": "Agent error",
+  "Agent finished": "Agent finished",
+  "Agent has completed its task": "Agent has completed its task",
+  "Agent is waiting for your input": "Agent is waiting for your input",
+  "Agent not found: {{input": {
+    "agentId}}": "Agent not found: {{input.agentId}}"
+  },
+  "Agent profile already exists: {{input": {
+    "name}}": "Agent profile already exists: {{input.name}}"
+  },
+  "Agent profile not found: {{input": {
+    "name}}": "Agent profile not found: {{input.name}}"
+  },
+  "Agent stopped": "Agent stopped",
+  "Agent {{id}}": "Agent {{id}}",
+  "Agent {{input": {
+    "agentCommand}} has no active session in this group": "Agent {{input.agentCommand}} has no active session in this group",
+    "agentId}} not found": "Agent {{input.agentId}} not found"
+  },
+  "Agent-to-agent communication not configured": {
+    "": "Agent-to-agent communication not configured."
+  },
+  "Agent-to-agent message result": "Agent-to-agent message result",
+  "Agent: {{label}}": "Agent: {{label}}",
+  "All changes are already committed": {
+    " The branch {{branch}} is up to date": {
+      "": "All changes are already committed. The branch {{branch}} is up to date."
+    }
+  },
+  "All changes are committed": {
+    "": "All changes are committed."
+  },
+  "An unexpected error occurred during rollback": "An unexpected error occurred during rollback",
+  "Android Compact": "Android Compact",
+  "Android Medium": "Android Medium",
+  "Anthropic": "Anthropic",
+  "Application Support": "Application Support",
+  "Approval kind: {{kind}}": "Approval kind: {{kind}}",
+  "Authentication failed": {
+    " Please try again": {
+      "": "Authentication failed. Please try again."
+    }
+  },
+  "Backend terminal sessions require a workspaceId": "Backend terminal sessions require a workspaceId",
+  "Backend terminal stream error": "Backend terminal stream error",
+  "Backend workspace": "Backend workspace",
+  "Blocked unsafe URL scheme: {{parsed": {
+    "protocol}}": "Blocked unsafe URL scheme: {{parsed.protocol}}"
+  },
+  "Bound to the active group chat": "Bound to the active group chat",
+  "Branch ": "Branch ",
+  "Branch checkout verification failed: expected \\": "Branch checkout verification failed: expected \\",
+  "Branch name can only contain letters, numbers, dots, hyphens, underscores, and slashes": "Branch name can only contain letters, numbers, dots, hyphens, underscores, and slashes",
+  "Branch name cannot be empty": "Branch name cannot be empty",
+  "Branch name cannot start with -": "Branch name cannot start with -",
+  "Branch name contains invalid characters": "Branch name contains invalid characters",
+  "Branch name too long (max 250 characters)": "Branch name too long (max 250 characters)",
+  "Build plan": "Build plan",
+  "Cannot delete branch ": "Cannot delete branch ",
+  "Cannot display binary file": "Cannot display binary file",
+  "Cannot force push to protected branch ": "Cannot force push to protected branch ",
+  "Cannot merge/rebase with uncommitted changes": {
+    " Please commit or stash your changes first": {
+      "": "Cannot merge/rebase with uncommitted changes. Please commit or stash your changes first."
+    }
+  },
+  "Cannot merge/rebase: another merge or rebase is in progress": {
+    " Please complete or abort it first": {
+      "": "Cannot merge/rebase: another merge or rebase is in progress. Please complete or abort it first."
+    }
+  },
+  "Cannot paste: input is full": "Cannot paste: input is full",
+  "Cannot pull with uncommitted changes": {
+    " Please commit or stash your changes first, or enable auto-stash": {
+      "": "Cannot pull with uncommitted changes. Please commit or stash your changes first, or enable auto-stash."
+    }
+  },
+  "Cannot pull: a rebase or merge is in progress": {
+    " Please complete or abort it first": {
+      "": "Cannot pull: a rebase or merge is in progress. Please complete or abort it first."
+    }
+  },
+  "Cannot rollback while streaming": "Cannot rollback while streaming",
+  "Cannot rollback: message not found": "Cannot rollback: message not found",
+  "Cannot rollback: this turn is not rollbackable": "Cannot rollback: this turn is not rollbackable",
+  "Cannot send message: {{reason}}": "Cannot send message: {{reason}}",
+  "Cannot switch branches: you have uncommitted changes": {
+    " Please commit or stash your changes first": {
+      "": "Cannot switch branches: you have uncommitted changes. Please commit or stash your changes first."
+    }
+  },
+  "Cannot sync with uncommitted changes": {
+    " Please commit or stash your changes first": {
+      "": "Cannot sync with uncommitted changes. Please commit or stash your changes first."
+    }
+  },
+  "Cannot sync: a rebase or merge is in progress": {
+    " Please complete or abort it first": {
+      "": "Cannot sync: a rebase or merge is in progress. Please complete or abort it first."
+    }
+  },
+  "Chat ID is required": "Chat ID is required",
+  "Chat is not bound to a backend agent conversation": {
+    "": "Chat is not bound to a backend agent conversation."
+  },
+  "Chat not found": "Chat not found",
+  "Chat session is in {{actual}} mode, expected {{expected}}": "Chat session is in {{actual}} mode, expected {{expected}}",
+  "Chat · {{name}}": "Chat · {{name}}",
+  "Check for updates": "Check for updates",
+  "Clipboard not available": "Clipboard not available",
+  "Close tab ({{hotkey}})": "Close tab ({{hotkey}})",
+  "Close {{name}}": "Close {{name}}",
+  "Code selection": "Code selection",
+  "Code submission failed: {{codeRes": {
+    "statusText}}": "Code submission failed: {{codeRes.statusText}}"
+  },
+  "Codex 5": {
+    "1 Max": "Codex 5.1 Max",
+    "1 Mini": "Codex 5.1 Mini",
+    "2": "Codex 5.2",
+    "3": "Codex 5.3"
+  },
+  "Collaboration runtime unavailable": "Collaboration runtime unavailable",
+  "Collaboration session completed": "Collaboration session completed",
+  "Collaboration session created": "Collaboration session created",
+  "Collaboration session failed": "Collaboration session failed",
+  "Collaboration stream failed": "Collaboration stream failed",
+  "Collaboration task": "Collaboration task",
+  "Commit & Push{{suffix}}": "Commit & Push{{suffix}}",
+  "Commit message cannot be empty": "Commit message cannot be empty",
+  "Commit them": {
+    " Write a clear, concise commit message": {
+      "": "Commit them. Write a clear, concise commit message."
+    }
+  },
+  "Commit to {{branch}}": "Commit to {{branch}}",
+  "Commit to {{currentBranch}}": "Commit to {{currentBranch}}",
+  "Commit {{count}} to {{branch}}": "Commit {{count}} to {{branch}}",
+  "Commit {{stagedCount}} to {{currentBranch}}": "Commit {{stagedCount}} to {{currentBranch}}",
+  "Commit{{suffix}}": "Commit{{suffix}}",
+  "Completed {{count}} task": "Completed {{count}} task",
+  "Conversation \\": "Conversation \\",
+  "Conversation not found": "Conversation not found",
+  "Conversation not found in DB, keeping local mode state": "Conversation not found in DB, keeping local mode state",
+  "Conversation not found: {{id}}": {
+    " ": "Conversation not found: {{id}}. "
+  },
+  "Conversation not found: {{input": {
+    "id}}": "Conversation not found: {{input.id}}"
+  },
+  "Conversation pipeline error": "Conversation pipeline error",
+  "Conversation {{id}}": "Conversation {{id}}",
+  "Copied to clipboard": "Copied to clipboard",
+  "Copied {{count}} paths": "Copied {{count}} paths",
+  "Copy failed": "Copy failed",
+  "Could not determine GitHub repository URL": "Could not determine GitHub repository URL",
+  "Could not find default branch (main or master)": "Could not find default branch (main or master)",
+  "Could not get git context": "Could not get git context",
+  "Create PR": "Create PR",
+  "Create Pull Request ({{count}} commit ahead of {{branch}})": "Create Pull Request ({{count}} commit ahead of {{branch}})",
+  "Create a new workspace": "Create a new workspace",
+  "Created {{count}} task": "Created {{count}} task",
+  "Created: {{content}}": "Created: {{content}}",
+  "Creating new child conversations is no longer supported": "Creating new child conversations is no longer supported",
+  "Delete ": "Delete ",
+  "Delete registration for {{name}}": "Delete registration for {{name}}",
+  "Delete {{name}}?": "Delete {{name}}?",
+  "Detected {{provider}} model": "Detected {{provider}} model",
+  "Discard changes to ": "Discard changes to ",
+  "Ergatai": "Ergatai",
+  "Ergatai MCP Tools": "Ergatai MCP Tools",
+  "Ergatai backend did not return an agent ID": "Ergatai backend did not return an agent ID",
+  "Error loading files: {{message}}": "Error loading files: {{message}}",
+  "Error {{code}}": "Error {{code}}",
+  "Expand {{id}}": "Expand {{id}}",
+  "Expected an array of messages": "Expected an array of messages",
+  "Export complete": "Export complete",
+  "Export failed": "Export failed",
+  "Extra High": "Extra High",
+  "Failed to cancel prompt: {{response": {
+    "status}} {{error}}": "Failed to cancel prompt: {{response.status}} {{error}}"
+  },
+  "Failed to create project: {{error instanceof Error ? error": {
+    "message : String(error)}}": "Failed to create project: {{error instanceof Error ? error.message : String(error)}}"
+  },
+  "Failed to create worktree: The git repository is locked by another process": {
+    " This usually happens when another git operation is in progress, or a previous operation crashed": {
+      " Please wait for the other operation to complete, or manually remove the lock file (e": {
+        "g": {
+          ", ": {
+            "git/config": {
+              "lock or ": {
+                "git/index": {
+                  "lock) if you": "Failed to create worktree: The git repository is locked by another process. This usually happens when another git operation is in progress, or a previous operation crashed. Please wait for the other operation to complete, or manually remove the lock file (e.g., .git/config.lock or .git/index.lock) if you"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "Failed to create worktree: This repository uses Git LFS, but git-lfs was not found or failed": {
+    " Please install git-lfs (e": {
+      "g": {
+        ", ": "Failed to create worktree: This repository uses Git LFS, but git-lfs was not found or failed. Please install git-lfs (e.g., "
+      }
+    }
+  },
+  "Failed to create worktree: {{errorMessage}}": "Failed to create worktree: {{errorMessage}}",
+  "Failed to delete file: {{message}}": "Failed to delete file: {{message}}",
+  "Failed to delete files: {{message}}": "Failed to delete files: {{message}}",
+  "Failed to delete {{name}}": "Failed to delete {{name}}",
+  "Failed to discard changes: {{message}}": "Failed to discard changes: {{message}}",
+  "Failed to fetch diff: {{status}}": "Failed to fetch diff: {{status}}",
+  "Failed to fetch initial context usage:": "Failed to fetch initial context usage:",
+  "Failed to generate commit message": "Failed to generate commit message",
+  "Failed to get agent bindings": "Failed to get agent bindings",
+  "Failed to get chat agents": "Failed to get chat agents",
+  "Failed to load agent status": "Failed to load agent status",
+  "Failed to load file": "Failed to load file",
+  "Failed to load full theme {{id}}:": "Failed to load full theme {{id}}:",
+  "Failed to prepare PR request": "Failed to prepare PR request",
+  "Failed to prepare commit request": "Failed to prepare commit request",
+  "Failed to process file \\": "Failed to process file \\",
+  "Failed to process image \\": "Failed to process image \\",
+  "Failed to read binary file: {{msg}}": "Failed to read binary file: {{msg}}",
+  "Failed to read file: {{error instanceof Error ? error": {
+    "message : ": "Failed to read file: {{error instanceof Error ? error.message : "
+  },
+  "Failed to read file: {{msg}}": "Failed to read file: {{msg}}",
+  "Failed to refresh agent list": "Failed to refresh agent list",
+  "Failed to rename chat": "Failed to rename chat",
+  "Failed to retry pending message after auth:": "Failed to retry pending message after auth:",
+  "Failed to rollback": "Failed to rollback",
+  "Failed to rollback conversation": {
+    " Please try again": {
+      "": "Failed to rollback conversation. Please try again."
+    }
+  },
+  "Failed to send agent-to-agent message": "Failed to send agent-to-agent message",
+  "Failed to send implementation request": {
+    " Please try again": {
+      "": "Failed to send implementation request. Please try again."
+    }
+  },
+  "Failed to send message": "Failed to send message",
+  "Failed to send plan approval": {
+    " Please try again": {
+      "": "Failed to send plan approval. Please try again."
+    }
+  },
+  "Failed to send prompt: {{response": {
+    "status}} {{error}}": "Failed to send prompt: {{response.status}} {{error}}"
+  },
+  "Failed to send queued message after {{count}} attempts": {
+    " The message has been removed from the queue": {
+      "": "Failed to send queued message after {{count}} attempts. The message has been removed from the queue."
+    }
+  },
+  "Failed to send queued message": {
+    " Retrying in {{seconds}}s (attempt {{retry}}/{{max}})": {
+      "": "Failed to send queued message. Retrying in {{seconds}}s (attempt {{retry}}/{{max}})."
+    }
+  },
+  "Failed to send reply": "Failed to send reply",
+  "Failed to spawn agent": "Failed to spawn agent",
+  "Failed to spawn agent: {{message}}": "Failed to spawn agent: {{message}}",
+  "Failed to spawn new session": "Failed to spawn new session",
+  "Failed to stage files for commit": "Failed to stage files for commit",
+  "Failed to start agent": "Failed to start agent",
+  "Failed to start review": "Failed to start review",
+  "Failed to update conversation mode:": "Failed to update conversation mode:",
+  "Failed to verify conversation \\": "Failed to verify conversation \\",
+  "File": "File",
+  "File is too large to display (max 2 MB)": "File is too large to display (max 2 MB)",
+  "File name cannot contain path separators": "File name cannot contain path separators",
+  "File name contains invalid characters": "File name contains invalid characters",
+  "File not found": "File not found",
+  "File not found: {{fullPath}}": "File not found: {{fullPath}}",
+  "Filtering: {{name}}": "Filtering: {{name}}",
+  "Finished working on \\": "Finished working on \\",
+  "Finished {{count}} {{plural}}": "Finished {{count}} {{plural}}",
+  "Finished: {{content}}": "Finished: {{content}}",
+  "Fix Conflicts": "Fix Conflicts",
+  "Follow link": "Follow link",
+  "Follow these exact steps to create a PR:": "Follow these exact steps to create a PR:",
+  "Forking conversations is no longer supported": "Forking conversations is no longer supported",
+  "Found {{count}} files": "Found {{count}} files",
+  "Found {{count}} matches": "Found {{count}} matches",
+  "Free usage limit": "Free usage limit",
+  "Generate detailed PR review comments for the changes in the current context": {
+    "": "Generate detailed PR review comments for the changes in the current context."
+  },
+  "Generate release notes summarizing the changes in this codebase": {
+    "": "Generate release notes summarizing the changes in this codebase."
+  },
+  "Go to image {{index}}": "Go to image {{index}}",
+  "Grepped {{count}} files": "Grepped {{count}} files",
+  "Group chat is not initialized": "Group chat is not initialized",
+  "Group chat messages must mention an agent": "Group chat messages must mention an agent",
+  "If unknown of these steps fail, ask the user for help": {
+    "": "If unknown of these steps fail, ask the user for help."
+  },
+  "Implement plan": "Implement plan",
+  "Input Required": "Input Required",
+  "Installed ({{type}})": "Installed ({{type}})",
+  "Invalid agent name": "Invalid agent name",
+  "Invalid branch name": "Invalid branch name",
+  "Invalid branch name: ": "Invalid branch name: ",
+  "Invalid branch name: cannot be empty": "Invalid branch name: cannot be empty",
+  "Invalid branch name: cannot start with -": "Invalid branch name: cannot start with -",
+  "Invalid collaboration session response": "Invalid collaboration session response",
+  "Invalid commit hash format": "Invalid commit hash format",
+  "Invalid file name": "Invalid file name",
+  "Invalid message at index {{index}}": "Invalid message at index {{index}}",
+  "Keyboard shortcuts": "Keyboard shortcuts",
+  "Last fetched {{time}}": "Last fetched {{time}}",
+  "Line {{number}}": "Line {{number}}",
+  "List {{count}} task": "List {{count}} task",
+  "Listed {{count}} tasks": "Listed {{count}} tasks",
+  "Local branch deleted, but failed to delete remote: {{message}}": "Local branch deleted, but failed to delete remote: {{message}}",
+  "Local shell": "Local shell",
+  "MCP Tool: {{path}}": "MCP Tool: {{path}}",
+  "MCP server ": "MCP server ",
+  "Manage archived workspace {{name}}": "Manage archived workspace {{name}}",
+  "Manage providers for {{name}}": "Manage providers for {{name}}",
+  "Manage workspace {{name}}": "Manage workspace {{name}}",
+  "Manage {{label}} {{name}}": "Manage {{label}} {{name}}",
+  "Message at index {{index}} missing string id": "Message at index {{index}} missing string id",
+  "Message at index {{index}} missing string role": "Message at index {{index}} missing string role",
+  "Message failed": "Message failed",
+  "Message system is not ready": {
+    " Please try again": {
+      "": "Message system is not ready. Please try again."
+    }
+  },
+  "Missing code or state parameter": "Missing code or state parameter",
+  "Missing code parameter": "Missing code parameter",
+  "Mock search result": "Mock search result",
+  "Mode: {{mode}}": "Mode: {{mode}}",
+  "Move \\": "Move \\",
+  "New Conversation": "New Conversation",
+  "New Workspace": "New Workspace",
+  "New session spawned": "New session spawned",
+  "New workspace": "New workspace",
+  "No active chat available": "No active chat available",
+  "No commands matching \\": "No commands matching \\",
+  "No files selected for commit": "No files selected for commit",
+  "No files staged for commit": "No files staged for commit",
+  "No items matching \\": "No items matching \\",
+  "No prompt, images, or files found in last user message": "No prompt, images, or files found in last user message",
+  "No runtime adapter registered for conversation: {{id}}": {
+    " ": "No runtime adapter registered for conversation: {{id}}. "
+  },
+  "No upstream branch to pull from": {
+    " The remote branch may have been deleted": {
+      "": "No upstream branch to pull from. The remote branch may have been deleted."
+    }
+  },
+  "No workspace path available": "No workspace path available",
+  "No {{noun}} available": "No {{noun}} available",
+  "No {{noun}} matching \\": "No {{noun}} matching \\",
+  "Not a git repository: {{path}}": "Not a git repository: {{path}}",
+  "Not found": "Not found",
+  "Nothing to push": "Nothing to push",
+  "Older messages will not be available": {
+    "": "Older messages will not be available."
+  },
+  "One or more mentioned agents are not in this group": "One or more mentioned agents are not in this group",
+  "Open Kanban board": "Open Kanban board",
+  "Open Pull Request #{{number}}": "Open Pull Request #{{number}}",
+  "Open currently previewed file in preferred editor": "Open currently previewed file in preferred editor",
+  "Open file in editor": "Open file in editor",
+  "Open in editor": "Open in editor",
+  "Open settings page": "Open settings page",
+  "Open the Kanban board view": "Open the Kanban board view",
+  "Open worktree in preferred editor": "Open worktree in preferred editor",
+  "Open-source terminal coding agent (native ACP)": "Open-source terminal coding agent (native ACP)",
+  "OpenAI": "OpenAI",
+  "Original text was {{size}}KB": {
+    " Consider attaching as a file instead": {
+      "": "Original text was {{size}}KB. Consider attaching as a file instead."
+    }
+  },
+  "Original text was {{size}}MB": {
+    " Please attach as a file instead": {
+      "": "Original text was {{size}}MB. Please attach as a file instead."
+    }
+  },
+  "Other: {{text}}": "Other: {{text}}",
+  "PID: {{pid}}": "PID: {{pid}}",
+  "PR #{{number}}": "PR #{{number}}",
+  "PR schema validation failed": "PR schema validation failed",
+  "Pasted Text · {{size}}": "Pasted Text · {{size}}",
+  "Path contains invalid characters": "Path contains invalid characters",
+  "Path escapes allowed directory": "Path escapes allowed directory",
+  "Path is not within a registered project or worktree": "Path is not within a registered project or worktree",
+  "Path must be absolute": "Path must be absolute",
+  "Perform a security audit of the code in the current context": {
+    " Identify vulnerabilities, security risks, and suggest fixes": {
+      "": "Perform a security audit of the code in the current context. Identify vulnerabilities, security risks, and suggest fixes."
+    }
+  },
+  "Permission stream failed ({{response": {
+    "status}}): {{detail}}": "Permission stream failed ({{response.status}}): {{detail}}"
+  },
+  "Permissions stream failed ({{response": {
+    "status}}): {{detail}}": "Permissions stream failed ({{response.status}}): {{detail}}"
+  },
+  "Pin {{count}} {{plural}}": "Pin {{count}} {{plural}}",
+  "Pin {{label}}": "Pin {{label}}",
+  "Pinned chats": "Pinned chats",
+  "Plan Ready": "Plan Ready",
+  "Plan revision {{revision}}": "Plan revision {{revision}}",
+  "Please clear some text or attach content as a file instead": {
+    "": "Please clear some text or attach content as a file instead."
+  },
+  "Please ensure the chat component has registered an adapter": {
+    "": "Please ensure the chat component has registered an adapter."
+  },
+  "Please enter a commit message": "Please enter a commit message",
+  "Please refresh the page or create a new chat": {
+    "": "Please refresh the page or create a new chat."
+  },
+  "Please review the code in the current context and provide feedback on code quality, potential bugs, and improvements": {
+    "": "Please review the code in the current context and provide feedback on code quality, potential bugs, and improvements."
+  },
+  "Please try again": "Please try again",
+  "Please try refreshing the page or creating a new chat": {
+    "": "Please try refreshing the page or creating a new chat."
+  },
+  "Preparing agent execution": "Preparing agent execution",
+  "Preparing {{name}}": "Preparing {{name}}",
+  "Profile deleted from backend": "Profile deleted from backend",
+  "Profile: {{profile}}": "Profile: {{profile}}",
+  "Project creation returned invalid project_id: {{project": {
+    "project_id}}": "Project creation returned invalid project_id: {{project.project_id}}"
+  },
+  "Project not found": "Project not found",
+  "Project not found: {{input": {
+    "projectId}}": "Project not found: {{input.projectId}}"
+  },
+  "Project path (cwd) required for project agents": "Project path (cwd) required for project agents",
+  "Provider \\": "Provider \\",
+  "Pull failed due to conflicts": {
+    " The operation has been aborted": {
+      " Please resolve conflicts manually or try a different approach": {
+        "": "Pull failed due to conflicts. The operation has been aborted. Please resolve conflicts manually or try a different approach."
+      }
+    }
+  },
+  "Pull succeeded but failed to restore your stashed changes": {
+    " Your changes are saved in git stash": {
+      " Run ": "Pull succeeded but failed to restore your stashed changes. Your changes are saved in git stash. Run "
+    }
+  },
+  "Pull {{count}} commit": "Pull {{count}} commit",
+  "Pull {{count}} commit from remote": "Pull {{count}} commit from remote",
+  "Push to origin": "Push to origin",
+  "Push {{count}} commit": "Push {{count}} commit",
+  "Push {{count}} commit to remote": "Push {{count}} commit to remote",
+  "Queue item not found: {{id}}": "Queue item not found: {{id}}",
+  "Quit": "Quit",
+  "Recent chats": "Recent chats",
+  "Remove {{name}}": "Remove {{name}}",
+  "Replay on top of {{count}} commit": "Replay on top of {{count}} commit",
+  "Reply queued": "Reply queued",
+  "Reply sent": "Reply sent",
+  "Result: {{path}}": "Result: {{path}}",
+  "Reusing bound agent": "Reusing bound agent",
+  "Rollback already in progress": "Rollback already in progress",
+  "Run git diff to review uncommitted changes": "Run git diff to review uncommitted changes",
+  "Running {{type}}": "Running {{type}}",
+  "Runtime event gap detected": "Runtime event gap detected",
+  "Runtime stream failed": "Runtime stream failed",
+  "Runtime unavailable": "Runtime unavailable",
+  "SSE connection lost": "SSE connection lost",
+  "SSE request failed: {{response": {
+    "status}} {{detail": {
+      "trim()}}": "SSE request failed: {{response.status}} {{detail.trim()}}"
+    }
+  },
+  "SSE response has no readable body": "SSE response has no readable body",
+  "Saved as {{name}}": "Saved as {{name}}",
+  "Search and open a file in the workspace": "Search and open a file in the workspace",
+  "Search messages": "Search messages",
+  "Search through chat history": "Search through chat history",
+  "Send a message first before renaming this chat": "Send a message first before renaming this chat",
+  "Sending agent-to-agent message": "Sending agent-to-agent message",
+  "Session not found for conversation: {{id}}": "Session not found for conversation: {{id}}",
+  "Session stream failed ({{response": {
+    "status}}): {{detail}}": "Session stream failed ({{response.status}}): {{detail}}"
+  },
+  "Session {{state}}": "Session {{state}}",
+  "Shell exited with status {{result": {
+    "status}}": "Shell exited with status {{result.status}}"
+  },
+  "Show all keyboard shortcuts": "Show all keyboard shortcuts",
+  "Skill: {{label}}": "Skill: {{label}}",
+  "Spawn result": "Spawn result",
+  "Spawned new agent": "Spawned new agent",
+  "Spawning agent": "Spawning agent",
+  "Spawning agent with params": "Spawning agent with params",
+  "Spawning new agent session": "Spawning new agent session",
+  "Start a new chat": "Start a new chat",
+  "Start a new workspace": "Start a new workspace",
+  "Started {{count}} task": "Started {{count}} task",
+  "Started {{count}} {{plural}}": "Started {{count}} {{plural}}",
+  "Started: {{content}}": "Started: {{content}}",
+  "Sync failed due to conflicts": {
+    " The operation has been aborted": {
+      " Please resolve conflicts manually": {
+        "": "Sync failed due to conflicts. The operation has been aborted. Please resolve conflicts manually."
+      }
+    }
+  },
+  "Sync pull succeeded but failed to restore your stashed changes": {
+    " Your changes are saved in git stash": {
+      "": "Sync pull succeeded but failed to restore your stashed changes. Your changes are saved in git stash."
+    }
+  },
+  "Task #{{id}}": "Task #{{id}}",
+  "Task {{number}}": "Task {{number}}",
+  "Terminal 1": "Terminal 1",
+  "Terminal 2": "Terminal 2",
+  "Terminal provider \"{{id}}\" is unavailable: {{reason}}": "Terminal provider \"{{id}}\" is unavailable: {{reason}}",
+  "Terminal session {{paneId}} not found or not alive": "Terminal session {{paneId}} not found or not alive",
+  "Terminal stream error": "Terminal stream error",
+  "Terminal stream failed ({{response": {
+    "status}}): {{detail}}": "Terminal stream failed ({{response.status}}): {{detail}}"
+  },
+  "Terminal {{number}}": "Terminal {{number}}",
+  "Test router is only available in test mode (NODE_ENV=test or ELECTRON_TEST_MODE=true)": "Test router is only available in test mode (NODE_ENV=test or ELECTRON_TEST_MODE=true)",
+  "Text truncated": "Text truncated",
+  "Text truncated to {{size}}KB": "Text truncated to {{size}}KB",
+  "The ": "The ",
+  "The branch is already pushed to remote": {
+    "": "The branch is already pushed to remote."
+  },
+  "The conversation may not have been created yet or was deleted": {
+    " ": "The conversation may not have been created yet or was deleted. "
+  },
+  "The current branch is {{branch}}": {
+    "": "The current branch is {{branch}}."
+  },
+  "The target branch is origin/{{branch}}": {
+    "": "The target branch is origin/{{branch}}."
+  },
+  "The user requested a PR": {
+    "": "The user requested a PR."
+  },
+  "Theme path is not within allowed directories": "Theme path is not within allowed directories",
+  "Theme {{id}} not found, falling back to github-dark": "Theme {{id}} not found, falling back to github-dark",
+  "There are {{count}} uncommitted changes": {
+    "": "There are {{count}} uncommitted changes."
+  },
+  "There is no upstream branch yet": {
+    "": "There is no upstream branch yet."
+  },
+  "This agent has no bound conversation yet": "This agent has no bound conversation yet",
+  "This is a bug — please report it": {
+    "": "This is a bug — please report it."
+  },
+  "This may happen after backend restart": {
+    " ": "This may happen after backend restart. "
+  },
+  "Timed out": "Timed out",
+  "To-do list with {{count}} items": {
+    " Click to {{action}}": "To-do list with {{count}} items. Click to {{action}}"
+  },
+  "Tools for {{name}}": "Tools for {{name}}",
+  "Unable to copy chat": "Unable to copy chat",
+  "Unable to export chat": "Unable to export chat",
+  "Unpin {{count}} {{plural}}": "Unpin {{count}} {{plural}}",
+  "Unpin {{label}}": "Unpin {{label}}",
+  "Unsupported platform: {{platformId}}": "Unsupported platform: {{platformId}}",
+  "Up to date": "Up to date",
+  "Updated {{count}} {{plural}}": "Updated {{count}} {{plural}}",
+  "Use gh pr create --base {{branch}} to create a PR": {
+    " Keep the title under 80 characters and description under five sentences": {
+      "": "Use gh pr create --base {{branch}} to create a PR. Keep the title under 80 characters and description under five sentences."
+    }
+  },
+  "Use git diff origin/{{branch}}": {
+    "": {
+      "": {
+        " to review the PR diff": "Use git diff origin/{{branch}}... to review the PR diff"
+      }
+    }
+  },
+  "User skipped questions - proceed with defaults": "User skipped questions - proceed with defaults",
+  "Using {{parts}}": "Using {{parts}}",
+  "View more{{suffix}}": "View more{{suffix}}",
+  "Will be sent when current response completes": "Will be sent when current response completes",
+  "Working on collaboration task": "Working on collaboration task",
+  "Workspace not found": "Workspace not found",
+  "Workspace not found: {{input": {
+    "id}}": "Workspace not found: {{input.id}}"
+  },
+  "Workspace {{id}}": "Workspace {{id}}",
+  "Worktree path is required": "Worktree path is required",
+  "This repository uses Git LFS, but git-lfs was not found": {
+    " Please install git-lfs (e": {
+      "g": {
+        ", ": "This repository uses Git LFS, but git-lfs was not found. Please install git-lfs (e.g., "
+      }
+    }
+  },
+  "You can now use ": "You can now use ",
+  "agent not ready": "agent not ready",
+  "collapse": "collapse",
+  "commitHash required for committed category": "commitHash required for committed category",
+  "expand": "expand",
+  "state changed": "state changed",
+  "task": "task",
+  "tasks": "tasks",
+  "{{category}} shortcut": "{{category}} shortcut",
+  "{{count}} commit to merge": "{{count}} commit to merge",
+  "{{count}} server(s) from {{source}}": "{{count}} server(s) from {{source}}",
+  "{{count}}d ago": "{{count}}d ago",
+  "{{count}}h ago": "{{count}}h ago",
+  "{{count}}m ago": "{{count}}m ago",
+  "{{name}} cannot be empty": "{{name}} cannot be empty",
+  "{{name}} cannot contain path traversal": "{{name}} cannot contain path traversal",
+  "{{name}} cannot start with -": "{{name}} cannot start with -",
+  "{{name}} contains invalid characters": "{{name}} contains invalid characters",
+  "{{name}} too long (max 250 characters)": "{{name}} too long (max 250 characters)",
+  "{{op}} failed due to conflicts": {
+    " The operation has been aborted": {
+      " Please resolve conflicts manually or use a different strategy": {
+        "": "{{op}} failed due to conflicts. The operation has been aborted. Please resolve conflicts manually or use a different strategy."
+      }
+    }
+  },
+  "{{platform}} ({{arch}})": "{{platform}} ({{arch}})"
+}

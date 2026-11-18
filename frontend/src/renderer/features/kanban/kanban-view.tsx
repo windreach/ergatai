@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback, useMemo, useEffect, useRef, useState } from "react"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { toast } from "sonner"

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import * as shiki from "shiki"
 import { isBuiltinTheme } from "../vscode-themes"
 import { getBuiltinThemeById } from "./builtin-themes"
@@ -153,7 +154,7 @@ export async function loadFullTheme(theme: VSCodeFullTheme): Promise<void> {
     await highlighter.loadTheme(shikiTheme as shiki.ThemeRegistration)
     fullThemesCache.set(theme.id, shikiTheme)
   } catch (error) {
-    console.error(`Failed to load full theme ${theme.id}:`, error)
+    console.error(i18n.t("Failed to load full theme {{id}}:", { id: theme.id }), error)
     // Don't throw - allow fallback to default theme
   }
 }
@@ -229,7 +230,7 @@ export async function ensureThemeLoaded(themeId: string): Promise<void> {
   }
 
   // Theme not found - this is an error case
-  console.warn(`Theme ${themeId} not found, falling back to github-dark`)
+  console.warn(i18n.t("Theme {{id}} not found, falling back to github-dark", { id: themeId }))
 }
 
 /**

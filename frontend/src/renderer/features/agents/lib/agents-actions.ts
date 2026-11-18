@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 /**
  * Centralized action system for Agents
  * Actions can be triggered via hotkeys or UI buttons
@@ -57,8 +58,8 @@ export interface AgentActionDefinition {
 
 const openShortcutsAction: AgentActionDefinition = {
   id: "open-shortcuts",
-  label: "Keyboard shortcuts",
-  description: "Show all keyboard shortcuts",
+  label: i18n.t('Keyboard shortcuts'),
+  description: i18n.t('Show all keyboard shortcuts'),
   category: "general",
   hotkey: "?",
   handler: async (context) => {
@@ -72,8 +73,8 @@ const openShortcutsAction: AgentActionDefinition = {
 
 const createNewAgentAction: AgentActionDefinition = {
   id: "create-new-agent",
-  label: "New workspace",
-  description: "Create a new workspace",
+  label: i18n.t('New workspace'),
+  description: i18n.t('Create a new workspace'),
   category: "general",
   hotkey: "cmd+n",
   handler: async (context) => {
@@ -92,8 +93,8 @@ const createNewAgentAction: AgentActionDefinition = {
 
 const openSettingsAction: AgentActionDefinition = {
   id: "open-settings",
-  label: "Settings",
-  description: "Open settings page",
+  label: i18n.t("Settings"),
+  description: i18n.t('Open settings page'),
   category: "general",
   hotkey: ["cmd+,", "ctrl+,"],
   handler: async (context) => {
@@ -106,7 +107,7 @@ const openSettingsAction: AgentActionDefinition = {
 
 const toggleSidebarAction: AgentActionDefinition = {
   id: "toggle-sidebar",
-  label: "Toggle sidebar",
+  label: i18n.t('Toggle sidebar'),
   description: "Show/hide left sidebar",
   category: "view",
   hotkey: ["cmd+\\", "ctrl+\\"],
@@ -118,8 +119,8 @@ const toggleSidebarAction: AgentActionDefinition = {
 
 const toggleChatSearchAction: AgentActionDefinition = {
   id: "toggle-chat-search",
-  label: "Search messages",
-  description: "Search through chat history",
+  label: i18n.t('Search messages'),
+  description: i18n.t('Search through chat history'),
   category: "view",
   hotkey: ["cmd+f", "ctrl+f"],
   handler: async (context) => {
@@ -130,8 +131,8 @@ const toggleChatSearchAction: AgentActionDefinition = {
 
 const openKanbanAction: AgentActionDefinition = {
   id: "open-kanban",
-  label: "Open Kanban board",
-  description: "Open the Kanban board view",
+  label: i18n.t('Open Kanban board'),
+  description: i18n.t('Open the Kanban board view'),
   category: "view",
   hotkey: "cmd+shift+k",
   handler: async (context) => {
@@ -147,8 +148,8 @@ const openKanbanAction: AgentActionDefinition = {
 
 const openInEditorAction: AgentActionDefinition = {
   id: "open-in-editor",
-  label: "Open in editor",
-  description: "Open worktree in preferred editor",
+  label: i18n.t('Open in editor'),
+  description: i18n.t('Open worktree in preferred editor'),
   category: "general",
   hotkey: "cmd+o",
   handler: async () => {
@@ -160,8 +161,8 @@ const openInEditorAction: AgentActionDefinition = {
 
 const openFileInEditorAction: AgentActionDefinition = {
   id: "open-file-in-editor",
-  label: "Open file in editor",
-  description: "Open currently previewed file in preferred editor",
+  label: i18n.t('Open file in editor'),
+  description: i18n.t('Open currently previewed file in preferred editor'),
   category: "general",
   hotkey: "cmd+shift+o",
   handler: async () => {
@@ -172,8 +173,8 @@ const openFileInEditorAction: AgentActionDefinition = {
 
 const fileSearchAction: AgentActionDefinition = {
   id: "file-search",
-  label: "Go to file",
-  description: "Search and open a file in the workspace",
+  label: i18n.t('Go to file'),
+  description: i18n.t('Search and open a file in the workspace'),
   category: "navigation",
   hotkey: "cmd+p",
   handler: async (context) => {
@@ -221,11 +222,11 @@ export async function executeAgentAction(
   const action = AGENT_ACTIONS[actionId]
 
   if (!action) {
-    return { success: false, error: `Action ${actionId} not found` }
+    return { success: false, error: i18n.t("Action {{id}} not found", { id: actionId }) }
   }
 
   if (action.isAvailable && !action.isAvailable(context)) {
-    return { success: false, error: `Action ${actionId} not available` }
+    return { success: false, error: i18n.t("Action {{id}} not available", { id: actionId }) }
   }
 
   try {
@@ -233,7 +234,7 @@ export async function executeAgentAction(
   } catch (error) {
     return {
       success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
+      error: error instanceof Error ? error.message : i18n.t('Unknown error'),
     }
   }
 }

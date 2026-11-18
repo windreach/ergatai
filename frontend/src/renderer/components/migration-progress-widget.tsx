@@ -1,6 +1,8 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useEffect, useState } from "react"
+import { useTranslation } from "react-i18next"
 import { trpc } from "../lib/trpc"
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover"
 import { Progress } from "./ui/progress"
@@ -8,6 +10,7 @@ import { Button } from "./ui/button"
 
 export function MigrationProgressWidget({ inline = false }: { inline?: boolean }) {
   const [open, setOpen] = useState(false)
+  const { t } = useTranslation()
   const utils = trpc.useUtils()
   const progressQuery = trpc.ergatai.getMigrationProgress.useQuery(undefined, {
     refetchInterval: 5000,
@@ -65,7 +68,7 @@ export function MigrationProgressWidget({ inline = false }: { inline?: boolean }
         <button
           type="button"
           className="flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-[background-color,color,transform] duration-150 ease-out active:scale-[0.97] outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70"
-          aria-label="Migration progress"
+          aria-label={i18n.t('Migration progress')}
         >
           <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.5">
             <path d="M2 12h3V8H2v4Zm4.5 0h3V4h-3v8Zm4.5 0h3V6h-3v6Z" />
@@ -77,7 +80,7 @@ export function MigrationProgressWidget({ inline = false }: { inline?: boolean }
           size="sm"
           className="shadow-lg border border-border/60 bg-background/90 backdrop-blur"
         >
-          迁移进度 {percent}%
+          {t("migration.progress", { percent })}
         </Button>
       )}
     </PopoverTrigger>
@@ -89,7 +92,7 @@ export function MigrationProgressWidget({ inline = false }: { inline?: boolean }
         {trigger}
         <PopoverContent side="top" align="end" className="w-72 p-3 space-y-3">
           <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-            Agent 历史迁移
+            {t("migration.agentHistory")}
           </div>
           <div className="space-y-2">
             {rows.map((m) => {
@@ -105,12 +108,12 @@ export function MigrationProgressWidget({ inline = false }: { inline?: boolean }
                     <Progress value={p} className="h-1" />
                     <div className="text-[10px] text-muted-foreground">
                       {m.status === "running"
-                        ? "迁移中…"
+                        ? t("migration.migrating")
                         : m.status === "done"
-                          ? "已完成"
+                          ? t("migration.completed")
                           : m.status === "error"
-                            ? "失败"
-                            : "等待开始"}
+                            ? t("migration.failed")
+                             : t("migration.waiting")}
                     </div>
                   </div>
                 )

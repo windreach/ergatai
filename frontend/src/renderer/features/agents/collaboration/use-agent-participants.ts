@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useEffect, useMemo, useRef } from "react"
@@ -153,7 +154,7 @@ export function useAgentParticipants({
         )
 
         return {
-          activity: "Bound to the active group chat",
+          activity: i18n.t('Bound to the active group chat'),
           agentId: agent.id,
           coreAgentId: agent.id,
           key: `group:${agent.id}`,
@@ -246,7 +247,7 @@ export function useAgentParticipants({
           workspaceId: agent.workspaceId,
         })),
         ...stoppedAgents.map<AgentParticipant>((binding) => ({
-          activity: "Agent stopped",
+          activity: i18n.t('Agent stopped'),
           agentId: binding.agentId,
           coreAgentId:
             inferCoreAgentId(binding.agentCommand) ?? inferCoreAgentId(binding.agentName),

@@ -110,7 +110,7 @@ export const detailsSidebarOpenAtom = atomWithWindowStorage<boolean>(
 // Note: the side chat used to be a tab here; it now lives in its own
 // independent SideChatSidebar. A stale persisted "chat" value is treated
 // as "details" by the sidebar.
-export type DetailsSidebarTab = "details" | "files" | "git" | "task-board"
+export type DetailsSidebarTab = "details" | "files" | "git"
 
 export const detailsSidebarTabAtom = atomWithWindowStorage<DetailsSidebarTab>(
   "overview:sidebarTab",

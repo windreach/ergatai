@@ -4,6 +4,7 @@ import {
   Menu,
   nativeImage
 } from "electron"
+import { t } from "./lib/i18n"
 import {
   existsSync,
   mkdirSync,
@@ -240,7 +241,7 @@ const server = createServer(async (req, res) => {
         } catch (err) {
           console.error("[Auth Server] handleAuthCode failed:", err)
           res.writeHead(500, { "Content-Type": "text/plain" })
-          res.end("Authentication failed. Please try again.")
+          res.end(t("Authentication failed. Please try again."))
           return
         }
 
@@ -311,7 +312,7 @@ const server = createServer(async (req, res) => {
 </html>`)
       } else {
         res.writeHead(400, { "Content-Type": "text/plain" })
-        res.end("Missing code parameter")
+        res.end(t("Missing code parameter"))
       }
     } else if (url.pathname === "/callback") {
       // Handle MCP OAuth callback
@@ -395,11 +396,11 @@ const server = createServer(async (req, res) => {
 </html>`)
       } else {
         res.writeHead(400, { "Content-Type": "text/plain" })
-        res.end("Missing code or state parameter")
+        res.end(t("Missing code or state parameter"))
       }
     } else {
       res.writeHead(404, { "Content-Type": "text/plain" })
-      res.end("Not found")
+      res.end(t("Not found"))
     }
   })
 
@@ -575,15 +576,15 @@ if (gotTheLock) {
       const showDevTools = !app.isPackaged || isDevToolsUnlocked()
       const template: Electron.MenuItemConstructorOptions[] = [
         {
-          label: "Ergatai",
+          label: t("Ergatai"),
           submenu: [
             {
-              label: "About Ergatai",
+              label: t("About Ergatai"),
               click: () => app.showAboutPanel(),
             },
             { type: "separator" },
             {
-              label: "Settings...",
+              label: t("Settings..."),
               ...(settingsMenuIcon && { icon: settingsMenuIcon }),
               accelerator: "CmdOrCtrl+,",
               click: () => {
@@ -606,25 +607,25 @@ if (gotTheLock) {
                   if (result.success) {
                     dialog.showMessageBox({
                       type: "info",
-                      message: "CLI command uninstalled",
-                      detail: "The 'ergatai' command has been removed from your PATH.",
+                      message: t("CLI command uninstalled"),
+                      detail: t("The 'ergatai' command has been removed from your PATH."),
                     })
                     buildMenu()
                   } else {
-                    dialog.showErrorBox("Uninstallation Failed", result.error || "Unknown error")
+                    dialog.showErrorBox(t("Uninstallation Failed"), result.error || t("Unknown error"))
                   }
                 } else {
                   const result = await installCli()
                   if (result.success) {
                     dialog.showMessageBox({
                       type: "info",
-                      message: "CLI command installed",
+                      message: t("CLI command installed"),
                       detail:
-                        "You can now use 'ergatai .' in any terminal to open Ergatai in that directory.",
+                        t("You can now use 'ergatai .' in any terminal to open Ergatai in that directory."),
                     })
                     buildMenu()
                   } else {
-                    dialog.showErrorBox("Installation Failed", result.error || "Unknown error")
+                    dialog.showErrorBox(t("Installation Failed"), result.error || t("Unknown error"))
                   }
                 }
               },
@@ -637,7 +638,7 @@ if (gotTheLock) {
             { role: "unhide" },
             { type: "separator" },
             {
-              label: "Quit",
+              label: t("Quit"),
               accelerator: "CmdOrCtrl+Q",
               click: async () => {
                 setIsQuitting(true)
@@ -647,10 +648,10 @@ if (gotTheLock) {
           ],
         },
         {
-          label: "File",
+          label: t("File"),
           submenu: [
             {
-              label: "New Chat",
+              label: t("New Chat"),
               accelerator: "CmdOrCtrl+N",
               click: () => {
                 console.log("[Menu] New Chat clicked (Cmd+N)")

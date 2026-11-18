@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo } from "react"
@@ -113,7 +114,7 @@ export const AgentAskUserQuestionTool = memo(function AgentAskUserQuestionTool({
   if (state === "result" && isError) {
     return (
       <StatusLine>
-        <span>Question</span>
+        <span>{i18n.t('Question')}</span>
         <span className="text-muted-foreground/50">•</span>
         <span className="text-red-500">{effectiveErrorText || "Error"}</span>
       </StatusLine>
@@ -126,7 +127,7 @@ export const AgentAskUserQuestionTool = memo(function AgentAskUserQuestionTool({
     if (entries.length === 0) {
       return (
         <StatusLine>
-          <span>Question answered</span>
+          <span>{i18n.t('Question answered')}</span>
         </StatusLine>
       )
     }
@@ -163,7 +164,7 @@ export const AgentAskUserQuestionTool = memo(function AgentAskUserQuestionTool({
       <StatusLine>
         <span>{firstQuestion || "Question"}</span>
         <span className="text-muted-foreground/50">•</span>
-        <span>Waiting for response...</span>
+        <span>{i18n.t('Waiting for response...')}</span>
       </StatusLine>
     )
   }
@@ -177,7 +178,7 @@ export const AgentAskUserQuestionTool = memo(function AgentAskUserQuestionTool({
       <StatusLine>
         <span>{firstQuestion || "Question"}</span>
         <span className="text-muted-foreground/50">•</span>
-        <span>Submitting...</span>
+        <span>{i18n.t('Submitting...')}</span>
       </StatusLine>
     )
   }
@@ -187,7 +188,7 @@ export const AgentAskUserQuestionTool = memo(function AgentAskUserQuestionTool({
     <StatusLine>
       <span>{firstQuestion || "Question"}</span>
       <span className="text-muted-foreground/50">•</span>
-      <span>Interrupted</span>
+      <span>{i18n.t('Interrupted')}</span>
     </StatusLine>
   )
 }, areAskUserQuestionPropsEqual)

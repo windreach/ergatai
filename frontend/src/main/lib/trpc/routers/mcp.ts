@@ -1,6 +1,7 @@
 import {
   z
 } from "zod"
+import { t } from "../../i18n"
 import {
   publicProcedure,
   router
@@ -142,7 +143,7 @@ async function getGlobalServerOrThrow(
 ): Promise<{ id: string; name: string }> {
   const server = await findGlobalServerByName(name)
   if (!server) {
-    throw new Error(`MCP server "${name}" not found in global config`)
+    throw new Error(t('MCP server "{{name}}" not found in global config'))
   }
   return server
 }

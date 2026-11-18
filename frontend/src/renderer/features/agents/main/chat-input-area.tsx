@@ -1,7 +1,7 @@
 "use client"
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
 import { Button } from "../../../components/ui/button"
@@ -34,6 +34,8 @@ import {
 import { useConversationOllamaModel } from "../hooks/use-conversation-ollama-model"
 import { getRuntimeSessionStore } from "../../conversation"
 import { trpc } from "../../../lib/trpc"
+import { useTranslation } from "react-i18next"
+import i18n from "@/lib/i18n"
 import { cn } from "../../../lib/utils"
 import { useExtensionMeta } from "../lib/extension-meta-store"
 import {
@@ -643,7 +645,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
     },
     onError: (error) => {
       if (error.message.includes("agent not found")) return
-      toast.error(`Failed to switch model: ${error.message}`)
+      toast.error(i18n.t("Failed to switch model: {{message}}", { message: error.message }))
     },
   })
   // OpenCode (and Claude Code) expose selectable model lists; only truly
@@ -1225,28 +1227,35 @@ const availableModels = useAvailableModels(agentId, profileHint)
           : ""
     if (model && model !== "undefined" && model !== "null") {
       setRuntimeModel(model)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setRuntimeModelKnown(true)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setIsDetectingRuntimeModel(false)
     }
   }, [agentId, isRuntimeModelProvider, extensionMeta])
+
+  const onInputContentChangeEffect = useEffectEvent((value: boolean) => {
+    onInputContentChange?.(value)
+  })
 
   // Tab accepts the inline prompt suggestion when input is empty.
   useEffect(() => {
     const editor = editorRef.current
     if (!editor) return
+    const el = editor.getElement()
+    if (!el) return
     const handleTab = (e: KeyboardEvent) => {
       if (e.key !== "Tab" || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return
       if (hasContent || !promptSuggestion) return
       e.preventDefault()
       editor.setValue(promptSuggestion)
       setHasContent(true)
-      onInputContentChange?.(true)
+      onInputContentChangeEffect(true)
       currentDraftTextRef.current = promptSuggestion
     }
-    const el = editorRef.current as unknown as HTMLElement
     el.addEventListener("keydown", handleTab, true)
     return () => el.removeEventListener("keydown", handleTab, true)
-  }, [editorRef, hasContent, promptSuggestion, onInputContentChange])
+  }, [editorRef, hasContent, promptSuggestion])
 
   // Editor submit handler - handles Enter key with queue logic
   // If input is empty and queue has items, stop stream and send first from queue
@@ -1743,7 +1752,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
 	                          type="button"
 	                          disabled
 	                          className="flex h-7 items-center gap-1.5 px-2 text-sm text-muted-foreground opacity-100 disabled:opacity-100"
-	                          title={`Detected ${provider} model`}
+	                          title={i18n.t("Detected {{provider}} model", { provider })}
 	                        >
 	                          {isDetectingRuntimeModel ? (
 	                            <IconSpinner className="h-4 w-4 shrink-0" />
@@ -1889,14 +1898,14 @@ const availableModels = useAvailableModels(agentId, profileHint)
                               fileInputRef.current?.click()
                             }}
                           >
-                            上传文件
+                            {i18n.t("common.uploadFile")}
                           </button>
                           <button
                             type="button"
                             className="flex w-full items-center gap-2 rounded-sm px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
                             onClick={handlePickFolder}
                           >
-                            上传文件夹
+                            {i18n.t("common.uploadFolder")}
                           </button>
                         </PopoverContent>
                       </Popover>

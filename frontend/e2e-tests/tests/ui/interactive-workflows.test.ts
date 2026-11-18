@@ -64,11 +64,6 @@ test.describe.serial("UI interactions", () => {
     )
   })
 
-  test("opens Task Board from the sidebar", async () => {
-    await pressEnterOn(page.getByRole("button", { name: "Open task board" }))
-    await expect(page.getByRole("heading", { level: 1, name: "Task Board" })).toBeVisible()
-  })
-
   test("opens Manage Agents from the sidebar", async () => {
     await pressEnterOn(page.getByRole("button", { name: "Manage Agents" }))
     await expect(page.getByRole("heading", { level: 1, name: "Manage Agents" })).toBeVisible()

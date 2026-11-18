@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
  
 "use client"
 
@@ -260,7 +261,7 @@ function updateTaskSnapshotFromParts(
 
       tasks.set(taskId, {
         id: taskId,
-        subject: part.input?.subject ?? existing?.subject ?? `Task #${taskId}`,
+        subject: part.input?.subject ?? existing?.subject ?? i18n.t("Task #{{id}}", { id: taskId }),
         description: part.input?.description ?? existing?.description,
         activeForm: part.input?.activeForm ?? existing?.activeForm,
         status: statusChange?.to ?? part.input?.status ?? existing?.status ?? "pending",
@@ -399,7 +400,7 @@ function extractChangesFromParts(
       const inputSubject = part.input?.subject
       const subject = inputSubject
         ? formatTaskSubject(taskId, inputSubject)
-        : taskSubjects.get(taskId) ?? formatTaskSubject(taskId, `Task #${taskId}`)
+        : taskSubjects.get(taskId) ?? formatTaskSubject(taskId, i18n.t("Task #{{id}}", { id: taskId }))
 
       // Check if this task was already in our changes (e.g., created then updated in same group)
       const existingIdx = changes.findIndex(c => c.id === taskId)
@@ -1067,16 +1068,16 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
     const startedCount = changes.filter(c => c.newStatus === "in_progress").length
 
     if (createdCount > 0 && createdCount === changes.length) {
-      header = { kind: "text", text: `Created ${createdCount} task${createdCount > 1 ? "s" : ""}` }
+      header = { kind: "text", text: i18n.t("Created {{count}} task", { count: createdCount }) + (createdCount > 1 ? "s" : "") }
     } else if (completedCount > 0 && completedCount === changes.length) {
-      header = { kind: "text", text: `Completed ${completedCount} task${completedCount > 1 ? "s" : ""}` }
+      header = { kind: "text", text: i18n.t("Completed {{count}} task", { count: completedCount }) + (completedCount > 1 ? "s" : "") }
     } else if (startedCount > 0 && startedCount === changes.length) {
-      header = { kind: "text", text: `Started ${startedCount} task${startedCount > 1 ? "s" : ""}` }
+      header = { kind: "text", text: i18n.t("Started {{count}} task", { count: startedCount }) + (startedCount > 1 ? "s" : "") }
     } else {
       header = { kind: "text", text: `${changes.length} task update${changes.length > 1 ? "s" : ""}` }
     }
   } else if (hasTaskList) {
-    header = { kind: "text", text: `List ${taskList!.length} task${taskList!.length > 1 ? "s" : ""}` }
+    header = { kind: "text", text: i18n.t("List {{count}} task", { count: taskList!.length }) + (taskList!.length > 1 ? "s" : "") }
   } else if (hasTaskGet) {
     header = {
       kind: "task_get",
@@ -1140,7 +1141,7 @@ export const AgentTaskToolsGroup = memo(function AgentTaskToolsGroup({
           <PlanIcon className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
           {header.kind === "task_get" ? (
             <span className="text-xs flex-1">
-              <span className="font-medium text-foreground">Read task</span>
+              <span className="font-medium text-foreground">{i18n.t('Read task')}</span>
               <span className="text-muted-foreground ml-1">
                 {`${header.id}. ${header.subject}`}
               </span>

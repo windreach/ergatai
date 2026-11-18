@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { CollapseIcon, ExpandIcon } from "../../../components/ui/icons"
 import { cn } from "../../../lib/utils"
 import { ListTree } from "lucide-react"
@@ -32,7 +33,7 @@ export function CollapsibleStepsHeader({
       </div>
       {/* react-doctor-disable-next-line html-no-nested-interactive */}
       <button
-        aria-label="ExpandIcon"
+        aria-label={i18n.t('ExpandIcon')}
         className="p-1 rounded-md hover:bg-accent transition-[background-color,transform] duration-150 ease-out active:scale-95"
         onClick={(e) => {
           e.stopPropagation()

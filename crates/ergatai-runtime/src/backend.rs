@@ -107,6 +107,9 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
     /// List all active workspaces.
     async fn list_workspaces(&self) -> ErgataiResult<Vec<WorkspaceHandle>>;
 
+    /// Update the working directory of an already-registered workspace.
+    async fn update_workspace_work_dir(&self, _id: &str, _work_dir: &std::path::Path) {}
+
     /// Cleanup a workspace.
     async fn cleanup_workspace(&self, handle: &WorkspaceHandle) -> ErgataiResult<()>;
 

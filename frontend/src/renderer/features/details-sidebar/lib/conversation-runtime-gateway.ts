@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback, useSyncExternalStore } from "react"
 
 import { trpcClient } from "../../../lib/trpc"
@@ -214,7 +215,7 @@ function connect(conversationId: string) {
               channel.state = {
                 ...channel.state,
                 connectionStatus: "reconnecting",
-                error: "Runtime event gap detected",
+                error: i18n.t('Runtime event gap detected'),
               }
               notify(channel)
               reconnect(conversationId, 0)
@@ -293,7 +294,7 @@ function connect(conversationId: string) {
             channel.state = {
               ...channel.state,
               connectionStatus: "reconnecting",
-              error: "Runtime event gap detected",
+              error: i18n.t('Runtime event gap detected'),
             }
             notify(channel)
             reconnect(conversationId, 0)
@@ -326,7 +327,7 @@ function connect(conversationId: string) {
         channel.state = {
           ...channel.state,
           connectionStatus: "reconnecting",
-          error: error instanceof Error ? error.message : "Runtime stream failed",
+          error: error instanceof Error ? error.message : i18n.t('Runtime stream failed'),
         }
         notify(channel)
         reconnect(conversationId)

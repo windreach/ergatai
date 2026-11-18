@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
@@ -206,8 +207,8 @@ export function AddAgentDialog({
               <div className="flex items-start gap-4">
                 <label
                   className="relative flex h-16 w-16 flex-shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-dashed bg-muted/30 text-muted-foreground transition-colors hover:border-primary/40 hover:bg-accent/40 hover:text-foreground"
-                  title="Accepts PNG, JPG, WebP or SVG up to 2MB"
-                  aria-label="Upload agent avatar"
+                  title={i18n.t('Accepts PNG, JPG, WebP or SVG up to 2MB')}
+                  aria-label={i18n.t('Upload agent avatar')}
                 >
                   <input
                     type="file"
@@ -226,7 +227,7 @@ export function AddAgentDialog({
                   ) : (
                     <span className="flex flex-col items-center gap-1">
                       <Upload className="h-4 w-4" />
-                      <span className="text-[10px] leading-none">Image</span>
+                      <span className="text-[10px] leading-none">{i18n.t('Image')}</span>
                     </span>
                   )}
                 </label>
@@ -270,7 +271,7 @@ export function AddAgentDialog({
                 </div>
                 <Input
                   id="startup-command"
-                  placeholder="Enter the executable command"
+                  placeholder={i18n.t('Enter the executable command')}
                   value={startupCommand}
                   onChange={(event) => {
                     const value = event.target.value

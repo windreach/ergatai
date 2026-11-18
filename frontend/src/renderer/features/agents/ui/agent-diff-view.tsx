@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import {
@@ -572,7 +573,7 @@ const FileDiffCard = memo(function FileDiffCard({
           css: "css", json: "json", md: "markdown", html: "html",
           py: "python", rs: "rust", go: "go", rb: "ruby",
         }
-        const lang = langMap[ext] || ext || undefined
+        const lang = langMap[ext]
         const result = parseDiffFromFile(
           { name: file.oldPath || displayPath, contents: oldContent, lang: lang as unknown as NonNullable<Parameters<typeof parseDiffFromFile>[0]>["lang"] },
           { name: file.newPath || displayPath, contents: fileContent, lang: lang as unknown as NonNullable<Parameters<typeof parseDiffFromFile>[0]>["lang"] },
@@ -754,7 +755,7 @@ const FileDiffCard = memo(function FileDiffCard({
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
-                  aria-label="Action"
+                  aria-label={i18n.t('Action')}
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation()
@@ -835,7 +836,7 @@ const FileDiffCard = memo(function FileDiffCard({
                   )}>
                     {isViewed && <Check className="size-3" strokeWidth={2.5} />}
                   </div>
-                  <span>Viewed</span>
+                  <span>{i18n.t('Viewed')}</span>
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom">
@@ -1184,7 +1185,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
 
           const response = await fetch(`/api/agents/sandbox/${sandboxId}/diff`)
           if (!response.ok) {
-            throw new Error(`Failed to fetch diff: ${response.statusText}`)
+            throw new Error(i18n.t("Failed to fetch diff: {{status}}", { status: response.statusText }))
           }
 
           const data = await response.json()
@@ -1223,7 +1224,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
         else if (sandboxId) {
           const response = await fetch(`/api/agents/sandbox/${sandboxId}/diff`)
           if (!response.ok) {
-            throw new Error(`Failed to fetch diff: ${response.statusText}`)
+            throw new Error(i18n.t("Failed to fetch diff: {{status}}", { status: response.statusText }))
           }
           const data = await response.json()
           diffContent = data.diff || ""
@@ -1331,7 +1332,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
         // Refresh the diff
         handleRefresh()
       } catch (error) {
-        toast.error(`Failed to discard: ${error instanceof Error ? error.message : "Unknown error"}`)
+        toast.error(i18n.t("Failed to discard: {{message}}", { message: error instanceof Error ? error.message : i18n.t("Unknown error") }))
       } finally {
         setDiscardFilePath(null)
       }
@@ -1998,7 +1999,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
                 className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md"
               >
                 <IconChatBubble className="h-4 w-4" />
-                <span className="sr-only">Back to chat</span>
+                <span className="sr-only">{i18n.t('Back to chat')}</span>
               </Button>
 
               {/* Stats - centered */}
@@ -2035,14 +2036,14 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
                 <button
                   onClick={() => setDiffMode("split")}
                   className="relative z-[2] px-1.5 flex items-center justify-center transition-colors duration-200 rounded text-muted-foreground"
-                  title="Split view"
+                  title={i18n.t('Split view')}
                 >
                   <Columns2 className="h-3.5 w-3.5" />
                 </button>
                 <button
                   onClick={() => setDiffMode("unified")}
                   className="relative z-[2] px-1.5 flex items-center justify-center transition-colors duration-200 rounded text-muted-foreground"
-                  title="Unified view"
+                  title={i18n.t('Unified view')}
                 >
                   <Rows2 className="h-3.5 w-3.5" />
                 </button>

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useCallback, useMemo } from "react"
@@ -34,6 +35,7 @@ import { useStreamingStatusStore } from "../stores/streaming-status-store"
 
 // Note: ForkContext moved to fork-context.ts for Fast Refresh compatibility.
 import { ForkContext } from "./fork-context"
+import { SuppressErrorCardsContext } from "./suppress-error-cards-context"
 
 // ============================================================================
 // ISOLATED MESSAGE GROUP (LAYER 4)
@@ -81,7 +83,7 @@ function buildAttachmentSummary(
   if (folderCount > 0) {
     parts.push(folderCount === 1 ? "folder" : `${folderCount} folders`)
   }
-  return `Using ${parts.join(", ")}`
+  return i18n.t("Using {{parts}}", { parts: parts.join(", ") })
 }
 
 // Helper: Resolve image URL from image part data
@@ -222,6 +224,10 @@ interface IsolatedMessageGroupProps {
   }>
   MessageGroupWrapper: React.ComponentType<{ children: React.ReactNode; isLastGroup?: boolean }>
   toolRegistry: Record<string, { icon: ToolIcon; title: (args: ToolPart) => string }>
+  /** Rendered at the end of the last group so it stays in the message flow. */
+  footer?: React.ReactNode
+  /** Hide error cards in this group while an automatic retry is active. */
+  suppressErrorCards?: boolean
 }
 
 function areGroupPropsEqual(
@@ -242,7 +248,9 @@ function areGroupPropsEqual(
     prev.UserBubbleComponent === next.UserBubbleComponent &&
     prev.ToolCallComponent === next.ToolCallComponent &&
     prev.MessageGroupWrapper === next.MessageGroupWrapper &&
-    prev.toolRegistry === next.toolRegistry
+    prev.toolRegistry === next.toolRegistry &&
+    prev.footer === next.footer &&
+    prev.suppressErrorCards === next.suppressErrorCards
   )
 }
 
@@ -263,6 +271,8 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
   ToolCallComponent,
   MessageGroupWrapper,
   toolRegistry,
+  footer,
+  suppressErrorCards = false,
 }: IsolatedMessageGroupProps) {
   // Subscribe to specific atoms - NOT the whole messages array
   const perChatKey = `${conversationId}:::${userMsgId}`
@@ -470,7 +480,7 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
-                    aria-label="IconTextUndo"
+                    aria-label={i18n.t('IconTextUndo')}
                     onClick={() => onRollback(userMsg as UIMessage)}
                     disabled={isRollingBack}
                     tabIndex={-1}
@@ -525,15 +535,19 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
 
       {/* Assistant messages - memoized, only re-renders when IDs change */}
       {assistantIds.length > 0 && (
-        <ForkContext.Provider value={canFork ? onFork : null}>
-          <MemoizedAssistantMessages
-            assistantMsgIds={assistantIds}
-            conversationId={conversationId}
-            chatId={chatId}
-            isMobile={isMobile}
-            sandboxSetupStatus={sandboxSetupStatus}
-          />
-        </ForkContext.Provider>
+        <SuppressErrorCardsContext.Provider
+          value={isLastGroup && suppressErrorCards}
+        >
+          <ForkContext.Provider value={canFork ? onFork : null}>
+            <MemoizedAssistantMessages
+              assistantMsgIds={assistantIds}
+              conversationId={conversationId}
+              chatId={chatId}
+              isMobile={isMobile}
+              sandboxSetupStatus={sandboxSetupStatus}
+            />
+          </ForkContext.Provider>
+        </SuppressErrorCardsContext.Provider>
       )}
 
       {/* Planning indicator */}
@@ -550,6 +564,11 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
             />
           </div>
         )}
+
+      {/* In-flow status footer (e.g. auto-retry). Rendered inside the last
+          group because MessageGroupWrapper stretches the last group to the
+          viewport height; a sibling footer would be pushed to the bottom. */}
+      {isLastGroup ? footer : null}
     </MessageGroupWrapper>
   )
 }, areGroupPropsEqual)

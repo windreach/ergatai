@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { createContext, useContext, useMemo } from "react"
 
 const WindowContext = createContext<string>("default")

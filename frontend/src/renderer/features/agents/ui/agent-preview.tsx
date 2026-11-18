@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState, useRef, useCallback, useEffect, useMemo } from "react"
@@ -40,7 +41,7 @@ const LoadingOverlay = ({ className }: { className?: string }) => (
         viewBox="0 0 400 400"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
-        aria-label="Ergatai logo"
+        aria-label={i18n.t('Ergatai logo')}
       >
         <path
           fillRule="evenodd"
@@ -397,7 +398,7 @@ export function AgentPreview({
               className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md"
             >
               <IconChatBubble className="h-4 w-4" />
-              <span className="sr-only">Back to chat</span>
+              <span className="sr-only">{i18n.t('Back to chat')}</span>
             </Button>
 
             {/* Reload button */}
@@ -534,7 +535,7 @@ export function AgentPreview({
                 width="100%"
                 height="100%"
                 style={{ border: "none" }}
-                title="Preview"
+                title={i18n.t('Preview')}
                 // react-doctor-disable-next-line iframe-missing-sandbox
                 sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
                 allow="clipboard-write"
@@ -607,7 +608,7 @@ export function AgentPreview({
                   allow="clipboard-write"
                   onLoad={() => setIsLoaded(true)}
                   onError={() => setIsLoaded(true)}
-                  title="Preview"
+                  title={i18n.t('Preview')}
                   tabIndex={-1}
                 />
 

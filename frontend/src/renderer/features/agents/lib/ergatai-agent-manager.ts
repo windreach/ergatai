@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 /**
  * Ergatai Agent Manager — manages agent lifecycle through the Rust backend.
  *
@@ -62,9 +63,9 @@ interface SpawnAgentRequest {
 class ConversationNotFoundError extends Error {
   constructor(conversationId: string) {
     super(
-      `Conversation "${conversationId}" not found in backend. ` +
-        `This may happen after backend restart. ` +
-        `Please refresh the page or create a new chat.`
+      i18n.t("Conversation \"{{id}}\" not found in backend. ", { id: conversationId }) +
+        i18n.t("This may happen after backend restart. ") +
+        i18n.t("Please refresh the page or create a new chat.")
     )
     this.name = "ConversationNotFoundError"
   }
@@ -93,16 +94,16 @@ const pendingAgentCreations = new Map<string, Promise<string>>()
 export async function spawnAgent(
   request: SpawnAgentRequest
 ): Promise<string> {
-  log.info("Spawning agent", undefined, { request })
+  log.info(i18n.t('Spawning agent'), undefined, { request })
   try {
     const result = await trpcClient.ergatai.spawnAgent.mutate(request)
-    log.info("Spawn result", undefined, { result })
+    log.info(i18n.t('Spawn result'), undefined, { result })
     // Handle both snake_case and camelCase response formats
     const resultObj = result as Record<string, unknown>
     const agentId = (resultObj.agent_id ?? resultObj.agentId) as string | undefined
     if (!agentId) {
       log.error("Backend did not return agent_id", undefined, { result })
-      throw new Error("Ergatai backend did not return an agent ID")
+      throw new Error(i18n.t('Ergatai backend did not return an agent ID'))
     }
     return agentId
   } catch (error) {
@@ -152,7 +153,7 @@ async function checkExistingAgentBinding(
       const agents = await listAgents()
       const agent = agents.find((a) => a.agent_id === agentId)
       if (agent && agent.is_alive) {
-        log.debug("Reusing bound agent", undefined, { agentId })
+        log.debug(i18n.t('Reusing bound agent'), undefined, { agentId })
         return agentId
       }
     } catch {
@@ -161,7 +162,7 @@ async function checkExistingAgentBinding(
 
     return null
   } catch (err) {
-    log.warn("Failed to get agent bindings", err as Error)
+    log.warn(i18n.t('Failed to get agent bindings'), err as Error)
     return null
   }
 }
@@ -185,7 +186,7 @@ async function validateConversationExists(conversationId: string): Promise<void>
     }
     // Otherwise, wrap the error
     throw new Error(
-      `Failed to verify conversation "${conversationId}": ${err instanceof Error ? err.message : String(err)}`
+      i18n.t("Failed to verify conversation \"{{id}}\": {{message}}", { id: conversationId, message: err instanceof Error ? err.message : String(err) })
     )
   }
 }
@@ -205,12 +206,12 @@ async function spawnNewAgent(
     conversationId,
     command,
   }
-  log.debug("Spawning agent with params", undefined, { spawnParams })
+  log.debug(i18n.t('Spawning agent with params'), undefined, { spawnParams })
   const agentId = await spawnAgent(spawnParams)
-  log.info("Spawned new agent", undefined, { agentId })
+  log.info(i18n.t('Spawned new agent'), undefined, { agentId })
 
   // Note: Agent binding has been removed from the backend
-  log.debug("Agent binding disabled - backend endpoint removed")
+  log.debug(i18n.t('Agent binding disabled - backend endpoint removed'))
 
   return agentId
 }
@@ -252,24 +253,24 @@ export async function getOrCreateActiveAgent(
       if (!conversationId) {
         throw new Error(
           "conversationId is required but was not provided. " +
-          "This is a bug — please report it."
+          i18n.t('This is a bug — please report it.')
         )
       }
 
       return await spawnNewAgent(conversationId, command)
     } catch (err) {
-      log.error("Failed to spawn agent", err as Error, { conversationId, command })
+      log.error(i18n.t('Failed to spawn agent'), err as Error, { conversationId, command })
       const errorMessage = err instanceof Error ? err.message : String(err)
 
       // Provide more specific error messages
-      if (errorMessage.includes("Conversation not found")) {
+      if (errorMessage.includes(i18n.t('Conversation not found'))) {
         throw new Error(
-          `Conversation not found: ${conversationId}. ` +
-          `The conversation may not have been created yet or was deleted. ` +
-          `Please try refreshing the page or creating a new chat.`
+          i18n.t("Conversation not found: {{id}}. ", { id: conversationId }) +
+          i18n.t("The conversation may not have been created yet or was deleted. ") +
+          i18n.t("Please try refreshing the page or creating a new chat.")
         )
       }
-      throw new Error(`Failed to spawn agent: ${errorMessage}`)
+      throw new Error(i18n.t("Failed to spawn agent: {{message}}", { message: errorMessage }))
     }
   })()
 
@@ -294,19 +295,23 @@ export async function refreshAgentList(
     const agents = await listAgents()
     setAgents(agents)
   } catch (err) {
-    log.error("Failed to refresh agent list", err as Error)
+    log.error(i18n.t('Failed to refresh agent list'), err as Error)
   }
 }
 /**
  * Get all agents bound to a chat.
  * Used for agent-to-agent routing to determine if target agent already exists.
  */
-export async function getChatAgents(chatId: string): Promise<ChatAgent[]> {
+export async function getChatAgents(chatId: string): Promise<{ agents: ChatAgent[]; all_idle: boolean }> {
   try {
-    return await trpcClient.ergatai.getChatAgents.query({ chatId })
+    const response = await trpcClient.ergatai.getChatAgents.query({ chatId })
+    return {
+      agents: response.agents ?? [],
+      all_idle: response.all_idle ?? true,
+    }
   } catch (err) {
-    log.warn("Failed to get chat agents", err as Error)
-    return []
+    log.warn(i18n.t('Failed to get chat agents'), err as Error)
+    return { agents: [], all_idle: true }
   }
 }
 
@@ -336,7 +341,7 @@ export async function sendAgentToAgentMessage(
     correlationId?: string
   } = {}
 ): Promise<{ targetAgentId: string | null; sessionId: string | null; status: string }> {
-  log.info("Sending agent-to-agent message", undefined, {
+  log.info(i18n.t('Sending agent-to-agent message'), undefined, {
     fromAgentId,
     targetAgentCommand,
     forceNewSession: options.forceNewSession,
@@ -362,7 +367,7 @@ export async function sendAgentToAgentMessage(
     const sessionId = (resultObj.session_id ?? resultObj.stream ?? null) as string | null
     const status = (resultObj.status ?? "unknown") as string
 
-    log.info("Agent-to-agent message result", undefined, {
+    log.info(i18n.t('Agent-to-agent message result'), undefined, {
       targetAgentId,
       sessionId,
       status,
@@ -370,7 +375,7 @@ export async function sendAgentToAgentMessage(
 
     return { targetAgentId, sessionId, status }
   } catch (err) {
-    log.error("Failed to send agent-to-agent message", err as Error)
+    log.error(i18n.t('Failed to send agent-to-agent message'), err as Error)
     throw err
   }
 }
@@ -393,7 +398,7 @@ export async function spawnNewAgentSession(
     workspaceId?: string
   } = {}
 ): Promise<SpawnSessionResult> {
-  log.info("Spawning new agent session", undefined, {
+  log.info(i18n.t('Spawning new agent session'), undefined, {
     agentId,
     targetCommand,
     reason,
@@ -408,10 +413,10 @@ export async function spawnNewAgentSession(
       workspaceId: options.workspaceId,
     })
 
-    log.info("New session spawned", undefined, { result })
+    log.info(i18n.t('New session spawned'), undefined, { result })
     return result
   } catch (err) {
-    log.error("Failed to spawn new session", err as Error)
+    log.error(i18n.t('Failed to spawn new session'), err as Error)
     throw err
   }
 }

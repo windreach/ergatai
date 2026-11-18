@@ -3,6 +3,7 @@ import {
   safeStorage,
   shell
 } from "electron"
+import { t } from "../../i18n"
 import {
   z
 } from "zod"
@@ -173,7 +174,7 @@ export const claudeCodeRouter = router({
       )
 
       if (!codeRes.ok) {
-        throw new Error(`Code submission failed: ${codeRes.statusText}`)
+        throw new Error(t('Code submission failed: {{codeRes.statusText}}'))
       }
 
       // Poll for OAuth token (max 10 seconds)

@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events"
+import { t } from "../i18n"
 import { FALLBACK_SHELL, SHELL_CRASH_THRESHOLD_MS } from "./env"
 import { portManager } from "./port-manager"
 import { createSession, setupInitialCommands } from "./session"
@@ -124,7 +125,7 @@ export class TerminalManager extends EventEmitter {
 		const session = this.sessions.get(paneId)
 
 		if (!session || !session.isAlive) {
-			throw new Error(`Terminal session ${paneId} not found or not alive`)
+			throw new Error(t('Terminal session {{paneId}} not found or not alive'))
 		}
 
 		session.pty.write(data)

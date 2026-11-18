@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { memo, useMemo } from "react"
 import { KanbanColumn } from "./kanban-column"
 import type { KanbanCardData } from "./kanban-card"

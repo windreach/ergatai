@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useMemo, useSyncExternalStore } from "react"
 import { trpcClient } from "../../../lib/trpc"
 
@@ -406,7 +407,7 @@ function reducer(state: ConversationState, event: ConversationEvent): Conversati
 function toError(value: unknown): Error {
   if (value instanceof Error) return value
   return new Error(
-    typeof value === "string" ? value : "Conversation pipeline error",
+    typeof value === "string" ? value : i18n.t('Conversation pipeline error'),
   )
 }
 
@@ -555,7 +556,7 @@ class ConversationPipeline {
               agentId: this.agentId,
               event: deltaEvent,
             })
-            this.state = { ...this.state, error: new Error(deltaEvent.message ?? "Agent error") }
+            this.state = { ...this.state, error: new Error(deltaEvent.message ?? i18n.t('Agent error')) }
             this.notify()
             this.consecutiveStreamErrors = 0
             return

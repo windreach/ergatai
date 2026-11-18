@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useState, useEffect } from "react"
 import { useAtom } from "jotai"
 import { Button } from "../../ui/button"
@@ -197,7 +198,7 @@ export function AgentsDebugTab() {
       {/* Header - hidden on narrow screens since it's in the navigation bar */}
       {!isNarrowScreen && (
         <div>
-          <h3 className="text-lg font-semibold mb-1">Debug</h3>
+          <h3 className="text-lg font-semibold mb-1">{i18n.t('Debug')}</h3>
           <p className="text-sm text-muted-foreground">
             System information and developer tools
           </p>
@@ -213,7 +214,7 @@ export function AgentsDebugTab() {
           <InfoRow label="Version" value={systemInfo?.version} isLoading={isLoading} />
           <InfoRow
             label="Platform"
-            value={systemInfo ? `${systemInfo.platform} (${systemInfo.arch})` : undefined}
+            value={systemInfo ? i18n.t("{{platform}} ({{arch}})", { platform: systemInfo.platform, arch: systemInfo.arch }) : undefined}
             isLoading={isLoading}
           />
           <InfoRow
@@ -228,7 +229,7 @@ export function AgentsDebugTab() {
             status={systemInfo?.protocolRegistered ? "success" : "warning"}
           />
           <div className="flex items-center justify-between p-3">
-            <span className="text-sm text-muted-foreground">userData</span>
+            <span className="text-sm text-muted-foreground">{i18n.t('userData')}</span>
             <div className="flex items-center gap-2">
               <span className="text-sm font-mono truncate max-w-[200px]">
                 {isLoading ? "..." : systemInfo?.userDataPath}
@@ -274,7 +275,7 @@ export function AgentsDebugTab() {
               <div className="flex items-center gap-2">
                 <Scan className="h-4 w-4 text-muted-foreground" />
                 <div>
-                  <span className="text-sm">React Scan</span>
+                  <span className="text-sm">{i18n.t('React Scan')}</span>
                   <p className="text-xs text-muted-foreground">
                     Highlight component re-renders
                   </p>
@@ -290,7 +291,7 @@ export function AgentsDebugTab() {
               <div className="flex items-center gap-2">
                 <Terminal className="h-4 w-4 text-muted-foreground" />
                 <div>
-                  <span className="text-sm">Mock Chat Replies</span>
+                  <span className="text-sm">{i18n.t('Mock Chat Replies')}</span>
                   <p className="text-xs text-muted-foreground">
                     Development default; reload after changing
                   </p>
@@ -311,7 +312,7 @@ export function AgentsDebugTab() {
               <div className="flex items-center gap-2">
                 <WifiOff className="h-4 w-4 text-muted-foreground" />
                 <div>
-                  <span className="text-sm">Simulate Offline</span>
+                  <span className="text-sm">{i18n.t('Simulate Offline')}</span>
                   <p className="text-xs text-muted-foreground">
                     Test offline mode without disconnecting
                   </p>
@@ -329,7 +330,7 @@ export function AgentsDebugTab() {
               <div className="flex items-center gap-2">
                 <FileJson className="h-4 w-4 text-muted-foreground" />
                 <div>
-                  <span className="text-sm">Show Message JSON</span>
+                  <span className="text-sm">{i18n.t('Show Message JSON')}</span>
                   <p className="text-xs text-muted-foreground">
                     Display raw JSON below each message in chat
                   </p>

@@ -17,6 +17,7 @@ import {
   terminalManager,
   z,
 } from "./ergatai-shared"
+import { t } from "../../i18n"
 
 export const workspacesRouter = router({
 
@@ -442,7 +443,7 @@ export const workspacesRouter = router({
         // Validate project_id format before using it
         if (!project.project_id || project.project_id.startsWith('ws_')) {
           console.error('[createWorkspace] Invalid project_id format:', project)
-          throw new Error(`Project creation returned invalid project_id: ${project.project_id}`)
+          throw new Error(t('Project creation returned invalid project_id: {{project.project_id}}'))
         }
 
         // Set as default project

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import * as VisuallyHidden from "@radix-ui/react-visually-hidden"
@@ -223,7 +224,7 @@ export const FileSearchDialog = memo(function FileSearchDialog({
           onKeyDown={handleKeyDown}
         >
           <VisuallyHidden.Root>
-            <DialogPrimitive.Title>Go to File</DialogPrimitive.Title>
+            <DialogPrimitive.Title>{i18n.t('Go to File')}</DialogPrimitive.Title>
           </VisuallyHidden.Root>
 
           {/* Search */}
@@ -232,7 +233,7 @@ export const FileSearchDialog = memo(function FileSearchDialog({
               <SearchIcon className="h-4 w-4 text-muted-foreground shrink-0" />
               <Input
                 ref={searchInputRef}
-                placeholder="Go to file..."
+                placeholder={i18n.t('Go to file...')}
                 value={query}
                 onChange={handleSearchChange}
                 className="h-auto p-0 border-0 rounded-none bg-transparent text-sm placeholder:text-muted-foreground focus-visible:ring-0 focus-visible:ring-offset-0"

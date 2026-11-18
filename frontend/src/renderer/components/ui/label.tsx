@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import * as React from "react"
@@ -24,6 +25,5 @@ const Label = React.forwardRef<
 Label.displayName = LabelPrimitive.Root.displayName
 
 export { Label }
-
 
 

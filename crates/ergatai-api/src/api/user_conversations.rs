@@ -1280,7 +1280,17 @@ pub async fn list_conversation_file_changes(
             })
             .map(|workspace| workspace.work_dir);
         let messages = user_data_db::messages::list(id_i64)?;
-        let worktree_path = context.and_then(|context| context.worktree_path);
+        // The chat's worktree is the agent's working directory, so it is also
+        // the boundary for the files a conversation can claim. Fall back to it
+        // when no explicit per-conversation execution context exists.
+        let worktree_path = context
+            .and_then(|context| context.worktree_path)
+            .or_else(|| {
+                user_data_db::chats::get(conversation.chat_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|chat| chat.worktree_path)
+            });
 
         Ok(Some(calculate_conversation_file_changes(
             &messages,

@@ -1,67 +1,63 @@
-use crate::services::agent::DiscoveredModels;
 use crate::services::profile_service::{ProfileModelDetail, ProfileModelSource};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
-pub async fn discover_models(_profile_name: &str, cwd: Option<&str>) -> DiscoveredModels {
-    let native_default = detect_native_config()
-        .ok()
-        .flatten()
-        .and_then(|cfg| cfg.default_model);
-    let current = native_default.clone();
+use super::source::SourceReading;
 
-    // Parallel read: config file + SDK.
-    let config_details = crate::services::model_file_reader::read_opencode_models(cwd);
-    let sdk_future = crate::services::agent_sdk_service::discover("opencode", cwd);
-
-    // Run SDK discovery concurrently with (already sync) config read by awaiting now.
-    let sdk = sdk_future.await;
-
-    let mut merged: Vec<ProfileModelDetail> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut sources: Vec<ProfileModelSource> = Vec::new();
-
-    if !config_details.is_empty() {
-        sources.push(ProfileModelSource::ConfigFile);
-        for d in config_details {
-            if seen.insert(d.id.clone()) {
-                merged.push(d);
-            }
-        }
+/// OpenCode server (`/api/model`). This is the authoritative full catalogue when
+/// the OpenCode background service is available.
+pub async fn read_sdk(cwd: Option<&str>) -> SourceReading {
+    let sdk = crate::services::agent_sdk_service::discover("opencode", cwd).await;
+    if let Some(error) = sdk.get("error").and_then(Value::as_str) {
+        return SourceReading::unavailable(ProfileModelSource::AgentSdk, error);
     }
 
-    let sdk_details: Vec<ProfileModelDetail> = sdk
+    let default_model = sdk
+        .get("default_model")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let details: Vec<ProfileModelDetail> = sdk
         .get("models")
-        .and_then(|v| v.as_array())
+        .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
                 .filter_map(|m| {
-                    let id = m
+                    let raw_id = m
                         .get("id")
                         .or_else(|| m.get("value"))
                         .or_else(|| m.get("name"))
                         .or_else(|| m.get("model"))
-                        .and_then(|v| v.as_str())?
-                        .to_string();
-                    if id.is_empty() {
+                        .and_then(Value::as_str)?
+                        .trim();
+                    if raw_id.is_empty() {
                         return None;
                     }
-                    let name = m
-                        .get("name")
-                        .or_else(|| m.get("displayName"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(&id)
-                        .to_string();
-                    let description = m
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
                     let provider = m
                         .get("provider")
                         .or_else(|| m.get("providerID"))
-                        .and_then(|v| v.as_str())
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    // ACP/config IDs are provider-qualified. Normalize the SDK
+                    // list so the same model never appears twice and switching
+                    // sends the value the agent actually accepts.
+                    let id = if provider.is_empty() || raw_id.contains('/') {
+                        raw_id.to_string()
+                    } else {
+                        format!("{provider}/{raw_id}")
+                    };
+                    let name = m
+                        .get("name")
+                        .or_else(|| m.get("displayName"))
+                        .and_then(Value::as_str)
+                        .unwrap_or(raw_id)
+                        .to_string();
+                    let description = m
+                        .get("description")
+                        .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
                     Some(ProfileModelDetail {
@@ -75,44 +71,252 @@ pub async fn discover_models(_profile_name: &str, cwd: Option<&str>) -> Discover
         })
         .unwrap_or_default();
 
-    if !sdk_details.is_empty() {
-        sources.push(ProfileModelSource::AgentSdk);
-        for d in sdk_details {
-            if seen.insert(d.id.clone()) {
-                merged.push(d);
+    if details.is_empty() {
+        SourceReading::unavailable(
+            ProfileModelSource::AgentSdk,
+            "OpenCode server returned no models",
+        )
+    } else {
+        SourceReading::success(ProfileModelSource::AgentSdk, details, None, default_model)
+    }
+}
+
+/// Static models.dev catalogue cached by OpenCode. Used when the server is not
+/// running. Only providers that are configured/authenticated are included so
+/// the selector does not fill with unusable models.
+pub fn read_models_dev_cache(cwd: Option<&str>) -> SourceReading {
+    let Some(cache_path) = opencode_cache_path() else {
+        return SourceReading::unavailable(
+            ProfileModelSource::ModelsDevCache,
+            "models.dev cache path unavailable",
+        );
+    };
+    let Ok(raw) = fs::read_to_string(&cache_path) else {
+        return SourceReading::unavailable(
+            ProfileModelSource::ModelsDevCache,
+            format!("cannot read {}", cache_path.display()),
+        );
+    };
+    let Ok(catalog) = serde_json::from_str::<Value>(&raw) else {
+        return SourceReading::unavailable(
+            ProfileModelSource::ModelsDevCache,
+            "models.dev cache is not valid JSON",
+        );
+    };
+    let Some(providers) = catalog.as_object() else {
+        return SourceReading::unavailable(
+            ProfileModelSource::ModelsDevCache,
+            "models.dev cache has unexpected shape",
+        );
+    };
+
+    let connected = connected_provider_ids(providers, cwd);
+    if connected.is_empty() {
+        return SourceReading::unavailable(
+            ProfileModelSource::ModelsDevCache,
+            "no configured/authenticated providers in models.dev cache",
+        );
+    }
+
+    let overrides = configured_model_overrides(cwd);
+    let opencode_authed =
+        env_is_set("OPENCODE_API_KEY") || auth_provider_ids().contains("opencode");
+
+    let mut details = Vec::new();
+    for (provider_id, provider) in providers {
+        if !connected.contains(provider_id) {
+            continue;
+        }
+        let provider_name = provider
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(provider_id)
+            .to_string();
+        let Some(models) = provider.get("models").and_then(Value::as_object) else {
+            continue;
+        };
+        for (model_id, model) in models {
+            // An explicit `provider.*.models` map in opencode.json(c) is an
+            // override, not an addition: respect the user's chosen subset.
+            if let Some(allowed) = overrides.get(provider_id) {
+                if !allowed.contains(model_id) {
+                    continue;
+                }
+            }
+            // Without an OpenCode credential, only free Zen models are usable.
+            if (provider_id == "opencode" || provider_id == "opencode-go")
+                && !opencode_authed
+                && !model_id.ends_with("-free")
+                && model
+                    .get("cost")
+                    .and_then(|cost| cost.get("input"))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(1.0)
+                    > 0.0
+            {
+                continue;
+            }
+            let id = if model_id.contains('/') {
+                model_id.clone()
+            } else {
+                format!("{provider_id}/{model_id}")
+            };
+            let name = model
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(model_id)
+                .to_string();
+            let description = model
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            details.push(ProfileModelDetail {
+                id,
+                name,
+                description,
+                provider: provider_name.clone(),
+            });
+        }
+    }
+
+    if details.is_empty() {
+        SourceReading::unavailable(
+            ProfileModelSource::ModelsDevCache,
+            "models.dev cache has no models for connected providers",
+        )
+    } else {
+        SourceReading::success(ProfileModelSource::ModelsDevCache, details, None, None)
+    }
+}
+
+fn opencode_cache_path() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = dirs::cache_dir() {
+        candidates.push(dir.join("opencode").join("models.json"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".cache").join("opencode").join("models.json"));
+    }
+    candidates
+        .iter()
+        .find(|path| path.is_file())
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
+}
+
+fn connected_provider_ids(
+    providers: &serde_json::Map<String, Value>,
+    cwd: Option<&str>,
+) -> HashSet<String> {
+    let mut connected = configured_provider_ids(cwd);
+
+    for (provider_id, provider) in providers {
+        let env_names = provider
+            .get("env")
+            .and_then(Value::as_array)
+            .map(|values| values.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+            .unwrap_or_default();
+        if env_names.iter().any(|name| env_is_set(name)) {
+            connected.insert(provider_id.clone());
+        }
+    }
+
+    connected
+}
+
+fn configured_provider_ids(cwd: Option<&str>) -> HashSet<String> {
+    let mut connected = HashSet::new();
+
+    // Providers explicitly configured in opencode.json(c).
+    for candidate in opencode_config_candidates(cwd) {
+        let Ok(content) = fs::read_to_string(&candidate) else {
+            continue;
+        };
+        let stripped = crate::services::model_file_reader::strip_json_comments(&content);
+        let Ok(cfg) = serde_json::from_str::<Value>(&stripped) else {
+            continue;
+        };
+        if let Some(providers) = cfg.get("provider").and_then(Value::as_object) {
+            connected.extend(providers.keys().cloned());
+        }
+        if let Some(model) = cfg.get("model").and_then(Value::as_str) {
+            if let Some((provider, _)) = model.split_once('/') {
+                connected.insert(provider.to_string());
             }
         }
     }
 
-    // SDK default model if present
-    let sdk_default = sdk
-        .get("default_model")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
+    // Providers with credentials in OpenCode's auth store.
+    connected.extend(auth_provider_ids());
 
-    let default_model = native_default.or(sdk_default);
+    connected
+}
 
-    if merged.is_empty() {
-        DiscoveredModels {
-            details: Vec::new(),
-            source: ProfileModelSource::None,
-            sources: Vec::new(),
-            current,
-            default_model,
-        }
-    } else {
-        let primary = sources
-            .first()
-            .copied()
-            .unwrap_or(ProfileModelSource::ConfigFile);
-        DiscoveredModels {
-            details: merged,
-            source: primary,
-            sources,
-            current,
-            default_model,
+fn auth_provider_ids() -> HashSet<String> {
+    let auth_path = crate::services::native_agent_config::home_path(&[
+        ".local",
+        "share",
+        "opencode",
+        "auth.json",
+    ]);
+    let Ok(content) = fs::read_to_string(auth_path) else {
+        return HashSet::new();
+    };
+    let Ok(auth) = serde_json::from_str::<Value>(&content) else {
+        return HashSet::new();
+    };
+    auth.as_object()
+        .map(|entries| entries.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// Explicit model subsets declared in `provider.<id>.models`. Missing entries
+/// mean "no override" (all catalogue models are allowed).
+fn configured_model_overrides(cwd: Option<&str>) -> HashMap<String, HashSet<String>> {
+    let mut overrides = HashMap::new();
+    for candidate in opencode_config_candidates(cwd) {
+        let Ok(content) = fs::read_to_string(&candidate) else {
+            continue;
+        };
+        let stripped = crate::services::model_file_reader::strip_json_comments(&content);
+        let Ok(cfg) = serde_json::from_str::<Value>(&stripped) else {
+            continue;
+        };
+        let Some(providers) = cfg.get("provider").and_then(Value::as_object) else {
+            continue;
+        };
+        for (provider_id, provider) in providers {
+            let Some(models) = provider.get("models").and_then(Value::as_object) else {
+                continue;
+            };
+            overrides.insert(provider_id.clone(), models.keys().cloned().collect());
         }
     }
+    overrides
+}
+
+fn opencode_config_candidates(cwd: Option<&str>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var("OPENCODE_CONFIG") {
+        if !path.trim().is_empty() {
+            candidates.push(PathBuf::from(path));
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".config").join("opencode").join("opencode.json"));
+        candidates.push(home.join(".config").join("opencode").join("opencode.jsonc"));
+    }
+    if let Some(cwd) = cwd {
+        candidates.push(PathBuf::from(cwd).join("opencode.json"));
+    }
+    candidates
+}
+
+fn env_is_set(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
 }
 
 // Runtime model switching is performed in-process by the ACP agent.

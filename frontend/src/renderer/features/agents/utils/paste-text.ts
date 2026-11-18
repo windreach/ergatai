@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { toast } from "sonner"
 
 // Threshold for auto-converting large pasted text to a file (5KB)
@@ -41,19 +42,19 @@ export function insertTextAtCursor(text: string, editableElement: Element): void
 
     if (availableSpace === 0) {
       // No space left at all
-      toast.warning("Cannot paste: input is full", {
-        description: "Please clear some text or attach content as a file instead.",
+      toast.warning(i18n.t('Cannot paste: input is full'), {
+        description: i18n.t('Please clear some text or attach content as a file instead.'),
       })
       return
     } else if (text.length > VERY_LARGE_THRESHOLD) {
       const originalMB = (text.length / 1_000_000).toFixed(1)
-      toast.warning(`Text truncated`, {
-        description: `Original text was ${originalMB}MB. Please attach as a file instead.`,
+      toast.warning(i18n.t("Text truncated"), {
+        description: i18n.t("Original text was {{size}}MB. Please attach as a file instead.", { size: originalMB }),
       })
     } else {
       const truncatedKB = Math.round(effectiveLimit / 1024)
-      toast.warning(`Text truncated to ${truncatedKB}KB`, {
-        description: `Original text was ${originalKB}KB. Consider attaching as a file instead.`,
+      toast.warning(i18n.t("Text truncated to {{size}}KB", { size: truncatedKB }), {
+        description: i18n.t("Original text was {{size}}KB. Consider attaching as a file instead.", { size: originalKB }),
       })
     }
   }

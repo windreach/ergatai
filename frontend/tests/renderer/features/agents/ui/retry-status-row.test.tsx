@@ -1,11 +1,10 @@
-import { describe, expect, it, vi } from "vitest"
-import { fireEvent, render, screen } from "@testing-library/react"
+import { describe, expect, it } from "vitest"
+import { render, screen } from "@testing-library/react"
 
 import { RetryStatusRow } from "@/features/agents/ui/retry-status-row"
 
 describe("RetryStatusRow", () => {
-  it("shows the attempt counter and calls onStop", () => {
-    const onStop = vi.fn()
+  it("shows the attempt counter without a stop action", () => {
     render(
       <RetryStatusRow
         retry={{
@@ -15,14 +14,11 @@ describe("RetryStatusRow", () => {
           nextRetryAtMs: 0,
           errorName: "rate_limit",
         }}
-        onStop={onStop}
       />,
     )
 
-    expect(screen.getByText("正在自动重试 3/20")).toBeTruthy()
-    expect(screen.getByText("· 正在重试…")).toBeTruthy()
-
-    fireEvent.click(screen.getByRole("button", { name: /停止/ }))
-    expect(onStop).toHaveBeenCalledTimes(1)
+    expect(screen.getByText("Automatically retrying 3/20")).toBeTruthy()
+    expect(screen.getByText("· retrying…")).toBeTruthy()
+    expect(screen.queryByRole("button")).toBeNull()
   })
 })

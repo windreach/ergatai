@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
  
 import { useEffect, useCallback, useRef } from "react"
 import { trpc, trpcClient } from "../../../lib/trpc"
@@ -25,7 +26,7 @@ import {
 import { waitForStreamingReady } from "../utils/stream-utils"
 import { buildQuoteMentionToken, buildDiffMentionToken, buildPastedMentionToken } from "../mentions/mentions-utils"
 
-const ACKNOWLEDGMENT_TEXT = "收到"
+const ACKNOWLEDGMENT_TEXT = i18n.t("acknowledgment")
 
 // Collaboration session runtime type (from useCollaborationSession hook)
 interface CollaborationSessionRuntime {
@@ -350,7 +351,7 @@ export function useMessageSending({
       const parentChatId = conversationRef.current.parentChatId
       if (!parentChatId) {
         console.warn("[GroupChat] Cannot send message: parentChatId is not set")
-        toast.error("Group chat is not initialized")
+        toast.error(i18n.t('Group chat is not initialized'))
         return
       }
       const agentMentionPattern = /@\[agent:([^\]]+)\]/g
@@ -376,7 +377,7 @@ export function useMessageSending({
           .filter((agent): agent is CoreAgentOption => Boolean(agent))
 
         if (targets.length !== mentionedAgents.length) {
-          toast.error("One or more mentioned agents are not in this group")
+          toast.error(i18n.t('One or more mentioned agents are not in this group'))
           return
         }
 
@@ -480,13 +481,13 @@ export function useMessageSending({
             failedIndices.map((i) => [targets[i].id, 'failed' as const])
           )
           messagingRef.current.setGroupAgentRuntimeStatuses(parentChatId, failedStatuses as GroupAgentRuntimeStatuses)
-          toast.error(`Failed to send to ${failedIndices.length} agent(s)`)
+          toast.error(i18n.t("Failed to send to {{count}} agent(s)", { count: failedIndices.length }))
         }
 
         return
       }
 
-      toast.error("Group chat messages must mention an agent")
+      toast.error(i18n.t('Group chat messages must mention an agent'))
       return
     }
 
@@ -577,7 +578,7 @@ export function useMessageSending({
       await serviceRef.current!.send(parts)
     } catch (error) {
       (console as any).error("[ChatSend] Failed to send message:", error)
-      (toast as any).error(error instanceof Error ? error.message : "Failed to send message")
+      (toast as any).error(error instanceof Error ? error.message : i18n.t('Failed to send message'))
       // Restore editor content so the user can retry
       (inputRefsRef.current.editor.current as { getValue?: () => string; clear?: () => void; setValue?: (value: string) => void } | null)?.setValue?.(
         mentionPrefix + (text || ""),

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { trpcClient } from "../../../lib/trpc"
 import { toast } from "sonner"
 
@@ -86,13 +87,13 @@ export async function exportChat({ chatId, conversationId, format }: ExportOptio
     document.body.removeChild(link)
     URL.revokeObjectURL(url)
 
-    toast.success("Export complete", {
-      description: `Saved as ${exportData.filename}`,
+    toast.success(i18n.t('Export complete'), {
+      description: i18n.t("Saved as {{name}}", { name: exportData.filename }),
     })
   } catch (error) {
     console.error("[exportChat] Error:", error)
-    toast.error("Export failed", {
-      description: error instanceof Error ? error.message : "Unable to export chat",
+    toast.error(i18n.t('Export failed'), {
+      description: error instanceof Error ? error.message : i18n.t('Unable to export chat'),
     })
   }
 }
@@ -115,15 +116,15 @@ export async function copyChat({ chatId, conversationId, format }: ExportOptions
       if (window.desktopApi?.clipboardWrite) {
         await window.desktopApi.clipboardWrite(exportData.content)
       } else {
-        throw new Error("Clipboard not available")
+        throw new Error(i18n.t('Clipboard not available'))
       }
     }
 
-    toast.success("Copied to clipboard")
+    toast.success(i18n.t('Copied to clipboard'))
   } catch (error) {
     console.error("[copyChat] Error:", error)
-    toast.error("Copy failed", {
-      description: error instanceof Error ? error.message : "Unable to copy chat",
+    toast.error(i18n.t('Copy failed'), {
+      description: error instanceof Error ? error.message : i18n.t('Unable to copy chat'),
     })
   }
 }

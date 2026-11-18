@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import React, { useMemo, useRef, useEffect, useState, useCallback, memo } from "react"
@@ -202,7 +203,7 @@ const ArchiveChatItem = memo(function ArchiveChatItem({
             <button
               onClick={handleRestore}
               className="flex-shrink-0 text-muted-foreground hover:text-foreground active:text-foreground transition-[color,transform] duration-150 ease-out active:scale-[0.97]"
-              aria-label="Restore chat"
+              aria-label={i18n.t('Restore chat')}
             >
               <UnarchiveIcon className="h-3 w-3" />
             </button>
@@ -480,7 +481,7 @@ export const ArchivePopover = memo(function ArchivePopover({ trigger }: ArchiveP
             <SearchIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
             <Input
               ref={searchInputRef}
-              placeholder="Search..."
+              placeholder={i18n.t('Search...')}
               value={searchQuery}
               onChange={handleSearchChange}
               className="h-auto p-0 border-0 bg-transparent text-sm placeholder:text-muted-foreground focus-visible:ring-0 focus-visible:ring-offset-0"

@@ -5,7 +5,7 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { buildCodexUiModels } from "../lib/codex-ui-models"
 import { TEXT_FILE_EXTENSIONS } from "../lib/text-file-extensions"
 import { AlignJustify, Folder, GitBranch, GitCompare, MessageSquare, PanelRight, Plus, TerminalSquare } from "lucide-react"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, memo, useRef, useState, startTransition } from "react"
 import { Button } from "../../../components/ui/button"
 import {
   AttachIcon,
@@ -25,6 +25,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "../../../components/ui/tooltip"
+import { useTranslation } from "react-i18next"
+import i18n from "@/lib/i18n"
 import { cn } from "../../../lib/utils"
 import { conversationAgentStorage } from "../lib/conversation-agent-storage"
 import {
@@ -289,7 +291,7 @@ interface NewChatFormProps {
 
 // react-doctor-disable-next-line no-high-complexity-react-function
 // react-doctor-disable-next-line no-giant-component
-export function NewChatForm({
+export const NewChatForm = memo(function NewChatForm({
   isMobileFullscreen = false,
   onBackToChats,
   selectedWorkspaceId,
@@ -316,14 +318,7 @@ export function NewChatForm({
     )?.agentId ?? null
   }, [selectedChatId, agentBindingsQuery.data])
 
-  // Debug logging: only log when key values change
-  useEffect(() => {
-    console.log("[new-chat-form] Agent binding:", {
-      selectedChatId,
-      bindingsCount: agentBindingsQuery.data?.length ?? 0,
-      backendAgentId,
-    })
-  }, [selectedChatId, agentBindingsQuery.data, backendAgentId])
+  // (debug logging removed for performance)
 
   // Current draft ID being edited (generated when user starts typing in empty form)
   const currentDraftIdRef = useRef<string | null>(null)
@@ -515,7 +510,10 @@ export function NewChatForm({
     () => coreAgents,
     [coreAgents],
   )
-  const fallbackAgent = enabledAgents[0] ?? { id: "claude-code" as CoreAgentId, name: "Claude Code" }
+  const fallbackAgent = useMemo(
+    () => enabledAgents[0] ?? { id: "claude-code" as CoreAgentId, name: "Claude Code" },
+    [enabledAgents],
+  )
   const [selectedAgent, setSelectedAgent] = useState<CoreAgentOption>(fallbackAgent)
   const agentModelIdAtom = useMemo(
     () => agentModelIdAtomFamily(selectedAgent?.id ?? "claude-code"),
@@ -679,6 +677,11 @@ export function NewChatForm({
   }, [selectedAgent.id])
 
   const hiddenModels = useAtomValue(hiddenModelsAtom)
+  const hiddenModelSet = useMemo(() => new Set(hiddenModels), [hiddenModels])
+  const visibleModels = useMemo(
+    () => availableModels.models.filter((m) => !hiddenModelSet.has(m.id)),
+    [availableModels.models, hiddenModelSet],
+  )
   const codexUiModels = useMemo(
     () => buildCodexUiModels(availableModels.models, hiddenModels),
     [availableModels.models, hiddenModels],
@@ -846,6 +849,7 @@ export function NewChatForm({
   const [mentionSearchText, setMentionSearchText] = useState("")
   const [mentionPosition, setMentionPosition] = useState({ top: 0, left: 0 })
   const [inputContainerWidth, setInputContainerWidth] = useState(0)
+  const [inputContainerLeft, setInputContainerLeft] = useState(0)
   const [mentionScope, setMentionScope] = useState<"agents" | "resources" | "all">("agents")
   const [browseRoot, setBrowseRoot] = useState<string | null>(null)
 
@@ -1286,13 +1290,7 @@ export function NewChatForm({
   const utils = trpc.useUtils()
   const createChatMutation = trpc.chats.create.useMutation({
     onSuccess: (data, variables) => {
-      console.log("[new-chat-form] Chat created successfully:", {
-        chatId: data.id,
-        workspaceId: data.workspaceId,
-        worktreePath: data.worktreePath,
-        conversationCount: data.conversations?.length,
-        firstConversationId: data.conversations?.[0]?.id,
-      })
+      // chat created
 
       // Save the selected agent command for the first conversation
       const firstConversationId = data.conversations?.[0]?.id
@@ -1346,7 +1344,7 @@ export function NewChatForm({
       clearPastedTexts()
       fileContentsRef.current.clear()
       clearCurrentDraft()
-      console.log("[new-chat-form] About to setSelectedChatId:", data.id)
+      // (setSelectedChatId)
       setSelectedChatId(data.id)
       // Track this chat and its first conversation as just created for typewriter effect
       const ids = [data.id]
@@ -1471,7 +1469,7 @@ export function NewChatForm({
       branchType:
         effectiveWorkMode === "worktree" ? selectedBranchType : undefined,
       branchMode:
-        effectiveWorkMode === "worktree" ? "existing" : undefined,
+        effectiveWorkMode === "worktree" ? "new" : undefined,
       useWorktree: effectiveWorkMode === "worktree",
       mode: agentMode,
       collaborationMode,
@@ -1537,9 +1535,21 @@ export function NewChatForm({
   }, [])
 
   // Save draft to localStorage when content changes
+  const validatedProjectRef = useRef(validatedProject)
+  useEffect(() => {
+    validatedProjectRef.current = validatedProject
+  }, [validatedProject])
+
+  const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const hasContentRef = useRef(false)
+
   const handleContentChange = useCallback(
     (hasContent: boolean) => {
-      setHasContent(hasContent)
+      if (hasContentRef.current !== hasContent) {
+        hasContentRef.current = hasContent
+        setHasContent(hasContent)
+      }
       const text = editorRef.current?.getValue() || ""
 
       // Skip if text hasn't changed
@@ -1548,36 +1558,50 @@ export function NewChatForm({
       }
       lastSavedTextRef.current = text
 
-      const globalDrafts = loadGlobalDrafts()
-
-      if (text.trim() && validatedProject) {
-        // If no current draft ID, create a new one
-        if (!currentDraftIdRef.current) {
-          currentDraftIdRef.current = generateDraftId()
-        }
-
-        const key = currentDraftIdRef.current
-        globalDrafts[key] = {
-          text,
-          updatedAt: Date.now(),
-          project: {
-            id: validatedProject.id,
-            name: validatedProject.name,
-            path: validatedProject.path,
-            gitOwner: validatedProject.gitOwner,
-            gitRepo: validatedProject.gitRepo,
-            gitProvider: validatedProject.gitProvider,
-          },
-        }
-        saveGlobalDrafts(globalDrafts)
-      } else if (currentDraftIdRef.current) {
-        // Text is empty - delete the current draft
-        deleteNewChatDraft(currentDraftIdRef.current)
-        currentDraftIdRef.current = null
+      // Debounce draft persistence so typing does not hit localStorage on
+      // every keystroke.
+      if (draftSaveTimerRef.current) {
+        clearTimeout(draftSaveTimerRef.current)
       }
+      draftSaveTimerRef.current = setTimeout(() => {
+        const project = validatedProjectRef.current
+        const globalDrafts = loadGlobalDrafts()
+
+        if (text.trim() && project) {
+          if (!currentDraftIdRef.current) {
+            currentDraftIdRef.current = generateDraftId()
+          }
+
+          const key = currentDraftIdRef.current
+          globalDrafts[key] = {
+            text,
+            updatedAt: Date.now(),
+            project: {
+              id: project.id,
+              name: project.name,
+              path: project.path,
+              gitOwner: project.gitOwner,
+              gitRepo: project.gitRepo,
+              gitProvider: project.gitProvider,
+            },
+          }
+          saveGlobalDrafts(globalDrafts)
+        } else if (currentDraftIdRef.current) {
+          deleteNewChatDraft(currentDraftIdRef.current)
+          currentDraftIdRef.current = null
+        }
+      }, 300)
     },
-    [validatedProject],
+    [],
   )
+
+  useEffect(() => {
+    return () => {
+      if (draftSaveTimerRef.current) {
+        clearTimeout(draftSaveTimerRef.current)
+      }
+    }
+  }, [])
 
   // Clear current draft when chat is created
   const clearCurrentDraft = useCallback(() => {
@@ -1589,10 +1613,23 @@ export function NewChatForm({
   }, [setSelectedDraftId])
 
   // Memoized callbacks to prevent re-renders
+  // Measure the editor container so dropdowns align with the input box instead
+  // of the trigger token (or a stale/zero position) inside it.
+  const measureInputContainer = useCallback(() => {
+    const rect = inputContainerRef.current?.getBoundingClientRect()
+    if (!rect) {
+      setInputContainerWidth(0)
+      setInputContainerLeft(0)
+      return
+    }
+    setInputContainerWidth(rect.width)
+    setInputContainerLeft(rect.left)
+  }, [])
+
   const handleMentionTrigger = useCallback(
     ({ searchText, rect, triggerChar }: { searchText: string; rect: DOMRect; triggerChar?: string }) => {
       const ch = triggerChar || "@"
-      setInputContainerWidth(inputContainerRef.current?.getBoundingClientRect().width ?? 0)
+      measureInputContainer()
 
       if (ch === "$") {
         setSkillSearchText(searchText)
@@ -1623,7 +1660,7 @@ export function NewChatForm({
       setShowSkillDropdown(false)
       setShowHashDropdown(false)
     },
-    [],
+    [measureInputContainer],
   )
 
   const handleCloseTrigger = useCallback(() => {
@@ -1640,15 +1677,183 @@ export function NewChatForm({
     setShowHashDropdown(false)
   }, [])
 
+  const skillTrigger = useMemo(
+    () => (
+      <AgentsSkillTrigger
+        isOpen={showSkillDropdown}
+        onClose={() => setShowSkillDropdown(false)}
+        onSelect={handleSkillSelect}
+        searchText={skillSearchText}
+        position={skillPosition}
+        containerWidth={inputContainerWidth || undefined}
+        agentId={undefined}
+        cwd={validatedProject?.path}
+        agentKind={selectedAgentKind}
+      />
+    ),
+    [showSkillDropdown, skillSearchText, skillPosition, inputContainerWidth, handleSkillSelect, validatedProject?.path, selectedAgentKind],
+  )
+
+  const hashTrigger = useMemo(
+    () => (
+      <AgentsHashTrigger
+        isOpen={showHashDropdown}
+        onClose={() => setShowHashDropdown(false)}
+        onSelect={handleHashSelect}
+        searchText={hashSearchText}
+        position={hashPosition}
+        containerWidth={inputContainerWidth || undefined}
+        changedFiles={[]}
+      />
+    ),
+    [showHashDropdown, handleHashSelect, hashSearchText, hashPosition, inputContainerWidth],
+  )
+
+  const mentionTriggerEl = useMemo(
+    () => (
+      <AgentsFileMention
+        isOpen={showMentionDropdown}
+        onClose={handleCloseTrigger}
+        onSelect={handleMentionSelect}
+        searchText={mentionSearchText}
+        position={mentionPosition}
+        projectPath={validatedProject?.path}
+        containerWidth={inputContainerWidth || undefined}
+        browseRoot={browseRoot}
+        onBrowseRootChange={setBrowseRoot}
+        showingFilesList={showingFilesList}
+        showingAgentsList={showingAgentsList}
+        scope={mentionScope}
+        boundAgents={collaborationMode === "group" ? boundGroupAgents : undefined}
+        agentKind={selectedAgentKind}
+      />
+    ),
+    [
+      showMentionDropdown,
+      handleCloseTrigger,
+      handleMentionSelect,
+      mentionSearchText,
+      mentionPosition,
+      validatedProject?.path,
+      inputContainerWidth,
+      browseRoot,
+      setBrowseRoot,
+      showingFilesList,
+      showingAgentsList,
+      mentionScope,
+      collaborationMode,
+      boundGroupAgents,
+      selectedAgentKind,
+    ],
+  )
+
+  const modelSelector = useMemo(() => {
+    if (!(selectedAgent.id === "codex" ? codexUiModels.length > 0 : availableModels.models.length > 0)) {
+      return null
+    }
+    return (
+      <AgentModelSelector
+        open={modelPopoverOpen}
+        onOpenChange={setModelPopoverOpen}
+        selectedAgentId={selectedAgent.id === "codex" ? "codex" : "claude-code"}
+        onSelectedAgentIdChange={(next) => {
+          if (selectedAgent.id === "opencode") return
+          startTransition(() => {
+            if (next === "codex") {
+              setSelectedAgent(enabledAgents.find((a) => a.id === "codex") || fallbackAgent)
+            } else {
+              setSelectedAgent(claudeAgent)
+            }
+            setLastSelectedAgentId(next)
+            availableModels.refreshProfile(next)
+          })
+        }}
+        allowProviderSwitch={false}
+        selectedModelLabel={_selectedModelLabel}
+        claude={{
+          models: visibleModels,
+          selectedModelId: selectedModel?.id,
+          onSelectModel: (modelId) => {
+            const m =
+              availableModels.models.find((item) => item.id === modelId) ||
+              availableModels.models[0]
+            if (!m) return
+            userSelectedModelRef.current = true
+            startTransition(() => {
+              setSelectedModel(m)
+              _setLastSelectedModelId(m.id)
+            })
+          },
+          hasCustomModelConfig: hasCustomClaudeConfig,
+          isOffline: availableModels.isOffline && availableModels.hasOllama,
+          ollamaModels: availableModels.ollamaModels,
+          selectedOllamaModel: currentOllamaModel,
+          recommendedOllamaModel: availableModels.recommendedModel,
+          onSelectOllamaModel: _setSelectedOllamaModel,
+          isConnected: _isClaudeConnected,
+          thinkingEnabled,
+          onThinkingChange: setThinkingEnabled,
+        }}
+        codex={{
+          models: codexUiModels,
+          selectedModelId: selectedCodexModel.id,
+          onSelectModel: (modelId) => {
+            const m = codexUiModels.find((item) => item.id === modelId)
+            if (!m) return
+            _setLastSelectedCodexModelId(m.id)
+          },
+          selectedThinking: selectedCodexThinking,
+          onSelectThinking: (thinking) => {
+            setLastSelectedCodexThinking(thinking)
+          },
+          isConnected: false,
+        }}
+      />
+    )
+  }, [
+    selectedAgent.id,
+    codexUiModels,
+    availableModels.models,
+    availableModels.refreshProfile,
+    modelPopoverOpen,
+    _selectedModelLabel,
+    visibleModels,
+    selectedModel?.id,
+    hasCustomClaudeConfig,
+    availableModels.isOffline,
+    availableModels.hasOllama,
+    availableModels.ollamaModels,
+    currentOllamaModel,
+    availableModels.recommendedModel,
+    _isClaudeConnected,
+    thinkingEnabled,
+    selectedCodexModel.id,
+    selectedCodexThinking,
+    enabledAgents,
+    fallbackAgent,
+    claudeAgent,
+    userSelectedModelRef,
+    _setLastSelectedModelId,
+    _setSelectedOllamaModel,
+    setThinkingEnabled,
+    _setLastSelectedCodexModelId,
+    setLastSelectedCodexThinking,
+    setModelPopoverOpen,
+    setSelectedAgent,
+    setLastSelectedAgentId,
+    setSelectedModel,
+  ])
+
   // Slash command handlers
   const handleSlashTrigger = useCallback(
     ({ searchText, rect, triggerChar }: { searchText: string; rect: DOMRect; triggerChar?: string }) => {
+      measureInputContainer()
       setSlashSearchText(searchText)
       setSlashPosition({ top: rect.top, left: rect.left })
       slashTriggerCharRef.current = triggerChar || "/"
       setShowSlashDropdown(true)
     },
-    [],
+    [measureInputContainer],
   )
 
   const handleCloseSlashTrigger = useCallback(() => {
@@ -1940,7 +2145,7 @@ export function NewChatForm({
               size="icon"
               onClick={onBackToChats}
               className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md"
-              aria-label="All projects"
+              aria-label={i18n.t('All projects')}
             >
               <AlignJustify className="h-4 w-4" />
             </Button>
@@ -1954,7 +2159,7 @@ export function NewChatForm({
                       size="icon"
                       onClick={() => setConversationsSidebarMode("sidebar")}
                       className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md flex items-center justify-center"
-                      aria-label="Open chats pane"
+                      aria-label={i18n.t('Open chats pane')}
                     >
                       <IconOpenSidebarRight className="h-4 w-4 scale-x-[-1]" />
                     </Button>
@@ -1973,7 +2178,7 @@ export function NewChatForm({
                 size="icon"
                 onClick={handleOpenTerminal}
                 className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
-                aria-label="Open terminal"
+                aria-label={i18n.t('Open terminal')}
               >
                 <TerminalSquare className="h-4 w-4" />
               </Button>
@@ -1984,7 +2189,7 @@ export function NewChatForm({
                 size="icon"
                 onClick={handleOpenDetails}
                 className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
-                aria-label="Open details"
+                aria-label={i18n.t('Open details')}
               >
                 <IconOpenSidebarRight className="h-4 w-4" />
               </Button>
@@ -2053,7 +2258,7 @@ export function NewChatForm({
                       onContentChange={handleContentChange}
                       onSubmit={handleSend}
                       onShiftTab={toggleMode}
-                      placeholder="Plan, / command, @ context, $ skill, # ref"
+                      placeholder={i18n.t('Plan, / command, @ context, $ skill, # ref')}
                       className={cn(
                         "bg-transparent max-h-[240px] overflow-y-auto p-1",
                         isMobileFullscreen ? "min-h-[56px]" : "min-h-[44px]",
@@ -2077,85 +2282,30 @@ export function NewChatForm({
                           groupAgentIds={groupAgentIds}
                           onChangeGroupAgents={setGroupAgentIds}
                           onChange={(agent) => {
-                            setGroupAgentIds((current) =>
-                              current.includes(agent.id)
-                                ? current
-                                : [...current, agent.id],
-                            )
-                            // Update selectedAgent for unknown agent (including custom profiles like mock-agent)
-                            const matchedAgent = enabledAgents.find((item) => item.id === agent.id)
-                            if (matchedAgent) {
-                              setSelectedAgent(matchedAgent)
-                              setLastSelectedAgentId(agent.id)
-                            } else if (agent.id === "codex") {
-                              setSelectedAgent(enabledAgents.find((item) => item.id === "codex") || fallbackAgent)
-                              setLastSelectedAgentId("codex")
-                            } else if (agent.id === "claude-code") {
-                              setSelectedAgent(claudeAgent)
-                              setLastSelectedAgentId("claude-code")
-                            }
+                            startTransition(() => {
+                              setGroupAgentIds((current) =>
+                                current.includes(agent.id)
+                                  ? current
+                                  : [...current, agent.id],
+                              )
+                              const matchedAgent = enabledAgents.find((item) => item.id === agent.id)
+                              if (matchedAgent) {
+                                setSelectedAgent(matchedAgent)
+                                setLastSelectedAgentId(agent.id)
+                              } else if (agent.id === "codex") {
+                                setSelectedAgent(enabledAgents.find((item) => item.id === "codex") || fallbackAgent)
+                                setLastSelectedAgentId("codex")
+                              } else if (agent.id === "claude-code") {
+                                setSelectedAgent(claudeAgent)
+                                setLastSelectedAgentId("claude-code")
+                              }
+                              availableModels.refreshProfile(agent.id)
+                            })
                           }}
                         />
                       </div>
                       {/* Model selector next to agent selector */}
-                        {(selectedAgent.id === "codex" ? codexUiModels.length > 0 : availableModels.models.length > 0) && (
-                          <AgentModelSelector
-                            open={modelPopoverOpen}
-                            onOpenChange={setModelPopoverOpen}
-                            selectedAgentId={selectedAgent.id === "codex" ? "codex" : "claude-code"}
-                            onSelectedAgentIdChange={(next) => {
-                              // OpenCode is represented as "claude-code" inside the
-                              // model selector. Switching models there must not
-                              // replace the selected OpenCode agent with Claude.
-                              if (selectedAgent.id === "opencode") return
-                              if (next === "codex") {
-                                setSelectedAgent(enabledAgents.find((a) => a.id === "codex") || fallbackAgent)
-                              } else {
-                                setSelectedAgent(claudeAgent)
-                              }
-                              setLastSelectedAgentId(next)
-                            }}
-                            allowProviderSwitch={false}
-                            selectedModelLabel={_selectedModelLabel}
-                            claude={{
-                              models: availableModels.models.filter((m) => !new Set(hiddenModels).has(m.id)),
-                              selectedModelId: selectedModel?.id,
-                              onSelectModel: (modelId) => {
-                                const m =
-                                  availableModels.models.find((item) => item.id === modelId) ||
-                                  availableModels.models[0]
-                                if (!m) return
-                                userSelectedModelRef.current = true
-                                setSelectedModel(m)
-                                // Persist the user's choice for both Claude and OpenCode.
-                                _setLastSelectedModelId(m.id)
-                              },
-                              hasCustomModelConfig: hasCustomClaudeConfig,
-                              isOffline: availableModels.isOffline && availableModels.hasOllama,
-                              ollamaModels: availableModels.ollamaModels,
-                              selectedOllamaModel: currentOllamaModel,
-                              recommendedOllamaModel: availableModels.recommendedModel,
-                              onSelectOllamaModel: _setSelectedOllamaModel,
-                              isConnected: _isClaudeConnected,
-                              thinkingEnabled,
-                              onThinkingChange: setThinkingEnabled,
-                            }}
-                            codex={{
-                              models: codexUiModels,
-                              selectedModelId: selectedCodexModel.id,
-                              onSelectModel: (modelId) => {
-                                const m = codexUiModels.find((item) => item.id === modelId)
-                                if (!m) return
-                                _setLastSelectedCodexModelId(m.id)
-                              },
-                              selectedThinking: selectedCodexThinking,
-                              onSelectThinking: (thinking) => {
-                                setLastSelectedCodexThinking(thinking)
-                              },
-                              isConnected: false,
-                            }}
-                          />
-                        )}
+                        {modelSelector}
 
                        <PermissionModeSelector />
                     </div>
@@ -2239,7 +2389,7 @@ export function NewChatForm({
                                 fileInputRef.current?.click()
                               }}
                             >
-                              上传文件
+                              {i18n.t("common.uploadFile")}
                             </button>
                             {/* react-doctor-disable-next-line html-no-nested-interactive */}
                             <button
@@ -2249,7 +2399,7 @@ export function NewChatForm({
                                 folderInputRef.current?.click()
                               }}
                             >
-                              上传文件夹
+                              {i18n.t("common.uploadFolder")}
                             </button>
                           </PopoverContent>
                         </Popover>
@@ -2287,7 +2437,7 @@ export function NewChatForm({
                   searchText={slashSearchText}
                   position={slashPosition}
                   containerWidth={inputContainerWidth || undefined}
-                  containerLeft={mentionPosition.left}
+                  containerLeft={inputContainerLeft}
                   chatId={selectedChatId ?? undefined}
                   cwd={validatedProject?.path}
                   mode={agentMode}
@@ -2296,28 +2446,10 @@ export function NewChatForm({
                 />
 
                 {/* $ skill/template trigger dropdown */}
-                <AgentsSkillTrigger
-                  isOpen={showSkillDropdown}
-                  onClose={() => setShowSkillDropdown(false)}
-                  onSelect={handleSkillSelect}
-                  searchText={skillSearchText}
-                  position={skillPosition}
-                  containerWidth={inputContainerWidth || undefined}
-                  agentId={undefined}
-                  cwd={validatedProject?.path}
-                  agentKind={selectedAgentKind}
-                />
+                {skillTrigger}
 
                 {/* # reference trigger dropdown */}
-                <AgentsHashTrigger
-                  isOpen={showHashDropdown}
-                  onClose={() => setShowHashDropdown(false)}
-                  onSelect={handleHashSelect}
-                  searchText={hashSearchText}
-                  position={hashPosition}
-                  containerWidth={inputContainerWidth || undefined}
-                  changedFiles={[]}
-                />
+                {hashTrigger}
 
                 {/* Project, Work Mode, and Branch selectors - directly under input */}
                 <div className="mt-1.5 md:mt-2 ml-[5px] flex items-center gap-2">
@@ -2356,7 +2488,7 @@ export function NewChatForm({
                           {/* react-doctor-disable-next-line no-placeholder-only-field */}
                           <input
                             type="text"
-                            placeholder="Search branches..."
+                            placeholder={i18n.t('Search branches...')}
                             value={branchSearch}
                             onChange={(e) => setBranchSearch(e.target.value)}
                             className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
@@ -2489,22 +2621,7 @@ export function NewChatForm({
                 {/* Worktree config banner - moved to corner banner below */}
 
                 {/* @ context mention dropdown */}
-                <AgentsFileMention
-                  isOpen={showMentionDropdown}
-                  onClose={handleCloseTrigger}
-                  onSelect={handleMentionSelect}
-                  searchText={mentionSearchText}
-                  position={mentionPosition}
-                  projectPath={validatedProject?.path}
-                  containerWidth={inputContainerWidth || undefined}
-                  browseRoot={browseRoot}
-                  onBrowseRootChange={setBrowseRoot}
-                  showingFilesList={showingFilesList}
-                  showingAgentsList={showingAgentsList}
-                  scope={mentionScope}
-                  boundAgents={collaborationMode === "group" ? boundGroupAgents : undefined}
-                  agentKind={selectedAgentKind}
-                />
+                {mentionTriggerEl}
 
               </div>
             </div>
@@ -2583,7 +2700,7 @@ export function NewChatForm({
           <div className="flex flex-col items-center gap-1 w-10 border-l border-border/50 bg-tl-background py-2 flex-shrink-0">
             <button
               type="button"
-              title="Detail"
+              title={i18n.t('Detail')}
               onClick={() => {
                 if (isDetailsSidebarOpen) setIsDetailsSidebarOpen(false)
                 else {
@@ -2601,7 +2718,7 @@ export function NewChatForm({
             </button>
             <button
               type="button"
-              title="Files"
+              title={i18n.t('Files')}
               disabled
               className="h-8 w-8 rounded-md flex items-center justify-center transition-colors text-muted-foreground/40 cursor-not-allowed"
             >
@@ -2609,7 +2726,7 @@ export function NewChatForm({
             </button>
             <button
               type="button"
-              title="Git"
+              title={i18n.t('Git')}
               disabled
               className="h-8 w-8 rounded-md flex items-center justify-center transition-colors text-muted-foreground/40 cursor-not-allowed"
             >
@@ -2617,7 +2734,7 @@ export function NewChatForm({
             </button>
             <button
               type="button"
-              title="Side Chat"
+              title={i18n.t('Side Chat')}
               disabled
               className="h-8 w-8 rounded-md flex items-center justify-center transition-colors text-muted-foreground/40 cursor-not-allowed"
             >
@@ -2625,7 +2742,7 @@ export function NewChatForm({
             </button>
             <button
               type="button"
-              title="Changes"
+              title={i18n.t('Changes')}
               disabled
               className="h-8 w-8 rounded-md flex items-center justify-center transition-colors text-muted-foreground/40 cursor-not-allowed"
             >
@@ -2633,7 +2750,7 @@ export function NewChatForm({
             </button>
             <button
               type="button"
-              title="Terminal"
+              title={i18n.t('Terminal')}
               onClick={() => {
                 if (isTerminalSidebarOpen) setIsTerminalSidebarOpen(false)
                 else {
@@ -2677,4 +2794,4 @@ export function NewChatForm({
         )}
     </div>
   )
-}
+})

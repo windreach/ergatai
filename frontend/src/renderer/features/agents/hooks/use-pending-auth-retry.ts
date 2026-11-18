@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useEffect, useRef } from "react"
 import { getMessageCorrelationService } from "@/features/conversation"
 
@@ -100,7 +101,7 @@ export function usePendingAuthRetry({
         } catch (error) {
           // Restore the pending retry so the user can try again
           setPendingAuthRetry(pendingAuthRetry)
-          console.error("Failed to retry pending message after auth:", error)
+          console.error(i18n.t('Failed to retry pending message after auth:'), error)
         } finally {
           // Clear the retrying flag
           isRetryingRef.current = false

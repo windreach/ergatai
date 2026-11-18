@@ -1,6 +1,7 @@
 import {
   z
 } from "zod"
+import { t } from "../../i18n"
 import {
   publicProcedure,
   router
@@ -84,7 +85,7 @@ export const groupChatRouter = router({
       )
 
       if (!member?.conversationId) {
-        throw new Error(`Agent ${input.agentCommand} has no active session in this group`)
+        throw new Error(t('Agent {{input.agentCommand}} has no active session in this group'))
       }
 
       const agentId = member.agentId || input.agentCommand

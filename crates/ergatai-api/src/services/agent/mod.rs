@@ -8,9 +8,13 @@ use crate::services::profile_service::{self, ProfileModelSource};
 use ergatai_runtime::profile_registry::AgentRegistration;
 use serde_json::Value;
 
+pub mod acp;
 pub mod claude;
 pub mod codex;
 pub mod opencode;
+pub mod source;
+
+pub use source::ModelReadContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentKind {
@@ -34,13 +38,29 @@ impl AgentKind {
 
 pub struct DiscoveredModels {
     pub details: Vec<profile_service::ProfileModelDetail>,
-    /// Primary source (kept for backwards compatibility).
+    /// Highest-ranked source that produced this catalogue.
     pub source: ProfileModelSource,
-    /// All sources that contributed models (merged read).
+    /// All sources that contributed models (primary + config overlay).
     pub sources: Vec<ProfileModelSource>,
     pub current: Option<String>,
     /// Default model detected from native config / SDK.
     pub default_model: Option<String>,
+    /// Whether at least one source completed successfully. `false` means every
+    /// source was unavailable and the caller must not overwrite the cache.
+    pub success: bool,
+}
+
+impl DiscoveredModels {
+    pub fn none(default_model: Option<String>) -> Self {
+        Self {
+            details: Vec::new(),
+            source: ProfileModelSource::None,
+            sources: Vec::new(),
+            current: None,
+            default_model,
+            success: false,
+        }
+    }
 }
 
 pub fn resolve_kind(profile: &AgentRegistration) -> AgentKind {
@@ -83,23 +103,13 @@ pub async fn resolve_kind_by_name(name: &str) -> AgentKind {
     }
 }
 
-pub async fn discover_models(
-    kind: AgentKind,
-    profile_name: &str,
-    cwd: Option<&str>,
-) -> DiscoveredModels {
-    match kind {
-        AgentKind::Claude => claude::discover_models(profile_name, cwd).await,
-        AgentKind::Codex => codex::discover_models(profile_name, cwd).await,
-        AgentKind::OpenCode => opencode::discover_models(profile_name, cwd).await,
-        AgentKind::Unknown => DiscoveredModels {
-            details: Vec::new(),
-            source: ProfileModelSource::None,
-            sources: Vec::new(),
-            current: None,
-            default_model: None,
-        },
-    }
+/// Read models using the shared source-priority chain:
+/// live ACP > native CLI/SDK > models.dev cache > config file.
+///
+/// Each agent only contributes the sources it supports; the ranking and
+/// persistence rules are identical for every agent kind.
+pub async fn discover_models(kind: AgentKind, ctx: &ModelReadContext<'_>) -> DiscoveredModels {
+    source::read_by_priority(kind, ctx).await
 }
 
 // Runtime model switching is performed in-process by the ACP agent.

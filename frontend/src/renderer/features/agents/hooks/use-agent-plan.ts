@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { trpc } from "../../../lib/trpc"
 
 interface UseAgentPlanOptions {
@@ -62,7 +63,7 @@ export function useAgentPlan({
 
   // Convert TRPC errors to standard Error objects
   const error = bindingsError || planError
-    ? new Error((bindingsError || planError)?.message ?? "Unknown error")
+    ? new Error((bindingsError || planError)?.message ?? i18n.t('Unknown error'))
     : null
 
   return {

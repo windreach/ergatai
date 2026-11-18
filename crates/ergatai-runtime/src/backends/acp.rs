@@ -16,7 +16,7 @@
 //! - Requires agents to support ACP protocol
 //! - No direct terminal I/O (not suitable for interactive CLI agents)
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -31,12 +31,14 @@ use tracing::{debug, error, info, warn};
 use ergatai_error::id::{format as format_id, generate, IdType};
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, CreateElicitationRequest, CreateElicitationResponse, DeleteSessionRequest,
-    ElicitationAction, EnvVariable, HttpHeader, ImageContent, InitializeRequest,
-    ListSessionsRequest, LoadSessionRequest, McpServer, McpServerHttp, McpServerStdio,
-    NewSessionRequest, Plan, PromptRequest, RequestPermissionRequest, RequestPermissionResponse,
-    SessionNotification, SessionUpdate, TextContent, ToolCall as AcpToolCall, ToolCallContent,
-    ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
+    ClientCapabilities, ContentBlock, CreateElicitationRequest, CreateElicitationResponse,
+    DeleteSessionRequest, ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities,
+    ElicitationContentValue, ElicitationFormCapabilities, ElicitationMode, ElicitationScope,
+    EnvVariable, HttpHeader, ImageContent, InitializeRequest, ListSessionsRequest,
+    LoadSessionRequest, McpServer, McpServerHttp, McpServerStdio, NewSessionRequest, Plan,
+    PromptRequest, RequestPermissionRequest, RequestPermissionResponse, SessionNotification,
+    SessionUpdate, TextContent, ToolCall as AcpToolCall, ToolCallContent, ToolCallLocation,
+    ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{
@@ -84,9 +86,17 @@ impl StartupPhaseExecutor for AcpInitializePhase<'_> {
     }
 
     async fn execute(&self) -> ergatai_error::ErgataiResult<()> {
+        // Advertise form elicitation support so agents (e.g. OpenCode's
+        // `question` tool) can render interactive forms instead of failing with
+        // "The question couldn't be shown to the user in this client".
+        let client_capabilities = ClientCapabilities::new()
+            .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()));
         let response = self
             .connection
-            .send_request(InitializeRequest::new(ProtocolVersion::V1))
+            .send_request(
+                InitializeRequest::new(ProtocolVersion::V1)
+                    .client_capabilities(client_capabilities),
+            )
             .block_task()
             .await
             .map_err(|e| {
@@ -310,6 +320,7 @@ impl JsonRpcMessage for ExtendedSessionNotification {
     fn to_untyped_message(&self) -> Result<UntypedMessage, agent_client_protocol::Error> {
         match self {
             ExtendedSessionNotification::Standard(notif) => notif.to_untyped_message(),
+            // TODO(subagent): frontend temporarily does not consume subagent events.
             ExtendedSessionNotification::SubagentSpawned(event) => {
                 let params = serde_json::json!({
                     "sessionId": event.session_id,
@@ -1675,17 +1686,35 @@ async fn handle_standard_session_notification(
                     )
                     .await;
                 } else {
+                    // Surface the real failure reason when the agent provides
+                    // one; `title` is only a fallback because it usually just
+                    // repeats the tool name/path shown in the row above.
+                    let content_text = update
+                        .fields
+                        .content
+                        .as_ref()
+                        .map(|content| extract_text_from_tool_call_content(content))
+                        .unwrap_or_default();
+                    let error_text = raw_output
+                        .as_ref()
+                        .and_then(extract_error_text_from_output)
+                        .or_else(|| {
+                            let text = content_text.trim();
+                            if text.is_empty() {
+                                None
+                            } else {
+                                Some(text.to_string())
+                            }
+                        })
+                        .unwrap_or_else(|| "tool call failed".to_string());
+
                     send_output_event_with_turn_token(
                         turn_token,
                         conversation_id,
                         AgentOutputEvent::ToolCallError {
                             role: "assistant".to_string(),
                             id: update.tool_call_id.to_string(),
-                            error: update
-                                .fields
-                                .title
-                                .clone()
-                                .unwrap_or_else(|| "tool call failed".to_string()),
+                            error: error_text,
                         },
                     )
                     .await;
@@ -2020,8 +2049,8 @@ const MAX_TRACKED_TOOL_CALLS: usize = 200;
 /// Maximum number of elicitations to track per agent.
 const MAX_TRACKED_ELICITATIONS: usize = 50;
 
-/// Default timeout for elicitation responses (60 seconds).
-const DEFAULT_ELICITATION_TIMEOUT_SECS: u64 = 60;
+/// Default timeout for elicitation responses (5 minutes).
+const DEFAULT_ELICITATION_TIMEOUT_SECS: u64 = 300;
 
 // ── Internal types ──
 
@@ -2372,6 +2401,40 @@ fn extract_text_from_tool_call_content(content: &[ToolCallContent]) -> String {
         }
     }
     out
+}
+
+/// Pick a human-readable failure message out of a failed tool call's raw output.
+///
+/// Agents report failures in different shapes: a plain string, an object with
+/// `error`/`message`, or command-style `stderr`/`stdout` text. Unknown objects
+/// are ignored so file contents are never dumped into the transcript.
+fn extract_error_text_from_output(output: &serde_json::Value) -> Option<String> {
+    let text = match output {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Object(map) => {
+            const KEYS: [&str; 8] = [
+                "error",
+                "error_message",
+                "message",
+                "stderr",
+                "stdout",
+                "output",
+                "content",
+                "text",
+            ];
+            KEYS.iter()
+                .find_map(|key| map.get(*key).and_then(|value| value.as_str()))
+                .unwrap_or_default()
+                .to_string()
+        }
+        _ => String::new(),
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 impl ToolCallTracker {
@@ -3337,6 +3400,109 @@ pub struct ElicitationResponse {
     pub action: String,
     /// Optional form data (for form-mode elicitations).
     pub form_data: Option<serde_json::Value>,
+}
+
+/// Extract session/tool-call identifiers from an elicitation scope.
+fn elicitation_scope_ids(scope: &ElicitationScope) -> (Option<String>, Option<String>) {
+    match scope {
+        ElicitationScope::Session(session) => (
+            Some(session.session_id.to_string()),
+            session.tool_call_id.as_ref().map(|id| id.to_string()),
+        ),
+        _ => (None, None),
+    }
+}
+
+/// Serialize an ACP elicitation request into the JSON payload surfaced to the
+/// frontend through the unified permission feed.
+///
+/// The frontend needs the form schema (not just the human-readable message) to
+/// render options and to send answers back in the shape the agent expects.
+fn describe_elicitation(request: &CreateElicitationRequest) -> serde_json::Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "message".to_string(),
+        serde_json::Value::String(request.message.clone()),
+    );
+
+    let (mode, scope) = match &request.mode {
+        ElicitationMode::Form(form) => {
+            payload.insert(
+                "requestedSchema".to_string(),
+                serde_json::to_value(&form.requested_schema).unwrap_or(serde_json::Value::Null),
+            );
+            ("form", Some(&form.scope))
+        }
+        ElicitationMode::Url(url) => {
+            payload.insert(
+                "url".to_string(),
+                serde_json::Value::String(url.url.clone()),
+            );
+            ("url", Some(&url.scope))
+        }
+        ElicitationMode::Other(other) => ("other", Some(&other.scope)),
+        _ => ("unknown", None),
+    };
+
+    payload.insert(
+        "mode".to_string(),
+        serde_json::Value::String(mode.to_string()),
+    );
+
+    if let Some(scope) = scope {
+        let (session_id, tool_call_id) = elicitation_scope_ids(scope);
+        if let Some(session_id) = session_id {
+            payload.insert(
+                "sessionId".to_string(),
+                serde_json::Value::String(session_id),
+            );
+        }
+        if let Some(tool_call_id) = tool_call_id {
+            payload.insert(
+                "toolCallId".to_string(),
+                serde_json::Value::String(tool_call_id),
+            );
+        }
+    }
+
+    serde_json::Value::Object(payload)
+}
+
+/// Convert one JSON form value into an ACP elicitation content value.
+fn json_to_elicitation_content(value: &serde_json::Value) -> Option<ElicitationContentValue> {
+    match value {
+        serde_json::Value::String(value) => Some(ElicitationContentValue::String(value.clone())),
+        serde_json::Value::Bool(value) => Some(ElicitationContentValue::Boolean(*value)),
+        serde_json::Value::Number(number) => number
+            .as_i64()
+            .map(ElicitationContentValue::Integer)
+            .or_else(|| number.as_f64().map(ElicitationContentValue::Number)),
+        serde_json::Value::Array(items) => {
+            let mut strings = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    serde_json::Value::String(value) => strings.push(value.clone()),
+                    _ => return None,
+                }
+            }
+            Some(ElicitationContentValue::StringArray(strings))
+        }
+        _ => None,
+    }
+}
+
+/// Convert a JSON object of form answers into ACP elicitation content.
+fn json_object_to_elicitation_content(
+    value: &serde_json::Value,
+) -> Option<BTreeMap<String, ElicitationContentValue>> {
+    let object = value.as_object()?;
+    let content: BTreeMap<String, ElicitationContentValue> = object
+        .iter()
+        .filter_map(|(key, value)| {
+            json_to_elicitation_content(value).map(|value| (key.clone(), value))
+        })
+        .collect();
+    (!content.is_empty()).then_some(content)
 }
 
 /// Tracked ACP elicitation request (agent asking user for input).
@@ -4854,6 +5020,13 @@ impl AcpBackendInterface for AcpBackend {
         })
     }
 
+    async fn update_workspace_work_dir(&self, id: &str, work_dir: &std::path::Path) {
+        let mut workspaces = self.workspaces.write();
+        if let Some(ws) = workspaces.get_mut(id) {
+            ws.work_dir = work_dir.to_path_buf();
+        }
+    }
+
     fn next_agent_id(&self, workspace_id: &str) -> String {
         // Delegate to the inherent `next_agent_id` method above.
         // Inherent methods take priority over trait methods on `self.method()`
@@ -5679,18 +5852,14 @@ impl AcpBackendInterface for AcpBackend {
                                 aid,
                                 format_id(generate(), IdType::Session)
                             );
-                            let mode_str = match &request.mode {
-                                agent_client_protocol::schema::v1::ElicitationMode::Form(_) => {
-                                    "form".to_string()
-                                }
-                                agent_client_protocol::schema::v1::ElicitationMode::Url(_) => {
-                                    "url".to_string()
-                                }
-                                agent_client_protocol::schema::v1::ElicitationMode::Other(o) => {
-                                    format!("other:{}", o.mode)
-                                }
-                                _ => "unknown".to_string(),
-                            };
+                            // Serialize the whole request (including the form
+                            // schema) so the frontend can render the form.
+                            let elicitation_input = describe_elicitation(&request);
+                            let mode_str = elicitation_input
+                                .get("mode")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
                             info!(
                                 agent_id = %aid,
                                 elicitation_id = %elicitation_id,
@@ -5698,10 +5867,6 @@ impl AcpBackendInterface for AcpBackend {
                                 message_bytes = request.message.len(),
                                 "ACP elicitation request received (awaiting frontend response)"
                             );
-                            let elicitation_input = serde_json::json!({
-                                "message": request.message.clone(),
-                                "mode": mode_str.clone(),
-                            });
                             elics.record(elicitation_id.clone(), request.message.clone(), mode_str);
 
                             // Surface the elicitation in the unified permission feed.
@@ -5760,9 +5925,14 @@ impl AcpBackendInterface for AcpBackend {
                                         .await;
                                     match resp.action.as_str() {
                                         "accept" => {
-                                            // TODO: parse form_data into ElicitationContentValue map
-                                            ElicitationAction::Accept(agent_client_protocol::schema::v1::ElicitationAcceptAction::new())
-                                        },
+                                            let content = resp
+                                                .form_data
+                                                .as_ref()
+                                                .and_then(json_object_to_elicitation_content);
+                                            ElicitationAction::Accept(
+                                                ElicitationAcceptAction::new().content(content),
+                                            )
+                                        }
                                         "cancel" => ElicitationAction::Cancel,
                                         _ => ElicitationAction::Decline,
                                     }
@@ -5852,7 +6022,11 @@ impl AcpBackendInterface for AcpBackend {
                         .mcp_capabilities
                         .http;
                     let (_mcp_guard, mcp_declaration) = match &task_mcp_server_factory {
-                        Some(factory) if mcp_acp_supported => {
+                        // MCP-over-ACP is preferred only when HTTP MCP is NOT available:
+                        // claude-code speaks a newer MCP-over-ACP dialect (serverId/requestId)
+                        // that this bridge (v1, connectionId) cannot deserialize, so when
+                        // HTTP MCP is supported we take the HTTP fallback path instead.
+                        Some(factory) if mcp_acp_supported && !mcp_http_supported => {
                             let bridge = AcpMcpBridge::new(
                                 factory.clone(),
                                 task_mcp_server_context.clone(),
@@ -7829,6 +8003,127 @@ impl AcpBackendInterface for AcpBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_extract_error_text_from_output_shapes() {
+        assert_eq!(
+            extract_error_text_from_output(&serde_json::json!("boom")).as_deref(),
+            Some("boom")
+        );
+        assert_eq!(
+            extract_error_text_from_output(&serde_json::json!({ "error": "permission denied" }))
+                .as_deref(),
+            Some("permission denied")
+        );
+        assert_eq!(
+            extract_error_text_from_output(&serde_json::json!({ "stderr": "  EISDIR  " }))
+                .as_deref(),
+            Some("EISDIR")
+        );
+        assert_eq!(
+            extract_error_text_from_output(&serde_json::json!({ "success": false })),
+            None
+        );
+    }
+
+    #[test]
+    fn test_initialize_request_advertises_form_elicitation() {
+        let request = InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
+            ClientCapabilities::new().elicitation(
+                ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()),
+            ),
+        );
+
+        let value = serde_json::to_value(request).expect("initialize request");
+        assert_eq!(
+            value["clientCapabilities"]["elicitation"]["form"],
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn test_describe_elicitation_includes_form_schema() {
+        let schema = agent_client_protocol::schema::v1::ElicitationSchema::new()
+            .property(
+                "q0",
+                agent_client_protocol::schema::v1::StringPropertySchema::new().one_of(vec![
+                    agent_client_protocol::schema::v1::EnumOption::new("has-content", "有具体内容"),
+                ]),
+                false,
+            )
+            .property(
+                "q0_custom",
+                agent_client_protocol::schema::v1::StringPropertySchema::new(),
+                false,
+            );
+        let scope = agent_client_protocol::schema::v1::ElicitationSessionScope::new("ses_1")
+            .tool_call_id("call_1");
+        let request = CreateElicitationRequest::new(
+            ElicitationMode::Form(agent_client_protocol::schema::v1::ElicitationFormMode::new(
+                scope, schema,
+            )),
+            "Pick one",
+        );
+
+        let payload = describe_elicitation(&request);
+        assert_eq!(payload["mode"], "form");
+        assert_eq!(payload["message"], "Pick one");
+        assert_eq!(payload["sessionId"], "ses_1");
+        assert_eq!(payload["toolCallId"], "call_1");
+        assert_eq!(payload["requestedSchema"]["type"], "object");
+        assert_eq!(
+            payload["requestedSchema"]["properties"]["q0"]["oneOf"][0]["const"],
+            "has-content"
+        );
+        assert_eq!(
+            payload["requestedSchema"]["properties"]["q0"]["oneOf"][0]["title"],
+            "有具体内容"
+        );
+        assert!(payload["requestedSchema"]["properties"]["q0_custom"].is_object());
+    }
+
+    #[test]
+    fn test_json_object_to_elicitation_content() {
+        let value = serde_json::json!({
+            "q0": "option-a",
+            "q1": ["a", "b"],
+            "flag": true,
+            "count": 3,
+        });
+
+        let content = json_object_to_elicitation_content(&value).expect("content");
+        assert_eq!(
+            content.get("q0"),
+            Some(&ElicitationContentValue::String("option-a".to_string()))
+        );
+        assert_eq!(
+            content.get("q1"),
+            Some(&ElicitationContentValue::StringArray(vec![
+                "a".to_string(),
+                "b".to_string()
+            ]))
+        );
+        assert_eq!(
+            content.get("flag"),
+            Some(&ElicitationContentValue::Boolean(true))
+        );
+        assert_eq!(
+            content.get("count"),
+            Some(&ElicitationContentValue::Integer(3))
+        );
+    }
+
+    #[test]
+    fn test_json_object_to_elicitation_content_skips_unknown_values() {
+        let value = serde_json::json!({
+            "ok": "value",
+            "nested": { "not": "primitive" },
+        });
+
+        let content = json_object_to_elicitation_content(&value).expect("content");
+        assert_eq!(content.len(), 1);
+        assert!(content.contains_key("ok"));
+    }
 
     #[test]
     fn test_acp_backend_name() {

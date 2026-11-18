@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { memo } from "react"
 import { ArrowDown, ArrowUp, GitBranch } from "lucide-react"
 import { toast } from "sonner"
@@ -42,7 +43,7 @@ export const GitStatusBar = memo(function GitStatusBar({
 			refetch()
 		},
 		onError: (error: { message: string }) =>
-			toast.error(`Pull failed: ${error.message}`),
+			toast.error(i18n.t("Pull failed: {{message}}", { message: error.message })),
 	})
 
 	const branch = status?.branch ?? null
@@ -94,7 +95,7 @@ export const GitStatusBar = memo(function GitStatusBar({
 						"hover:bg-foreground/5 text-muted-foreground hover:text-foreground",
 						"disabled:opacity-40 disabled:pointer-events-none",
 					)}
-					title={pullCount > 0 ? `Pull ${pullCount} commit${pullCount !== 1 ? "s" : ""}` : "Up to date"}
+					title={pullCount > 0 ? i18n.t("Pull {{count}} commit", { count: pullCount }) + (pullCount !== 1 ? "s" : "") : i18n.t("Up to date")}
 				>
 					<ArrowDown className="size-3" />
 					Pull
@@ -108,7 +109,7 @@ export const GitStatusBar = memo(function GitStatusBar({
 						"hover:bg-foreground/5 text-muted-foreground hover:text-foreground",
 						"disabled:opacity-40 disabled:pointer-events-none",
 					)}
-					title={pushCount > 0 ? `Push ${pushCount} commit${pushCount !== 1 ? "s" : ""}` : "Nothing to push"}
+					title={pushCount > 0 ? i18n.t("Push {{count}} commit", { count: pushCount }) + (pushCount !== 1 ? "s" : "") : i18n.t("Nothing to push")}
 				>
 					<ArrowUp className="size-3" />
 					Push

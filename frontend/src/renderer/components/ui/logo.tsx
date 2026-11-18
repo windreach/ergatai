@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import * as React from "react"
 import { cn } from "../../lib/utils"
 import ergataiMarkUrl from "../../assets/ergatai-mark.png"
@@ -12,7 +13,7 @@ export function Logo({ fill = "currentColor", className, style, ...props }: Logo
     <span
       className={cn("w-full h-full", className)}
       role="img"
-      aria-label="Ergatai logo"
+      aria-label={i18n.t('Ergatai logo')}
       {...props}
       style={{
         ...style,

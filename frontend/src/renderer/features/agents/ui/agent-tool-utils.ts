@@ -15,6 +15,8 @@ type ComparablePart = {
   state?: string
   input?: unknown
   output?: unknown
+  error?: unknown
+  errorText?: unknown
 }
 
 // ============================================================================
@@ -48,6 +50,11 @@ function hasToolStateChanged(prev: ComparablePart, next: ComparablePart): boolea
   const prevOutputJson = JSON.stringify(prev.output || {})
   const nextOutputJson = JSON.stringify(next.output || {})
   if (prevOutputJson !== nextOutputJson) return true
+
+  // Failure messages arrive separately from state on some backends
+  const prevErrorJson = JSON.stringify(prev.error ?? prev.errorText ?? null)
+  const nextErrorJson = JSON.stringify(next.error ?? next.errorText ?? null)
+  if (prevErrorJson !== nextErrorJson) return true
 
   return false
 }
@@ -186,6 +193,92 @@ export function areExploringGroupPropsEqual(
   if (prevProps.chatStatus !== nextProps.chatStatus) return false
 
   return true
+}
+
+type ToolFileInput = {
+  _locations?: Array<{ path?: string }>
+  file_path?: unknown
+  filePath?: unknown
+  path?: unknown
+  file?: unknown
+}
+
+/**
+ * Resolve the file path a tool part operates on.
+ *
+ * Backend/persisted parts do not always carry `_locations` — an agent may
+ * only report `input.path` (e.g. `{ "path": "/tmp/HelloWorld.java" }`).
+ * Falling back to the raw input fields keeps rendering and step counting
+ * consistent before and after the live projection is replaced by the
+ * persisted copy.
+ *
+ * Keep in sync with the backend's `resolve_tool_file_path`.
+ */
+export function getToolFilePath(part: { input?: unknown } | null | undefined): string {
+  const input = part?.input as ToolFileInput | undefined
+  if (!input) return ""
+
+  const locationPath = input._locations?.[0]?.path
+  if (typeof locationPath === "string" && locationPath.length > 0) {
+    return locationPath
+  }
+
+  for (const candidate of [input.file_path, input.filePath, input.path, input.file]) {
+    if (typeof candidate === "string" && candidate.length > 0) {
+      return candidate
+    }
+  }
+
+  return ""
+}
+
+/**
+ * Resolve a human-readable failure message for a tool part.
+ *
+ * Live parts carry `error`, persisted/projected parts may carry `errorText`,
+ * and some backends embed the reason in `output`/`result`.
+ */
+export function getToolErrorText(
+  part: { error?: unknown; errorText?: unknown; output?: unknown; result?: unknown } | null | undefined,
+): string {
+  if (!part) return ""
+  return (
+    extractTextValue(part.errorText) ||
+    extractTextValue(part.error) ||
+    extractTextValue(part.output) ||
+    extractTextValue(part.result)
+  )
+}
+
+function extractTextValue(value: unknown, depth = 0): string {
+  if (value == null || depth > 4) return ""
+  if (typeof value === "string") return value.trim()
+  if (typeof value !== "object") return ""
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => extractTextValue(item, depth + 1))
+      .filter(Boolean)
+      .join("\n")
+  }
+
+  const record = value as Record<string, unknown>
+  for (const key of [
+    "errorText",
+    "error_message",
+    "errorMessage",
+    "error",
+    "message",
+    "stderr",
+    "stdout",
+    "output",
+    "content",
+    "text",
+  ]) {
+    const text = extractTextValue(record[key], depth + 1)
+    if (text) return text
+  }
+  return ""
 }
 
 /**

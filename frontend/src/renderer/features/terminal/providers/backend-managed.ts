@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { trpcClient } from "@/lib/trpc"
 import { createTrpcTerminalProvider } from "./create-provider"
 import type { TerminalProvider } from "./types"
@@ -5,10 +6,10 @@ import type { TerminalRoutes, StreamEventShape } from "./create-provider"
 
 export const backendManagedProvider: TerminalProvider = createTrpcTerminalProvider({
   id: "backend-managed",
-  label: "Backend workspace",
+  label: i18n.t('Backend workspace'),
   async attach(request) {
     if (!request.workspaceId) {
-      throw new Error("Backend terminal sessions require a workspaceId")
+      throw new Error(i18n.t('Backend terminal sessions require a workspaceId'))
     }
 
     return trpcClient.backendTerminal.attach.mutate({
@@ -34,5 +35,5 @@ export const backendManagedProvider: TerminalProvider = createTrpcTerminalProvid
       handlers.onReset?.()
     }
   },
-  streamErrorLabel: "Backend terminal stream error",
+  streamErrorLabel: i18n.t('Backend terminal stream error'),
 })

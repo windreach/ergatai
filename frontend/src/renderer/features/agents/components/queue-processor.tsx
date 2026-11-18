@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useEffect, useRef } from "react"
@@ -189,7 +190,7 @@ export function QueueProcessor() {
             `[QueueProcessor] Max retry attempts (${MAX_RETRY_ATTEMPTS}) exceeded for item ${item.id}. Giving up.`
           )
           toast.error(
-            `Failed to send queued message after ${MAX_RETRY_ATTEMPTS} attempts. The message has been removed from the queue.`
+            i18n.t("Failed to send queued message after {{count}} attempts. The message has been removed from the queue.", { count: MAX_RETRY_ATTEMPTS })
           )
           // Clear loading state since we're dropping the message
           clearLoading(
@@ -220,7 +221,7 @@ export function QueueProcessor() {
 
         // Notify user with retry count
         toast.error(
-          `Failed to send queued message. Retrying in ${Math.round(backoffDelay / 1000)}s (attempt ${retryCount}/${MAX_RETRY_ATTEMPTS}).`
+          i18n.t("Failed to send queued message. Retrying in {{seconds}}s (attempt {{retry}}/{{max}}).", { seconds: Math.round(backoffDelay / 1000), retry: retryCount, max: MAX_RETRY_ATTEMPTS })
         )
 
         // Schedule retry with exponential backoff instead of immediate re-check

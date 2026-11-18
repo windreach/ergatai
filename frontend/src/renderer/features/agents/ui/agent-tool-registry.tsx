@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
  
 "use client"
 
@@ -25,6 +26,7 @@ import {
   SparklesIcon,
   WriteFileIcon,
 } from "../../../components/ui/icons"
+import { getToolFilePath } from "./agent-tool-utils"
 
 export type ToolVariant = "simple" | "collapsible"
 
@@ -50,13 +52,33 @@ export interface ToolMeta {
   subtitle?: (part: ToolPart) => string
   tooltipContent?: (part: ToolPart, projectPath?: string) => string
   variant: ToolVariant
+  /**
+   * Show a failure reason inline next to the title instead of rendering a red
+   * error row underneath. Used for read-only tools where a missing target is
+   * an expected outcome rather than a tool malfunction.
+   */
+  inlineError?: boolean
 }
 
+// Persisted tool parts use `error`, live AI SDK parts use `output-error`.
+// Treat every failure marker as terminal so a failed tool never renders as
+// pending or as a silent success.
+const TOOL_ERROR_STATES = new Set(["output-error", "error", "failed"])
+
 export function getToolStatus(part: ToolPart, chatStatus?: string) {
+  const isErrorState =
+    typeof part.state === "string" && TOOL_ERROR_STATES.has(part.state)
+  const hasErrorPayload =
+    (typeof part.error === "string" && part.error.trim().length > 0) ||
+    (typeof part.errorText === "string" && part.errorText.trim().length > 0)
   const basePending =
-    part.state !== "output-available" && part.state !== "output-error" && part.state !== "result"
+    part.state !== "output-available" &&
+    part.state !== "result" &&
+    !isErrorState &&
+    !hasErrorPayload
   const isError =
-    part.state === "output-error" ||
+    isErrorState ||
+    hasErrorPayload ||
     (part.state === "output-available" && part.output?.success === false)
   const isSuccess = part.state === "output-available" && !isError
   // Critical: if chat stopped streaming, pending tools should show as complete
@@ -167,7 +189,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
       const isInputStreaming = part.state === "input-streaming"
       if (isInputStreaming) return "Preparing agent"
       const subagentType = part.input?.subagent_type || "Agent"
-      return isPending ? `Running ${subagentType}` : `${subagentType} completed`
+      return isPending ? i18n.t("Running {{type}}", { type: subagentType }) : `${subagentType} completed`
     },
     subtitle: (part) => {
       // Don't show subtitle while input is still streaming
@@ -208,10 +230,10 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
 
       if (mode === "content") {
         // In content mode, numFiles is always 0, use numLines instead
-        return numLines > 0 ? `Found ${numLines} matches` : "No matches"
+        return numLines > 0 ? i18n.t("Found {{count}} matches", { count: numLines }) : "No matches"
       }
 
-      return numFiles > 0 ? `Grepped ${numFiles} files` : "No matches"
+      return numFiles > 0 ? i18n.t("Grepped {{count}} files", { count: numFiles }) : "No matches"
     },
     subtitle: (part) => {
       // Don't show subtitle while input is still streaming
@@ -240,7 +262,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
       if (isPending) return "Exploring files"
 
       const numFiles = part.output?.numFiles || 0
-      return numFiles > 0 ? `Found ${numFiles} files` : "No files found"
+      return numFiles > 0 ? i18n.t("Found {{count}} files", { count: numFiles }) : "No files found"
     },
     subtitle: (part) => {
       // Don't show subtitle while input is still streaming
@@ -272,17 +294,20 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
       // Don't show subtitle while input is still streaming
       if (part.state === "input-streaming") return ""
       // Get file path from backend locations
-      const filePath = part.input?._locations?.[0]?.path || ""
+      const filePath = getToolFilePath(part)
       if (!filePath) return "" // Don't show "file" placeholder during streaming
       return filePath.split("/").pop() || ""
     },
     tooltipContent: (part, projectPath) => {
       if (part.state === "input-streaming") return ""
       // Get file path from backend locations
-      const filePath = part.input?._locations?.[0]?.path || ""
+      const filePath = getToolFilePath(part)
       return getDisplayPath(filePath, projectPath)
     },
     variant: "simple",
+    // A missing file is a normal read outcome, not a fatal tool failure, so
+    // keep the row neutral and surface the reason next to the title.
+    inlineError: true,
   },
 
   "tool-Edit": {
@@ -290,7 +315,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
     title: (part) => {
       const isInputStreaming = part.state === "input-streaming"
       if (isInputStreaming) return "Preparing edit"
-      const filePath = part.input?._locations?.[0]?.path || ""
+      const filePath = getToolFilePath(part)
       if (!filePath) return "Edit" // Show "Edit" if no file path yet during streaming
       return filePath.split("/").pop() || "Edit"
     },
@@ -321,7 +346,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
     subtitle: (part) => {
       // Don't show subtitle while input is still streaming
       if (part.state === "input-streaming") return ""
-      const filePath = part.input?._locations?.[0]?.path || ""
+      const filePath = getToolFilePath(part)
       if (!filePath) return "" // Don't show "file" placeholder during streaming
       return filePath.split("/").pop() || ""
     },
@@ -495,7 +520,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
       const { isPending } = getToolStatus(part)
       const count = part.output?.tasks?.length
       if (isPending) return "Listing tasks"
-      return count !== undefined ? `Listed ${count} tasks` : "Listed tasks"
+      return count !== undefined ? i18n.t("Listed {{count}} tasks", { count }) : "Listed tasks"
     },
     subtitle: () => "",
     variant: "simple",
@@ -553,7 +578,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
       return isPending ? "Editing notebook" : "Edited notebook"
     },
     subtitle: (part) => {
-      const filePath = part.input?._locations?.[0]?.path || ""
+      const filePath = getToolFilePath(part)
       if (!filePath) return ""
       return filePath.split("/").pop() || ""
     },
@@ -569,7 +594,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
     },
     subtitle: (part) => {
       const pid = part.input?.pid
-      return pid ? `PID: ${pid}` : ""
+      return pid ? i18n.t("PID: {{pid}}", { pid }) : ""
     },
     variant: "simple",
   },
@@ -582,7 +607,7 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
     },
     subtitle: (part) => {
       const pid = part.input?.pid
-      return pid ? `PID: ${pid}` : ""
+      return pid ? i18n.t("PID: {{pid}}", { pid }) : ""
     },
     variant: "simple",
   },

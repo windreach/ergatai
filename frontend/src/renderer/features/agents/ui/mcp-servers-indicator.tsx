@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useAtom } from "jotai"
@@ -136,35 +137,35 @@ export const McpServersIndicator = memo(function McpServersIndicator({
         return (
           <span
             className="w-2 h-2 rounded-full bg-green-500"
-            aria-label="Connected"
+            aria-label={i18n.t('Connected')}
           />
         )
       case "failed":
         return (
           <span
             className="w-2 h-2 rounded-full bg-red-500"
-            aria-label="Connection failed"
+            aria-label={i18n.t('Connection failed')}
           />
         )
       case "needs-auth":
         return (
           <span
             className="w-2 h-2 rounded-full bg-yellow-500"
-            aria-label="Needs authentication"
+            aria-label={i18n.t('Needs authentication')}
           />
         )
       case "pending":
         return (
           <Loader2
             className="w-3 h-3 text-muted-foreground animate-spin"
-            aria-label="Connecting"
+            aria-label={i18n.t('Connecting')}
           />
         )
       default:
         return (
           <span
             className="w-2 h-2 rounded-full bg-muted-foreground/50"
-            aria-label="Unknown status"
+            aria-label={i18n.t('Unknown status')}
           />
         )
     }
@@ -213,7 +214,7 @@ export const McpServersIndicator = memo(function McpServersIndicator({
               variant="ghost"
               size="sm"
               className="h-6 px-2 gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors rounded-md"
-              aria-label="MCP Servers"
+              aria-label={i18n.t('MCP Servers')}
               aria-haspopup="dialog"
               aria-expanded={isOpen}
             >
@@ -233,7 +234,7 @@ export const McpServersIndicator = memo(function McpServersIndicator({
         onOpenAutoFocus={(e) => e.preventDefault()}
         onKeyDown={handleKeyDown}
         role="dialog"
-        aria-label="MCP Servers"
+        aria-label={i18n.t('MCP Servers')}
       >
         <div className="px-3 py-2 border-b">
           <h4 className="font-medium text-sm" id="mcp-servers-title">
@@ -330,7 +331,7 @@ export const McpServersIndicator = memo(function McpServersIndicator({
                     className="pl-8 pr-3 py-1 space-y-0.5"
                     // react-doctor-disable-next-line prefer-tag-over-role
                     role="list"
-                    aria-label={`Tools for ${server.name}`}
+                    aria-label={i18n.t("Tools for {{name}}", { name: server.name })}
                   >
                     {tools.map((tool: string) => (
                       <div
@@ -369,7 +370,7 @@ export const McpServersIndicator = memo(function McpServersIndicator({
                 >
                   <span
                     className="w-2 h-2 rounded-full bg-green-500"
-                    aria-label="Active"
+                    aria-label={i18n.t('Active')}
                   />
                   <span className="truncate">{plugin.name}</span>
                 </div>

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useEffect, useRef, useCallback } from "react"
@@ -137,7 +138,7 @@ export function useDesktopNotifications() {
 
         // Show native notification
         window.desktopApi?.showNotification({
-          title: "Agent finished",
+          title: i18n.t('Agent finished'),
           body: `${agentName} completed the task`,
         })
       }
@@ -172,7 +173,7 @@ export function showAgentNotification(agentName: string) {
   // Only notify if window is not focused
   if (!document.hasFocus()) {
     window.desktopApi?.showNotification({
-      title: "Agent finished",
+      title: i18n.t('Agent finished'),
       body: `${agentName} completed the task`,
     })
   }

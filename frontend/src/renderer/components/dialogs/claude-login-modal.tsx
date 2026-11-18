@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useAtom, useSetAtom } from "jotai"
@@ -320,14 +321,14 @@ export function ClaudeLoginModal({
         {/* Close button */}
         <AlertDialogCancel className="absolute right-4 top-4 h-6 w-6 p-0 border-0 bg-transparent hover:bg-muted rounded-sm opacity-70 hover:opacity-100">
           <X className="h-4 w-4" />
-          <span className="sr-only">Close</span>
+          <span className="sr-only">{i18n.t('Close')}</span>
         </AlertDialogCancel>
 
         <div className="space-y-8">
           {/* Header with dual icons */}
         <ClaudeCodeDualHeader
-          title="Claude Code"
-          subtitle="Connect your Claude Code subscription"
+          title={i18n.t('Claude Code')}
+          subtitle={i18n.t('Connect your Claude Code subscription')}
         />
 
           {/* Content */}
@@ -356,7 +357,7 @@ export function ClaudeLoginModal({
                   value={authCode}
                   onChange={handleCodeChange}
                   onKeyDown={handleKeyDown}
-                  placeholder="Paste your authentication code here..."
+                  placeholder={i18n.t('Paste your authentication code here...')}
                   className="font-mono text-center"
                   autoFocus
                   disabled={isSubmitting}

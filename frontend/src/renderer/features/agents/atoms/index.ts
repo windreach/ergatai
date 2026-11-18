@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { atom } from "jotai"
 import { atomWithStorage } from "jotai/utils"
 import { atomFamily } from "jotai/utils"
@@ -190,12 +191,12 @@ export const previousAgentChatIdAtom = atom<string | null>(null)
 
 // Selected draft ID - when user clicks on a draft in sidebar, this is set
 // NewChatForm uses this to restore the draft text
-// Reset to null when "New Workspace" is clicked or chat is created
+// Reset to null when i18n.t('New Workspace') is clicked or chat is created
 export const selectedDraftIdAtom = atom<string | null>(null)
 
 // Show new chat form explicitly - true by default so new users see the form, not kanban
 // Set to false when kanban is explicitly opened (via hotkey or button)
-// Set to true when "New Workspace" is clicked
+// Set to true when i18n.t('New Workspace') is clicked
 export const showNewChatFormAtom = atom<boolean>(false)
 
 // When true, suppress auto-focus on chat input (e.g. during sidebar keyboard navigation)
@@ -882,10 +883,10 @@ export const selectedCommitAtom = atom<SelectedCommit>(null)
 
 // Active tab in diff sidebar (Changes/History)
 // Exposed as atom so external components (e.g. git activity badges) can switch tabs
-export const diffActiveTabAtom = atom<"changes" | "diff" | "history">("changes")
+export const diffActiveTabAtom = atom<"changes" | "history">("changes")
 
 // Pending PR message to send to chat
-// Set by ChatView when "Create PR" is clicked, consumed by ChatViewInner
+// Set by ChatView when i18n.t('Create PR') is clicked, consumed by ChatViewInner
 export const pendingPrMessageAtom = atom<{ message: string; conversationId: string } | null>(null)
 
 // Pending Review message to send to chat
@@ -893,7 +894,7 @@ export const pendingPrMessageAtom = atom<{ message: string; conversationId: stri
 export const pendingReviewMessageAtom = atom<{ message: string; conversationId: string } | null>(null)
 
 // Pending merge conflict resolution message to send to chat
-// Set when user clicks "Fix Conflicts" button, consumed by ChatViewInner
+// Set when user clicks i18n.t('Fix Conflicts') button, consumed by ChatViewInner
 export const pendingConflictResolutionMessageAtom = atom<{ message: string; conversationId: string } | null>(null)
 
 // Pending auth retry - stores failed message when auth-error occurs
@@ -1010,8 +1011,8 @@ export const pendingInitialPromptAtomFamily = atomFamily(
 
 // Pending user questions from AskUserQuestion tool
 // Set when Claude requests user input, cleared when answered or skipped
-export const QUESTIONS_SKIPPED_MESSAGE = "User skipped questions - proceed with defaults"
-export const QUESTIONS_TIMED_OUT_MESSAGE = "Timed out"
+export const QUESTIONS_SKIPPED_MESSAGE = i18n.t('User skipped questions - proceed with defaults')
+export const QUESTIONS_TIMED_OUT_MESSAGE = i18n.t('Timed out')
 
 export type PendingUserQuestion = {
   conversationId: string
@@ -1039,7 +1040,7 @@ export const expiredUserQuestionsAtom = atom<Map<string, PendingUserQuestion>>(n
 // Map<conversationId, parentChatId> - allows filtering by workspace
 export const pendingPlanApprovalsAtom = atom<Map<string, string>>(new Map())
 
-// Pending "Build plan" trigger - set by ChatView sidebar, consumed by ChatViewInner
+// Pending i18n.t('Build plan') trigger - set by ChatView sidebar, consumed by ChatViewInner
 // Contains conversationId to approve, null when no pending approval
 export const pendingBuildPlanConversationIdAtom = atom<string | null>(null)
 
@@ -1229,7 +1230,7 @@ export const showMessageJsonAtom = atomWithStorage<boolean>(
 
 // Desktop view mode - takes priority over chat-based rendering
 // null = default behavior (chat/new-chat/kanban)
-export type DesktopView = "settings" | "task-board" | "add-agent" | null
+export type DesktopView = "settings" | "add-agent" | null
 export const desktopViewAtom = atom<DesktopView>(null)
 
 // Settings inner sidebar widths (for Keyboard, Projects two-panel layouts)

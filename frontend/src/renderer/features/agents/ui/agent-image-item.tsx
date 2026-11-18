@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
@@ -230,7 +231,7 @@ export function AgentImageItem({
             <IconSpinner className="size-4 text-muted-foreground" />
           </div>
         ) : hasError ? (
-          <div className="w-full h-full flex items-center justify-center bg-muted/50 rounded border border-destructive/20" title="Failed to load image">
+          <div className="w-full h-full flex items-center justify-center bg-muted/50 rounded border border-destructive/20" title={i18n.t('Failed to load image')}>
             <ImageOff className="size-4 text-destructive/50" />
           </div>
         ) : url ? (
@@ -258,7 +259,7 @@ export function AgentImageItem({
 
         {onRemove && (
           <button
-            aria-label="Action"
+            aria-label={i18n.t('Action')}
             onClick={(e) => {
               e.stopPropagation()
               onRemove()
@@ -297,7 +298,7 @@ export function AgentImageItem({
             onClick={closeFullscreen}
             className="absolute top-4 right-4 p-2 rounded-full bg-black/50 hover:bg-black/70 transition-colors text-white z-10"
             type="button"
-            aria-label="Close fullscreen (Esc)"
+            aria-label={i18n.t('Close fullscreen (Esc)')}
           >
             <X className="size-6" />
           </button>
@@ -308,7 +309,7 @@ export function AgentImageItem({
               onClick={goToPrevious}
               className="absolute left-4 top-1/2 -translate-y-1/2 p-3 rounded-full bg-black/50 hover:bg-black/70 transition-colors text-white z-10"
               type="button"
-              aria-label="Previous image (←)"
+              aria-label={i18n.t('Previous image (←)')}
             >
               <ChevronLeft className="size-8" />
             </button>
@@ -344,7 +345,7 @@ export function AgentImageItem({
               onClick={goToNext}
               className="absolute right-4 top-1/2 -translate-y-1/2 p-3 rounded-full bg-black/50 hover:bg-black/70 transition-colors text-white z-10"
               type="button"
-              aria-label="Next image (→)"
+              aria-label={i18n.t('Next image (→)')}
             >
               <ChevronRight className="size-8" />
             </button>
@@ -369,7 +370,7 @@ export function AgentImageItem({
                         : "bg-white/40 hover:bg-white/60"
                     }`}
                     type="button"
-                    aria-label={`Go to image ${idx + 1}`}
+                    aria-label={i18n.t("Go to image {{index}}", { index: idx + 1 })}
                   />
                 ))}
               </div>

@@ -2,6 +2,7 @@ import {
 	assertRegisteredWorktree,
 	assertValidGitPath,
 } from "./path-validation";
+import { t } from "../../i18n"
 import { createGit, withLockRetry } from "../git-factory";
 
 /** Maximum files per batch to avoid command line length limits */
@@ -40,12 +41,12 @@ export async function gitSwitchBranch(
 
 	// Validate: reject anything that looks like a flag
 	if (branch.startsWith("-")) {
-		throw new Error("Invalid branch name: cannot start with -");
+		throw new Error(t("Invalid branch name: cannot start with -"));
 	}
 
 	// Validate: reject empty branch names
 	if (!branch.trim()) {
-		throw new Error("Invalid branch name: cannot be empty");
+		throw new Error(t("Invalid branch name: cannot be empty"));
 	}
 
 	const git = createGit(worktreePath);

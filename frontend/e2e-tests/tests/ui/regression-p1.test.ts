@@ -305,9 +305,6 @@ test.describe.serial("P1 core regression (Ergatai Electron UI) @regression", () 
       page.getByRole("button", { name: "New Workspace" }).first(),
     ).toBeVisible({ timeout: 10_000 })
     await expect(
-      page.getByRole("button", { name: "Open task board" }).first(),
-    ).toBeVisible({ timeout: 10_000 })
-    await expect(
       page.getByRole("button", { name: "Manage Agents" }).first(),
     ).toBeVisible({ timeout: 10_000 })
   })
@@ -394,28 +391,6 @@ test.describe.serial("P1 core regression (Ergatai Electron UI) @regression", () 
     await expect(appearanceTab).toHaveAttribute("aria-selected", "false")
 
     await closeSettings()
-  })
-
-  test("UI-TB-002 Task Board back navigation @regression", async () => {
-    // Open task board
-    const taskBoardButton = page.getByRole("button", { name: "Open task board" }).first()
-    await expect(taskBoardButton).toBeVisible({ timeout: 10_000 })
-    await taskBoardButton.focus()
-    await page.keyboard.press("Enter")
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Task Board" }),
-    ).toBeVisible({ timeout: 10_000 })
-
-    // Navigate back via "Back to Task Board" button
-    const backBtn = page.getByRole("button", { name: "Back to Task Board" }).first()
-    if (await backBtn.isVisible().catch(() => false)) {
-      await backBtn.click()
-      await expect(
-        page.getByRole("heading", { level: 1, name: "Task Board" }),
-      ).not.toBeVisible({ timeout: 5_000 })
-    } else {
-      test.skip(true, "Back to Task Board control unavailable")
-    }
   })
 
   test("UI-CHG-001 Changes panel renders @regression", async () => {

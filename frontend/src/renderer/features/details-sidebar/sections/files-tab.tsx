@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState, useEffect, useCallback, useRef, useMemo, memo, forwardRef, useImperativeHandle } from "react"
@@ -546,16 +547,16 @@ export const FilesTab = memo(forwardRef<FilesTabHandle, FilesTabProps>(function 
 
       case "delete": {
         const label = node.type === "folder" ? "folder" : "file"
-        if (window.confirm(`Move "${node.name}" to trash?`)) {
+        if (window.confirm(i18n.t("Move \"{{name}}\" to trash?", { name: node.name }))) {
           deleteMutation.mutate(
             { absolutePath },
             {
               onSuccess: () => {
-                toast.success(`${node.name} moved to trash`)
+                toast.success(i18n.t("{{name}} moved to trash", { name: node.name }))
                 invalidateFiles()
               },
               onError: (err) => {
-                toast.error(`Failed to delete ${label}`, { description: err.message })
+                toast.error(i18n.t("Failed to delete {{label}}", { label }), { description: err.message })
               },
             },
           )
@@ -571,7 +572,7 @@ export const FilesTab = memo(forwardRef<FilesTabHandle, FilesTabProps>(function 
     setRenameLoading(true)
     try {
       await renameMutation.mutateAsync({ absolutePath, newName })
-      toast.success(`Renamed to ${newName}`)
+      toast.success(i18n.t("Renamed to {{name}}", { name: newName }))
 
       // Update expanded paths: replace old path prefix with new
       const oldPath = renameTarget.path
@@ -750,7 +751,7 @@ export const FilesTab = memo(forwardRef<FilesTabHandle, FilesTabProps>(function 
   if (!worktreePath) {
     return (
       <div className={cn("flex-1 flex items-center justify-center p-4", className)}>
-        <p className="text-xs text-muted-foreground">No project open</p>
+        <p className="text-xs text-muted-foreground">{i18n.t('No project open')}</p>
       </div>
     )
   }
@@ -760,7 +761,7 @@ export const FilesTab = memo(forwardRef<FilesTabHandle, FilesTabProps>(function 
       <div className="flex-1 overflow-y-auto pb-2">
         {tree.length === 0 ? (
           <div className="px-2 py-4 text-center">
-            <p className="text-xs text-muted-foreground">Loading files...</p>
+            <p className="text-xs text-muted-foreground">{i18n.t('Loading files...')}</p>
           </div>
         ) : (
           <div
@@ -798,8 +799,8 @@ export const FilesTab = memo(forwardRef<FilesTabHandle, FilesTabProps>(function 
         onSave={handleRenameSave}
         currentName={renameTarget?.name ?? ""}
         isLoading={renameLoading}
-        title="Rename"
-        placeholder="New name"
+        title={i18n.t('Rename')}
+        placeholder={i18n.t('New name')}
       />
     </div>
   )

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
  
 "use client"
 
@@ -9,7 +10,7 @@ import { selectedWorkspaceAtom } from "../atoms"
 import { AgentToolRegistry, getToolStatus } from "./agent-tool-registry"
 import { AgentToolCall } from "./agent-tool-call"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
-import { areTaskToolPropsEqual } from "./agent-tool-utils"
+import { areTaskToolPropsEqual, getToolFilePath, getToolErrorText } from "./agent-tool-utils"
 import type { MessagePart } from "../stores/message-store"
 import type { TaskToolOutput } from "./tool-types"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
@@ -233,7 +234,7 @@ export const AgentTaskTool = memo(function AgentTaskTool({
               }
               const { isPending: nestedIsPending, isError: nestedIsError } =
                 getToolStatus(nestedPart, chatStatus)
-              const filePath = nestedPart.input?._locations?.[0]?.path
+              const filePath = getToolFilePath(nestedPart)
               const handleClick = nestedPart.type === "tool-Read" && onOpenFile && filePath
                 ? () => onOpenFile(filePath)
                 : undefined
@@ -247,6 +248,8 @@ export const AgentTaskTool = memo(function AgentTaskTool({
                   tooltipContent={nestedMeta.tooltipContent?.(nestedPart, projectPath)}
                   isPending={nestedIsPending}
                   isError={nestedIsError}
+                  errorText={nestedIsError ? getToolErrorText(nestedPart) : undefined}
+                  inlineError={nestedMeta.inlineError}
                   onClick={handleClick}
                 />
               )

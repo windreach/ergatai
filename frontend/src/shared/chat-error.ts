@@ -1,3 +1,4 @@
+import i18n from "../renderer/lib/i18n"
 /**
  * Shared error shapes for chat surfaces.
  *
@@ -37,7 +38,7 @@ function asCode(value: unknown): string | number | undefined {
 /** Strip provider wrappers so the card body is readable. */
 export function cleanErrorMessage(message: string): string {
   let text = (message ?? "").trim()
-  if (!text) return "本轮执行失败"
+  if (!text) return i18n.t("chat.executionFailed")
 
   text = text.replace(/\s*\[code=[^\]]+\]\s*$/i, "")
   text = text.replace(/\s*\{[\s\S]*["']?errorKind["']?[\s\S]*\}\s*$/i, "")
@@ -45,7 +46,7 @@ export function cleanErrorMessage(message: string): string {
   text = text.replace(/[:\s]+$/, "")
   text = text.replace(/\s{2,}/g, " ")
 
-  return text.trim() || "本轮执行失败"
+  return text.trim() || i18n.t("chat.executionFailed")
 }
 
 export function normalizeChatError(input: {
@@ -63,7 +64,7 @@ export function normalizeChatError(input: {
 }): ChatErrorInfo {
   const message =
     asString(input.message) ??
-    "本轮执行失败"
+    i18n.t("chat.executionFailed")
   const data = input.data ?? input.error_data
   const repeatCount =
     typeof input.repeatCount === "number" && input.repeatCount > 1
@@ -102,8 +103,9 @@ export function chatErrorFromMetadata(
 }
 
 export type ChatErrorDisplay = {
-  title: string
-  description: string
+  titleKey: string
+  descriptionKey?: string
+  descriptionText?: string
 }
 
 /** Map structured error kinds to short, actionable copy. */
@@ -114,9 +116,8 @@ export function getChatErrorDisplay(error: ChatErrorInfo): ChatErrorDisplay {
 
   if (haystack.includes("model_not_found") || haystack.includes("selected model")) {
     return {
-      title: "模型不可用",
-      description:
-        "所选模型不存在，或当前账号没有访问权限。请在模型选择器中切换模型后重试。",
+      titleKey: "chat.errors.modelUnavailable.title",
+      descriptionKey: "chat.errors.modelUnavailable.description",
     }
   }
 
@@ -127,15 +128,15 @@ export function getChatErrorDisplay(error: ChatErrorInfo): ChatErrorDisplay {
     haystack.includes("401")
   ) {
     return {
-      title: "认证失败",
-      description: "请重新登录或更新 API Key 后重试。",
+      titleKey: "chat.errors.authenticationFailed.title",
+      descriptionKey: "chat.errors.authenticationFailed.description",
     }
   }
 
   if (haystack.includes("permission_denied") || haystack.includes("forbidden")) {
     return {
-      title: "没有访问权限",
-      description: "当前账号没有执行该操作的权限，请检查模型或组织权限设置。",
+      titleKey: "chat.errors.permissionDenied.title",
+      descriptionKey: "chat.errors.permissionDenied.description",
     }
   }
 
@@ -147,8 +148,8 @@ export function getChatErrorDisplay(error: ChatErrorInfo): ChatErrorDisplay {
     haystack.includes("too many requests")
   ) {
     return {
-      title: "请求受限",
-      description: "额度不足或触发了限流。请稍后重试，或切换模型/套餐。",
+      titleKey: "chat.errors.rateLimited.title",
+      descriptionKey: "chat.errors.rateLimited.description",
     }
   }
 
@@ -158,8 +159,8 @@ export function getChatErrorDisplay(error: ChatErrorInfo): ChatErrorDisplay {
     haystack.includes("too long")
   ) {
     return {
-      title: "上下文过长",
-      description: "当前会话上下文超出模型限制。请压缩上下文或开启新会话。",
+      titleKey: "chat.errors.contextTooLong.title",
+      descriptionKey: "chat.errors.contextTooLong.description",
     }
   }
 
@@ -175,14 +176,14 @@ export function getChatErrorDisplay(error: ChatErrorInfo): ChatErrorDisplay {
     haystack.includes("504")
   ) {
     return {
-      title: "服务暂时不可用",
-      description: "模型服务暂时不可用，系统会自动重试；也可以手动重试。",
+      titleKey: "chat.errors.serviceUnavailable.title",
+      descriptionKey: "chat.errors.serviceUnavailable.description",
     }
   }
 
   return {
-    title: "本轮执行失败",
-    description: cleaned,
+    titleKey: "chat.executionFailed",
+    descriptionText: cleaned,
   }
 }
 

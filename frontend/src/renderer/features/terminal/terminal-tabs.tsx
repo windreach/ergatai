@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import {
   memo,
   useRef,
@@ -196,7 +197,7 @@ const TerminalTab = memo(
             {isEditing ? (
               // react-doctor-disable-next-line html-no-nested-interactive
               <input
-                aria-label="Action"
+                aria-label={i18n.t('Action')}
                 ref={inputRef}
                 type="text"
                 value={editValue}
@@ -249,7 +250,7 @@ const TerminalTab = memo(
                   type="button"
                   onClick={handleCloseClick}
                   className="relative z-20 hover:text-foreground rounded p-0.5 transition-[color,transform] duration-150 ease-out active:scale-[0.97]"
-                  aria-label="Close terminal"
+                  aria-label={i18n.t('Close terminal')}
                 >
                   <X className="h-3 w-3" />
                 </button>
@@ -545,12 +546,12 @@ export const TerminalTabs = memo(function TerminalTabs({
                   size="icon"
                   onClick={onCreateTerminal}
                   className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] rounded-md"
-                  aria-label="New terminal"
+                  aria-label={i18n.t('New terminal')}
                 >
                   <PlusIcon className="h-3.5 w-3.5" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="bottom">New terminal</TooltipContent>
+              <TooltipContent side="bottom">{i18n.t('New terminal')}</TooltipContent>
             </Tooltip>
           </div>
         </div>

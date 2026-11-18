@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback } from "react"
 import type { Chat, UIMessage } from "@ai-sdk/react"
 import type { agentChatStore } from "../stores/agent-chat-store"
@@ -29,7 +30,7 @@ export function useCreateNewConversation(_options: UseCreateNewConversationOptio
     // Backend no longer supports creating child conversations
     // This feature has been removed
     console.warn("[use-create-new-conversation] createChildConversation is no longer supported")
-    throw new Error("Creating new child conversations is no longer supported")
+    throw new Error(i18n.t('Creating new child conversations is no longer supported'))
   }, [])
 
   return {

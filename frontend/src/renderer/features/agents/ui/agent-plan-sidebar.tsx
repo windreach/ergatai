@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useMemo, useState } from "react"
@@ -62,7 +63,7 @@ export function AgentPlanSidebar({
             size="icon"
             onClick={onClose}
             className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
-            aria-label="Close plan"
+            aria-label={i18n.t('Close plan')}
           >
             <IconDoubleChevronRight className="h-4 w-4" />
           </Button>
@@ -135,7 +136,7 @@ export function AgentPlanSidebar({
         {isLoading ? (
           <div className="flex flex-col items-center justify-center h-full p-6 text-center">
             <IconSpinner className="h-8 w-8 text-muted-foreground mb-3" />
-            <p className="text-sm text-muted-foreground">Loading plan...</p>
+            <p className="text-sm text-muted-foreground">{i18n.t('Loading plan...')}</p>
           </div>
         ) : error ? (
           <div className="flex flex-col items-center justify-center h-full p-6 text-center">

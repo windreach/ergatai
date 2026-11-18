@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import * as React from "react"
 
 // Breakpoint for narrow/mobile layout in desktop app

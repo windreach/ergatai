@@ -238,18 +238,24 @@ async function opencode() {
     };
   }).filter(Boolean);
 
-  // Models from /api/model
+  // Models from /api/model. Use provider-qualified IDs so the same model
+  // offered by different providers is preserved and matches the values that
+  // the ACP model selector accepts.
   const modelsArr = Array.isArray(modelsResp?.data) ? modelsResp.data : (Array.isArray(modelsResp) ? modelsResp : []);
   const seenModelIds = new Set();
   const modelList = modelsArr.flatMap((m) => {
-    const id = m.id || m.modelID || m.value || m.name || m.model || "";
+    const provider = m.providerID || m.provider || "";
+    const rawId = m.id || m.modelID || m.value || m.name || m.model || "";
+    const id = provider && rawId && !String(rawId).includes("/")
+      ? `${provider}/${rawId}`
+      : rawId;
     if (id && seenModelIds.has(id)) return [];
     if (id) seenModelIds.add(id);
     return [{
       id,
-      name: m.name || m.displayName || m.id || m.modelID || m.model || "",
+      name: m.name || m.displayName || rawId,
       description: m.description || "",
-      provider: m.providerID || m.provider || "",
+      provider,
     }];
   });
   const configInfo = Array.isArray(configResp)
@@ -258,7 +264,9 @@ async function opencode() {
   // Prioritize the configured default model so it becomes the default selection.
   if (configInfo?.model) {
     const mm = configInfo.model;
-    const configuredId = mm.model || "";
+    const configuredId = mm.providerID && mm.model
+      ? `${mm.providerID}/${mm.model}`
+      : (mm.model || "");
     if (configuredId) {
       const idx = modelList.findIndex((m) => m.id === configuredId);
       if (idx > 0) {

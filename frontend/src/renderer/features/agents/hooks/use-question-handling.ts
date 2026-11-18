@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useAtom } from "jotai"
 import type { UIMessage } from "@ai-sdk/react"
@@ -74,7 +75,7 @@ export function useQuestionHandling({
         }
       } catch (error) {
         // Silently fail - context usage is not critical
-        console.debug("Failed to fetch initial context usage:", error)
+        console.debug(i18n.t('Failed to fetch initial context usage:'), error)
       }
     }
 

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useAtom, useAtomValue } from "jotai"
 import { toast } from "sonner"
@@ -127,7 +128,7 @@ export function useSideChatController(chatId: string, isActive: boolean): SideCh
         ?.conversationId
 
     if (!resolvedConversationId) {
-      toast.error("This agent has no bound conversation yet")
+      toast.error(i18n.t('This agent has no bound conversation yet'))
       return
     }
 

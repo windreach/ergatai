@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState, useEffect, useMemo } from "react"
@@ -83,7 +84,7 @@ export function CreateBranchDialog({
 
   const createBranchMutation = trpc.changes.createBranch.useMutation({
     onSuccess: (data) => {
-      toast.success(`Branch '${data.branchName}' created successfully`)
+      toast.success(i18n.t("Branch '{{name}}' created successfully", { name: data.branchName }))
       // Invalidate branches query to refresh the list
       utils.changes.getBranches.invalidate({ worktreePath: projectPath })
       onBranchCreated(data.branchName)
@@ -98,7 +99,7 @@ export function CreateBranchDialog({
           : error.message?.includes("not found")
             ? "The base branch could not be found."
             : "An unexpected error occurred. Please try again."
-      toast.error(`Failed to create branch: ${friendlyMessage}`)
+      toast.error(i18n.t("Failed to create branch: {{message}}", { message: friendlyMessage }))
     },
   })
 
@@ -139,7 +140,7 @@ export function CreateBranchDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <CanvasDialogContent className="sm:max-w-[350px] overflow-visible">
         <CanvasDialogHeader>
-          <DialogTitle>Create a Branch</DialogTitle>
+          <DialogTitle>{i18n.t('Create a Branch')}</DialogTitle>
         </CanvasDialogHeader>
 
         <CanvasDialogBody className="space-y-4">
@@ -150,7 +151,7 @@ export function CreateBranchDialog({
             </Label>
             <Input
               id="branch-name"
-              placeholder="feature/my-new-feature"
+              placeholder={i18n.t('feature/my-new-feature')}
               value={branchName}
               onChange={(e) => setBranchName(e.target.value)}
               onKeyDown={(e) => {
@@ -171,7 +172,7 @@ export function CreateBranchDialog({
 
           {/* Base Branch Selection with Search */}
           <div className="space-y-2">
-            <Label className="text-sm">Create branch based on...</Label>
+            <Label className="text-sm">{i18n.t('Create branch based on...')}</Label>
             {/* Using Popover WITHOUT Portal so it renders inside Dialog's DOM tree */}
             <PopoverPrimitive.Root
               open={baseBranchOpen}
@@ -201,13 +202,13 @@ export function CreateBranchDialog({
               >
                 <Command>
                   <CommandInput
-                    placeholder="Search branches..."
+                    placeholder={i18n.t('Search branches...')}
                     value={baseBranchSearch}
                     onValueChange={setBaseBranchSearch}
                   />
                   <CommandList className="max-h-[200px]">
                     {filteredBaseBranches.length === 0 ? (
-                      <CommandEmpty>No branches found.</CommandEmpty>
+                      <CommandEmpty>{i18n.t('No branches found.')}</CommandEmpty>
                     ) : (
                       <CommandGroup>
                         {filteredBaseBranches.map((branch) => (

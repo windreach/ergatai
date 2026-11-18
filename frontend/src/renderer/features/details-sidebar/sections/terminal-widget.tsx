@@ -1,6 +1,7 @@
+import i18n from "@/lib/i18n"
 "use client"
 
-import { useEffect, memo, useCallback, useMemo, useRef } from "react"
+import { useEffect, memo, useCallback, useMemo, useRef, useState } from "react"
 import { useAtom, useAtomValue } from "jotai"
 import { useTheme } from "next-themes"
 import { fullThemeDataAtom } from "@/lib/atoms"
@@ -22,12 +23,15 @@ import {
 import type { TerminalInstance } from "@/features/terminal"
 import { cn } from "@/lib/utils"
 import { killTerminalSession } from "@/features/terminal"
+import { AgentTerminalOutput } from "../../agents/ui/agent-terminal-output"
 import { randomToken } from "../../../../shared/id"
 
 interface TerminalWidgetProps {
   /** Must match the TerminalSidebar scope key so tasks map 1:1 to sidebar terminals */
   scopeKey: string
   onExpand?: () => void
+  /** Agent terminal output entries (from extension meta terminal_update) */
+  terminalEntries?: { key: string; value: unknown }[]
 }
 
 function generateTerminalId(): string {
@@ -48,7 +52,7 @@ function getNextTerminalName(terminals: TerminalInstance[]): string {
 
   const maxNumber =
     existingNumbers.length > 0 ? Math.max(...existingNumbers) : 0
-  return `Terminal ${maxNumber + 1}`
+  return i18n.t("Terminal {{number}}", { number: maxNumber + 1 })
 }
 
 /**
@@ -57,9 +61,12 @@ function getNextTerminalName(terminals: TerminalInstance[]): string {
  * clicking a task enters the real terminal (expanded sidebar) to view
  * live output and interact with it. No terminal is auto-created.
  */
+const EMPTY_TERMINAL_ENTRIES: TerminalWidgetProps["terminalEntries"] & {} = []
+
 export const TerminalWidget = memo(function TerminalWidget({
   scopeKey,
   onExpand,
+  terminalEntries = EMPTY_TERMINAL_ENTRIES,
 }: TerminalWidgetProps) {
   const [allTerminals, setAllTerminals] = useAtom(terminalsAtom)
   const [allActiveIds, setAllActiveIds] = useAtom(activeTerminalIdAtom)
@@ -90,6 +97,22 @@ export const TerminalWidget = memo(function TerminalWidget({
     () => allActiveIds[scopeKey] || null,
     [allActiveIds, scopeKey],
   )
+
+  const [selectedTerminalKey, setSelectedTerminalKey] = useState<string | null>(null)
+  useEffect(() => {
+    if (
+      terminalEntries.length > 0 &&
+      (!selectedTerminalKey ||
+        !terminalEntries.some((entry) => entry.key === selectedTerminalKey))
+    ) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
+      setSelectedTerminalKey(terminalEntries[0].key)
+    }
+    if (terminalEntries.length === 0) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
+      setSelectedTerminalKey(null)
+    }
+  }, [terminalEntries, selectedTerminalKey])
 
   const scopeKeyRef = useRef(scopeKey)
   // react-doctor-disable-next-line no-ref-current-in-render
@@ -193,7 +216,7 @@ export const TerminalWidget = memo(function TerminalWidget({
                   size="icon"
                   onClick={onExpand}
                   className="h-6 w-6 p-0 hover:bg-foreground/10 text-muted-foreground hover:text-foreground rounded-md transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0"
-                  aria-label="Open terminal"
+                  aria-label={i18n.t('Open terminal')}
                 >
                   <ArrowUpRight className="h-3 w-3" />
                 </Button>
@@ -213,14 +236,51 @@ export const TerminalWidget = memo(function TerminalWidget({
                 size="icon"
                 onClick={handleCreateAndEnter}
                 className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] rounded-md flex-shrink-0"
-                aria-label="New terminal"
+                aria-label={i18n.t('New terminal')}
               >
                 <PlusIcon className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="bottom">New terminal</TooltipContent>
+            <TooltipContent side="bottom">{i18n.t('New terminal')}</TooltipContent>
           </Tooltip>
         </div>
+
+        {/* Agent terminal output (from extension meta) */}
+        {terminalEntries.length > 0 && (
+          <div className="border-t border-border/40 p-2 space-y-1">
+            <div className="flex flex-wrap gap-1">
+              {terminalEntries.map((entry) => (
+                <button
+                  key={entry.key}
+                  type="button"
+                  onClick={() => setSelectedTerminalKey(entry.key)}
+                  className={cn(
+                    "rounded px-2 py-1 text-left text-[10px]",
+                    selectedTerminalKey === entry.key
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:bg-muted/50",
+                  )}
+                >
+                  {entry.key}
+                </button>
+              ))}
+            </div>
+            {selectedTerminalKey ? (
+              <AgentTerminalOutput
+                content={(() => {
+                  const value = terminalEntries.find((e) => e.key === selectedTerminalKey)?.value
+                  if (typeof value === "string") return value
+                  try {
+                    return JSON.stringify(value ?? null, null, 2)
+                  } catch {
+                    return String(value)
+                  }
+                })()}
+                className="h-40 w-full rounded"
+              />
+            ) : null}
+          </div>
+        )}
 
         {/* Terminal task list */}
         <div className="min-h-0">
@@ -265,7 +325,7 @@ export const TerminalWidget = memo(function TerminalWidget({
                 </button>
                 <button
                   type="button"
-                  aria-label={`Close ${terminal.name}`}
+                  aria-label={i18n.t("Close {{name}}", { name: terminal.name })}
                   onClick={() => closeTerminal(terminal.id)}
                   className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
                 >

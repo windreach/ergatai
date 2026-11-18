@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { Component, type ReactNode } from "react"
 import { AlertCircle } from "lucide-react"
 import { Button } from "./button"

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { Button } from "../../../../components/ui/button";
 import {
 	DropdownMenu,
@@ -112,11 +113,11 @@ function formatTimeSince(date: Date): string {
 	const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
 	if (seconds < 60) return "just now";
 	const minutes = Math.floor(seconds / 60);
-	if (minutes < 60) return `${minutes}m ago`;
+	if (minutes < 60) return i18n.t("{{count}}m ago", { count: minutes });
 	const hours = Math.floor(minutes / 60);
-	if (hours < 24) return `${hours}h ago`;
+	if (hours < 24) return i18n.t("{{count}}h ago", { count: hours });
 	const days = Math.floor(hours / 24);
-	return `${days}d ago`;
+	return i18n.t("{{count}}d ago", { count: days });
 }
 
 // react-doctor-disable-next-line no-high-complexity-react-function
@@ -194,21 +195,21 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 		onSuccess: () => {
 			onRefresh?.();
 		},
-		onError: (error) => toast.error(`Pull failed: ${error.message}`),
+		onError: (error) => toast.error(i18n.t("Pull failed: {{message}}", { message: error.message })),
 	});
 
 	const forcePushMutation = trpc.changes.forcePush.useMutation({
 		onSuccess: () => {
 			onRefresh?.();
 		},
-		onError: (error: { message: string }) => toast.error(`Force push failed: ${error.message}`),
+		onError: (error: { message: string }) => toast.error(i18n.t("Force push failed: {{message}}", { message: error.message })),
 	});
 
 	const mergeFromDefaultMutation = trpc.changes.mergeFromDefault.useMutation({
 		onSuccess: () => {
 			onRefresh?.();
 		},
-		onError: (error: { message: string }) => toast.error(`Merge failed: ${error.message}`),
+		onError: (error: { message: string }) => toast.error(i18n.t("Merge failed: {{message}}", { message: error.message })),
 	});
 
 	const { pr } = usePRStatus({
@@ -345,7 +346,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 				pendingLabel: "Pulling...",
 				icon: <ArrowDown className="size-3.5" />,
 				handler: handlePull,
-				tooltip: `Pull ${pullCount} commit${pullCount !== 1 ? "s" : ""} from remote`,
+				tooltip: i18n.t("Pull {{count}} commit from remote", { count: pullCount }) + (pullCount !== 1 ? "s" : ""),
 				badge: `↓${pullCount}`,
 				variant: "default",
 				isPending: isPullPending,
@@ -359,7 +360,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 				pendingLabel: "Pushing...",
 				icon: <ArrowUp className="size-3.5" />,
 				handler: handlePush,
-				tooltip: `Push ${pushCount} commit${pushCount !== 1 ? "s" : ""} to remote`,
+				tooltip: i18n.t("Push {{count}} commit to remote", { count: pushCount }) + (pushCount !== 1 ? "s" : ""),
 				badge: `↑${pushCount}`,
 				variant: "default",
 				isPending: isPushPending,
@@ -372,7 +373,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 				label: "Open PR",
 				icon: <ExternalLinkIcon className="size-3.5" />,
 				handler: handleOpenPR,
-				tooltip: `Open Pull Request #${pr.number}`,
+				tooltip: i18n.t("Open Pull Request #{{number}}", { number: pr.number }),
 				variant: "ghost",
 			};
 		}
@@ -386,7 +387,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 					pendingLabel: "Creating...",
 					icon: <GitPullRequest className="size-3.5" />,
 					handler: onCreatePr,
-					tooltip: `Create Pull Request (${aheadOfDefault} commit${aheadOfDefault !== 1 ? "s" : ""} ahead of ${branchData?.defaultBranch || "main"})`,
+					tooltip: i18n.t("Create Pull Request ({{count}} commit ahead of {{branch}})", { count: aheadOfDefault, branch: branchData?.defaultBranch || "main" }) + (aheadOfDefault !== 1 ? "s" : ""),
 					badge: `↑${aheadOfDefault}`,
 					variant: "default",
 					isPending: isCreatingPr,
@@ -398,7 +399,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 				pendingLabel: "Fetching...",
 				icon: <IconFetch className="size-3.5" />,
 				handler: handleFetch,
-				tooltip: lastFetchTime ? `Last fetched ${displayTime}` : "Check for updates",
+				tooltip: lastFetchTime ? i18n.t("Last fetched {{time}}", { time: displayTime }) : i18n.t("Check for updates"),
 				variant: "ghost",
 				isPending: isFetchPending,
 			};
@@ -533,10 +534,10 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 								) : (
 									<IconReview className="size-3.5" />
 								)}
-								<span>Review</span>
+								<span>{i18n.t('Review')}</span>
 							</Button>
 						</TooltipTrigger>
-						<TooltipContent side="bottom">Review changes with AI</TooltipContent>
+						<TooltipContent side="bottom">{i18n.t('Review changes with AI')}</TooltipContent>
 					</Tooltip>
 				)}
 
@@ -644,7 +645,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 										"h-6 w-6 p-0 rounded-l-none rounded-r-md focus:z-10",
 										displayAction.variant === "ghost" && "hover:bg-accent hover:text-accent-foreground shadow-none"
 									)}
-									aria-label="More git options"
+									aria-label={i18n.t('More git options')}
 								>
 									<HiChevronDown className="size-3" />
 								</Button>
@@ -658,9 +659,9 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 								>
 									<HiArrowPath className={cn("mr-2 size-3.5", isFetchPending && "animate-spin")} />
 									<div className="flex-1">
-										<div>Fetch origin</div>
+										<div>{i18n.t('Fetch origin')}</div>
 										<div className="text-[10px] text-muted-foreground">
-											{lastFetchTime ? `Last fetched ${displayTime}` : "Check for updates"}
+											{lastFetchTime ? i18n.t("Last fetched {{time}}", { time: displayTime }) : i18n.t("Check for updates")}
 										</div>
 									</div>
 								</DropdownMenuItem>
@@ -674,7 +675,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 									>
 										<IconForcePush className="mr-2 size-3.5" />
 										<div className="flex-1">
-											<div>Force push</div>
+											<div>{i18n.t('Force push')}</div>
 											<div className="text-[10px] text-muted-foreground/70">
 												Overwrite remote (dangerous)
 											</div>
@@ -696,7 +697,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 												<div>Merge from {branchData?.defaultBranch || "main"}</div>
 												<div className="text-[10px] text-muted-foreground">
 													{behindDefault > 0
-														? `${behindDefault} commit${behindDefault !== 1 ? "s" : ""} to merge`
+														? i18n.t("{{count}} commit to merge", { count: behindDefault }) + (behindDefault !== 1 ? "s" : "")
 														: "Already up to date"}
 												</div>
 											</div>
@@ -716,7 +717,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 												<div>Rebase on {branchData?.defaultBranch || "main"}</div>
 												<div className="text-[10px] text-muted-foreground">
 													{behindDefault > 0
-														? `Replay on top of ${behindDefault} commit${behindDefault !== 1 ? "s" : ""}`
+														? i18n.t("Replay on top of {{count}} commit", { count: behindDefault }) + (behindDefault !== 1 ? "s" : "")
 														: "Already up to date"}
 												</div>
 											</div>
@@ -805,7 +806,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 										className="text-xs text-yellow-600 dark:text-yellow-500"
 									>
 										<GitMerge className="mr-2 size-3.5" />
-										<span>Fix Merge Conflicts</span>
+										<span>{i18n.t('Fix Merge Conflicts')}</span>
 									</DropdownMenuItem>
 								)}
 							</DropdownMenuContent>
@@ -824,7 +825,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 								"h-6 w-6 p-0 rounded-r-none border-0",
 								viewMode !== "split" && "hover:bg-foreground/10"
 							)}
-							title="Split view"
+							title={i18n.t('Split view')}
 						>
 							<Columns2 className="size-3.5" />
 						</Button>
@@ -836,7 +837,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 								"h-6 w-6 p-0 rounded-l-none border-0 border-l border-input",
 								viewMode !== "unified" && "hover:bg-foreground/10"
 							)}
-							title="Unified view"
+							title={i18n.t('Unified view')}
 						>
 							<Rows2 className="size-3.5" />
 						</Button>
@@ -879,7 +880,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 								className="text-xs"
 							>
 								<RefreshCw className="mr-2 size-3.5" />
-								<span>Refresh diff view</span>
+								<span>{i18n.t('Refresh diff view')}</span>
 							</DropdownMenuItem>
 						)}
 
@@ -894,7 +895,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 								<DropdownMenuSub>
 									<DropdownMenuSubTrigger className="text-xs">
 										<Eye className="mr-2 size-3.5" />
-										<span>View</span>
+										<span>{i18n.t('View')}</span>
 									</DropdownMenuSubTrigger>
 									<DropdownMenuSubContent>
 										<DropdownMenuItem
@@ -902,14 +903,14 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 											className={cn("text-xs", viewMode === "split" && "bg-muted")}
 										>
 											<Columns2 className="mr-2 size-3.5" />
-											<span>Split view</span>
+											<span>{i18n.t('Split view')}</span>
 										</DropdownMenuItem>
 										<DropdownMenuItem
 											onClick={() => onViewModeChange("unified")}
 											className={cn("text-xs", viewMode === "unified" && "bg-muted")}
 										>
 											<Rows2 className="mr-2 size-3.5" />
-											<span>Unified view</span>
+											<span>{i18n.t('Unified view')}</span>
 										</DropdownMenuItem>
 									</DropdownMenuSubContent>
 								</DropdownMenuSub>
@@ -924,7 +925,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 								className="text-xs"
 							>
 								<ChevronsUpDown className="mr-2 size-3.5" />
-								<span>Expand all</span>
+								<span>{i18n.t('Expand all')}</span>
 							</DropdownMenuItem>
 						)}
 						{onCollapseAll && (
@@ -933,7 +934,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 								className="text-xs"
 							>
 								<ChevronsDownUp className="mr-2 size-3.5" />
-								<span>Collapse all</span>
+								<span>{i18n.t('Collapse all')}</span>
 							</DropdownMenuItem>
 						)}
 
@@ -947,7 +948,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 								className="text-xs"
 							>
 								<Check className="mr-2 size-3.5" />
-								<span>Mark all as viewed</span>
+								<span>{i18n.t('Mark all as viewed')}</span>
 							</DropdownMenuItem>
 						)}
 						{onMarkAllUnviewed && viewedCount > 0 && (
@@ -956,7 +957,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 								className="text-xs"
 							>
 								<Square className="mr-2 size-3.5" />
-								<span>Mark all as unviewed</span>
+								<span>{i18n.t('Mark all as unviewed')}</span>
 							</DropdownMenuItem>
 						)}
 					</DropdownMenuContent>

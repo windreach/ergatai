@@ -679,7 +679,36 @@ async fn dispatch_turn(mut turn: InitialPromptTurn) -> Result<()> {
                 "",
             );
             let agent_kind_str = agent_kind.as_str();
-            let converted_prompt = convert_prompt_tokens(&turn.prompt, agent_kind_str);
+
+            // Tell the agent which worktree it is operating in so file edits land
+            // in the chat's worktree (not the host repository) and the Changes
+            // panel can detect them.
+            let work_dir_note = {
+                let chat_id_typed = ChatId::decode(&turn.chat_id).ok();
+                let workspace_id_typed = WorkspaceId::decode(&turn.workspace_id).ok();
+                let chat_worktree = chat_id_typed
+                    .and_then(|id| crate::user_data_db::chats::get(id).ok().flatten())
+                    .and_then(|chat| chat.worktree_path);
+                let workspace_work_dir = workspace_id_typed
+                    .and_then(|id| crate::user_data_db::workspaces::get(id).ok().flatten())
+                    .map(|workspace| workspace.work_dir);
+                let work_dir = chat_worktree.or(workspace_work_dir).unwrap_or_default();
+                if work_dir.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "[Working directory: {}]\nUse relative paths within this directory for all file operations.\n\n",
+                        work_dir
+                    )
+                }
+            };
+
+            let prompt_with_context = if work_dir_note.is_empty() {
+                turn.prompt.clone()
+            } else {
+                format!("{}{}", work_dir_note, turn.prompt)
+            };
+            let converted_prompt = convert_prompt_tokens(&prompt_with_context, agent_kind_str);
 
             let delivery = if turn.images.is_empty() {
                 runtime

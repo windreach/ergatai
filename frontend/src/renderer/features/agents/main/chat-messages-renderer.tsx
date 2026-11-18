@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 /**
  * ChatMessagesRenderer - Shared conversation message surface.
  * Main chat and side chat both own their scroll controller, but use this
@@ -37,6 +38,10 @@ interface ChatMessagesRendererProps {
   contentClassName?: string
   /** Rendered above the message list (for example collaboration cards). */
   header?: React.ReactNode
+  /** Rendered after the last message inside the scroll container (e.g. retry status). */
+  footer?: React.ReactNode
+  /** Hide error cards while an automatic retry is in progress. */
+  suppressErrorCards?: boolean
   emptyState?: React.ReactNode
   errorState?: React.ReactNode
   loadingState?: React.ReactNode
@@ -62,6 +67,8 @@ export const ChatMessagesRenderer = memo(function ChatMessagesRenderer({
   className,
   contentClassName,
   header,
+  footer,
+  suppressErrorCards = false,
   emptyState,
   errorState,
   loadingState,
@@ -131,12 +138,13 @@ export const ChatMessagesRenderer = memo(function ChatMessagesRenderer({
                 <path d="M12 7v6" />
               </svg>
             </div>
-            <h3 className="text-base font-medium text-foreground mb-2">Chat</h3>
+            <h3 className="text-base font-medium text-foreground mb-2">{i18n.t('Chat')}</h3>
             <p className="text-sm text-muted-foreground text-center max-w-[240px]">
               Start a conversation by typing below.
             </p>
           </div>
         ) : emptyState}
+        {footer}
       </div>
     )
   }
@@ -176,7 +184,7 @@ export const ChatMessagesRenderer = memo(function ChatMessagesRenderer({
             if (role === "agent") {
               return (
                 <div key={message.id} className="space-y-2 border-l-2 border-blue-300 pl-3">
-                  <div className="text-xs font-medium text-blue-600 dark:text-blue-400">Agent Request</div>
+                  <div className="text-xs font-medium text-blue-600 dark:text-blue-400">{i18n.t('Agent Request')}</div>
                   {text ? <ChatMarkdownRenderer content={text} size="sm" /> : null}
                 </div>
               )
@@ -186,6 +194,9 @@ export const ChatMessagesRenderer = memo(function ChatMessagesRenderer({
             return (
               <div key={message.id} className="space-y-2">
                 {message.parts?.map((part: unknown, index: number) => {
+                  if (suppressErrorCards && (part as { type?: string })?.type === "error") {
+                    return null
+                  }
                   const chatError = chatErrorFromPart(part)
                   return chatError ? (
                     <ChatErrorCard
@@ -199,6 +210,7 @@ export const ChatMessagesRenderer = memo(function ChatMessagesRenderer({
               </div>
             )
           })}
+          {footer}
         </div>
       </div>
     )
@@ -232,6 +244,8 @@ export const ChatMessagesRenderer = memo(function ChatMessagesRenderer({
           toolRegistry={AgentToolRegistry}
           onRollback={onRollback}
           onFork={onFork}
+          footer={footer}
+          suppressErrorCards={suppressErrorCards}
         />
       </div>
     </div>

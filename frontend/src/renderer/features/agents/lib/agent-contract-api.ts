@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 /**
  * Agent Contract API — matches Ergatai backend API responses
  *
@@ -144,22 +145,22 @@ export interface CoreAgentOption {
 export const CORE_AGENT_OPTIONS: CoreAgentOption[] = [
   {
     id: "claude-code",
-    name: "Claude Code",
-    description: "Anthropic's terminal coding agent",
+    name: i18n.t('Claude Code'),
+    description: i18n.t("Anthropic's terminal coding agent"),
     defaultCommand: "claude",
     profileName: "claude",
   },
   {
     id: "codex",
     name: "Codex",
-    description: "OpenAI's terminal coding agent",
+    description: i18n.t("OpenAI's terminal coding agent"),
     defaultCommand: "codex",
     profileName: "codex",
   },
   {
     id: "opencode",
     name: "OpenCode",
-    description: "Open-source terminal coding agent (native ACP)",
+    description: i18n.t('Open-source terminal coding agent (native ACP)'),
     defaultCommand: "opencode acp",
     profileName: "opencode",
   },
@@ -214,7 +215,7 @@ export function getCoreAgentDisplayName(
 }
 
 /**
- * Resolve a raw sender id/name (e.g. "claude-code", "Claude Code", "codex")
+ * Resolve a raw sender id/name (e.g. "claude-code", i18n.t('Claude Code'), "codex")
  * to a known core agent. Returns null when nothing matches so callers can
  * fall back to the raw value instead of guessing.
  *
@@ -323,7 +324,7 @@ function mapAgentToSummary(agent: AgentInfoResponse, index = 0): AgentSummary {
   return {
     id: agentId,
     name: sessionTitle || stableId || agentId,
-    description: profile ? `Profile: ${profile}` : `Agent ${stableId || agentId}`,
+    description: profile ? i18n.t("Profile: {{profile}}", { profile }) : i18n.t("Agent {{id}}", { id: stableId || agentId }),
     status: mapLifecycleState(text(agent?.lifecycle_state, text(agent?.state, "unknown")), Boolean(agent?.is_alive)),
     conversationCount: 0, // TODO: aggregate from sessions
     workspaceId: text(agent?.workspace_id, "default"),
@@ -339,7 +340,7 @@ function mapAgentToSummary(agent: AgentInfoResponse, index = 0): AgentSummary {
 /** Map backend ConversationSummary (BackendConversation) to frontend AgentConversation */
 function mapConversation(conv: ConversationSummary, agentId?: string): AgentConversation {
   const conversationId = text(conv?.id, `conversation-unknown`)
-  const title = text(conv?.name, `Conversation ${conversationId.slice(0, 8)}`)
+  const title = text(conv?.name, i18n.t("Conversation {{id}}", { id: conversationId.slice(0, 8) }))
   const mode = text(conv?.mode, "unknown")
   const updatedAt = conv?.updated_at
     ? new Date(conv.updated_at * 1000).toISOString()
@@ -355,7 +356,7 @@ function mapConversation(conv: ConversationSummary, agentId?: string): AgentConv
     id: conversationId,
     agentId: agentId || "unknown-agent",
     title,
-    preview: `Mode: ${mode}`,
+    preview: i18n.t("Mode: {{mode}}", { mode }),
     status,
     updatedAt,
     messageCount: 0, // 后端不再提供此字段
@@ -405,10 +406,10 @@ export const agentContractApi: AgentContractApi = {
 
         const option: CoreAgentOption = {
           id,
-          // Unified friendly display name ("Claude Code"); the raw backend
+          // Unified friendly display name (i18n.t('Claude Code')); the raw backend
           // profile name stays the stable key (profileName/install targets).
           name: getCoreAgentDisplayName(id) ?? profile.name,
-          description: `Installed (${profile.agent_type})`,
+          description: i18n.t("Installed ({{type}})", { type: profile.agent_type }),
           defaultCommand: profile.command,
           profileName: profile.name,
           nativeTriggers: profile.native_triggers ?? [],

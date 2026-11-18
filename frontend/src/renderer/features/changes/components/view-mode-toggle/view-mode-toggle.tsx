@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { Button } from "../../../../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../../components/ui/tooltip";
 import { LuFolder, LuFolderTree } from "react-icons/lu";

@@ -1,10 +1,11 @@
+import i18n from "@/lib/i18n"
 import { useCallback } from "react"
 import { trpcClient } from "../../../lib/trpc"
 import { toast } from "sonner"
 import { useAgentConversationStore } from "../stores/conversation-store"
 
 // Hardcoded business string for plan approval
-const IMPLEMENT_PLAN_MESSAGE = "Implement plan"
+const IMPLEMENT_PLAN_MESSAGE = i18n.t('Implement plan')
 
 interface UsePlanApprovalOptions {
   conversationId: string
@@ -34,13 +35,13 @@ export function usePlanApproval({
         })
       } catch (error) {
         console.error("[plan-approval] Failed to respond:", error)
-        toast.error("Failed to send plan approval. Please try again.")
+        toast.error(i18n.t('Failed to send plan approval. Please try again.'))
       }
     },
     [],
   )
 
-  // Handle plan approval - sends "Implement plan" message and switches to agent mode
+  // Handle plan approval - sends i18n.t('Implement plan') message and switches to agent mode
   // NOTE: Direct store access is intentional - the transport reads from store synchronously.
   // If subsequent steps fail, the store will be in "agent" mode but the message won't be sent.
   // This is an acceptable trade-off since the user can manually switch back to plan mode.
@@ -60,10 +61,10 @@ export function usePlanApproval({
       // Enable auto-scroll and immediately scroll to bottom
       scrollToBottom()
 
-      // Send "Implement plan" message (now in agent mode)
+      // Send i18n.t('Implement plan') message (now in agent mode)
       if (!sendMessageRef.current) {
         console.error("[plan-approval] sendMessageRef.current is not available")
-        toast.error("Message system is not ready. Please try again.")
+        toast.error(i18n.t('Message system is not ready. Please try again.'))
         return
       }
 
@@ -74,7 +75,7 @@ export function usePlanApproval({
         })
       } catch (error) {
         console.error("[plan-approval] Failed to send message:", error)
-        toast.error("Failed to send implementation request. Please try again.")
+        toast.error(i18n.t('Failed to send implementation request. Please try again.'))
       }
     },
     [conversationId, setConversationMode, scrollToBottom, updateConversationModeMutation, sendMessageRef],

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { memo, useMemo, useState } from "react"
 import { ChevronDown, MoreVertical, RotateCcw, Trash2 } from "lucide-react"
 import { toast } from "sonner"
@@ -100,7 +101,7 @@ const ArchivedWorkspaceItem = memo(({
       >
         <div className="flex items-center justify-between gap-2">
           <div className="truncate text-sm font-medium">
-            {workspace.name || `Workspace ${workspace.id.slice(0, 8)}`}
+            {workspace.name || i18n.t("Workspace {{id}}", { id: workspace.id.slice(0, 8) })}
           </div>
         </div>
       </button>
@@ -109,7 +110,7 @@ const ArchivedWorkspaceItem = memo(({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            aria-label={`Manage archived workspace ${workspace.name || workspace.id}`}
+            aria-label={i18n.t("Manage archived workspace {{name}}", { name: workspace.name || workspace.id })}
             className="mt-2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus:opacity-100 group-hover:opacity-100"
           >
             <MoreVertical className="h-3.5 w-3.5" />
@@ -141,7 +142,7 @@ const ArchivedWorkspaceItem = memo(({
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete archived workspace?</AlertDialogTitle>
+            <AlertDialogTitle>{i18n.t('Delete archived workspace?')}</AlertDialogTitle>
             <AlertDialogDescription>
               This permanently removes the archived workspace record and its project
               registrations. It does not delete project directories or worktree files
@@ -159,7 +160,7 @@ const ArchivedWorkspaceItem = memo(({
           )}
 
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{i18n.t('Cancel')}</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={deleteMutation.isPending}
@@ -208,7 +209,7 @@ export const ArchivedWorkspaceList = memo(({
         aria-expanded={isOpen}
         className="flex h-7 w-full items-center justify-between rounded-lg px-2 text-left text-sm font-medium text-foreground/80 transition-colors hover:bg-foreground/5 hover:text-foreground"
       >
-        <span>Archived Workspaces</span>
+        <span>{i18n.t('Archived Workspaces')}</span>
         <ChevronDown
           className={cn(
             "h-3.5 w-3.5 flex-shrink-0 text-muted-foreground transition-transform duration-200",

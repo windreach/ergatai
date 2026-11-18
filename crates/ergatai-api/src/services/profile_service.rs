@@ -35,15 +35,47 @@ pub enum ProfileModelStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProfileModelSource {
-    /// Detected via ACP `/config` options (legacy path).
+    /// Live ACP session config options. The running agent's own selector is the
+    /// most authoritative source: it reflects what can actually be selected now.
     AcpConfigOptions,
-    /// Detected via the agent's proprietary SDK (Claude `supportedModels()`,
-    /// OpenCode provider config, etc.). Takes precedence over ACP detection.
+    /// Agent-native CLI query (e.g. Claude Code `/model`).
+    CliModelCommand,
+    /// Detected via the agent's proprietary SDK/server (OpenCode `/api/model`,
+    /// Claude `supportedModels()`).
     AgentSdk,
+    /// Static models.dev catalog cached by OpenCode (`~/.cache/opencode/models.json`).
+    ModelsDevCache,
     /// Detected by reading the agent's config files directly (fast path).
     ConfigFile,
     /// No models detected yet.
     None,
+}
+
+impl ProfileModelSource {
+    /// Higher wins. A source may legitimately return fewer models than a lower
+    /// source (the user disabled models); only the source rank decides whether a
+    /// newer detection may replace the cached catalog.
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::AcpConfigOptions => 50,
+            Self::CliModelCommand => 40,
+            Self::AgentSdk => 30,
+            Self::ModelsDevCache => 20,
+            Self::ConfigFile => 10,
+            Self::None => 0,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AcpConfigOptions => "acp_config_options",
+            Self::CliModelCommand => "cli_model_command",
+            Self::AgentSdk => "agent_sdk",
+            Self::ModelsDevCache => "models_dev_cache",
+            Self::ConfigFile => "config_file",
+            Self::None => "none",
+        }
+    }
 }
 
 /// Rich model metadata returned by agent SDKs.
@@ -87,6 +119,13 @@ pub struct ProfileModelCatalog {
     /// Default model detected from native config / SDK.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    /// True when the latest detection would have downgraded the catalog and was
+    /// therefore not applied. The cached models remain the last high-rank list.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
+    /// When the last detection attempt happened (including rejected downgrades).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attempt_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +146,10 @@ struct StoredProfileModels {
     option_id: Option<String>,
     #[serde(default)]
     default_model: Option<String>,
+    #[serde(default)]
+    stale: bool,
+    #[serde(default)]
+    last_attempt_at: Option<i64>,
 }
 
 fn normalize_profile_models(
@@ -154,6 +197,8 @@ fn normalize_profile_models(
         verified_at: updated_at,
         current: None,
         default_model: stored.default_model,
+        stale: stored.stale,
+        last_attempt_at: stored.last_attempt_at,
     })
 }
 
@@ -173,8 +218,41 @@ fn models_json_with_source(
         "last_known_models": models,
         "option_id": option_id,
         "verified_at": chrono::Utc::now().timestamp_millis(),
+        "stale": false,
+        "last_attempt_at": chrono::Utc::now().timestamp_millis(),
     })
     .to_string()
+}
+
+/// Effective authority of a cached catalog. `sources` is the union of every
+/// source that contributed models, so the max rank is the one that must be
+/// protected from lower-rank overwrites.
+pub(crate) fn catalog_rank(catalog: &ProfileModelCatalog) -> u8 {
+    catalog
+        .sources
+        .iter()
+        .copied()
+        .map(ProfileModelSource::rank)
+        .max()
+        .unwrap_or_else(|| catalog.source.rank())
+}
+
+/// Whether a detection result may replace the cached catalogue.
+///
+/// Equal rank always replaces: a successful read from the same authority is
+/// allowed to return fewer models (for example when the user disables models).
+/// Only a strictly lower-ranked result is rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PersistDecision {
+    Replace,
+    KeepStale,
+}
+
+pub(crate) fn persist_decision(old: Option<&ProfileModelCatalog>, new_rank: u8) -> PersistDecision {
+    match old {
+        Some(old) if new_rank < catalog_rank(old) => PersistDecision::KeepStale,
+        _ => PersistDecision::Replace,
+    }
 }
 
 fn unsupported_json(previous_json: Option<&str>) -> Result<String> {
@@ -197,6 +275,8 @@ fn unsupported_json(previous_json: Option<&str>) -> Result<String> {
         "last_known_models": last_known_models,
         "option_id": Option::<String>::None,
         "verified_at": chrono::Utc::now().timestamp_millis(),
+        "stale": false,
+        "last_attempt_at": chrono::Utc::now().timestamp_millis(),
     })
     .to_string())
 }
@@ -380,7 +460,9 @@ pub async fn get_profile_models_by_name(name: &str) -> Result<ProfileModelCatalo
         Err(e) => return Err(anyhow::anyhow!("Failed to get profile models: {}", e)),
     };
 
-    // Real-time static config file read + merge (per plan: static file read on every open).
+    // Pure read: merge the static config overlay in memory only. Model writes
+    // happen exclusively in the detection/refresh paths, where source rank is
+    // known and can be compared against the cached catalogue.
     let mut catalog = cached.unwrap_or(ProfileModelCatalog {
         status: ProfileModelStatus::NotDetected,
         source: ProfileModelSource::None,
@@ -392,93 +474,53 @@ pub async fn get_profile_models_by_name(name: &str) -> Result<ProfileModelCatalo
         verified_at: None,
         current: None,
         default_model: None,
+        stale: false,
+        last_attempt_at: None,
     });
 
-    // Resolve agent kind for this profile to read its config file.
+    // Resolve agent kind for this profile to overlay its config file.
     if let Ok(Some(profile)) = get_profile_by_name(name).await {
         let kind = crate::services::agent::resolve_kind(&profile);
         let file_details = crate::services::agent::read_models(kind, None);
         if !file_details.is_empty() {
-            // Merge file details into catalog (file takes precedence for metadata).
             let mut seen: std::collections::HashSet<String> =
                 catalog.models.iter().cloned().collect();
             let mut merged_details = catalog.model_details.clone();
-            let mut changed = false;
-            // Ensure all file models present.
             for fd in &file_details {
                 if !seen.contains(&fd.id) {
                     seen.insert(fd.id.clone());
                     merged_details.push(fd.clone());
                     catalog.models.push(fd.id.clone());
-                    changed = true;
-                } else {
-                    // Update metadata if already present.
-                    if let Some(existing) = merged_details.iter_mut().find(|d| d.id == fd.id) {
-                        if !fd.name.is_empty() && existing.name != fd.name {
-                            existing.name = fd.name.clone();
-                            changed = true;
-                        }
-                        if !fd.description.is_empty() && existing.description != fd.description {
-                            existing.description = fd.description.clone();
-                            changed = true;
-                        }
-                        if !fd.provider.is_empty() && existing.provider != fd.provider {
-                            existing.provider = fd.provider.clone();
-                            changed = true;
-                        }
+                } else if let Some(existing) = merged_details.iter_mut().find(|d| d.id == fd.id) {
+                    // User config wins for metadata (custom provider names etc.).
+                    if !fd.name.is_empty() {
+                        existing.name = fd.name.clone();
+                    }
+                    if !fd.description.is_empty() {
+                        existing.description = fd.description.clone();
+                    }
+                    if !fd.provider.is_empty() {
+                        existing.provider = fd.provider.clone();
                     }
                 }
             }
             catalog.model_details = merged_details;
             if catalog.status == ProfileModelStatus::NotDetected {
                 catalog.status = ProfileModelStatus::Available;
-                changed = true;
             }
             if !catalog.sources.contains(&ProfileModelSource::ConfigFile) {
                 catalog.sources.push(ProfileModelSource::ConfigFile);
-                changed = true;
             }
             if catalog.source == ProfileModelSource::None {
                 catalog.source = ProfileModelSource::ConfigFile;
-                changed = true;
             }
-            // last_known_models
             if catalog.last_known_models.is_empty() {
                 catalog.last_known_models = catalog.models.clone();
-                changed = true;
-            }
-            if changed {
-                catalog.verified_at = Some(chrono::Utc::now().timestamp_millis());
-                // Persist merged catalog back to DB (best effort).
-                let _ = persist_merged_catalog(name, &catalog).await;
             }
         }
     }
 
     Ok(catalog)
-}
-
-/// Persist a full merged catalog back to profile (best-effort, used by real-time file merge).
-async fn persist_merged_catalog(name: &str, catalog: &ProfileModelCatalog) -> Result<()> {
-    let registry = get_profile_registry()?;
-    let json = serde_json::json!({
-        "status": catalog.status,
-        "source": catalog.source,
-        "sources": catalog.sources,
-        "models": catalog.models,
-        "model_details": catalog.model_details,
-        "last_known_models": catalog.last_known_models,
-        "option_id": catalog.option_id,
-        "verified_at": catalog.verified_at,
-        "default_model": catalog.default_model,
-    })
-    .to_string();
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    registry
-        .update_models_by_name(name, &json, now_ms)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to save models: {}", e))?;
-    Ok(())
 }
 
 /// 保存探测到的模型列表到 profile（按 profile name 保存，单次查询避免 TOCTOU）。
@@ -496,6 +538,11 @@ pub async fn save_profile_models_by_name(
         .map_err(|e| anyhow::anyhow!("Failed to save profile models: {}", e))
 }
 /// Persist a detected model list to the profile cache.
+///
+/// The cache is source-ranked. A newer detection may replace it when its
+/// highest source rank is >= the cached rank. A lower-rank result (for example
+/// a config-file-only read while the agent server is down) must never destroy a
+/// richer catalogue; in that case the cached models are kept and marked stale.
 pub async fn persist_profile_models(
     profile_name: &str,
     details: &[ProfileModelDetail],
@@ -506,13 +553,56 @@ pub async fn persist_profile_models(
     if details.is_empty() {
         return Ok(());
     }
-    let models: Vec<String> = details.iter().map(|d| d.id.clone()).collect();
+
     let registry = get_profile_registry()?;
     let sources = if sources.is_empty() {
         vec![source]
     } else {
         sources.to_vec()
     };
+    let new_rank = source.rank().max(
+        sources
+            .iter()
+            .copied()
+            .map(ProfileModelSource::rank)
+            .max()
+            .unwrap_or(0),
+    );
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    // Rank-aware read-modify-write: keep a higher-ranked cached catalogue and
+    // only update the staleness marker.
+    if let Ok(Some((existing_json, existing_ts))) = registry.get_models_by_name(profile_name).await
+    {
+        if let Ok(existing) = normalize_profile_models(&existing_json, Some(existing_ts)) {
+            let old_rank = catalog_rank(&existing);
+            if persist_decision(Some(&existing), new_rank) == PersistDecision::KeepStale {
+                let mut kept = existing;
+                kept.stale = true;
+                kept.last_attempt_at = Some(now_ms);
+                if let Ok(json) = serde_json::to_string(&kept) {
+                    let _ = registry
+                        .update_models_by_name(
+                            profile_name,
+                            &json,
+                            kept.verified_at.unwrap_or(existing_ts),
+                        )
+                        .await;
+                }
+                tracing::info!(
+                    profile = %profile_name,
+                    old_rank,
+                    new_rank,
+                    new_source = source.as_str(),
+                    "Model detection: kept higher-ranked cached catalogue"
+                );
+                return Ok(());
+            }
+        }
+    }
+
+    let models: Vec<String> = details.iter().map(|d| d.id.clone()).collect();
     let json = serde_json::json!({
         "status": ProfileModelStatus::Available,
         "source": source,
@@ -521,11 +611,12 @@ pub async fn persist_profile_models(
         "model_details": details,
         "last_known_models": models,
         "option_id": Option::<String>::None,
-        "verified_at": chrono::Utc::now().timestamp_millis(),
+        "verified_at": now_ms,
         "default_model": default_model,
+        "stale": false,
+        "last_attempt_at": now_ms,
     })
     .to_string();
-    let now_ms = chrono::Utc::now().timestamp_millis();
     registry
         .update_models_by_name(profile_name, &json, now_ms)
         .await
@@ -548,6 +639,8 @@ pub async fn get_profile_models(id: &str) -> Result<ProfileModelCatalog> {
             verified_at: None,
             current: None,
             default_model: None,
+            stale: false,
+            last_attempt_at: None,
         }),
         Err(e) => Err(anyhow::anyhow!("Failed to get profile models: {}", e)),
     }
@@ -613,5 +706,76 @@ mod tests {
         let json = unsupported_json(Some(&json)).unwrap();
         let catalog = normalize_profile_models(&json, Some(457)).unwrap();
         assert_eq!(catalog.last_known_models, vec!["model-a"]);
+    }
+
+    fn catalog_with_sources(sources: Vec<ProfileModelSource>) -> ProfileModelCatalog {
+        ProfileModelCatalog {
+            status: ProfileModelStatus::Available,
+            source: sources.first().copied().unwrap_or(ProfileModelSource::None),
+            sources,
+            models: vec!["model-a".to_string()],
+            model_details: Vec::new(),
+            last_known_models: Vec::new(),
+            option_id: None,
+            verified_at: None,
+            current: None,
+            default_model: None,
+            stale: false,
+            last_attempt_at: None,
+        }
+    }
+
+    #[test]
+    fn catalog_rank_uses_highest_contributing_source() {
+        let catalog = catalog_with_sources(vec![
+            ProfileModelSource::ConfigFile,
+            ProfileModelSource::AgentSdk,
+        ]);
+        assert_eq!(catalog_rank(&catalog), ProfileModelSource::AgentSdk.rank());
+    }
+
+    #[test]
+    fn lower_rank_keeps_existing_catalogue() {
+        let existing = catalog_with_sources(vec![
+            ProfileModelSource::ConfigFile,
+            ProfileModelSource::AgentSdk,
+        ]);
+        assert_eq!(
+            persist_decision(Some(&existing), ProfileModelSource::ConfigFile.rank()),
+            PersistDecision::KeepStale
+        );
+    }
+
+    #[test]
+    fn equal_rank_replaces_even_when_the_user_removes_models() {
+        let existing = catalog_with_sources(vec![ProfileModelSource::AgentSdk]);
+        assert_eq!(
+            persist_decision(Some(&existing), ProfileModelSource::AgentSdk.rank()),
+            PersistDecision::Replace
+        );
+        assert_eq!(
+            persist_decision(Some(&existing), ProfileModelSource::AcpConfigOptions.rank()),
+            PersistDecision::Replace
+        );
+    }
+
+    #[test]
+    fn no_existing_catalogue_always_replaces() {
+        assert_eq!(
+            persist_decision(None, ProfileModelSource::ConfigFile.rank()),
+            PersistDecision::Replace
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_stale_marker() {
+        let catalog = normalize_profile_models(
+            r#"{"status":"available","source":"agent_sdk","sources":["config_file","agent_sdk"],"models":["model-a"],"stale":true,"last_attempt_at":999}"#,
+            Some(123),
+        )
+        .unwrap();
+        assert!(catalog.stale);
+        assert_eq!(catalog.last_attempt_at, Some(999));
+        assert_eq!(catalog_rank(&catalog), ProfileModelSource::AgentSdk.rank());
     }
 }

@@ -1,10 +1,10 @@
 // spec: specs/ergatai-electron-ui-test-plan.md
-// scenarios: UI-SET-004..009, UI-TB-003, UI-TB-004
+// scenarios: UI-SET-004..009
 
 import { test, expect, type Page } from "@playwright/test"
 import { launchElectron } from "../../fixtures/electron-launcher"
 
-test.describe.serial("Settings/TaskBoard extended P2 (Ergatai Electron UI) @extended @ui", () => {
+test.describe.serial("Settings extended P2 (Ergatai Electron UI) @extended @ui", () => {
   let electron!: Awaited<ReturnType<typeof launchElectron>>
   let page!: Page
 
@@ -98,29 +98,5 @@ test.describe.serial("Settings/TaskBoard extended P2 (Ergatai Electron UI) @exte
     await debugBtn.isVisible().catch(() => false)
     await expect(page.locator("main, #root").first()).toBeVisible()
     await closeSettings()
-  })
-
-  test("UI-TB-003 Task Board renders columns @extended", async () => {
-    const taskBoardButton = page.getByRole("button", { name: "Open task board" }).first()
-    await expect(taskBoardButton).toBeVisible({ timeout: 10_000 })
-    await taskBoardButton.focus()
-    await page.keyboard.press("Enter")
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Task Board" }),
-    ).toBeVisible({ timeout: 10_000 })
-    for (const col of ["Queued", "Running", "Completed", "Failed"]) {
-      await page.getByText(col).first().waitFor({ state: "visible", timeout: 3_000 }).catch(() => {})
-    }
-    await expect(page.locator("main, #root").first()).toBeVisible()
-  })
-
-  test("UI-TB-004 Task Board empty state @extended", async () => {
-    const taskBoardButton = page.getByRole("button", { name: "Open task board" }).first()
-    if (await taskBoardButton.isVisible().catch(() => false)) {
-      await taskBoardButton.focus()
-      await page.keyboard.press("Enter")
-      await page.waitForTimeout(500)
-    }
-    await expect(page.locator("main, #root").first()).toBeVisible()
   })
 })

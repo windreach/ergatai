@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { trpc } from "../../../lib/trpc"
@@ -224,7 +225,7 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
       {displayOptions.length === 0 && (
         <DropdownEmptyState>
           {debouncedSearchText
-            ? `No commands matching "${debouncedSearchText}"`
+            ? i18n.t("No commands matching \"{{text}}\"", { text: debouncedSearchText })
             : "No commands available"}
         </DropdownEmptyState>
       )}

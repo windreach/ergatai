@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { PermissionApprovalPanel } from "../../../components/dialogs/permission-approval-dialog"
@@ -121,11 +122,8 @@ export function ActiveChatDock(props: any) {
             <ConversationStatusCard
               agentId={backendAgentId}
               chatId={parentChatId}
-              conversationId={conversationId}
               isStreaming={isStreaming}
               isCompacting={isCompacting}
-              changedFiles={changedFilesForConversation}
-              worktreePath={projectPath}
               onStop={handleStop}
               hasQueueCardAbove={queue.length > 0}
               hasAgentRailAbove={false}

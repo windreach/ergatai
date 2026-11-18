@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useAtomValue } from "jotai"
@@ -23,6 +24,7 @@ import { GroupAgentMessageHeader } from "../collaboration/group-agent-message-he
 import { useGroupChat } from "../collaboration/group-chat-context"
 import { MessageJsonDisplay } from "../ui/message-json-display"
 import { AgentAskUserQuestionTool } from "../ui/agent-ask-user-question-tool"
+import { AgentQuestionTool } from "../ui/agent-question-tool"
 import { AgentBashTool } from "../ui/agent-bash-tool"
 import { AgentGrepTool } from "../ui/agent-grep-tool"
 import { AgentEditTool } from "../ui/agent-edit-tool"
@@ -30,7 +32,7 @@ import { AgentFileChangeReport } from "../ui/agent-file-change-report"
 import { AgentExploringGroup } from "../ui/agent-exploring-group"
 import { AgentTaskToolsGroup } from "../ui/agent-task-tools"
 import { AgentPlanFileTool } from "../ui/agent-plan-file-tool"
-import { isPlanFile } from "../ui/agent-tool-utils"
+import { getToolFilePath, getToolErrorText, isPlanFile } from "../ui/agent-tool-utils"
 import { messageTypeVariantClass } from "../lib/message-type-styles"
 import type { CoreAgentId } from "../lib/agent-contract-api"
 import { ChatErrorCard } from "../ui/chat-error-card"
@@ -60,6 +62,7 @@ import {
 import { useFileOpen } from "../mentions"
 import { GitActivityBadges } from "../ui/git-activity-badges"
 import { ForkContext } from "./fork-context"
+import { SuppressErrorCardsContext } from "./suppress-error-cards-context"
 import { MemoizedTextPart } from "./memoized-text-part"
 import { InterAgentRepliesDisclosure } from "./inter-agent-replies-disclosure"
 import { isErgataiSendMessagePart } from "../lib/ergatai-mcp-detection"
@@ -400,7 +403,7 @@ function CollapsibleSteps({
         </div>
         {/* react-doctor-disable-next-line html-no-nested-interactive */}
         <button
-          aria-label="ExpandIcon"
+          aria-label={i18n.t('ExpandIcon')}
           className="p-1 rounded-md hover:bg-accent transition-[background-color,transform] duration-150 ease-out active:scale-95"
           onClick={(e) => {
             e.stopPropagation()
@@ -476,6 +479,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
   const projectPath = selectedWorkspace?.path
   const onOpenFile = useFileOpen()
   const onFork = useContext(ForkContext)
+  const suppressErrorCards = useContext(SuppressErrorCardsContext)
   const isDev = import.meta.env.DEV
   const { agents: groupChatAgents, isGroupChat } = useGroupChat()
   // Normalize ACP/codex tool parts into canonical types (e.g. "tool-Read README.md" → "tool-Read").
@@ -547,9 +551,9 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
         continue
       }
 
-      // Extract file path from locations (backend provides locations, not file_path)
-      const locations = (part.input as { _locations?: Array<{ path?: string }> } | undefined)?._locations
-      const filePath = locations?.[0]?.path
+      // Extract file path from locations/raw input (backend provides
+      // `_locations`, but persisted parts may only carry `input.path`)
+      const filePath = getToolFilePath(part)
 
       if (!filePath) {
         // Tool failed or backend didn't provide locations - skip silently
@@ -686,6 +690,15 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     if (part.type === "step-start") return null
     if (part.type === "tool-TaskOutput") return null
     if (part.type === "control-end") return null
+    if (suppressErrorCards) {
+      if (
+        part.type === "extension-error" ||
+        part.type === "rate-limit-warning" ||
+        part.type === "error"
+      ) {
+        return null
+      }
+    }
 
     if (part.toolCallId && orphanToolCallIds.has(part.toolCallId)) {
       if (!orphanFirstToolCallIds.has(part.toolCallId)) return null
@@ -806,7 +819,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
         >
           <div className="flex items-center gap-1 text-muted-foreground">
             <span className="font-medium text-foreground">@{targetAgent}</span>
-            <span>send_message</span>
+            <span>{i18n.t('send_message')}</span>
           </div>
           {message && (
             <div className="mt-1 max-h-44 overflow-y-auto rounded-sm bg-background/60 px-2 py-1.5">
@@ -837,13 +850,14 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     // - In collapsed steps: all show mini indicator, last collapsed op's card shown separately after finalParts
     // - In final parts: all but last show mini indicator, last shows full card
     if (part.type === "tool-Write" || part.type === "tool-Edit") {
-      const filePath = (part.input as { _locations?: Array<{ path?: string }> } | undefined)?._locations?.[0]?.path
-      if (!filePath) return null
-      if (isPlanFile(filePath)) {
-        // Use part.toolCallId to find operation since idx may be adjusted for collapsed parts
-        const opIndex = planOpsSummary.operations.findIndex(op => op.part.toolCallId === part.toolCallId)
-        if (opIndex === -1) return null
+      const filePath = getToolFilePath(part)
+      // Use part.toolCallId to find operation since idx may be adjusted for collapsed parts
+      const opIndex = planOpsSummary.operations.findIndex(op => op.part.toolCallId === part.toolCallId)
 
+      // Only tracked plan-file operations get special handling. Regular
+      // writes/edits (and untracked plan ops) fall through to AgentEditTool
+      // below, so a step counted in the header always renders a row.
+      if (filePath && isPlanFile(filePath) && opIndex !== -1) {
         const originalIndex = planOpsSummary.operations[opIndex]?.index ?? -1
         const isInCollapsedSteps = shouldCollapse && collapseBeforeIndex !== -1 && originalIndex < collapseBeforeIndex
         const isLastCollapsedOp = lastCollapsedPlanOp?.part.toolCallId === part.toolCallId
@@ -932,10 +946,26 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
       )
     }
 
+    if (part.type === "tool-question" || part.type === "tool-Question") {
+      const { isPending, isError } = getToolStatus(part, status)
+      return (
+        <AgentQuestionTool
+          // react-doctor-disable-next-line no-array-index-as-key
+          key={`${messageRenderKey}-${idx}`}
+          input={part.input as { questions?: Array<{ question: string; header?: string; multiple?: boolean; options?: Array<{ label: string; description?: string }> }> }}
+          output={part.output}
+          errorText={(part.errorText as string | undefined) || (part.error as string | undefined)}
+          state={isPending ? "call" : "result"}
+          isError={isError}
+          isStreaming={isStreaming && isLastMessage}
+        />
+      )
+    }
+
     if (part.type in AgentToolRegistry) {
       const meta = AgentToolRegistry[part.type]
       const { isPending, isError } = getToolStatus(part, status)
-      const filePath = (part.input as { _locations?: Array<{ path?: string }> } | undefined)?._locations?.[0]?.path
+      const filePath = getToolFilePath(part)
       const handleClick = part.type === "tool-Read" && onOpenFile && filePath
         ? () => onOpenFile(filePath)
         : undefined
@@ -944,11 +974,17 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
           // react-doctor-disable-next-line no-array-index-as-key
           key={`${messageRenderKey}-${idx}`}
           icon={meta.icon}
-          title={meta.title(part)}
+          title={
+            typeof (part as unknown as { claudeToolName?: unknown }).claudeToolName === "string"
+              ? (part as unknown as { claudeToolName: string }).claudeToolName
+              : meta.title(part)
+          }
           subtitle={meta.subtitle?.(part)}
           tooltipContent={meta.tooltipContent?.(part, projectPath)}
           isPending={isPending}
           isError={isError}
+          errorText={isError ? getToolErrorText(part) : undefined}
+          inlineError={meta.inlineError}
           onClick={handleClick}
         />
       )
@@ -983,16 +1019,23 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     }
 
     if (part.type?.startsWith("tool-")) {
+      // Prefer Claude's native tool name (preserved in claudeToolName) when
+      // available, so Claude tool calls render with their original tool name.
+      const claudeToolName =
+        typeof (part as unknown as { claudeToolName?: unknown }).claudeToolName === "string"
+          ? (part as unknown as { claudeToolName: string }).claudeToolName
+          : null
+      const displayName = claudeToolName || part.type.replace("tool-", "")
       return (
         // react-doctor-disable-next-line no-array-index-as-key
         <div key={`${messageRenderKey}-${idx}`} className="text-xs text-muted-foreground py-0.5 px-2">
-          {part.type.replace("tool-", "")}
+          {displayName}
         </div>
       )
     }
 
     return null
-  }, [nestedToolsMap, nestedToolIds, orphanToolCallIds, orphanFirstToolCallIds, orphanTaskGroups, collapseBeforeIndex, status, isLastMessage, isStreaming, conversationId, message.id, messageRenderKey, planOpsSummary, shouldCollapse, lastCollapsedPlanOp, onOpenFile, projectPath])
+  }, [nestedToolsMap, nestedToolIds, orphanToolCallIds, orphanFirstToolCallIds, orphanTaskGroups, collapseBeforeIndex, status, isLastMessage, isStreaming, conversationId, message.id, messageRenderKey, planOpsSummary, shouldCollapse, lastCollapsedPlanOp, onOpenFile, projectPath, suppressErrorCards])
 
   if (!message) return null
 
@@ -1134,7 +1177,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
-                    aria-label="More"
+                    aria-label={i18n.t('More')}
                     className="p-1 rounded-md transition-[background-color,transform] duration-150 ease-out hover:bg-accent active:scale-[0.97]"
                   >
                     <MoreHorizontal className="w-3.5 h-3.5 text-muted-foreground" />

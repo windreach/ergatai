@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 export interface PrContext {
   branch: string
   baseBranch: string
@@ -13,35 +14,35 @@ export function generatePrMessage(context: PrContext): string {
 
   const lines = [
     uncommittedCount > 0
-      ? `There are ${uncommittedCount} uncommitted changes.`
-      : "All changes are committed.",
-    `The current branch is ${branch}.`,
-    `The target branch is origin/${baseBranch}.`,
+      ? i18n.t("There are {{count}} uncommitted changes.", { count: uncommittedCount })
+      : i18n.t('All changes are committed.'),
+    i18n.t("The current branch is {{branch}}.", { branch }),
+    i18n.t("The target branch is origin/{{branch}}.", { branch: baseBranch }),
     hasUpstream
-      ? "The branch is already pushed to remote."
-      : "There is no upstream branch yet.",
-    "The user requested a PR.",
+      ? i18n.t('The branch is already pushed to remote.')
+      : i18n.t('There is no upstream branch yet.'),
+    i18n.t('The user requested a PR.'),
     "",
-    "Follow these exact steps to create a PR:",
+    i18n.t('Follow these exact steps to create a PR:'),
     "",
   ]
 
   const steps: string[] = []
 
   if (uncommittedCount > 0) {
-    steps.push("Run git diff to review uncommitted changes")
-    steps.push("Commit them. Write a clear, concise commit message.")
+    steps.push(i18n.t('Run git diff to review uncommitted changes'))
+    steps.push(i18n.t('Commit them. Write a clear, concise commit message.'))
   }
 
   if (!hasUpstream) {
-    steps.push("Push to origin")
+    steps.push(i18n.t('Push to origin'))
   }
 
-  steps.push(`Use git diff origin/${baseBranch}... to review the PR diff`)
+  steps.push(i18n.t("Use git diff origin/{{branch}}... to review the PR diff", { branch: baseBranch }))
   steps.push(
-    `Use gh pr create --base ${baseBranch} to create a PR. Keep the title under 80 characters and description under five sentences.`
+    i18n.t("Use gh pr create --base {{branch}} to create a PR. Keep the title under 80 characters and description under five sentences.", { branch: baseBranch })
   )
-  steps.push("If unknown of these steps fail, ask the user for help.")
+  steps.push(i18n.t('If unknown of these steps fail, ask the user for help.'))
 
   // Add numbered steps
   steps.forEach((step, index) => {
@@ -58,7 +59,7 @@ export function generateCommitToPrMessage(context: PrContext): string {
   const { branch, baseBranch, uncommittedCount } = context
 
   if (uncommittedCount === 0) {
-    return `All changes are already committed. The branch ${branch} is up to date.`
+    return i18n.t("All changes are already committed. The branch {{branch}} is up to date.", { branch })
   }
 
   return `There are ${uncommittedCount} uncommitted changes on branch ${branch}.

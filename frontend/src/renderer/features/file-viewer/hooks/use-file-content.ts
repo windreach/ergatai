@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useMemo, useEffect, useRef } from "react"
 import { trpc } from "../../../lib/trpc"
 
@@ -23,14 +24,14 @@ export interface FileContentResult {
 export function getErrorMessage(error: FileLoadError): string {
   switch (error) {
     case "not-found":
-      return "File not found"
+      return i18n.t('File not found')
     case "too-large":
-      return "File is too large to display (max 2 MB)"
+      return i18n.t('File is too large to display (max 2 MB)')
     case "binary":
-      return "Cannot display binary file"
+      return i18n.t('Cannot display binary file')
     case "unknown":
     default:
-      return "Failed to load file"
+      return i18n.t('Failed to load file')
   }
 }
 

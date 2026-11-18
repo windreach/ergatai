@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 /**
  * ErgataiChatTransport — streams chat through the Rust ergatai backend.
  *
@@ -414,7 +415,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
     const effectiveCorrelationId = messageCorrelationId || this.config.correlationId
 
     if (!expandedPrompt && images.length === 0 && files.length === 0) {
-      throw new Error("No prompt, images, or files found in last user message")
+      throw new Error(i18n.t('No prompt, images, or files found in last user message'))
     }
 
     // Stable text block ID for this response turn
@@ -501,50 +502,51 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                   return
                 }
 
-                // Capture subagent-attributed conversation chunks into the in-memory subagent buffer.
-                if (event.subagent_session_id) {
-                  if (event.type === "text") {
-                    appendSubagentMessage(agentId, event.subagent_session_id, {
-                      kind: "text",
-                      content: event.delta,
-                      createdAt: Date.now(),
-                    })
-                  } else if (event.type === "thinking") {
-                    appendSubagentMessage(agentId, event.subagent_session_id, {
-                      kind: "thinking",
-                      content: event.delta,
-                      createdAt: Date.now(),
-                    })
-                  } else if (event.type === "tool_call_start") {
-                    subagentToolOwners.set(event.id, event.subagent_session_id)
-                    appendSubagentMessage(agentId, event.subagent_session_id, {
-                      kind: "tool_call",
-                      content: `${event.name ?? "tool"} ${JSON.stringify(event.input ?? {})}`,
-                      createdAt: Date.now(),
-                      toolCallId: event.id,
-                      toolName: event.name ?? "tool",
-                      input: event.input,
-                      state: "pending",
-                    })
-                  }
-                }
-
-                // Attribute tool errors to the owning subagent even when the
-                // completion event has no subagent_session_id.
-                if (event.type === "tool_call_error") {
-                  const owner = subagentToolOwners.get(event.id)
-                  if (owner) {
-                    appendSubagentMessage(agentId, owner, {
-                      kind: "tool_result",
-                      content: event.error,
-                      createdAt: Date.now(),
-                      toolCallId: event.id,
-                      state: "failed",
-                      output: { error: event.error },
-                    })
-                    subagentToolOwners.delete(event.id)
-                  }
-                }
+                // TODO(subagent): temporarily not consumed. Subagent conversation capture disabled.
+                // // Capture subagent-attributed conversation chunks into the in-memory subagent buffer.
+                // if (event.subagent_session_id) {
+                //   if (event.type === "text") {
+                //     appendSubagentMessage(agentId, event.subagent_session_id, {
+                //       kind: "text",
+                //       content: event.delta,
+                //       createdAt: Date.now(),
+                //     })
+                //   } else if (event.type === "thinking") {
+                //     appendSubagentMessage(agentId, event.subagent_session_id, {
+                //       kind: "thinking",
+                //       content: event.delta,
+                //       createdAt: Date.now(),
+                //     })
+                //   } else if (event.type === "tool_call_start") {
+                //     subagentToolOwners.set(event.id, event.subagent_session_id)
+                //     appendSubagentMessage(agentId, event.subagent_session_id, {
+                //       kind: "tool_call",
+                //       content: `${event.name ?? "tool"} ${JSON.stringify(event.input ?? {})}`,
+                //       createdAt: Date.now(),
+                //       toolCallId: event.id,
+                //       toolName: event.name ?? "tool",
+                //       input: event.input,
+                //       state: "pending",
+                //     })
+                //   }
+                // }
+                //
+                // // Attribute tool errors to the owning subagent even when the
+                // // completion event has no subagent_session_id.
+                // if (event.type === "tool_call_error") {
+                //   const owner = subagentToolOwners.get(event.id)
+                //   if (owner) {
+                //     appendSubagentMessage(agentId, owner, {
+                //       kind: "tool_result",
+                //       content: event.error,
+                //       createdAt: Date.now(),
+                //       toolCallId: event.id,
+                //       state: "failed",
+                //       output: { error: event.error },
+                //     })
+                //     subagentToolOwners.delete(event.id)
+                //   }
+                // }
 
                 // Keep a consumable extension-meta snapshot for UI components.
                 if (event.type === "extension_update") {
@@ -620,58 +622,60 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                   return
                 }
 
-                // Keep subagent run metadata in the in-memory rail store.
-                if (event.type === "subagent_spawned") {
-                  upsertSubagentRun(agentId, {
-                    subagentSessionId: event.subagent_session_id,
-                    name: event.name,
-                    task: event.task,
-                    state: "running",
-                    startedAt: Date.now(),
-                    updatedAt: Date.now(),
-                  })
-                }
-
-                if (event.type === "subagent_state_update") {
-                  updateSubagentRunState(agentId, event.subagent_session_id, event.state)
-                }
-
-                // Surface subagent spawn/state events in the message stream.
-                if (event.type === "subagent_spawned") {
-                  if (activeBlock === "reasoning") {
-                    controller.enqueue({ type: "reasoning-end", id: getReasoningBlockId() })
-                    activeBlock = null
-                  } else if (activeBlock === "text") {
-                    // keep current text block open to append marker
-                  } else {
-                    textBlockCounter++
-                    controller.enqueue({ type: "text-start", id: getTextBlockId() })
-                    activeBlock = "text"
-                  }
-                  controller.enqueue({
-                    type: "text-delta",
-                    id: getTextBlockId(),
-                    delta: `\n[Subagent spawned: ${event.name} — ${event.task}]\n`,
-                  })
-                  return
-                }
-
-                if (event.type === "subagent_state_update") {
-                  if (activeBlock !== "text") {
-                    if (activeBlock === "reasoning") {
-                      controller.enqueue({ type: "reasoning-end", id: getReasoningBlockId() })
-                    }
-                    textBlockCounter++
-                    controller.enqueue({ type: "text-start", id: getTextBlockId() })
-                    activeBlock = "text"
-                  }
-                  controller.enqueue({
-                    type: "text-delta",
-                    id: getTextBlockId(),
-                    delta: `\n[Subagent ${event.subagent_session_id} state: ${event.state}]\n`,
-                  })
-                  return
-                }
+                // TODO(subagent): temporarily not consumed. Subagent run metadata and
+                // message-stream surface disabled.
+                // // Keep subagent run metadata in the in-memory rail store.
+                // if (event.type === "subagent_spawned") {
+                //   upsertSubagentRun(agentId, {
+                //     subagentSessionId: event.subagent_session_id,
+                //     name: event.name,
+                //     task: event.task,
+                //     state: "running",
+                //     startedAt: Date.now(),
+                //     updatedAt: Date.now(),
+                //   })
+                // }
+                //
+                // if (event.type === "subagent_state_update") {
+                //   updateSubagentRunState(agentId, event.subagent_session_id, event.state)
+                // }
+                //
+                // // Surface subagent spawn/state events in the message stream.
+                // if (event.type === "subagent_spawned") {
+                //   if (activeBlock === "reasoning") {
+                //     controller.enqueue({ type: "reasoning-end", id: getReasoningBlockId() })
+                //     activeBlock = null
+                //   } else if (activeBlock === "text") {
+                //     // keep current text block open to append marker
+                //   } else {
+                //     textBlockCounter++
+                //     controller.enqueue({ type: "text-start", id: getTextBlockId() })
+                //     activeBlock = "text"
+                //   }
+                //   controller.enqueue({
+                //     type: "text-delta",
+                //     id: getTextBlockId(),
+                //     delta: `\n[Subagent spawned: ${event.name} — ${event.task}]\n`,
+                //   })
+                //   return
+                // }
+                //
+                // if (event.type === "subagent_state_update") {
+                //   if (activeBlock !== "text") {
+                //     if (activeBlock === "reasoning") {
+                //       controller.enqueue({ type: "reasoning-end", id: getReasoningBlockId() })
+                //     }
+                //     textBlockCounter++
+                //     controller.enqueue({ type: "text-start", id: getTextBlockId() })
+                //     activeBlock = "text"
+                //   }
+                //   controller.enqueue({
+                //     type: "text-delta",
+                //     id: getTextBlockId(),
+                //     delta: `\n[Subagent ${event.subagent_session_id} state: ${event.state}]\n`,
+                //   })
+                //   return
+                // }
 
                 // Phase 19: Handle message_inserted event for interrupt queue management
                 if (event.type === "message_inserted") {
@@ -743,22 +747,23 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                   // Clean up the Map entry to prevent memory leak
                   toolCallInputs.delete(event.id)
 
-                  // Attribute tool results back to the owning subagent, if any.
-                  const owner = subagentToolOwners.get(event.id)
-                  if (owner) {
-                    appendSubagentMessage(agentId, owner, {
-                      kind: "tool_result",
-                      content:
-                        typeof event.output === "string"
-                          ? event.output
-                          : JSON.stringify(event.output ?? ""),
-                      createdAt: Date.now(),
-                      toolCallId: event.id,
-                      state: "completed",
-                      output: event.output,
-                    })
-                    subagentToolOwners.delete(event.id)
-                  }
+                  // TODO(subagent): temporarily not consumed. Subagent tool-result attribution disabled.
+                  // // Attribute tool results back to the owning subagent, if any.
+                  // const owner = subagentToolOwners.get(event.id)
+                  // if (owner) {
+                  //   appendSubagentMessage(agentId, owner, {
+                  //     kind: "tool_result",
+                  //     content:
+                  //       typeof event.output === "string"
+                  //         ? event.output
+                  //         : JSON.stringify(event.output ?? ""),
+                  //     createdAt: Date.now(),
+                  //     toolCallId: event.id,
+                  //     state: "completed",
+                  //     output: event.output,
+                  //   })
+                  //   subagentToolOwners.delete(event.id)
+                  // }
                 }
 
                 // Handle session title update separately
@@ -830,7 +835,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                 close([
                   {
                     type: "error",
-                    errorText: error instanceof Error ? error.message : "SSE connection lost",
+                    errorText: error instanceof Error ? error.message : i18n.t('SSE connection lost'),
                   },
                   { type: "finish" },
                 ])
@@ -863,7 +868,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
             }
 
             if (!effectiveAgentId) {
-              throw new Error("Agent ID is not available — cannot send message")
+              throw new Error(i18n.t('Agent ID is not available — cannot send message'))
             }
 
             // Model detection is now handled by the backend.
@@ -904,7 +909,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                     // Create new conversation
                     const conversation = await trpcClient.ergatai.createConversation.mutate({
                       chatId: this.config.chatId,
-                      title: promptToTitle(titleSource) || "New Conversation",
+                      title: promptToTitle(titleSource) || i18n.t('New Conversation'),
                       mode: this.config.mode,
                     })
                     return conversation.id
@@ -1007,7 +1012,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
             close([
               {
                 type: "error",
-                errorText: error instanceof Error ? error.message : "Failed to start agent",
+                errorText: error instanceof Error ? error.message : i18n.t('Failed to start agent'),
               },
               { type: "finish" },
             ])

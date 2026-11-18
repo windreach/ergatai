@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { trpcClient } from "@/lib/trpc"
 import { createTrpcTerminalProvider } from "./create-provider"
 import type { TerminalProvider } from "./types"
@@ -5,7 +6,7 @@ import type { TerminalRoutes, StreamEventShape } from "./create-provider"
 
 export const legacyElectronLocalProvider: TerminalProvider = createTrpcTerminalProvider({
   id: "legacy-electron-local",
-  label: "Local shell",
+  label: i18n.t('Local shell'),
   async attach(request) {
     return trpcClient.terminal.createOrAttach.mutate(request)
   },
@@ -24,5 +25,5 @@ export const legacyElectronLocalProvider: TerminalProvider = createTrpcTerminalP
       handlers.onExit(event.exitCode ?? 0, event.signal)
     }
   },
-  streamErrorLabel: "Terminal stream error",
+  streamErrorLabel: i18n.t('Terminal stream error'),
 })

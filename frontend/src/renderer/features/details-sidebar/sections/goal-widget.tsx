@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo } from "react"
@@ -25,7 +26,7 @@ export const GoalWidget = memo(function GoalWidget({ goal }: GoalWidgetProps) {
     <div className="rounded-lg border border-border/60 bg-muted/30 p-3 text-sm">
       <div className="mb-1 flex items-center gap-2 font-medium">
         <Target className="h-4 w-4" />
-        <span>Goal</span>
+        <span>{i18n.t('Goal')}</span>
       </div>
       <div className="text-xs text-muted-foreground whitespace-pre-wrap">{text}</div>
     </div>

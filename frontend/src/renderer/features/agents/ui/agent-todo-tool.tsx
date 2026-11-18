@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useState, useMemo, useEffect, useRef, useCallback } from "react"
@@ -104,11 +105,11 @@ function detectChanges(
 function getStatusVerb(status: TodoItem["status"], content: string): string {
   switch (status) {
     case "in_progress":
-      return `Started: ${content}`
+      return i18n.t("Started: {{content}}", { content })
     case "completed":
-      return `Finished: ${content}`
+      return i18n.t("Finished: {{content}}", { content })
     case "pending":
-      return `Created: ${content}`
+      return i18n.t("Created: {{content}}", { content })
     default:
       return content
   }
@@ -595,11 +596,11 @@ export const AgentTodoTool = memo(function AgentTodoTool({
     // Build summary title
     let summaryTitle = "Updated to-dos"
     if (completedChanges > 0 && startedChanges === 0) {
-      summaryTitle = `Finished ${completedChanges} ${completedChanges === 1 ? "task" : "tasks"}`
+      summaryTitle = i18n.t("Finished {{count}} {{plural}}", { count: completedChanges, plural: completedChanges === 1 ? i18n.t("task") : i18n.t("tasks") })
     } else if (startedChanges > 0 && completedChanges === 0) {
-      summaryTitle = `Started ${startedChanges} ${startedChanges === 1 ? "task" : "tasks"}`
+      summaryTitle = i18n.t("Started {{count}} {{plural}}", { count: startedChanges, plural: startedChanges === 1 ? i18n.t("task") : i18n.t("tasks") })
     } else if (completedChanges > 0 && startedChanges > 0) {
-      summaryTitle = `Updated ${changes.items.length} ${changes.items.length === 1 ? "task" : "tasks"}`
+      summaryTitle = i18n.t("Updated {{count}} {{plural}}", { count: changes.items.length, plural: changes.items.length === 1 ? i18n.t("task") : i18n.t("tasks") })
     }
 
     // Limit displayed items to avoid overflow
@@ -689,7 +690,7 @@ export const AgentTodoTool = memo(function AgentTodoTool({
         onClick={handleToggleExpand}
         role="button"
         aria-expanded={isExpanded}
-        aria-label={`To-do list with ${totalTodos} items. Click to ${isExpanded ? "collapse" : "expand"}`}
+        aria-label={i18n.t("To-do list with {{count}} items. Click to {{action}}", { count: totalTodos, action: isExpanded ? i18n.t("collapse") : i18n.t("expand") })}
         tabIndex={0}
         onKeyDown={handleKeyDown}
       >

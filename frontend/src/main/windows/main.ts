@@ -10,6 +10,7 @@ import {
   nativeImage,
   dialog,
 } from "electron"
+import { t, setLanguagePreference } from "../lib/i18n"
 import { join } from "path"
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "fs"
 import { createIPCHandler } from "trpc-electron/main"
@@ -282,6 +283,17 @@ function registerIpcHandlers(): void {
     setOptOut()
   })
 
+  // Language preference (native dialogs/menus follow the in-app setting)
+  ipcMain.handle(
+    "app:set-language-preference",
+    (
+      _event,
+      preference: "system" | "en" | "zh-CN",
+    ) => {
+      setLanguagePreference(preference)
+    },
+  )
+
   // Shell
   ipcMain.handle("shell:open-external", (_event, url: string) => {
     validateHttpUrl(url)
@@ -313,8 +325,8 @@ function registerIpcHandlers(): void {
       const result = await dialog.showSaveDialog(win, {
         defaultPath: options.filename,
         filters: options.filters || [
-          { name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif"] },
-          { name: "All Files", extensions: ["*"] },
+          { name: t("Images"), extensions: ["png", "jpg", "jpeg", "webp", "gif"] },
+          { name: t("All Files"), extensions: ["*"] },
         ],
       })
 
@@ -542,13 +554,13 @@ export function createWindow(options?: { chatId?: string; conversationId?: strin
         dialog
           .showMessageBox(window, {
             type: "warning",
-            buttons: ["Cancel", "Reload Anyway"],
+            buttons: [t("Cancel"), t("Reload Anyway")],
             defaultId: 0,
             cancelId: 0,
-            title: "Active Sessions",
-            message: "There are active agent sessions running.",
+            title: t("Active Sessions"),
+            message: t("There are active agent sessions running."),
             detail:
-              "Reloading will interrupt them. The current progress will be saved. Are you sure you want to reload?",
+              t("Reloading will interrupt them. The current progress will be saved. Are you sure you want to reload?"),
           })
           .then(({ response }) => {
             if (response === 1) {
@@ -580,7 +592,7 @@ export function createWindow(options?: { chatId?: string; conversationId?: strin
       dialog
         .showMessageBox(window, {
           type: "warning",
-          buttons: ["Cancel", "Close Anyway"],
+          buttons: [t("Cancel"), t("Close Anyway")],
           defaultId: 0,
           cancelId: 0,
           title: "Active Sessions",

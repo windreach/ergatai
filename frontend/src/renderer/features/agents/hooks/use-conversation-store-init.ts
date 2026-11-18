@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
  
 import { useEffect } from "react"
 import { appStore } from "../../../lib/jotai-store"
@@ -79,7 +80,7 @@ export function useConversationStoreInit({
       const localName = existingLocal?.name && existingLocal.name.trim() ? existingLocal.name : null
       // Historical titles can contain serialized mention tokens (e.g.
       // "@[file:local:...] fix this"). Render a readable title instead.
-      const name = mentionsToReadableText(dbName || localName || "") || "New Chat"
+      const name = mentionsToReadableText(dbName || localName || "") || i18n.t('New Chat')
       return {
         id: sc.id,
         name,
@@ -105,7 +106,7 @@ export function useConversationStoreInit({
       if (!dbConversationIds.has(id)) {
         allConversations.push({
           id,
-          name: "New Chat",
+          name: i18n.t('New Chat'),
           created_at: new Date().toISOString(),
         })
       }

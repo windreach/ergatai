@@ -1,7 +1,9 @@
+import i18n from "@/lib/i18n"
 import { useMemo, useState } from "react"
 import { AlertTriangle, Check, ChevronDown, Copy } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { useTranslation } from "react-i18next"
 import {
   getChatErrorDisplay,
   type ChatErrorInfo,
@@ -38,6 +40,7 @@ export function ChatErrorCard({
   onSwitchModel,
 }: ChatErrorCardProps) {
   const [copied, setCopied] = useState(false)
+  const { t } = useTranslation()
   const display = useMemo(() => getChatErrorDisplay(error), [error])
   const details = useMemo(() => buildDetails(error), [error])
 
@@ -55,7 +58,7 @@ export function ChatErrorCard({
   return (
     <div
       className={cn(
-        "my-2 w-full min-w-0 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-xs",
+        "my-2 w-full min-w-0 text-xs",
         className,
       )}
       data-testid="chat-error-card"
@@ -63,59 +66,59 @@ export function ChatErrorCard({
       <div className="flex items-start gap-2">
         <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-destructive" />
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="font-medium text-destructive">{display.title}</span>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-destructive">
+            <span className="font-medium">{t(display.titleKey)}</span>
             {error.errorName && (
-              <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] font-mono text-destructive/80">
+              <span className="font-mono text-[10px] text-destructive/80">
                 {error.errorName}
               </span>
             )}
             {error.repeatCount && error.repeatCount > 1 && (
-              <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive/80">
-                重复 {error.repeatCount} 次
+              <span className="text-[10px] text-destructive/80">
+                {t("chat.errors.repeated", { count: error.repeatCount })}
               </span>
             )}
           </div>
-          <p className="mt-1 text-muted-foreground">{display.description}</p>
+          <p className="mt-0.5 text-destructive/80">{display.descriptionKey ? t(display.descriptionKey) : display.descriptionText}</p>
 
           {(onRetry || onSwitchModel) && (
-            <div className="mt-2 flex flex-wrap items-center gap-2">
+            <div className="mt-1 flex flex-wrap items-center gap-2">
               {onRetry && (
                 <button
                   type="button"
                   onClick={onRetry}
                   disabled={retryDisabled}
-                  className="rounded border border-destructive/30 bg-background/60 px-2 py-1 font-medium text-foreground transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded px-1 py-0.5 font-medium underline underline-offset-2 transition-colors hover:text-destructive/80 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  重试
+                  {t("common.retry")}
                 </button>
               )}
               {onSwitchModel && (
                 <button
                   type="button"
                   onClick={onSwitchModel}
-                  className="rounded border border-border bg-background/60 px-2 py-1 font-medium text-foreground transition-colors hover:bg-accent"
+                  className="rounded px-1 py-0.5 font-medium underline underline-offset-2 transition-colors hover:text-destructive/80"
                 >
-                  切换模型
+                  {t("chat.errors.switchModel")}
                 </button>
               )}
             </div>
           )}
 
-          <details className="group mt-2">
-            <summary className="flex cursor-pointer list-none items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
+          <details className="group mt-1">
+            <summary className="flex cursor-pointer list-none items-center gap-1 text-[11px] text-destructive/60 hover:text-destructive/80">
               <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-180" />
-              技术详情
+              {t("chat.errors.technicalDetails")}
             </summary>
             <div className="relative mt-1.5">
-              <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-background/70 p-2 font-mono text-[10px] leading-relaxed text-muted-foreground">
+              <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded border border-destructive/20 bg-destructive/5 p-2 font-mono text-[10px] leading-relaxed text-destructive/70">
                 {details}
               </pre>
               <button
                 type="button"
                 onClick={handleCopy}
-                aria-label="复制错误详情"
-                className="absolute right-1.5 top-1.5 rounded border border-border/60 bg-background/90 p-1 text-muted-foreground transition-colors hover:text-foreground"
+                aria-label={t("chat.errors.copyErrorDetails")}
+                className="absolute right-1.5 top-1.5 rounded border border-destructive/20 bg-background/90 p-1 text-destructive/60 transition-colors hover:text-destructive"
               >
                 {copied ? (
                   <Check className="h-3 w-3 text-emerald-500" />

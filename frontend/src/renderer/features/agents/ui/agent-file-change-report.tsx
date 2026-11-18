@@ -1,8 +1,10 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState } from "react"
 import { ChevronDown, ChevronRight, FileText } from "lucide-react"
 import { cn } from "../../../lib/utils"
+import { useTranslation } from "react-i18next"
 
 interface FileChangeEntry {
   path?: string
@@ -38,6 +40,7 @@ function extractFiles(payload: unknown): FileChangeEntry[] {
 
 export function AgentFileChangeReport({ payload }: { payload?: unknown }) {
   const [open, setOpen] = useState(false)
+  const { t } = useTranslation()
   const files = extractFiles(payload)
   const hasFiles = files.length > 0
 
@@ -50,7 +53,7 @@ export function AgentFileChangeReport({ payload }: { payload?: unknown }) {
       >
         {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         <FileText className="h-4 w-4" />
-        <span>文件变更摘要</span>
+        <span>{t("chat.fileChangeSummary")}</span>
         {hasFiles ? <span className="text-muted-foreground">({files.length})</span> : null}
       </button>
       {open ? (

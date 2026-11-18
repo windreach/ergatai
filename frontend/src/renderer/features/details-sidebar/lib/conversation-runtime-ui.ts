@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import type { UIMessage } from "@ai-sdk/react"
 import type { ConversationRuntimeState } from "./conversation-runtime-gateway"
 import { PROJECTION_KINDS } from "@/lib/projection-kinds"
@@ -13,6 +14,7 @@ type RuntimeEvent = {
         id: string
         name: string
         input?: unknown
+        claude_tool_name?: string | null
       }
     | { type: "tool_call_input"; id: string; delta: string }
     | {
@@ -21,6 +23,7 @@ type RuntimeEvent = {
         name: string
         input?: unknown
         output?: unknown
+        claude_tool_name?: string | null
       }
     | { type: "tool_call_error"; id: string; error: string }
     | { type: "done"; stop_reason: string }
@@ -318,7 +321,7 @@ export function buildRuntimeMessages(
               (p.type === "text" &&
                 typeof p.text === "string" &&
                 (p.text.includes("provider.free-limit") ||
-                  p.text.includes("Free usage limit") ||
+                  p.text.includes(i18n.t('Free usage limit')) ||
                   p.text.toLowerCase().includes("error"))),
           ),
         )

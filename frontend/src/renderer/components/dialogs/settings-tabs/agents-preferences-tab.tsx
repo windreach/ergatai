@@ -1,4 +1,7 @@
+import i18n from "@/lib/i18n"
+import { resolveLanguage } from "@/lib/language"
 import { useAtom } from "jotai"
+import { useTranslation } from "react-i18next"
 import { useEffect, useState } from "react"
 import {
   analyticsOptOutAtom,
@@ -10,6 +13,7 @@ import {
   notifyWhenFocusedAtom,
   soundNotificationsEnabledAtom,
   preferredEditorAtom,
+  languagePreferenceAtom,
   type AgentMode,
   type AutoAdvanceTarget,
   type CtrlTabTarget,
@@ -153,7 +157,9 @@ export function AgentsPreferencesTab() {
   const [autoAdvanceTarget, setAutoAdvanceTarget] = useAtom(autoAdvanceTargetAtom)
   const [defaultAgentMode, setDefaultAgentMode] = useAtom(defaultAgentModeAtom)
   const [preferredEditor, setPreferredEditor] = useAtom(preferredEditorAtom)
+  const [languagePreference, setLanguagePreference] = useAtom(languagePreferenceAtom)
   const isNarrowScreen = useIsNarrowScreen()
+  const { t } = useTranslation()
 
   // Co-authored-by setting from Claude settings.json
   const { data: includeCoAuthoredBy, refetch: refetchCoAuthoredBy } =
@@ -185,9 +191,9 @@ export function AgentsPreferencesTab() {
       {/* Header - hidden on narrow screens since it's in the navigation bar */}
       {!isNarrowScreen && (
         <div className="flex flex-col gap-1.5 text-center sm:text-left">
-          <h3 className="text-sm font-semibold text-foreground">Preferences</h3>
+          <h3 className="text-sm font-semibold text-foreground">{t("settings.preferences.title")}</h3>
           <p className="text-xs text-muted-foreground">
-            Configure Claude's behavior and features
+            {t("settings.preferences.subtitle")}
           </p>
         </div>
       )}
@@ -197,12 +203,12 @@ export function AgentsPreferencesTab() {
         <div className="flex items-center justify-between p-4">
           <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
-              Extended Thinking
+              {t("settings.preferences.extendedThinking")}
             </span>
             <span className="text-xs text-muted-foreground">
               Enable deeper reasoning with more thinking tokens (uses more
               credits).{" "}
-              <span className="text-foreground/70">Disables response streaming.</span>
+              <span className="text-foreground/70">{t('Disables response streaming.')}</span>
             </span>
           </div>
           <Switch
@@ -229,8 +235,8 @@ export function AgentsPreferencesTab() {
               </span>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="agent">Agent</SelectItem>
-              <SelectItem value="plan">Plan</SelectItem>
+              <SelectItem value="agent">{t('Agent')}</SelectItem>
+              <SelectItem value="plan">{t('Plan')}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -313,8 +319,8 @@ export function AgentsPreferencesTab() {
               </span>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="workspaces">Workspaces</SelectItem>
-              <SelectItem value="agents">Agents</SelectItem>
+              <SelectItem value="workspaces">{t('Workspaces')}</SelectItem>
+              <SelectItem value="agents">{t('Agents')}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -341,9 +347,9 @@ export function AgentsPreferencesTab() {
               </span>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="next">Go to next workspace</SelectItem>
-              <SelectItem value="previous">Go to previous workspace</SelectItem>
-              <SelectItem value="close">Close workspace</SelectItem>
+              <SelectItem value="next">{t('Go to next workspace')}</SelectItem>
+              <SelectItem value="previous">{t('Go to previous workspace')}</SelectItem>
+              <SelectItem value="close">{t('Close workspace')}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -407,7 +413,7 @@ export function AgentsPreferencesTab() {
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger className="flex items-center gap-2">
                   <img src={vscodeBaseIcon} alt="" className="h-4 w-4 flex-shrink-0 object-contain" />
-                  <span>VS Code</span>
+                  <span>{t('VS Code')}</span>
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-48" sideOffset={6} alignOffset={-4}>
                   {VSCODE.map((app) => (
@@ -429,7 +435,7 @@ export function AgentsPreferencesTab() {
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger className="flex items-center gap-2">
                   <img src={jetbrainsBaseIcon} alt="" className="h-4 w-4 flex-shrink-0 object-contain" />
-                  <span>JetBrains</span>
+                  <span>{t('JetBrains')}</span>
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-48 max-h-[300px] overflow-y-auto" sideOffset={6} alignOffset={-4}>
                   {JETBRAINS.map((app) => (
@@ -450,6 +456,39 @@ export function AgentsPreferencesTab() {
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
+        </div>
+      </div>
+
+      {/* Language */}
+      <div className="bg-background rounded-lg border border-border overflow-hidden">
+        <div className="flex items-center justify-between p-4">
+          <div className="flex flex-col gap-1">
+            <span className="text-sm font-medium text-foreground">
+              Language
+            </span>
+            <span className="text-xs text-muted-foreground">
+              Choose the display language
+            </span>
+          </div>
+          <Select
+            value={languagePreference}
+            onValueChange={(value: any) => { setLanguagePreference(value); void i18n.changeLanguage(resolveLanguage(value)); window.location.reload() }}
+          >
+            <SelectTrigger className="w-auto px-2">
+              <span className="text-xs">
+                {languagePreference === "system"
+                  ? "System"
+                  : languagePreference === "en"
+                    ? "English"
+                    : "中文"}
+              </span>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="system">{t('System')}</SelectItem>
+              <SelectItem value="en">{t('English')}</SelectItem>
+              <SelectItem value="zh-CN">中文</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       </div>
 

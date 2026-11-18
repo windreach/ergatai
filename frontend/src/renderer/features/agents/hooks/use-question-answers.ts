@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback, useRef, useMemo } from "react"
 import { trpcClient } from "../../../lib/trpc"
 import { QUESTIONS_SKIPPED_MESSAGE } from "../atoms"
@@ -158,7 +159,7 @@ export function useQuestionAnswers({
             // Append to existing answer
             formattedAnswers[lastQuestion.question] = `${existingAnswer}, Other: ${customText}`
           } else {
-            formattedAnswers[lastQuestion.question] = `Other: ${customText}`
+            formattedAnswers[lastQuestion.question] = i18n.t("Other: {{text}}", { text: customText })
           }
         }
 

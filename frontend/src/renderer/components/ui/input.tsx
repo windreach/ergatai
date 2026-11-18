@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { cn } from "../../lib/utils"
 import * as React from "react"
 

@@ -65,6 +65,8 @@ export interface DesktopApi {
 
   // Analytics
   setAnalyticsOptOut: (optedOut: boolean) => Promise<void>
+  // Language preference (native dialogs/menus follow the in-app setting)
+  setLanguagePreference: (preference: "system" | "en" | "zh-CN") => Promise<void>
 
   // Native features
   setBadge: (count: number | null) => Promise<void>

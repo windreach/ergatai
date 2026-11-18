@@ -278,14 +278,4 @@ test.describe.serial("P0 smoke (Ergatai Electron UI)", () => {
 
     await closeSettings()
   })
-
-  test("UI-TB-001 Task Board opens from sidebar @smoke", async () => {
-    const taskBoardButton = page.getByRole("button", { name: "Open task board" }).first()
-    await expect(taskBoardButton).toBeVisible({ timeout: 10_000 })
-    await taskBoardButton.focus()
-    await page.keyboard.press("Enter")
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Task Board" }),
-    ).toBeVisible({ timeout: 10_000 })
-  })
 })

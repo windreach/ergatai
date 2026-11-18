@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useState } from "react"
@@ -97,7 +98,7 @@ export const AgentWebFetchTool = memo(function AgentWebFetchTool({
               Fetching
             </TextShimmer>
           ) : (
-            <span className="text-xs text-muted-foreground">Fetched</span>
+            <span className="text-xs text-muted-foreground">{i18n.t('Fetched')}</span>
           )}
           
           <span className="truncate text-foreground">{hostname}</span>
@@ -110,7 +111,7 @@ export const AgentWebFetchTool = memo(function AgentWebFetchTool({
               <IconSpinner className="w-3 h-3" />
             ) : (isError || !isSuccess) ? (
               <span className="text-destructive">
-                {statusCode ? `Error ${statusCode}` : "Failed"}
+                {statusCode ? i18n.t("Error {{code}}", { code: statusCode }) : i18n.t("Failed")}
               </span>
             ) : (
               <span className="text-muted-foreground">
@@ -150,4 +151,3 @@ export const AgentWebFetchTool = memo(function AgentWebFetchTool({
     </div>
   )
 }, areToolPropsEqual)
-

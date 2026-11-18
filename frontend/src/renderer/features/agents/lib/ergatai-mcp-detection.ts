@@ -1,8 +1,9 @@
+import i18n from "@/lib/i18n"
 /**
  * Shared detection helpers for Ergatai MCP tool calls.
  *
  * Different agents (Claude Code, Codex, OpenCode, ...) normalise the Ergatai
- * MCP server name in different ways ("Ergatai MCP Tools", "Ergatai_MCP_Tools",
+ * MCP server name in different ways (i18n.t('Ergatai MCP Tools'), "Ergatai_MCP_Tools",
  * "ergatai", "ergatai-mcp", ...). Relying on the exact server name is
  * therefore fragile. These helpers identify Ergatai MCP calls primarily by
  * their *structural* contract (e.g. send_message carries target_agent_id +

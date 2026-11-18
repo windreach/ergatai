@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useEffect, useCallback, useRef } from "react"
 import { toast } from "sonner"
 import { executeRollback } from "./rollback-utils"
@@ -82,7 +83,7 @@ export function useRollback({
         )
       } catch (error) {
         console.error("[useRollback] Unexpected error during rollback:", error)
-        toast.error("An unexpected error occurred during rollback")
+        toast.error(i18n.t('An unexpected error occurred during rollback'))
       }
     },
     [

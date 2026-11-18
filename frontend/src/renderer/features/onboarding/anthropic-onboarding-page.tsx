@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useSetAtom } from "jotai"
@@ -272,7 +273,7 @@ export function AnthropicOnboardingPage() {
 
       {/* Back button - fixed in top left corner below traffic lights */}
       <button
-        aria-label="ChevronLeft"
+        aria-label={i18n.t('ChevronLeft')}
         onClick={handleBack}
         className="fixed top-12 left-4 flex items-center justify-center h-8 w-8 rounded-full hover:bg-foreground/5 transition-colors"
       >
@@ -282,8 +283,8 @@ export function AnthropicOnboardingPage() {
       <div className="w-full max-w-[440px] space-y-8 px-4">
         {/* Header with dual icons */}
         <ClaudeCodeDualHeader
-          title="Connect Claude Code"
-          subtitle="Connect your Claude Code subscription to get started"
+          title={i18n.t('Connect Claude Code')}
+          subtitle={i18n.t('Connect your Claude Code subscription to get started')}
         />
 
         {/* Content */}
@@ -361,7 +362,7 @@ export function AnthropicOnboardingPage() {
                   value={authCode}
                   onChange={handleCodeChange}
                   onKeyDown={handleKeyDown}
-                  placeholder="Paste your authentication code here..."
+                  placeholder={i18n.t('Paste your authentication code here...')}
                   className="font-mono text-center pr-10"
                   autoFocus
                   disabled={isSubmitting}

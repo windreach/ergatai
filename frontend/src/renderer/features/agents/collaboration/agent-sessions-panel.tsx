@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useState } from "react"
 import { Clock, Play, Trash2 } from "lucide-react"
 
@@ -63,7 +64,7 @@ export function AgentSessionsPanel({
           className="size-5 p-0"
           disabled={createSession.isPending}
           onClick={() => createSession.mutate({ agentId })}
-          aria-label="Create session"
+          aria-label={i18n.t('Create session')}
         >
           +
         </Button>
@@ -71,7 +72,7 @@ export function AgentSessionsPanel({
       {sessionsQuery.isLoading ? (
         <Skeleton className="h-16 w-full" />
       ) : sessions.length === 0 ? (
-        <p className="px-3 py-2 text-xs text-muted-foreground">No saved sessions</p>
+        <p className="px-3 py-2 text-xs text-muted-foreground">{i18n.t('No saved sessions')}</p>
       ) : (
         <div className="rounded-md border">
           {sessions.map((session) => (
@@ -95,7 +96,7 @@ export function AgentSessionsPanel({
                   onClick={() =>
                     loadSession.mutate({ agentId, sessionId: session.session_id })
                   }
-                  aria-label="Load session"
+                  aria-label={i18n.t('Load session')}
                 >
                   <Play className="size-3" />
                 </Button>
@@ -107,7 +108,7 @@ export function AgentSessionsPanel({
                   onClick={() =>
                     deleteSession.mutate({ agentId, sessionId: session.session_id })
                   }
-                  aria-label="Delete session"
+                  aria-label={i18n.t('Delete session')}
                 >
                   <Trash2 className="size-3" />
                 </Button>

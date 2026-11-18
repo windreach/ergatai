@@ -236,4 +236,46 @@ describe("ConversationProjectionService", () => {
     const error = (result.visibleMessages[0]?.parts?.[0] as { error?: { repeatCount?: number } }).error
     expect(error?.repeatCount).toBe(3)
   })
+
+  it("collapses identical failed turns separated by empty turn placeholders", () => {
+    const service = getConversationProjectionService()
+    const makeError = (id: string, sequence: number): Message =>
+      ({
+        id,
+        role: "assistant",
+        sequence,
+        parts: [
+          {
+            type: "error",
+            error: {
+              message: "rate limited",
+              errorName: "rate_limit",
+              rawText: "rate limited",
+            },
+          },
+        ],
+        metadata: { turnId: `turn-${id}`, stopReason: "error" },
+      }) as Message
+    const placeholder = {
+      id: "msg-empty",
+      role: "assistant",
+      sequence: 2,
+      parts: [],
+      metadata: { turnId: "turn-empty" },
+    } as Message
+
+    const result = service.project({
+      persistedMessages: [makeError("msg-1", 1), placeholder, makeError("msg-3", 3)],
+    })
+
+    const errorParts = result.visibleMessages.flatMap((message) =>
+      (message.parts ?? []).filter((part) => part.type === "error"),
+    )
+    expect(errorParts).toHaveLength(1)
+    const error = (
+      errorParts[0] as { error?: { repeatCount?: number; rawText?: string } }
+    ).error
+    expect(error?.repeatCount).toBe(2)
+    expect(error?.rawText).toBe("rate limited")
+  })
 })

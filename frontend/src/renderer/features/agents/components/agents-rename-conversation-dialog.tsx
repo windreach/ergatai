@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 // react-doctor-disable-next-line use-lazy-motion
@@ -151,7 +152,7 @@ export function AgentsRenameConversationDialog({
                     ref={inputRef}
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="Chat name"
+                    placeholder={i18n.t('Chat name')}
                     className="w-full h-11 text-sm"
                     disabled={isSaving || isLoading}
                   />

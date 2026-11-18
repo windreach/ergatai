@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import React from "react"
 
 type ErrorBoundaryState = {
@@ -40,7 +41,7 @@ export class MapErrorBoundary extends React.Component<
       // You can render unknown custom fallback UI
       return (
         <div className="p-4 text-sm text-destructive">
-          <h3 className="font-semibold">Something went wrong</h3>
+          <h3 className="font-semibold">{i18n.t('Something went wrong')}</h3>
           <p className="mt-2 text-muted-foreground">{this.state.error?.message}</p>
           <button
             className="mt-2 text-xs underline"

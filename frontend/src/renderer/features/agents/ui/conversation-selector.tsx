@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useCallback, useMemo, useEffect, useRef, useState, memo, forwardRef, useImperativeHandle } from "react"
@@ -127,7 +128,7 @@ const SearchHistoryPopover = memo(forwardRef<SearchHistoryPopoverRef, SearchHist
       onOpenChange={setIsHistoryOpen}
       items={sortedConversations}
       onSelect={onSelect}
-      placeholder="Search chats..."
+      placeholder={i18n.t('Search chats...')}
       emptyMessage="No results"
       getItemValue={(conversation) => `${conversation?.name || "New Chat"} ${conversation?.id}`}
       renderItem={renderItem}
@@ -635,14 +636,14 @@ export function ConversationSelector({
           size="icon"
           onClick={onBackToChats}
           className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md"
-          aria-label="Back to chats"
+          aria-label={i18n.t('Back to chats')}
           style={{
             // @ts-expect-error - WebKit-specific property
             WebkitAppRegion: "no-drag",
           }}
         >
           <AlignJustify className="h-4 w-4" />
-          <span className="sr-only">Back to chats</span>
+          <span className="sr-only">{i18n.t('Back to chats')}</span>
         </Button>
       )}
 
@@ -653,7 +654,7 @@ export function ConversationSelector({
             <Button
               variant="ghost"
               size="icon"
-              aria-label="Open chats pane"
+              aria-label={i18n.t('Open chats pane')}
               onClick={() => setConversationsSidebarMode("sidebar")}
               className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md flex items-center justify-center"
               style={{
@@ -664,7 +665,7 @@ export function ConversationSelector({
               <IconOpenSidebarRight className="h-4 w-4 scale-x-[-1]" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="bottom">Open chats pane</TooltipContent>
+          <TooltipContent side="bottom">{i18n.t('Open chats pane')}</TooltipContent>
         </Tooltip>
       )}
 
@@ -868,7 +869,7 @@ export function ConversationSelector({
                                 className="relative z-20 hover:text-foreground rounded p-0.5 transition-[color,transform] duration-150 ease-out active:scale-[0.97] cursor-pointer"
                                 title={
                                   isActive && archiveAgentHotkey
-                                    ? `Close tab (${archiveAgentHotkey})`
+                                    ? i18n.t("Close tab ({{hotkey}})", { hotkey: archiveAgentHotkey })
                                     : "Close tab"
                                 }
                               >
@@ -975,11 +976,11 @@ export function ConversationSelector({
                 className="h-6 w-6 p-0 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md flex items-center justify-center hover:bg-foreground/10"
               >
                 <TerminalSquare className="h-4 w-4" />
-                <span className="sr-only">Open terminal</span>
+                <span className="sr-only">{i18n.t('Open terminal')}</span>
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom">
-              <span>Open terminal</span>
+              <span>{i18n.t('Open terminal')}</span>
               {toggleTerminalHotkey && <Kbd>{toggleTerminalHotkey}</Kbd>}
             </TooltipContent>
           </Tooltip>
@@ -1003,7 +1004,7 @@ export function ConversationSelector({
             className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 flex items-center justify-center"
           >
             <DiffIcon className="h-4 w-4" />
-            <span className="sr-only">Open diff</span>
+            <span className="sr-only">{i18n.t('Open diff')}</span>
           </Button>
         </div>
       )}
@@ -1024,7 +1025,7 @@ export function ConversationSelector({
             className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 flex items-center justify-center"
           >
             <Play className="h-4 w-4" />
-            <span className="sr-only">Open preview</span>
+            <span className="sr-only">{i18n.t('Open preview')}</span>
           </Button>
         </div>
       )}

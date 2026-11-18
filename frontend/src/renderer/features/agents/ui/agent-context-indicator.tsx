@@ -1,4 +1,6 @@
+import i18n from "@/lib/i18n"
 "use client"
+import { useTranslation } from "react-i18next"
 
 import { memo } from "react"
 import {
@@ -124,7 +126,7 @@ function ContextQuotaDetails({ quota }: { quota: MessageTokenData["contextQuota"
       {quota.reasoningOutputTokens != null && (
         <div>reasoning: {formatTokens(quota.reasoningOutputTokens)}</div>
       )}
-      {quota.modelUsage != null && <div>model usage reported</div>}
+      {quota.modelUsage != null && <div>{i18n.t('model usage reported')}</div>}
     </div>
   )
 }
@@ -137,6 +139,7 @@ export const AgentContextIndicator = memo(function AgentContextIndicator({
   isCompacting,
   disabled,
 }: AgentContextIndicatorProps) {
+  const { t } = useTranslation()
   // Prefer ACP context_used (real-time SSE snapshot), fall back to totalInputTokens (metadata)
   const contextTokens =
     tokenData.contextUsed ??
@@ -201,7 +204,7 @@ export const AgentContextIndicator = memo(function AgentContextIndicator({
           )}
         </div>
         {!tokenData.contextUsed && !tokenData.contextQuota && (
-          <p className="text-xs text-muted-foreground mt-1">adapter 未上报 usage</p>
+          <p className="text-xs text-muted-foreground mt-1">{t("chat.adapterNoUsage")}</p>
         )}
       </TooltipContent>
     </Tooltip>

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState } from "react"
@@ -57,7 +58,7 @@ export function PreviewSetupHoverCard({ children }: PreviewSetupHoverCardProps) 
                       ? "/agents-onboarding-dark.webp"
                       : "/agents-onboarding-light.webp"
                   }
-                  alt="Preview setup"
+                  alt={i18n.t('Preview setup')}
                   className="object-cover w-full h-full"
                   style={{ objectPosition: "top" }}
                 />
@@ -69,7 +70,7 @@ export function PreviewSetupHoverCard({ children }: PreviewSetupHoverCardProps) 
         {/* Content */}
         <div className="p-4 space-y-3">
           <div className="space-y-1.5">
-            <h4 className="text-sm font-semibold">Preview not available</h4>
+            <h4 className="text-sm font-semibold">{i18n.t('Preview not available')}</h4>
             <p className="text-[13px] text-muted-foreground leading-relaxed">
               To see live preview of your changes, you need to set up your repository first.
             </p>
@@ -81,11 +82,10 @@ export function PreviewSetupHoverCard({ children }: PreviewSetupHoverCardProps) 
             className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[13px] font-medium bg-foreground text-background hover:bg-foreground/90 rounded-md transition-colors"
           >
             <GitHubIcon className="h-3.5 w-3.5" />
-            <span>Set up repository</span>
+            <span>{i18n.t('Set up repository')}</span>
           </button>
         </div>
       </HoverCardContent>
     </HoverCard>
   )
 }
-

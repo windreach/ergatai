@@ -137,26 +137,19 @@ pub async fn switch_model(
         }),
     };
 
-    // On success, refresh the profile model catalog via SDK so future
-    // `get_profile_models` reads see the full SDK-reported list with
-    // source=agent_sdk. Fall back to recording the single model if SDK
-    // refresh returns empty (e.g. codex has no model list API) or when
-    // switching succeeded through ACP fallback.
+    // On success, refresh the profile catalogue through the shared priority
+    // chain. Persistence is rank-aware, so a live ACP/SDK read can update the
+    // cache but a failed/partial read cannot downgrade it.
     if result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         if let Some(pn) = profile_name.as_deref() {
             if kind == crate::services::agent::AgentKind::Unknown {
-                tracing::debug!(agent_id = %agent_id, "Skipping SDK model refresh: unknown agent kind");
+                tracing::debug!(agent_id = %agent_id, "Skipping model refresh: unknown agent kind");
             } else {
-                let discovered =
-                    crate::services::agent::discover_models(kind, pn, cwd.as_deref()).await;
-                if discovered.details.is_empty() {
-                    let _ = crate::services::profile_service::save_profile_models_by_name(
-                        pn,
-                        std::slice::from_ref(&body.model),
-                        Some(&body.model),
-                    )
-                    .await;
-                } else {
+                let ctx = crate::services::agent::ModelReadContext::new(pn)
+                    .with_cwd(cwd.as_deref())
+                    .with_live_agent(Some(&agent_id));
+                let discovered = crate::services::agent::discover_models(kind, &ctx).await;
+                if discovered.success && !discovered.details.is_empty() {
                     let _ = crate::services::profile_service::persist_profile_models(
                         pn,
                         &discovered.details,

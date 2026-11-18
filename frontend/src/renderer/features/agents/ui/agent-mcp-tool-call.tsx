@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useState, useMemo, useEffect } from "react"
@@ -247,7 +248,7 @@ export const AgentMcpToolCall = memo(function AgentMcpToolCall({
   const unwrappedOutput = useMemo(() => unwrapMcpOutput(part.output), [part.output])
 
   const title = useMemo(() => {
-    if (part.state === "input-streaming") return `Preparing ${mcpInfo.displayName}`
+    if (part.state === "input-streaming") return i18n.t("Preparing {{name}}", { name: mcpInfo.displayName })
     if (isPending) return getActiveTitle(mcpInfo)
     return getCompletedTitle(mcpInfo)
   }, [part.state, isPending, mcpInfo])

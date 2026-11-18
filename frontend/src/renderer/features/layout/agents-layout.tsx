@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback, useEffect, useState, useMemo, useRef } from "react"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { toast } from "sonner"
@@ -413,7 +414,7 @@ export function AgentsLayout() {
           onForward={handlePageForward}
           canBack={pageHistoryIndex > 0}
           canForward={pageHistoryIndex < pageHistory.length - 1}
-          pageTitle={desktopView === "settings" ? "Settings" : ""}
+          pageTitle={desktopView === "settings" ? i18n.t("Settings") : ""}
         />
         <div className="flex flex-1 overflow-hidden bg-tl-background">
           {/* Left Sidebar - switches between chat list and settings nav */}

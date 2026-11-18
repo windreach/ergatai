@@ -379,7 +379,7 @@ impl AgentRuntime {
     #[allow(clippy::too_many_arguments)]
     pub async fn launch_agent_scoped(
         &self,
-        mut spec: WorkspaceSpec,
+        spec: WorkspaceSpec,
         command: &str,
         instruction: Option<&str>,
         chat_id: Option<&str>,
@@ -387,6 +387,24 @@ impl AgentRuntime {
         profile_name: Option<&str>,
         transport: Option<&str>,
     ) -> ErgataiResult<String> {
+        // Make the allocated worktree explicit to the agent process as well. ACP
+        // already receives `work_dir` as the session cwd, but some agents/tools
+        // resolve absolute paths or consult environment variables instead, so
+        // expose it through the environment too.
+        let mut spec = spec;
+        spec.env
+            .entry("PWD".to_string())
+            .or_insert_with(|| spec.work_dir.to_string_lossy().to_string());
+        spec.env
+            .entry("CWD".to_string())
+            .or_insert_with(|| spec.work_dir.to_string_lossy().to_string());
+        spec.env
+            .entry("ERGATAI_WORK_DIR".to_string())
+            .or_insert_with(|| spec.work_dir.to_string_lossy().to_string());
+        spec.env
+            .entry("ERGATAI_WORKTREE".to_string())
+            .or_insert_with(|| spec.work_dir.to_string_lossy().to_string());
+
         // Check if workspace already exists (e.g., created by CLI POST /api/v1/workspaces).
         // Avoid calling create_workspace again to prevent duplicate workspace entries.
         // `ergatai_resume_session_id` is a control-plane hint, not a process env var.
@@ -398,18 +416,26 @@ impl AgentRuntime {
                 .into_iter()
                 .find(|w| w.id == spec.id)
                 .unwrap();
-            // Ensure work_dir from spec is in metadata (may be missing if
-            // server restarted and in-memory cache was lost).
-            if !ws.metadata.contains_key("work_dir") {
-                ws.metadata.insert(
-                    "work_dir".to_string(),
-                    spec.work_dir.to_string_lossy().to_string(),
-                );
-            }
+            // Always refresh work_dir from spec. A reused backend workspace may
+            // have been created for a different chat/worktree (same Ergatai
+            // workspace id), so a stale work_dir would launch the agent in the
+            // wrong directory. Overwrite unconditionally.
+            ws.metadata.insert(
+                "work_dir".to_string(),
+                spec.work_dir.to_string_lossy().to_string(),
+            );
             ws
         } else {
             self.backend.create_workspace(spec.clone()).await?
         };
+
+        // Keep the backend workspace's working directory in sync with this
+        // launch's spec, even when the workspace was reused from another
+        // chat/worktree sharing the same Ergatai workspace id.
+        let _ = self
+            .backend
+            .update_workspace_work_dir(&workspace.id, &spec.work_dir)
+            .await;
 
         // Pre-compute agent_id (Snowflake) for workspace metadata.
         // Note: next_agent_id() increments the counter, so start_agent() must use this pre-computed ID.
@@ -452,6 +478,13 @@ impl AgentRuntime {
 
         // Pass the pre-computed agent_id via workspace metadata
         let mut workspace_with_id = workspace.clone();
+        // Ensure the agent is launched in this spec's work_dir, even when the
+        // backend workspace was reused from a previous chat with a different
+        // worktree.
+        workspace_with_id.metadata.insert(
+            "work_dir".to_string(),
+            spec.work_dir.to_string_lossy().to_string(),
+        );
         workspace_with_id
             .metadata
             .insert("precomputed_agent_id".to_string(), agent_id.clone());

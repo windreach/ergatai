@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
  
 import { useCallback, useRef, useState } from "react"
 import { type UIMessage } from "@ai-sdk/react"
@@ -205,7 +206,7 @@ export function SideChat({
           <div className="h-16 w-full animate-pulse rounded-xl bg-muted/40" />
           <div className="ml-auto h-9 w-1/2 animate-pulse rounded-xl bg-muted/50" />
         </div>
-        <p className="text-xs text-muted-foreground">Loading conversation…</p>
+        <p className="text-xs text-muted-foreground">{i18n.t('Loading conversation…')}</p>
       </div>
     ) : undefined
 
@@ -218,7 +219,7 @@ export function SideChat({
           <path d="M12 7v6" />
         </svg>
       </div>
-      <h3 className="text-base font-medium text-foreground mb-2">Side Chat</h3>
+      <h3 className="text-base font-medium text-foreground mb-2">{i18n.t('Side Chat')}</h3>
       <p className="text-sm text-muted-foreground text-center max-w-[240px]">
         Start a conversation with an agent by typing below.
       </p>
@@ -262,16 +263,13 @@ export function SideChat({
             loadingState={sideChatLoadingState}
             emptyState={sideChatEmptyState}
             contentClassName="pt-4"
+            footer={
+              surface.runtimeRetry ? (
+                <RetryStatusRow retry={surface.runtimeRetry} />
+              ) : null
+            }
+            suppressErrorCards={!!surface.runtimeRetry}
           />
-        }
-        afterMessagesSlot={
-          surface.runtimeRetry ? (
-            <RetryStatusRow
-              retry={surface.runtimeRetry}
-              onStop={surface.handleStopRetry}
-              stopDisabled={surface.isStoppingRetry}
-            />
-          ) : null
         }
         footerSlot={
           <div className="w-full flex-shrink-0">

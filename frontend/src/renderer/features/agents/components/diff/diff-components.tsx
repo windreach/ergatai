@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import React, {
   createContext,
   useContext,
@@ -894,7 +895,7 @@ export const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
           >
             <IconCloseSidebarRight className="size-4 text-muted-foreground" />
           </Button>
-          <span className="text-sm text-muted-foreground ml-2">Changes</span>
+          <span className="text-sm text-muted-foreground ml-2">{i18n.t('Changes')}</span>
         </div>
       ) : null}
 

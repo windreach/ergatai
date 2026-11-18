@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { z } from "zod"
+import { t } from "../../../lib/i18n"
 import { router, publicProcedure } from "../index"
 import { dialog, BrowserWindow, app } from "electron"
 import { basename, join } from "path"
@@ -62,7 +63,7 @@ export const projectsRouter = router({
 
     const result = await dialog.showOpenDialog(window, {
       properties: ["openDirectory", "createDirectory"],
-      title: "Select Project Folder",
+      title: t("Select Project Folder"),
       buttonLabel: "Open Project",
     })
 
@@ -141,7 +142,7 @@ export const projectsRouter = router({
 
     const result = await dialog.showOpenDialog(window, {
       properties: ["openDirectory", "createDirectory"],
-      title: "Select Folder",
+      title: t("Select Folder"),
       buttonLabel: "Select",
     })
 
@@ -369,7 +370,7 @@ export const projectsRouter = router({
 
       const result = await dialog.showOpenDialog(window, {
         properties: ["openDirectory"],
-        title: `Locate ${input.expectedOwner}/${input.expectedRepo}`,
+        title: t("Locate {{owner}}/{{repo}}", { owner: input.expectedOwner, repo: input.expectedRepo }),
         buttonLabel: "Select",
       })
 
@@ -449,7 +450,7 @@ export const projectsRouter = router({
 
       const result = await dialog.showOpenDialog(window, {
         properties: ["openDirectory", "createDirectory"],
-        title: "Choose where to clone",
+        title: t("Choose where to clone"),
         defaultPath,
         buttonLabel: "Clone Here",
       })
@@ -478,7 +479,7 @@ export const projectsRouter = router({
 
       const result = await dialog.showOpenDialog(window, {
         properties: ["openFile"],
-        title: "Select Project Icon",
+        title: t("Select Project Icon"),
         buttonLabel: "Set Icon",
         filters: [
           { name: "Images", extensions: ["png", "jpg", "jpeg", "svg", "webp", "ico"] },

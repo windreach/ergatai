@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useEffect, useRef, useState } from "react"
 // react-doctor-disable-next-line no-flush-sync
 import { flushSync } from "react-dom"
@@ -169,7 +170,7 @@ export function UpdateBanner() {
           <button
             onClick={handleDismissWhatsNew}
             className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-muted"
-            aria-label="Dismiss"
+            aria-label={i18n.t('Dismiss')}
           >
             <svg
               width="14"
@@ -210,7 +211,7 @@ export function UpdateBanner() {
       {/* Update Available State */}
       {state.status === "available" && !isPending && (
         <>
-          <span className="text-foreground">Update available</span>
+          <span className="text-foreground">{i18n.t('Update available')}</span>
           <div className="flex items-center gap-2 ml-2">
             <button
               onClick={handleDismiss}

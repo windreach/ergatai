@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { t } from "../../i18n"
 import { promisify } from "node:util";
 import { branchExistsOnRemote } from "../worktree";
 import { execWithShellEnv } from "../shell-env";
@@ -114,7 +115,7 @@ async function getPRForBranch(
 		if (!result.success) {
 			console.error("[GitHub] PR schema validation failed:", result.error);
 			console.error("[GitHub] Raw data:", JSON.stringify(raw, null, 2));
-			throw new Error("PR schema validation failed");
+			throw new Error(t("PR schema validation failed"));
 		}
 		const data = result.data;
 

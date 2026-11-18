@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import React from "react"
@@ -81,8 +82,8 @@ export function MentionTriggerDropdown({
       ) : (
         <DropdownEmptyState>
           {debouncedSearchText
-            ? `No ${noun} matching "${debouncedSearchText}"`
-            : `No ${noun} available`}
+            ? i18n.t("No {{noun}} matching \"{{text}}\"", { noun, text: debouncedSearchText })
+            : i18n.t("No {{noun}} available", { noun })}
         </DropdownEmptyState>
       )}
     </DropdownPanel>

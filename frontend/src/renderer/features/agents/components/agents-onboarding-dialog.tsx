@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useEffect, useState, useRef, useCallback } from "react"
@@ -115,7 +116,7 @@ export function AgentsOnboardingDialog() {
 
           {/* Main Dialog */}
           {/* react-doctor-disable-next-line prefer-html-dialog */}
-          <div role="dialog" aria-modal="true" aria-label="Onboarding" className="fixed top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%] z-[46] pointer-events-none">
+          <div role="dialog" aria-modal="true" aria-label={i18n.t('Onboarding')} className="fixed top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%] z-[46] pointer-events-none">
             <motion.div
               initial={{ transform: "scale(0.95)", opacity: 0 }}
               animate={{ transform: "scale(1)", opacity: 1 }}
@@ -133,7 +134,7 @@ export function AgentsOnboardingDialog() {
                   className="absolute appearance-none outline-none select-none top-4 right-4 rounded-full cursor-pointer flex items-center justify-center ring-offset-background focus-visible:ring-ring bg-secondary h-8 w-8 text-foreground/70 hover:text-foreground focus:outline-hidden disabled:pointer-events-none active:scale-95 transition-all duration-200 ease-in-out z-[60] focus:outline-none focus-visible:outline-2 focus-visible:outline-focus focus-visible:outline-offset-2"
                 >
                   <X className="h-4 w-4" />
-                  <span className="sr-only">Close</span>
+                  <span className="sr-only">{i18n.t('Close')}</span>
                 </button>
 
                   <div className="flex flex-col">
@@ -155,7 +156,7 @@ export function AgentsOnboardingDialog() {
                                   ? "/agents-onboarding-dark.webp"
                                   : "/agents-onboarding-light.webp"
                               }
-                              alt="Agents interface"
+                              alt={i18n.t('Agents interface')}
                               fill
                               className="object-cover"
                               style={{ objectPosition: "top" }}

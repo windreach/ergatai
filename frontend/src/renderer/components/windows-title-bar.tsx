@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useEffect, useState } from "react"
@@ -120,7 +121,7 @@ export function WindowsTitleBar({
             size="icon"
             onClick={onToggleSidebar}
             className="h-6 w-6 rounded-md hover:bg-foreground/10"
-            aria-label="Toggle sidebar"
+            aria-label={i18n.t('Toggle sidebar')}
           >
             <PanelLeft className="h-4 w-4" />
           </Button>
@@ -131,7 +132,7 @@ export function WindowsTitleBar({
           onClick={onBack}
           disabled={!canBack}
           className="h-6 w-6 rounded-md hover:bg-foreground/10 disabled:opacity-40"
-          aria-label="Back"
+          aria-label={i18n.t('Back')}
         >
           <ChevronLeft className="h-4 w-4" />
         </Button>
@@ -141,7 +142,7 @@ export function WindowsTitleBar({
           onClick={onForward}
           disabled={!canForward}
           className="h-6 w-6 rounded-md hover:bg-foreground/10 disabled:opacity-40"
-          aria-label="Forward"
+          aria-label={i18n.t('Forward')}
         >
           <ChevronRight className="h-4 w-4" />
         </Button>
@@ -166,7 +167,7 @@ export function WindowsTitleBar({
           size="icon"
           onClick={handleMinimize}
           className="h-full w-10 rounded-none hover:bg-foreground/10"
-          aria-label="Minimize"
+          aria-label={i18n.t('Minimize')}
         >
           <Minus className="h-4 w-4" />
         </Button>
@@ -184,7 +185,7 @@ export function WindowsTitleBar({
           size="icon"
           onClick={handleClose}
           className="h-full w-10 rounded-none hover:bg-red-500/20 hover:text-red-500"
-          aria-label="Close"
+          aria-label={i18n.t('Close')}
         >
           <X className="h-4 w-4" />
         </Button>

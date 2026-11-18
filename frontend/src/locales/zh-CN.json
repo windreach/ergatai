@@ -1,0 +1,1275 @@
+{
+  "common": {
+    "retry": "重试",
+    "stop": "停止",
+    "uploadFile": "上传文件",
+    "uploadFolder": "上传文件夹",
+    "viewed": "已查看"
+  },
+  "chat": {
+    "executionFailed": "本轮执行失败",
+    "adapterNoUsage": "adapter 未上报 usage",
+    "fileChangeSummary": "文件变更摘要",
+    "errors": {
+      "modelUnavailable": {
+        "title": "模型不可用",
+        "description": "所选模型不存在，或当前账号没有访问权限。请在模型选择器中切换模型后重试。"
+      },
+      "authenticationFailed": {
+        "title": "认证失败",
+        "description": "请重新登录或更新 API Key 后重试。"
+      },
+      "permissionDenied": {
+        "title": "没有访问权限",
+        "description": "当前账号没有执行该操作的权限，请检查模型或组织权限设置。"
+      },
+      "rateLimited": {
+        "title": "请求受限",
+        "description": "额度不足或触发了限流。请稍后重试，或切换模型/套餐。"
+      },
+      "contextTooLong": {
+        "title": "上下文过长",
+        "description": "当前会话上下文超出模型限制。请压缩上下文或开启新会话。"
+      },
+      "serviceUnavailable": {
+        "title": "服务暂时不可用",
+        "description": "模型服务暂时不可用，系统会自动重试；也可以手动重试。"
+      },
+      "repeated": "重复 {{count}} 次",
+      "technicalDetails": "技术详情",
+      "switchModel": "切换模型",
+      "copyErrorDetails": "复制错误详情"
+    }
+  },
+  "migration": {
+    "notice": "迁移提示",
+    "noInstalledAgents": "暂无已安装 Agent",
+    "detected": "检测到本地已经安装 {{agents}}，是否需要进行迁移？",
+    "later": "稍后",
+    "migrating": "迁移中…",
+    "start": "开始迁移",
+    "progress": "迁移进度 {{percent}}%",
+    "agentHistory": "Agent 历史迁移",
+    "completed": "已完成",
+    "failed": "失败",
+    "waiting": "等待开始"
+  },
+  "retry": {
+    "autoRetrying": "正在自动重试 {{attempt}}/{{max}}",
+    "retryIn": "· {{seconds}} 秒后重试",
+    "retrying": "· 正在重试…"
+  },
+  "mock": {
+    "currentTask": "当前任务",
+    "breakingDown": "{{agent}} 正在拆解「{{topic}}」。先确认目标，再检查上下文和风险，最后组织可执行回复。",
+    "reply": "{{agent}} 的回复：围绕「{{topic}}」，我会先给出结论，再补充关键步骤和注意事项。",
+    "receivedRunning": "{{agent}}: 收到，任务正在执行。详细情况点击下方 {{agent}} 查看完整信息。",
+    "receivedEmpty": "收到：{{prompt}}。这是统一 mock 通道返回的回复，用于验证真实消息链路。",
+    "thinkingStyle": "用户想验证思考记录的展示样式。先确认用户意图，再整理回复结构。",
+    "emptyMessage": "空消息"
+  },
+  "acknowledgment": "确认",
+  "settings": {
+    "language": "语言",
+    "system": "跟随系统",
+    "english": "English",
+    "chinese": "中文",
+    "preferences": {
+      "title": "偏好设置",
+      "subtitle": "配置 Claude 的行为与功能",
+      "extendedThinking": "扩展思考"
+    }
+  },
+  "permissions": {
+    "fullAccessDescription": "这个可以完全访问电脑",
+    "fullAccessWarning": "Full Access 会自动批准所有操作并绕过文件锁检查——这个模式可以完全访问电脑。确定要开启吗？",
+    "askDescription": "风险操作前询问",
+    "autoDescription": "自动批准操作"
+  },
+  "API endpoint URL": "API 端点 URL",
+  "API key": "API 密钥",
+  "API token": "API 令牌",
+  "Aa": "Aa",
+  "Accepts PNG, JPG, WebP or SVG up to 2MB": "支持 PNG、JPG、WebP 或 SVG，最大 2MB",
+  "Account": "账户",
+  "Action": "操作",
+  "Active": "活跃",
+  "Add Agent": "添加 Agent",
+  "Add agent": "添加 Agent",
+  "Add from GitHub": "从 GitHub 添加",
+  "Add project folder": "添加项目文件夹",
+  "Add your reply": {
+    "": {
+      "": {
+        "": "添加你的回复..."
+      }
+    }
+  },
+  "Agent": "Agent",
+  "Agent Request": "Agent 请求",
+  "Agents": "Agents",
+  "Agents interface": "Agents 界面",
+  "All Platforms": "所有平台",
+  "All projects": "所有项目",
+  "Alt": "Alt",
+  "Appearance": "外观",
+  "Archive": "归档",
+  "Archive chat": "归档对话",
+  "Archive workspace": "归档工作区",
+  "Archive workspace?": "归档工作区？",
+  "Archived Workspaces": "已归档工作区",
+  "Are you sure you want to discard all changes to:": "确定要放弃对以下内容的所有更改吗：",
+  "ArrowUp": "ArrowUp",
+  "Async Tasks": "异步任务",
+  "Back": "返回",
+  "Back to chat": "返回对话",
+  "Back to chats": "返回对话列表",
+  "Base URL": "基础 URL",
+  "Cancel": "取消",
+  "Cannot view this file": "无法查看此文件",
+  "Changes": "更改",
+  "Chat": "对话",
+  "Chat archived": "对话已归档",
+  "Chat name": "对话名称",
+  "Chats": "对话",
+  "ChevronDown": "ChevronDown",
+  "ChevronLeft": "ChevronLeft",
+  "ChevronUp": "ChevronUp",
+  "Claude Code": "Claude Code",
+  "Clear browse root": "清除浏览根目录",
+  "Click": "点击",
+  "Click an agent in the rail to start chatting": "点击侧栏中的 Agent 开始对话",
+  "Click to change icon": "点击更改图标",
+  "Click to copy": "点击复制",
+  "Close": "关闭",
+  "Close (Esc)": "关闭 (Esc)",
+  "Close (Escape)": "关闭 (Escape)",
+  "Close chat": "关闭对话",
+  "Close chats pane": "关闭对话面板",
+  "Close details": "关闭详情",
+  "Close fullscreen (Esc)": "退出全屏 (Esc)",
+  "Close plan": "关闭计划",
+  "Close sidebar": "关闭侧栏",
+  "Close terminal": "关闭终端",
+  "Close workspace": "关闭工作区",
+  "Collaboration mode": "协作模式",
+  "Collapse all": "全部折叠",
+  "Columns3": "Columns3",
+  "Commit message": "提交信息",
+  "Config": "配置",
+  "Config file": "配置文件",
+  "Connect Claude Code": "连接 Claude Code",
+  "Connect your Claude Code subscription": "连接你的 Claude Code 订阅",
+  "Connect your Claude Code subscription to get started": "连接你的 Claude Code 订阅以开始使用",
+  "Connected": "已连接",
+  "Connecting": "连接中",
+  "Connection failed": "连接失败",
+  "Copy": "复制",
+  "Copy Path": "复制路径",
+  "Copy path": "复制路径",
+  "CopyIcon": "CopyIcon",
+  "Create a Branch": "创建分支",
+  "Create branch based on": {
+    "": {
+      "": {
+        "": "基于...创建分支"
+      }
+    }
+  },
+  "Create session": "创建会话",
+  "Creating diagram": {
+    "": {
+      "": {
+        "": "正在创建图表..."
+      }
+    }
+  },
+  "Ctrl+C": "Ctrl+C",
+  "Danger Zone": "危险区域",
+  "Debug": "调试",
+  "Default model": "默认模型",
+  "Delete archived workspace?": "删除已归档工作区？",
+  "Delete draft": "删除草稿",
+  "Delete registration only; the runtime binary remains installed": "仅删除注册信息；运行时二进制仍保留",
+  "Delete session": "删除会话",
+  "Delete workspace?": "删除工作区？",
+  "Description": "描述",
+  "Detail": "详情",
+  "Disables response streaming": {
+    "": "禁用响应流式传输。"
+  },
+  "Discord": "Discord",
+  "Dismiss": "忽略",
+  "Display name for this project": "此项目的显示名称",
+  "Don": "Don",
+  "Download SVG": "下载 SVG",
+  "Draft": "草稿",
+  "Draft:": "草稿：",
+  "Drag": "拖拽",
+  "Duration:": "时长：",
+  "Edit Workspace": "编辑工作区",
+  "Email": "邮箱",
+  "English": "English",
+  "Enter the executable command": "输入可执行命令",
+  "Enter your name": "输入你的名称",
+  "Ergatai Logo": "Ergatai 徽标",
+  "Ergatai logo": "Ergatai 徽标",
+  "Expand all": "全部展开",
+  "Expand changes": "展开更改",
+  "Expand to sidebar": "展开到侧栏",
+  "ExpandIcon": "ExpandIcon",
+  "Export chat": "导出对话",
+  "Export workspace": "导出工作区",
+  "F1": "F1",
+  "Failed": "失败",
+  "Failed to load image": "加载图片失败",
+  "Failed to load plan": "加载计划失败",
+  "Falls back to commands above": "回退到上述命令",
+  "Fetch origin": "拉取 origin",
+  "Fetched": "已拉取",
+  "Files": "文件",
+  "Find": {
+    "": {
+      "": {
+        "": "查找..."
+      }
+    }
+  },
+  "Fix Merge Conflicts": "修复合并冲突",
+  "Force push": "强制推送",
+  "Forward": "前进",
+  "Full Name": "全名",
+  "Full changelog": "完整更新日志",
+  "General": "通用",
+  "Git": "Git",
+  "Go to File": "转到文件",
+  "Go to file": "转到文件",
+  "Go to next workspace": "转到下一个工作区",
+  "Go to previous workspace": "转到上一个工作区",
+  "Goal": "目标",
+  "Help": "帮助",
+  "Icon": "图标",
+  "IconTextUndo": "IconTextUndo",
+  "Image": "图片",
+  "Interrupted": "已中断",
+  "JetBrains": "JetBrains",
+  "Kotlin icon": "Kotlin 图标",
+  "Load session": "加载会话",
+  "Loading agent binding…": "正在加载 Agent 绑定…",
+  "Loading conversation…": "正在加载对话…",
+  "Loading file": {
+    "": {
+      "": {
+        "": "正在加载文件..."
+      }
+    }
+  },
+  "Loading files": {
+    "": {
+      "": {
+        "": "正在加载文件..."
+      }
+    }
+  },
+  "Loading image": {
+    "": {
+      "": {
+        "": "正在加载图片..."
+      }
+    }
+  },
+  "Loading plan": {
+    "": {
+      "": {
+        "": "正在加载计划..."
+      }
+    }
+  },
+  "Loading themes from editors": {
+    "": {
+      "": {
+        "": "正在从编辑器加载主题..."
+      }
+    }
+  },
+  "Location": "位置",
+  "LuX": "LuX",
+  "MCP Servers": "MCP 服务器",
+  "Manage Agents": "管理 Agents",
+  "Manage providers": "管理提供商",
+  "Mark all as unviewed": "全部标记为未查看",
+  "Mark all as viewed": "全部标记为已查看",
+  "Mermaid Diagram Viewer": "Mermaid 图表查看器",
+  "Migration progress": "迁移进度",
+  "Minimize": "最小化",
+  "Mock Chat Replies": "模拟对话回复",
+  "Model": "模型",
+  "Model name": "模型名称",
+  "More": "更多",
+  "More agents": "更多 Agents",
+  "More git options": "更多 Git 选项",
+  "More options": "更多选项",
+  "Name": "名称",
+  "Needs authentication": "需要认证",
+  "New Chat": "新建对话",
+  "New Task (DAG)": "新建任务 (DAG)",
+  "New agent": "新建 Agent",
+  "New chat": "新建对话",
+  "New name": "新名称",
+  "New terminal": "新建终端",
+  "Next image (→)": "下一张图片 (→)",
+  "Next match (Enter)": "下一个匹配 (Enter)",
+  "No branches found": {
+    "": "未找到分支。"
+  },
+  "No files match filter": "没有匹配的文件",
+  "No messages yet": "暂无消息",
+  "No models found": {
+    "": "未找到模型。"
+  },
+  "No plan content": "无计划内容",
+  "No project open": "未打开项目",
+  "No projects": "无项目",
+  "No projects found": {
+    "": "未找到项目。"
+  },
+  "No results": "无结果",
+  "No results found": "未找到结果",
+  "No saved sessions": "无已保存会话",
+  "No terminal data": "无终端数据",
+  "Not set": "未设置",
+  "Onboarding": "引导",
+  "Open": "打开",
+  "Open chats pane": "打开对话面板",
+  "Open chats sidebar": "打开对话侧栏",
+  "Open details": "打开详情",
+  "Open diff": "打开差异",
+  "Open in": "打开方式",
+  "Open preview": "打开预览",
+  "Open sidebar": "打开侧栏",
+  "Open terminal": "打开终端",
+  "Other:": "其他：",
+  "Paste your authentication code here": {
+    "": {
+      "": {
+        "": "在此粘贴认证码..."
+      }
+    }
+  },
+  "Path": "路径",
+  "Permanently delete agent": "永久删除 Agent",
+  "Permanently delete agent and its conversation": "永久删除 Agent 及其对话",
+  "Pinned Chats": "置顶对话",
+  "Plan": "计划",
+  "Plan, / command, @ context, $ skill, # ref": "计划，/ 命令，@ 上下文，$ 技能，# 引用",
+  "Platform-specific overrides": "平台特定覆盖",
+  "Plugin": "插件",
+  "Preview": "预览",
+  "Preview not available": "预览不可用",
+  "Preview setup": "预览设置",
+  "Previous image (←)": "上一张图片 (←)",
+  "Previous match (Shift+Enter)": "上一个匹配 (Shift+Enter)",
+  "Production key": "生产密钥",
+  "Project": "项目",
+  "Project avatar in sidebar": "侧栏中的项目头像",
+  "Project name": "项目名称",
+  "Provider default": "提供商默认",
+  "Providers": "提供商",
+  "Question": "问题",
+  "Question answered": "问题已回答",
+  "QuestionCircleIcon": "QuestionCircleIcon",
+  "React Scan": "React Scan",
+  "Read task": "读取任务",
+  "Refresh diff view": "刷新差异视图",
+  "Remove": "移除",
+  "Remove Project": "移除项目",
+  "Remove Project?": "移除项目？",
+  "Remove text context": "移除文本上下文",
+  "Rename": "重命名",
+  "Replying to": "回复给",
+  "Repository": "仓库",
+  "Reset to": "重置为",
+  "Reset zoom (0)": "重置缩放 (0)",
+  "Resize": "调整大小",
+  "Restore": "恢复",
+  "Restore chat": "恢复对话",
+  "Restore workspace": "恢复工作区",
+  "Resume": "继续",
+  "Review": "审查",
+  "Review changes with AI": "使用 AI 审查更改",
+  "Reviews code for quality and best practices": "审查代码质量与最佳实践",
+  "Save to": "保存到",
+  "Scroll to bottom": "滚动到底部",
+  "Search branches": {
+    "": {
+      "": {
+        "": "搜索分支..."
+      }
+    }
+  },
+  "Search chats": {
+    "": {
+      "": {
+        "": "搜索对话..."
+      }
+    }
+  },
+  "Search models": {
+    "": {
+      "": {
+        "": "搜索模型..."
+      }
+    }
+  },
+  "Search projects": {
+    "": {
+      "": {
+        "": "搜索项目..."
+      }
+    }
+  },
+  "Search shortcuts": {
+    "": {
+      "": {
+        "": "搜索快捷键..."
+      }
+    }
+  },
+  "Search workspaces": {
+    "": {
+      "": {
+        "": "搜索工作区..."
+      }
+    }
+  },
+  "Search": {
+    "": {
+      "": {
+        "": "搜索..."
+      }
+    }
+  },
+  "Searched": "已搜索",
+  "Select project": "选择项目",
+  "Select workspace": "选择工作区",
+  "Send": "发送",
+  "Send now": "立即发送",
+  "Server": "服务器",
+  "Set default project": "设置默认项目",
+  "Set up repository": "设置仓库",
+  "Settings": "设置",
+  "Setup Commands": "设置命令",
+  "Shortcuts": "快捷键",
+  "Show Message JSON": "显示消息 JSON",
+  "Side Chat": "侧边对话",
+  "Simulate Offline": "模拟离线",
+  "Something went wrong": "出现错误",
+  "Source Folders": "源文件夹",
+  "Split view": "分屏视图",
+  "Stage": "暂存",
+  "Status:": "状态：",
+  "Stop": "停止",
+  "Stop (Ctrl+C)": "停止 (Ctrl+C)",
+  "Subagents temporarily disabled": "子 Agent 暂时禁用",
+  "Submitting": {
+    "": {
+      "": {
+        "": "提交中..."
+      }
+    }
+  },
+  "Switch branch": "切换分支",
+  "System": "系统",
+  "System preference": "系统偏好",
+  "Terminal": "终端",
+  "Thinking": "思考",
+  "To-dos": "待办",
+  "Toggle agents sidebar": "切换 Agent 侧栏",
+  "Toggle sidebar": "切换侧栏",
+  "Tokens:": "令牌：",
+  "Tools": "工具",
+  "Trash2": "Trash2",
+  "Type your own answer": "输入你的答案",
+  "URL": "URL",
+  "Unified view": "统一视图",
+  "Unknown status": "未知状态",
+  "Unstage": "取消暂存",
+  "Update available": "有可用更新",
+  "Upload agent avatar": "上传 Agent 头像",
+  "VS Code": "VS Code",
+  "View": "查看",
+  "View fullscreen": "全屏查看",
+  "Viewed": "已查看",
+  "Voice input": "语音输入",
+  "Waiting for response": {
+    "": {
+      "": {
+        "": "正在等待响应..."
+      }
+    }
+  },
+  "Where worktree setup is stored": "工作树设置存储位置",
+  "Windows": "Windows",
+  "Workspace name": "工作区名称",
+  "Workspaces": "工作区",
+  "Worktree": "工作树",
+  "Worktrees": "工作树",
+  "Zoom in (+)": "放大 (+)",
+  "Zoom out (-)": "缩小 (-)",
+  "bun install": "bun install",
+  "bun install && cp $ROOT_WORKTREE_PATH/": {
+    "env ": {
+      "env": "bun install && cp $ROOT_WORKTREE_PATH/.env .env"
+    }
+  },
+  "claude-sonnet-4-6": "claude-sonnet-4-6",
+  "code-reviewer": "code-reviewer",
+  "current": "当前",
+  "feature/my-new-feature": "feature/my-new-feature",
+  "https://": {
+    "": {
+      "": {
+        "": "https://..."
+      }
+    }
+  },
+  "https://api": {
+    "anthropic": {
+      "com": "https://api.anthropic.com"
+    }
+  },
+  "macOS / Linux": "macOS / Linux",
+  "model usage reported": "模型使用情况已上报",
+  "npm ci": "npm ci",
+  "on": "开启",
+  "or": "或",
+  "owner/repo": "owner/repo",
+  "owner/repo or https://github": {
+    "com/": {
+      "": {
+        "": {
+          "": "owner/repo 或 https://github.com/..."
+        }
+      }
+    }
+  },
+  "send_message": "send_message",
+  "sk-ant-": {
+    "": {
+      "": {
+        "": "sk-ant-..."
+      }
+    }
+  },
+  "userData": "userData",
+  "workdir missing": "workdir 缺失",
+  "Images": "图片",
+  "All Files": "所有文件",
+  "Reload Anyway": "仍然重新加载",
+  "Active Sessions": "活跃会话",
+  "There are active agent sessions running.": "有活跃的 Agent 会话正在运行。",
+  "Reloading will interrupt them. The current progress will be saved. Are you sure you want to reload?": "重新加载将中断它们。当前进度将被保存。确定要重新加载吗？",
+  "Close Anyway": "仍然关闭",
+  "Closing this window will interrupt them. The current progress will be saved. Are you sure you want to close?": "关闭此窗口将中断它们。当前进度将被保存。确定要关闭吗？",
+  "Select Project Folder": "选择项目文件夹",
+  "Select Folder": "选择文件夹",
+  "Locate {{owner}}/{{repo}}": "定位 {{owner}}/{{repo}}",
+  "Choose where to clone": "选择克隆位置",
+  "Select Project Icon": "选择项目图标",
+  "CLI command uninstalled": "CLI 命令已卸载",
+  "The 'ergatai' command has been removed from your PATH.": "“ergatai”命令已从 PATH 中移除。",
+  "Uninstallation Failed": "卸载失败",
+  "Unknown error": "未知错误",
+  "CLI command installed": "CLI 命令已安装",
+  "You can now use 'ergatai .' in any terminal to open Ergatai in that directory.": "现在你可以在任意终端使用“ergatai .”在该目录打开 Ergatai。",
+  "Installation Failed": "安装失败",
+  "Failed to save: {{message}}": "保存失败：{{message}}",
+  "Failed to rename: {{message}}": "重命名失败：{{message}}",
+  "Failed to upload icon: {{message}}": "上传图标失败：{{message}}",
+  "{{name}} moved to trash": "{{name}} 已移入回收站",
+  "Failed to delete {{label}}": "删除 {{label}} 失败",
+  "Renamed to {{name}}": "已重命名为 {{name}}",
+  "Failed to switch model: {{message}}": "切换模型失败：{{message}}",
+  "Failed to save provider: {{message}}": "保存提供商失败：{{message}}",
+  "Failed to set default: {{message}}": "设置默认失败：{{message}}",
+  "Provider \"{{name}}\" imported from {{agent}} config": "已从 {{agent}} 配置导入提供商“{{name}}”",
+  "Failed to import configuration: {{message}}": "导入配置失败：{{message}}",
+  "{{name}} installed": "{{name}} 已安装",
+  "{{name}} uninstalled": "{{name}} 已卸载",
+  "{{name}} registered": "{{name}} 已注册",
+  "{{name}} registration removed": "{{name}} 注册已移除",
+  "Branch '{{name}}' created successfully": "分支“{{name}}”创建成功",
+  "Failed to create branch: {{message}}": "创建分支失败：{{message}}",
+  "Failed to send to {{count}} agent(s)": "发送到 {{count}} 个 Agent 失败",
+  "Failed to process image \"{{name}}\"": "处理图片“{{name}}”失败",
+  "Failed to rollback: {{error}}": "回滚失败：{{error}}",
+  "Failed to discard: {{message}}": "放弃更改失败：{{message}}",
+  "Failed to delete project: {{message}}": "删除项目失败：{{message}}",
+  "Failed to delete provider: {{message}}": "删除提供商失败：{{message}}",
+  "Failed to process file \"{{name}}\"": "处理文件“{{name}}”失败",
+  "Pull failed: {{message}}": "拉取失败：{{message}}",
+  "Force push failed: {{message}}": "强制推送失败：{{message}}",
+  "Merge failed: {{message}}": "合并失败：{{message}}",
+  "Push failed: {{message}}": "推送失败：{{message}}",
+  "Commit failed: {{message}}": "提交失败：{{message}}",
+  "Pull ${pullCount} commit": "拉取 {{count}} 个提交",
+  "Push ${pushCount} commit": "推送 {{count}} 个提交",
+  "A plan is ready for your approval": "计划已准备好供你审批",
+  "About Ergatai": "关于 Ergatai",
+  "Action {{id}} not available": "操作 {{id}} 不可用",
+  "Action {{id}} not found": "未找到操作 {{id}}",
+  "Activity stream failed ({{response": {
+    "status}}): {{detail}}": "活动流失败 ({{response.status}}): {{detail}}"
+  },
+  "Add to Chat Context": "添加到对话上下文",
+  "Add to Context": "添加到上下文",
+  "Agent ": "Agent ",
+  "Agent Complete": "Agent 完成",
+  "Agent Error": "Agent 错误",
+  "Agent ID is not available — cannot send message": "Agent ID 不可用 — 无法发送消息",
+  "Agent binding disabled - backend endpoint removed": "Agent 绑定已禁用 - 后端端点已移除",
+  "Agent error": "Agent 错误",
+  "Agent finished": "Agent 已完成",
+  "Agent has completed its task": "Agent 已完成任务",
+  "Agent is waiting for your input": "Agent 正在等待你的输入",
+  "Agent not found: {{input": {
+    "agentId}}": "未找到 Agent: {{input.agentId}}"
+  },
+  "Agent profile already exists: {{input": {
+    "name}}": "Agent 配置已存在: {{input.name}}"
+  },
+  "Agent profile not found: {{input": {
+    "name}}": "未找到 Agent 配置: {{input.name}}"
+  },
+  "Agent stopped": "Agent 已停止",
+  "Agent {{id}}": "Agent {{id}}",
+  "Agent {{input": {
+    "agentCommand}} has no active session in this group": "Agent {{input.agentCommand}} 在此群组中没有活跃会话",
+    "agentId}} not found": "未找到 Agent {{input.agentId}}"
+  },
+  "Agent-to-agent communication not configured": {
+    "": "Agent 间通信未配置。"
+  },
+  "Agent-to-agent message result": "Agent 间消息结果",
+  "Agent: {{label}}": "Agent: {{label}}",
+  "All changes are already committed": {
+    " The branch {{branch}} is up to date": {
+      "": "所有更改已提交。分支 {{branch}} 已是最新。"
+    }
+  },
+  "All changes are committed": {
+    "": "所有更改已提交。"
+  },
+  "An unexpected error occurred during rollback": "回滚时发生意外错误",
+  "Android Compact": "Android 紧凑",
+  "Android Medium": "Android 中等",
+  "Anthropic": "Anthropic",
+  "Application Support": "应用支持",
+  "Approval kind: {{kind}}": "审批类型: {{kind}}",
+  "Authentication failed": {
+    " Please try again": {
+      "": "认证失败。请重试。"
+    }
+  },
+  "Backend terminal sessions require a workspaceId": "后端终端会话需要 workspaceId",
+  "Backend terminal stream error": "后端终端流错误",
+  "Backend workspace": "后端工作区",
+  "Blocked unsafe URL scheme: {{parsed": {
+    "protocol}}": "已阻止不安全的 URL 协议: {{parsed.protocol}}"
+  },
+  "Bound to the active group chat": "已绑定到活跃群聊",
+  "Branch ": "分支 ",
+  "Branch checkout verification failed: expected \\": "分支检出验证失败：预期 \\",
+  "Branch name can only contain letters, numbers, dots, hyphens, underscores, and slashes": "分支名只能包含字母、数字、点、连字符、下划线和斜杠",
+  "Branch name cannot be empty": "分支名不能为空",
+  "Branch name cannot start with -": "分支名不能以 - 开头",
+  "Branch name contains invalid characters": "分支名包含无效字符",
+  "Branch name too long (max 250 characters)": "分支名过长（最多 250 个字符）",
+  "Build plan": "构建计划",
+  "Cannot delete branch ": "无法删除分支 ",
+  "Cannot display binary file": "无法显示二进制文件",
+  "Cannot force push to protected branch ": "无法强制推送到受保护分支 ",
+  "Cannot merge/rebase with uncommitted changes": {
+    " Please commit or stash your changes first": {
+      "": "存在未提交更改，无法合并/变基。请先提交或暂存更改。"
+    }
+  },
+  "Cannot merge/rebase: another merge or rebase is in progress": {
+    " Please complete or abort it first": {
+      "": "另一个合并或变基正在进行中，无法合并/变基。请先完成或中止。"
+    }
+  },
+  "Cannot paste: input is full": "无法粘贴：输入已满",
+  "Cannot pull with uncommitted changes": {
+    " Please commit or stash your changes first, or enable auto-stash": {
+      "": "存在未提交更改，无法拉取。请先提交或暂存更改，或启用自动暂存。"
+    }
+  },
+  "Cannot pull: a rebase or merge is in progress": {
+    " Please complete or abort it first": {
+      "": "正在进行变基或合并，无法拉取。请先完成或中止。"
+    }
+  },
+  "Cannot rollback while streaming": "流式传输时无法回滚",
+  "Cannot rollback: message not found": "无法回滚：未找到消息",
+  "Cannot rollback: this turn is not rollbackable": "无法回滚：此轮次不可回滚",
+  "Cannot send message: {{reason}}": "无法发送消息：{{reason}}",
+  "Cannot switch branches: you have uncommitted changes": {
+    " Please commit or stash your changes first": {
+      "": "存在未提交更改，无法切换分支。请先提交或暂存更改。"
+    }
+  },
+  "Cannot sync with uncommitted changes": {
+    " Please commit or stash your changes first": {
+      "": "存在未提交更改，无法同步。请先提交或暂存更改。"
+    }
+  },
+  "Cannot sync: a rebase or merge is in progress": {
+    " Please complete or abort it first": {
+      "": "正在进行变基或合并，无法同步。请先完成或中止。"
+    }
+  },
+  "Chat ID is required": "需要 Chat ID",
+  "Chat is not bound to a backend agent conversation": {
+    "": "对话未绑定到后端 Agent 会话。"
+  },
+  "Chat not found": "未找到对话",
+  "Chat session is in {{actual}} mode, expected {{expected}}": "对话会话处于 {{actual}} 模式，预期 {{expected}}",
+  "Chat · {{name}}": "对话 · {{name}}",
+  "Check for updates": "检查更新",
+  "Clipboard not available": "剪贴板不可用",
+  "Close tab ({{hotkey}})": "关闭标签 ({{hotkey}})",
+  "Close {{name}}": "关闭 {{name}}",
+  "Code selection": "代码选区",
+  "Code submission failed: {{codeRes": {
+    "statusText}}": "代码提交失败: {{codeRes.statusText}}"
+  },
+  "Codex 5": {
+    "1 Max": "Codex 5.1 Max",
+    "1 Mini": "Codex 5.1 Mini",
+    "2": "Codex 5.2",
+    "3": "Codex 5.3"
+  },
+  "Collaboration runtime unavailable": "协作运行时不可用",
+  "Collaboration session completed": "协作会话已完成",
+  "Collaboration session created": "协作会话已创建",
+  "Collaboration session failed": "协作会话失败",
+  "Collaboration stream failed": "协作流失败",
+  "Collaboration task": "协作任务",
+  "Commit & Push{{suffix}}": "提交并推送{{suffix}}",
+  "Commit message cannot be empty": "提交信息不能为空",
+  "Commit them": {
+    " Write a clear, concise commit message": {
+      "": "提交它们。编写清晰、简洁的提交信息。"
+    }
+  },
+  "Commit to {{branch}}": "提交到 {{branch}}",
+  "Commit to {{currentBranch}}": "提交到 {{currentBranch}}",
+  "Commit {{count}} to {{branch}}": "提交 {{count}} 个到 {{branch}}",
+  "Commit {{stagedCount}} to {{currentBranch}}": "提交 {{stagedCount}} 个到 {{currentBranch}}",
+  "Commit{{suffix}}": "提交{{suffix}}",
+  "Completed {{count}} task": "已完成 {{count}} 个任务",
+  "Conversation \\": "对话 \\",
+  "Conversation not found": "未找到对话",
+  "Conversation not found in DB, keeping local mode state": "数据库中未找到对话，保留本地模式状态",
+  "Conversation not found: {{id}}": {
+    " ": "未找到对话: {{id}}. "
+  },
+  "Conversation not found: {{input": {
+    "id}}": "未找到对话: {{input.id}}"
+  },
+  "Conversation pipeline error": "对话流水线错误",
+  "Conversation {{id}}": "对话 {{id}}",
+  "Copied to clipboard": "已复制到剪贴板",
+  "Copied {{count}} paths": "已复制 {{count}} 个路径",
+  "Copy failed": "复制失败",
+  "Could not determine GitHub repository URL": "无法确定 GitHub 仓库 URL",
+  "Could not find default branch (main or master)": "未找到默认分支 (main 或 master)",
+  "Could not get git context": "无法获取 git 上下文",
+  "Create PR": "创建 PR",
+  "Create Pull Request ({{count}} commit ahead of {{branch}})": "创建 Pull Request (领先 {{branch}} {{count}} 个提交)",
+  "Create a new workspace": "创建新工作区",
+  "Created {{count}} task": "已创建 {{count}} 个任务",
+  "Created: {{content}}": "已创建: {{content}}",
+  "Creating new child conversations is no longer supported": "不再支持创建子对话",
+  "Delete ": "删除 ",
+  "Delete registration for {{name}}": "删除 {{name}} 的注册",
+  "Delete {{name}}?": "删除 {{name}}？",
+  "Detected {{provider}} model": "检测到 {{provider}} 模型",
+  "Discard changes to ": "放弃更改到 ",
+  "Ergatai": "Ergatai",
+  "Ergatai MCP Tools": "Ergatai MCP 工具",
+  "Ergatai backend did not return an agent ID": "Ergatai 后端未返回 Agent ID",
+  "Error loading files: {{message}}": "加载文件失败: {{message}}",
+  "Error {{code}}": "错误 {{code}}",
+  "Expand {{id}}": "展开 {{id}}",
+  "Expected an array of messages": "预期为消息数组",
+  "Export complete": "导出完成",
+  "Export failed": "导出失败",
+  "Extra High": "超高",
+  "Failed to cancel prompt: {{response": {
+    "status}} {{error}}": "取消提示失败: {{response.status}} {{error}}"
+  },
+  "Failed to create project: {{error instanceof Error ? error": {
+    "message : String(error)}}": "创建项目失败: {{error instanceof Error ? error.message : String(error)}}"
+  },
+  "Failed to create worktree: The git repository is locked by another process": {
+    " This usually happens when another git operation is in progress, or a previous operation crashed": {
+      " Please wait for the other operation to complete, or manually remove the lock file (e": {
+        "g": {
+          ", ": {
+            "git/config": {
+              "lock or ": {
+                "git/index": {
+                  "lock) if you": "创建 worktree 失败：Git 仓库被另一个进程锁定。这通常发生在另一个 git 操作进行中，或上一个操作崩溃。请等待其他操作完成，或确认无 git 操作运行时手动删除锁文件（如 .git/config.lock 或 .git/index.lock）。"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "Failed to create worktree: This repository uses Git LFS, but git-lfs was not found or failed": {
+    " Please install git-lfs (e": {
+      "g": {
+        ", ": "创建 worktree 失败：此仓库使用 Git LFS，但未找到或失败。请安装 git-lfs（如 'brew install git-lfs'）并运行 'git lfs install'。"
+      }
+    }
+  },
+  "Failed to create worktree: {{errorMessage}}": "创建 worktree 失败: {{errorMessage}}",
+  "Failed to delete file: {{message}}": "删除文件失败: {{message}}",
+  "Failed to delete files: {{message}}": "删除文件失败: {{message}}",
+  "Failed to delete {{name}}": "删除 {{name}} 失败",
+  "Failed to discard changes: {{message}}": "放弃更改失败: {{message}}",
+  "Failed to fetch diff: {{status}}": "获取差异失败: {{status}}",
+  "Failed to fetch initial context usage:": "获取初始上下文用量失败:",
+  "Failed to generate commit message": "生成提交信息失败",
+  "Failed to get agent bindings": "获取 Agent 绑定失败",
+  "Failed to get chat agents": "获取对话 Agents 失败",
+  "Failed to load agent status": "加载 Agent 状态失败",
+  "Failed to load file": "加载文件失败",
+  "Failed to load full theme {{id}}:": "加载完整主题 {{id}} 失败:",
+  "Failed to prepare PR request": "准备 PR 请求失败",
+  "Failed to prepare commit request": "准备提交请求失败",
+  "Failed to process file \\": "处理文件失败 \\",
+  "Failed to process image \\": "处理图片失败 \\",
+  "Failed to read binary file: {{msg}}": "读取二进制文件失败: {{msg}}",
+  "Failed to read file: {{error instanceof Error ? error": {
+    "message : ": "读取文件失败: {{error instanceof Error ? error.message : "
+  },
+  "Failed to read file: {{msg}}": "读取文件失败: {{msg}}",
+  "Failed to refresh agent list": "刷新 Agent 列表失败",
+  "Failed to rename chat": "重命名对话失败",
+  "Failed to retry pending message after auth:": "认证后重试待处理消息失败:",
+  "Failed to rollback": "回滚失败",
+  "Failed to rollback conversation": {
+    " Please try again": {
+      "": "回滚对话失败。请重试。"
+    }
+  },
+  "Failed to send agent-to-agent message": "发送 Agent 间消息失败",
+  "Failed to send implementation request": {
+    " Please try again": {
+      "": "发送实现请求失败。请重试。"
+    }
+  },
+  "Failed to send message": "发送消息失败",
+  "Failed to send plan approval": {
+    " Please try again": {
+      "": "发送计划审批失败。请重试。"
+    }
+  },
+  "Failed to send prompt: {{response": {
+    "status}} {{error}}": "发送提示失败: {{response.status}} {{error}}"
+  },
+  "Failed to send queued message after {{count}} attempts": {
+    " The message has been removed from the queue": {
+      "": "队列消息发送失败，已重试 {{count}} 次，消息已移除。"
+    }
+  },
+  "Failed to send queued message": {
+    " Retrying in {{seconds}}s (attempt {{retry}}/{{max}})": {
+      "": "队列消息发送失败，{{seconds}} 秒后重试（第 {{retry}}/{{max}} 次）。"
+    }
+  },
+  "Failed to send reply": "发送回复失败",
+  "Failed to spawn agent": "启动 Agent 失败",
+  "Failed to spawn agent: {{message}}": "启动 Agent 失败: {{message}}",
+  "Failed to spawn new session": "启动新会话失败",
+  "Failed to stage files for commit": "暂存文件失败",
+  "Failed to start agent": "启动 Agent 失败",
+  "Failed to start review": "启动审查失败",
+  "Failed to update conversation mode:": "更新对话模式失败:",
+  "Failed to verify conversation \\": "验证对话失败 \\",
+  "File": "文件",
+  "File is too large to display (max 2 MB)": "文件过大，无法显示（最大 2 MB）",
+  "File name cannot contain path separators": "文件名不能包含路径分隔符",
+  "File name contains invalid characters": "文件名包含无效字符",
+  "File not found": "未找到文件",
+  "File not found: {{fullPath}}": "未找到文件: {{fullPath}}",
+  "Filtering: {{name}}": "正在过滤: {{name}}",
+  "Finished working on \\": "已完成工作 \\",
+  "Finished {{count}} {{plural}}": "已完成 {{count}} {{plural}}",
+  "Finished: {{content}}": "已完成: {{content}}",
+  "Fix Conflicts": "修复冲突",
+  "Follow link": "跟随链接",
+  "Follow these exact steps to create a PR:": "按以下步骤创建 PR：",
+  "Forking conversations is no longer supported": "不再支持分叉对话",
+  "Found {{count}} files": "找到 {{count}} 个文件",
+  "Found {{count}} matches": "找到 {{count}} 个匹配",
+  "Free usage limit": "免费用量限制",
+  "Generate detailed PR review comments for the changes in the current context": {
+    "": "为当前上下文的更改生成详细的 PR 审查评论。"
+  },
+  "Generate release notes summarizing the changes in this codebase": {
+    "": "生成总结此代码库更改的发布说明。"
+  },
+  "Go to image {{index}}": "转到图片 {{index}}",
+  "Grepped {{count}} files": "已搜索 {{count}} 个文件",
+  "Group chat is not initialized": "群聊未初始化",
+  "Group chat messages must mention an agent": "群聊消息必须提及 Agent",
+  "If unknown of these steps fail, ask the user for help": {
+    "": "如果这些步骤中有未知失败，请向用户求助。"
+  },
+  "Implement plan": "实施计划",
+  "Input Required": "需要输入",
+  "Installed ({{type}})": "已安装 ({{type}})",
+  "Invalid agent name": "无效的 Agent 名称",
+  "Invalid branch name": "无效的分支名",
+  "Invalid branch name: ": "无效的分支名: ",
+  "Invalid branch name: cannot be empty": "无效的分支名：不能为空",
+  "Invalid branch name: cannot start with -": "无效的分支名：不能以 - 开头",
+  "Invalid collaboration session response": "无效的协作会话响应",
+  "Invalid commit hash format": "无效的提交哈希格式",
+  "Invalid file name": "无效的文件名",
+  "Invalid message at index {{index}}": "索引 {{index}} 处消息无效",
+  "Keyboard shortcuts": "键盘快捷键",
+  "Last fetched {{time}}": "上次获取 {{time}}",
+  "Line {{number}}": "第 {{number}} 行",
+  "List {{count}} task": "列出 {{count}} 个任务",
+  "Listed {{count}} tasks": "已列出 {{count}} 个任务",
+  "Local branch deleted, but failed to delete remote: {{message}}": "本地分支已删除，但删除远程失败: {{message}}",
+  "Local shell": "本地 Shell",
+  "MCP Tool: {{path}}": "MCP 工具: {{path}}",
+  "MCP server ": "MCP 服务器 ",
+  "Manage archived workspace {{name}}": "管理已归档工作区 {{name}}",
+  "Manage providers for {{name}}": "管理 {{name}} 的提供商",
+  "Manage workspace {{name}}": "管理工作区 {{name}}",
+  "Manage {{label}} {{name}}": "管理 {{label}} {{name}}",
+  "Message at index {{index}} missing string id": "索引 {{index}} 处消息缺少字符串 id",
+  "Message at index {{index}} missing string role": "索引 {{index}} 处消息缺少字符串 role",
+  "Message failed": "消息失败",
+  "Message system is not ready": {
+    " Please try again": {
+      "": "消息系统未就绪。请重试。"
+    }
+  },
+  "Missing code or state parameter": "缺少 code 或 state 参数",
+  "Missing code parameter": "缺少 code 参数",
+  "Mock search result": "模拟搜索结果",
+  "Mode: {{mode}}": "模式: {{mode}}",
+  "Move \\": "移动 \\",
+  "New Conversation": "新建对话",
+  "New Workspace": "新建工作区",
+  "New session spawned": "新会话已启动",
+  "New workspace": "新工作区",
+  "No active chat available": "无活跃对话",
+  "No commands matching \\": "无匹配命令 \\",
+  "No files selected for commit": "未选择要提交的文件",
+  "No files staged for commit": "未暂存要提交的文件",
+  "No items matching \\": "无匹配项 \\",
+  "No prompt, images, or files found in last user message": "最后一条用户消息中未找到提示、图片或文件",
+  "No runtime adapter registered for conversation: {{id}}": {
+    " ": "未注册对话的运行时适配器: {{id}}. "
+  },
+  "No upstream branch to pull from": {
+    " The remote branch may have been deleted": {
+      "": "无上游分支可拉取。远程分支可能已删除。"
+    }
+  },
+  "No workspace path available": "无可用工作区路径",
+  "No {{noun}} available": "无可用 {{noun}}",
+  "No {{noun}} matching \\": "无匹配的 {{noun}} \\",
+  "Not a git repository: {{path}}": "不是 git 仓库: {{path}}",
+  "Not found": "未找到",
+  "Nothing to push": "无可推送",
+  "Older messages will not be available": {
+    "": "旧消息将不可用。"
+  },
+  "One or more mentioned agents are not in this group": "一个或多个提及的 Agent 不在此群组",
+  "Open Kanban board": "打开 Kanban 看板",
+  "Open Pull Request #{{number}}": "打开 Pull Request #{{number}}",
+  "Open currently previewed file in preferred editor": "在首选编辑器中打开当前预览文件",
+  "Open file in editor": "在编辑器中打开文件",
+  "Open in editor": "在编辑器中打开",
+  "Open settings page": "打开设置页面",
+  "Open the Kanban board view": "打开 Kanban 看板视图",
+  "Open worktree in preferred editor": "在首选编辑器中打开 worktree",
+  "Open-source terminal coding agent (native ACP)": "开源终端编码 Agent (原生 ACP)",
+  "OpenAI": "OpenAI",
+  "Original text was {{size}}KB": {
+    " Consider attaching as a file instead": {
+      "": "原始文本为 {{size}}KB。建议作为文件附件。"
+    }
+  },
+  "Original text was {{size}}MB": {
+    " Please attach as a file instead": {
+      "": "原始文本为 {{size}}MB。请作为文件附件。"
+    }
+  },
+  "Other: {{text}}": "其他: {{text}}",
+  "PID: {{pid}}": "PID: {{pid}}",
+  "PR #{{number}}": "PR #{{number}}",
+  "PR schema validation failed": "PR 模式验证失败",
+  "Pasted Text · {{size}}": "粘贴文本 · {{size}}",
+  "Path contains invalid characters": "路径包含无效字符",
+  "Path escapes allowed directory": "路径逃逸允许的目录",
+  "Path is not within a registered project or worktree": "路径不在已注册的项目或 worktree 内",
+  "Path must be absolute": "路径必须为绝对路径",
+  "Perform a security audit of the code in the current context": {
+    " Identify vulnerabilities, security risks, and suggest fixes": {
+      "": "对当前上下文的代码进行安全审计。识别漏洞、安全风险并提出修复建议。"
+    }
+  },
+  "Permission stream failed ({{response": {
+    "status}}): {{detail}}": "权限流失败 ({{response.status}}): {{detail}}"
+  },
+  "Permissions stream failed ({{response": {
+    "status}}): {{detail}}": "权限流失败 ({{response.status}}): {{detail}}"
+  },
+  "Pin {{count}} {{plural}}": "置顶 {{count}} {{plural}}",
+  "Pin {{label}}": "置顶 {{label}}",
+  "Pinned chats": "置顶对话",
+  "Plan Ready": "计划就绪",
+  "Plan revision {{revision}}": "计划修订 {{revision}}",
+  "Please clear some text or attach content as a file instead": {
+    "": "请清除部分文本或作为文件附件。"
+  },
+  "Please ensure the chat component has registered an adapter": {
+    "": "请确保对话组件已注册适配器。"
+  },
+  "Please enter a commit message": "请输入提交信息",
+  "Please refresh the page or create a new chat": {
+    "": "请刷新页面或创建新对话。"
+  },
+  "Please review the code in the current context and provide feedback on code quality, potential bugs, and improvements": {
+    "": "请审查当前上下文的代码，并就代码质量、潜在 bug 和改进提供反馈。"
+  },
+  "Please try again": "请重试",
+  "Please try refreshing the page or creating a new chat": {
+    "": "请尝试刷新页面或创建新对话。"
+  },
+  "Preparing agent execution": "准备 Agent 执行",
+  "Preparing {{name}}": "准备 {{name}}",
+  "Profile deleted from backend": "后端已删除配置",
+  "Profile: {{profile}}": "配置: {{profile}}",
+  "Project creation returned invalid project_id: {{project": {
+    "project_id}}": "项目创建返回无效的 project_id: {{project.project_id}}"
+  },
+  "Project not found": "未找到项目",
+  "Project not found: {{input": {
+    "projectId}}": "未找到项目: {{input.projectId}}"
+  },
+  "Project path (cwd) required for project agents": "项目 Agent 需要项目路径 (cwd)",
+  "Provider \\": "提供商 \\",
+  "Pull failed due to conflicts": {
+    " The operation has been aborted": {
+      " Please resolve conflicts manually or try a different approach": {
+        "": "拉取因冲突失败。操作已中止。请手动解决冲突或尝试其他方法。"
+      }
+    }
+  },
+  "Pull succeeded but failed to restore your stashed changes": {
+    " Your changes are saved in git stash": {
+      " Run ": "拉取成功但恢复暂存更改失败。你的更改保存在 git stash 中。运行 "
+    }
+  },
+  "Pull {{count}} commit": "拉取 {{count}} 个提交",
+  "Pull {{count}} commit from remote": "从远程拉取 {{count}} 个提交",
+  "Push to origin": "推送到 origin",
+  "Push {{count}} commit": "推送 {{count}} 个提交",
+  "Push {{count}} commit to remote": "推送到远程 {{count}} 个提交",
+  "Queue item not found: {{id}}": "未找到队列项: {{id}}",
+  "Quit": "退出",
+  "Recent chats": "最近对话",
+  "Reloading will interrupt them": {
+    " The current progress will be saved": {
+      " Are you sure you want to reload?": "重新加载将中断它们。当前进度将被保存。确定要重新加载吗？"
+    }
+  },
+  "Remove {{name}}": "移除 {{name}}",
+  "Replay on top of {{count}} commit": "在 {{count}} 个提交之上重放",
+  "Reply queued": "回复已排队",
+  "Reply sent": "回复已发送",
+  "Result: {{path}}": "结果: {{path}}",
+  "Reusing bound agent": "复用已绑定 Agent",
+  "Rollback already in progress": "回滚进行中",
+  "Run git diff to review uncommitted changes": "运行 git diff 查看未提交更改",
+  "Running {{type}}": "运行 {{type}}",
+  "Runtime event gap detected": "检测到运行时事件缺口",
+  "Runtime stream failed": "运行时流失败",
+  "Runtime unavailable": "运行时不可用",
+  "SSE connection lost": "SSE 连接丢失",
+  "SSE request failed: {{response": {
+    "status}} {{detail": {
+      "trim()}}": "SSE 请求失败: {{response.status}} {{detail.trim()}}"
+    }
+  },
+  "SSE response has no readable body": "SSE 响应无正文",
+  "Saved as {{name}}": "已保存为 {{name}}",
+  "Search and open a file in the workspace": "搜索并打开工作区文件",
+  "Search messages": "搜索消息",
+  "Search through chat history": "搜索对话历史",
+  "Send a message first before renaming this chat": "重命名对话前请先发送消息",
+  "Sending agent-to-agent message": "正在发送 Agent 间消息",
+  "Session not found for conversation: {{id}}": "未找到对话的会话: {{id}}",
+  "Session stream failed ({{response": {
+    "status}}): {{detail}}": "会话流失败 ({{response.status}}): {{detail}}"
+  },
+  "Session {{state}}": "会话 {{state}}",
+  "Shell exited with status {{result": {
+    "status}}": "Shell 退出状态 {{result.status}}"
+  },
+  "Show all keyboard shortcuts": "显示所有键盘快捷键",
+  "Skill: {{label}}": "技能: {{label}}",
+  "Spawn result": "启动结果",
+  "Spawned new agent": "已启动新 Agent",
+  "Spawning agent": "正在启动 Agent",
+  "Spawning agent with params": "正在启动 Agent（带参数）",
+  "Spawning new agent session": "正在启动新 Agent 会话",
+  "Start a new chat": "开始新对话",
+  "Start a new workspace": "开始新工作区",
+  "Started {{count}} task": "已启动 {{count}} 个任务",
+  "Started {{count}} {{plural}}": "已启动 {{count}} {{plural}}",
+  "Started: {{content}}": "已启动: {{content}}",
+  "Sync failed due to conflicts": {
+    " The operation has been aborted": {
+      " Please resolve conflicts manually": {
+        "": "同步因冲突失败。操作已中止。请手动解决冲突。"
+      }
+    }
+  },
+  "Sync pull succeeded but failed to restore your stashed changes": {
+    " Your changes are saved in git stash": {
+      "": "同步拉取成功但恢复暂存更改失败。你的更改保存在 git stash 中。"
+    }
+  },
+  "Task #{{id}}": "任务 #{{id}}",
+  "Task {{number}}": "任务 {{number}}",
+  "Terminal 1": "终端 1",
+  "Terminal 2": "终端 2",
+  "Terminal provider \"{{id}}\" is unavailable: {{reason}}": "终端提供商 \"{{id}}\" 不可用: {{reason}}",
+  "Terminal session {{paneId}} not found or not alive": "终端会话 {{paneId}} 未找到或未存活",
+  "Terminal stream error": "终端流错误",
+  "Terminal stream failed ({{response": {
+    "status}}): {{detail}}": "终端流失败 ({{response.status}}): {{detail}}"
+  },
+  "Terminal {{number}}": "终端 {{number}}",
+  "Test router is only available in test mode (NODE_ENV=test or ELECTRON_TEST_MODE=true)": "测试路由仅在测试模式下可用 (NODE_ENV=test 或 ELECTRON_TEST_MODE=true)",
+  "Text truncated": "文本已截断",
+  "Text truncated to {{size}}KB": "文本已截断至 {{size}}KB",
+  "The ": "The ",
+  "The branch is already pushed to remote": {
+    "": "分支已推送到远程。"
+  },
+  "The conversation may not have been created yet or was deleted": {
+    " ": "对话可能尚未创建或已被删除。 "
+  },
+  "The current branch is {{branch}}": {
+    "": "当前分支为 {{branch}}。"
+  },
+  "The target branch is origin/{{branch}}": {
+    "": "目标分支为 origin/{{branch}}。"
+  },
+  "The user requested a PR": {
+    "": "用户请求了 PR。"
+  },
+  "Theme path is not within allowed directories": "主题路径不在允许的目录内",
+  "Theme {{id}} not found, falling back to github-dark": "未找到主题 {{id}}，回退到 github-dark",
+  "There are active agent sessions running": {
+    "": "有活跃的 Agent 会话正在运行。"
+  },
+  "There are {{count}} uncommitted changes": {
+    "": "有 {{count}} 个未提交更改。"
+  },
+  "There is no upstream branch yet": {
+    "": "尚无上游分支。"
+  },
+  "This agent has no bound conversation yet": "此 Agent 尚未绑定对话",
+  "This is a bug — please report it": {
+    "": "这是 bug — 请报告。"
+  },
+  "This may happen after backend restart": {
+    " ": "这可能发生在后端重启后。 "
+  },
+  "Timed out": "已超时",
+  "To-do list with {{count}} items": {
+    " Click to {{action}}": "包含 {{count}} 个待办的列表。点击以 {{action}}"
+  },
+  "Tools for {{name}}": "工具: {{name}}",
+  "Unable to copy chat": "无法复制对话",
+  "Unable to export chat": "无法导出对话",
+  "Unpin {{count}} {{plural}}": "取消置顶 {{count}} {{plural}}",
+  "Unpin {{label}}": "取消置顶 {{label}}",
+  "Unsupported platform: {{platformId}}": "不支持的平台: {{platformId}}",
+  "Up to date": "已是最新",
+  "Updated {{count}} {{plural}}": "已更新 {{count}} {{plural}}",
+  "Use gh pr create --base {{branch}} to create a PR": {
+    " Keep the title under 80 characters and description under five sentences": {
+      "": "使用 gh pr create --base {{branch}} 创建 PR。标题保持在 80 字符以内，描述不超过五句。"
+    }
+  },
+  "Use git diff origin/{{branch}}": {
+    "": {
+      "": {
+        " to review the PR diff": "使用 git diff origin/{{branch}}... 查看 PR 差异"
+      }
+    }
+  },
+  "User skipped questions - proceed with defaults": "用户跳过问题 - 使用默认值",
+  "Using {{parts}}": "使用 {{parts}}",
+  "View more{{suffix}}": "查看更多{{suffix}}",
+  "Will be sent when current response completes": "将在当前响应完成后发送",
+  "Working on collaboration task": "正在处理协作任务",
+  "Workspace not found": "未找到工作区",
+  "Workspace not found: {{input": {
+    "id}}": "未找到工作区: {{input.id}}"
+  },
+  "Workspace {{id}}": "工作区 {{id}}",
+  "Worktree path is required": "需要 Worktree 路径",
+  "This repository uses Git LFS, but git-lfs was not found": {
+    " Please install git-lfs (e": {
+      "g": {
+        ", ": "此仓库使用 Git LFS，但未找到 git-lfs。请安装 git-lfs（如 'brew install git-lfs'）并运行 'git lfs install'。"
+      }
+    }
+  },
+  "You can now use ": "现在你可以使用 ",
+  "agent not ready": "Agent 未就绪",
+  "collapse": "折叠",
+  "commitHash required for committed category": "committed 类别需要 commitHash",
+  "expand": "展开",
+  "state changed": "状态已更改",
+  "task": "任务",
+  "tasks": "任务",
+  "{{category}} shortcut": "{{category}} 快捷键",
+  "{{count}} commit to merge": "{{count}} 个提交待合并",
+  "{{count}} server(s) from {{source}}": "来自 {{source}} 的 {{count}} 个服务器",
+  "{{count}}d ago": "{{count}} 天前",
+  "{{count}}h ago": "{{count}} 小时前",
+  "{{count}}m ago": "{{count}} 分钟前",
+  "{{name}} cannot be empty": "{{name}} 不能为空",
+  "{{name}} cannot contain path traversal": "{{name}} 不能包含路径遍历",
+  "{{name}} cannot start with -": "{{name}} 不能以 - 开头",
+  "{{name}} contains invalid characters": "{{name}} 包含无效字符",
+  "{{name}} too long (max 250 characters)": "{{name}} 过长（最多 250 个字符）",
+  "{{op}} failed due to conflicts": {
+    " The operation has been aborted": {
+      " Please resolve conflicts manually or use a different strategy": {
+        "": "{{op}} 因冲突失败。操作已中止。请手动解决冲突或使用其他策略。"
+      }
+    }
+  },
+  "{{platform}} ({{arch}})": "{{platform}} ({{arch}})"
+}

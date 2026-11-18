@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
@@ -16,7 +17,7 @@ import {
   conversationModeAtomFamily,
 } from "../atoms"
 import { getToolStatus } from "./agent-tool-registry"
-import { areToolPropsEqual } from "./agent-tool-utils"
+import { areToolPropsEqual, getToolFilePath } from "./agent-tool-utils"
 
 interface AgentPlanFileToolProps {
   part: {
@@ -82,7 +83,7 @@ export const AgentPlanFileTool = memo(function AgentPlanFileTool({
 
   // Get plan content - for Write mode it's in input.content, for Edit it's in new_string
   const planContent = isWrite ? (part.input?.content || "") : (part.input?.new_string || "")
-  const filePath = part.input?._locations?.[0]?.path || ""
+  const filePath = getToolFilePath(part)
 
   // Show shimmer during streaming/pending
   const shouldShowShimmer = isPending || isInputStreaming
@@ -221,7 +222,7 @@ export const AgentPlanFileTool = memo(function AgentPlanFileTool({
               {isEdit ? "Updating plan..." : "Creating plan..."}
             </TextShimmer>
           ) : (
-            <span className="truncate text-foreground font-medium">Plan</span>
+            <span className="truncate text-foreground font-medium">{i18n.t('Plan')}</span>
           )}
         </div>
 
@@ -232,7 +233,7 @@ export const AgentPlanFileTool = memo(function AgentPlanFileTool({
               <TooltipTrigger asChild>
                 {/* react-doctor-disable-next-line html-no-nested-interactive */}
                 <button
-                  aria-label="CopyIcon"
+                  aria-label={i18n.t('CopyIcon')}
                   onClick={(e) => {
                     e.stopPropagation()
                     handleCopy()
@@ -264,7 +265,7 @@ export const AgentPlanFileTool = memo(function AgentPlanFileTool({
           {/* Expand/Collapse button */}
           {/* react-doctor-disable-next-line html-no-nested-interactive */}
           <button
-            aria-label="ExpandIcon"
+            aria-label={i18n.t('ExpandIcon')}
             onClick={(e) => {
               e.stopPropagation()
               handleToggleExpand()

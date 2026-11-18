@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useEffect, useState } from "react"
@@ -255,18 +256,18 @@ export const AgentsWidget = memo(function AgentsWidget({ chatId, activeConversat
   }
 
   return (
-    <WidgetCard widgetId="agents" title="Agents">
+    <WidgetCard widgetId="agents" title={i18n.t('Agents')}>
       <div className="px-1.5 py-1.5">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
               variant="outline"
               size="sm"
-              aria-label="New agent"
+              aria-label={i18n.t('New agent')}
               className="h-7 w-full justify-center gap-1.5 rounded-lg text-sm font-medium"
             >
               <Plus className="h-3.5 w-3.5" />
-              <span>New agent</span>
+              <span>{i18n.t('New agent')}</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
@@ -343,8 +344,8 @@ export const AgentsWidget = memo(function AgentsWidget({ chatId, activeConversat
                 </button>
                 <button
                   type="button"
-                  aria-label="Permanently delete agent"
-                  title="Permanently delete agent and its conversation"
+                  aria-label={i18n.t('Permanently delete agent')}
+                  title={i18n.t('Permanently delete agent and its conversation')}
                   onClick={(event) => {
                     event.stopPropagation()
                     void handleCloseAgent(participant)

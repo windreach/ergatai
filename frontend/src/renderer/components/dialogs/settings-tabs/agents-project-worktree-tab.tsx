@@ -1,8 +1,10 @@
+import i18n from "@/lib/i18n"
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useListKeyboardNav } from "./use-list-keyboard-nav"
 import { useAtomValue, useSetAtom } from "jotai"
 import { trpc } from "../../../lib/trpc"
 import { Button, buttonVariants } from "../../ui/button"
+import { Switch } from "../../ui/switch"
 import { Input } from "../../ui/input"
 import { Plus, Trash2, FolderOpen } from "lucide-react"
 import { AIPenIcon, ExternalLinkIcon, FolderFilledIcon, ImageIcon } from "../../ui/icons"
@@ -51,7 +53,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
   // Save mutation (auto-save, no toast on success — only on error)
   const saveMutation = trpc.worktreeConfig.save.useMutation({
     onError: (err) => {
-      toast.error(`Failed to save: ${err.message}`)
+      toast.error(i18n.t("Failed to save: {{message}}", { message: err.message }))
     },
   })
 
@@ -85,7 +87,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
       toast.success("Project renamed")
     },
     onError: (err) => {
-      toast.error(`Failed to rename: ${err.message}`)
+      toast.error(i18n.t("Failed to rename: {{message}}", { message: err.message }))
     },
   })
 
@@ -101,7 +103,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
       })
     },
     onError: (err) => {
-      toast.error(`Failed to delete project: ${err.message}`)
+      toast.error(i18n.t("Failed to delete project: {{message}}", { message: err.message }))
     },
   })
 
@@ -114,7 +116,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
       toast.success("Icon updated")
     },
     onError: (err) => {
-      toast.error(`Failed to upload icon: ${err.message}`)
+      toast.error(i18n.t("Failed to upload icon: {{message}}", { message: err.message }))
     },
   })
 
@@ -155,6 +157,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
   const [unixCommands, setUnixCommands] = useState<string[]>([])
   const [windowsCommands, setWindowsCommands] = useState<string[]>([])
   const [showPlatformSpecific, setShowPlatformSpecific] = useState(false)
+  const [autoMerge, setAutoMerge] = useState(false)
 
   // Ref to track last saved state for dirty checking
   const savedConfigRef = useRef<string>("")
@@ -192,6 +195,11 @@ function ProjectDetail({ projectId }: { projectId: string }) {
           // react-doctor-disable-next-line no-adjust-state-on-prop-change
           setShowPlatformSpecific(true)
         }
+
+        setAutoMerge(configData.config?.["auto-merge"] === true)
+      } else {
+        // react-doctor-disable-next-line no-adjust-state-on-prop-change
+        setAutoMerge(false)
       }
 
       setCommands(newCommands)
@@ -204,6 +212,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
         unixCommands: newUnix,
         windowsCommands: newWin,
         saveTarget: newSaveTarget,
+        autoMerge: configData.config?.["auto-merge"] === true,
       })
       configReadyRef.current = true
     }
@@ -212,10 +221,10 @@ function ProjectDetail({ projectId }: { projectId: string }) {
   const doSave = useCallback(() => {
     if (!projectId || !configReadyRef.current) return
 
-    const currentState = JSON.stringify({ commands, unixCommands, windowsCommands, saveTarget })
+    const currentState = JSON.stringify({ commands, unixCommands, windowsCommands, saveTarget, autoMerge })
     if (currentState === savedConfigRef.current) return
 
-    const config: Record<string, string[]> = {}
+    const config: Record<string, unknown> = {}
     const filteredCommands = commands.filter((c) => c.trim())
     const filteredUnix = unixCommands.filter((c) => c.trim())
     const filteredWin = windowsCommands.filter((c) => c.trim())
@@ -223,10 +232,11 @@ function ProjectDetail({ projectId }: { projectId: string }) {
     if (filteredCommands.length > 0) config["setup-worktree"] = filteredCommands
     if (filteredUnix.length > 0) config["setup-worktree-unix"] = filteredUnix
     if (filteredWin.length > 0) config["setup-worktree-windows"] = filteredWin
+    config["auto-merge"] = autoMerge
 
     saveMutation.mutate({ projectId, config, target: saveTarget })
     savedConfigRef.current = currentState
-  }, [projectId, commands, unixCommands, windowsCommands, saveTarget, saveMutation])
+  }, [projectId, commands, unixCommands, windowsCommands, saveTarget, autoMerge, saveMutation])
 
   const updateCommand = (index: number, value: string, list: string[], setter: (v: string[]) => void) => {
     const newList = [...list]
@@ -285,7 +295,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
           />
           {(allowEmpty || list.length > 1) && (
             <button
-              aria-label="Trash2"
+              aria-label={i18n.t('Trash2')}
               type="button"
               className="h-8 w-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive transition-colors"
               onClick={() => removeCommand(i, list, setter, allowEmpty)}
@@ -312,13 +322,13 @@ function ProjectDetail({ projectId }: { projectId: string }) {
 
         {/* ── General ── */}
         <div>
-          <h4 className="text-sm font-medium text-foreground mb-2">General</h4>
+          <h4 className="text-sm font-medium text-foreground mb-2">{i18n.t('General')}</h4>
           <div className="bg-background rounded-lg border border-border overflow-hidden">
             {/* Name */}
             <div className="flex items-center justify-between p-4">
               <div className="flex-1">
-                <span className="text-sm font-medium text-foreground">Name</span>
-                <p className="text-sm text-muted-foreground">Display name for this project</p>
+                <span className="text-sm font-medium text-foreground">{i18n.t('Name')}</span>
+                <p className="text-sm text-muted-foreground">{i18n.t('Display name for this project')}</p>
               </div>
               <div className="flex-shrink-0 w-80">
                 <Input
@@ -326,7 +336,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
                   onChange={(e) => setProjectName(e.target.value)}
                   onBlur={handleNameBlur}
                   className="w-full"
-                  placeholder="Project name"
+                  placeholder={i18n.t('Project name')}
                 />
               </div>
             </div>
@@ -334,15 +344,15 @@ function ProjectDetail({ projectId }: { projectId: string }) {
             {/* Icon */}
             <div className="flex items-center justify-between p-4 border-t border-border">
               <div className="flex-1">
-                <span className="text-sm font-medium text-foreground">Icon</span>
-                <p className="text-sm text-muted-foreground">Project avatar in sidebar</p>
+                <span className="text-sm font-medium text-foreground">{i18n.t('Icon')}</span>
+                <p className="text-sm text-muted-foreground">{i18n.t('Project avatar in sidebar')}</p>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
                 <button
                   type="button"
                   className="relative h-10 w-10 rounded-lg border border-border overflow-hidden flex items-center justify-center cursor-pointer bg-muted group/icon"
                   onClick={() => uploadIconMutation.mutate({ id: projectId })}
-                  title="Click to change icon"
+                  title={i18n.t('Click to change icon')}
                 >
                   {iconSrc ? (
                     <img
@@ -375,7 +385,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
             {/* Path */}
             <div className="flex items-center justify-between p-4 border-t border-border">
               <div className="flex-1 min-w-0 mr-4">
-                <span className="text-sm font-medium text-foreground">Path</span>
+                <span className="text-sm font-medium text-foreground">{i18n.t('Path')}</span>
                 <p className="text-sm text-muted-foreground truncate">{project?.path || "—"}</p>
               </div>
               <Button
@@ -394,7 +404,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
             {project?.gitOwner && project?.gitRepo && (
               <div className="flex items-center justify-between p-4 border-t border-border">
                 <div className="flex-1">
-                  <span className="text-sm font-medium text-foreground">Repository</span>
+                  <span className="text-sm font-medium text-foreground">{i18n.t('Repository')}</span>
                   <p className="text-sm text-muted-foreground">
                     {project.gitOwner}/{project.gitRepo}
                   </p>
@@ -422,12 +432,12 @@ function ProjectDetail({ projectId }: { projectId: string }) {
 
         {/* ── Config ── */}
         <div>
-          <h4 className="text-sm font-medium text-foreground mb-2">Config</h4>
+          <h4 className="text-sm font-medium text-foreground mb-2">{i18n.t('Config')}</h4>
           <div className="bg-background rounded-lg border border-border overflow-hidden">
             <div className="flex items-center justify-between p-4">
               <div className="flex-1">
-                <span className="text-sm font-medium text-foreground">Config file</span>
-                <p className="text-sm text-muted-foreground">Where worktree setup is stored</p>
+                <span className="text-sm font-medium text-foreground">{i18n.t('Config file')}</span>
+                <p className="text-sm text-muted-foreground">{i18n.t('Where worktree setup is stored')}</p>
               </div>
               <Select
                 value={saveTarget}
@@ -455,7 +465,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
         {/* ── Worktree ── */}
         <div>
           <div className="flex items-center justify-between mb-2">
-            <h4 className="text-sm font-medium text-foreground">Worktree</h4>
+            <h4 className="text-sm font-medium text-foreground">{i18n.t('Worktree')}</h4>
             <Button
               variant="ghost"
               size="sm"
@@ -479,10 +489,20 @@ function ProjectDetail({ projectId }: { projectId: string }) {
             </Button>
           </div>
           <div className="bg-background rounded-lg border border-border overflow-hidden">
-            {/* Setup commands */}
+            {/* Auto-merge */}
+             <div className="p-4 flex items-center justify-between border-b border-border">
+               <div>
+                 <span className="text-sm font-medium text-foreground">{i18n.t('Auto-merge to base branch')}</span>
+                 <p className="text-sm text-muted-foreground">
+                   {i18n.t('Automatically merge completed chat branches into their base branch when all agents are idle.')}
+                 </p>
+               </div>
+               <Switch checked={autoMerge} onCheckedChange={setAutoMerge} />
+             </div>
+             {/* Setup commands */}
             <div className="p-4 space-y-3">
               <div>
-                <span className="text-sm font-medium text-foreground">Setup Commands</span>
+                <span className="text-sm font-medium text-foreground">{i18n.t('Setup Commands')}</span>
                 <p className="text-sm text-muted-foreground">
                   Run after worktree creation.{" "}
                   <button
@@ -492,7 +512,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
                       navigator.clipboard.writeText("$ROOT_WORKTREE_PATH")
                       toast.success("Copied to clipboard")
                     }}
-                    title="Click to copy"
+                    title={i18n.t('Click to copy')}
                   >
                     $ROOT_WORKTREE_PATH
                   </button>
@@ -506,9 +526,9 @@ function ProjectDetail({ projectId }: { projectId: string }) {
             {(unixCommands.length > 0 || showPlatformSpecific) && (
               <div className="p-4 border-t border-border space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-foreground">macOS / Linux</span>
+                  <span className="text-sm font-medium text-foreground">{i18n.t('macOS / Linux')}</span>
                   {unixCommands.length === 0 && (
-                    <span className="text-sm text-muted-foreground">Falls back to commands above</span>
+                    <span className="text-sm text-muted-foreground">{i18n.t('Falls back to commands above')}</span>
                   )}
                 </div>
                 {renderCommandList(unixCommands, setUnixCommands, "brew install deps", true)}
@@ -519,9 +539,9 @@ function ProjectDetail({ projectId }: { projectId: string }) {
             {(windowsCommands.length > 0 || showPlatformSpecific) && (
               <div className="p-4 border-t border-border space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-foreground">Windows</span>
+                  <span className="text-sm font-medium text-foreground">{i18n.t('Windows')}</span>
                   {windowsCommands.length === 0 && (
-                    <span className="text-sm text-muted-foreground">Falls back to commands above</span>
+                    <span className="text-sm text-muted-foreground">{i18n.t('Falls back to commands above')}</span>
                   )}
                 </div>
                 {renderCommandList(windowsCommands, setWindowsCommands, "npm ci", true)}
@@ -546,11 +566,11 @@ function ProjectDetail({ projectId }: { projectId: string }) {
 
         {/* ── Danger Zone ── */}
         <div>
-          <h4 className="text-sm font-medium text-foreground mb-2">Danger Zone</h4>
+          <h4 className="text-sm font-medium text-foreground mb-2">{i18n.t('Danger Zone')}</h4>
           <div className="bg-background rounded-lg border border-border overflow-hidden">
           <div className="flex items-center justify-between p-4">
             <div className="flex-1">
-              <span className="text-sm font-medium text-foreground">Remove Project</span>
+              <span className="text-sm font-medium text-foreground">{i18n.t('Remove Project')}</span>
               <p className="text-sm text-muted-foreground">
                 Remove from your list. Files on disk will not be deleted.
               </p>
@@ -568,13 +588,13 @@ function ProjectDetail({ projectId }: { projectId: string }) {
               </AlertDialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
-                  <AlertDialogTitle>Remove Project?</AlertDialogTitle>
+                  <AlertDialogTitle>{i18n.t('Remove Project?')}</AlertDialogTitle>
                   <AlertDialogDescription>
                     This will remove &quot;{project?.name}&quot; from your project list. Your files will not be deleted.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogCancel>{i18n.t('Cancel')}</AlertDialogCancel>
                   <AlertDialogAction
                     onClick={() => deleteMutation.mutate({ id: projectId })}
                     disabled={deleteMutation.isPending}
@@ -684,7 +704,7 @@ export function AgentsProjectsTab() {
             {/* react-doctor-disable-next-line no-placeholder-only-field */}
             <input
               ref={searchInputRef}
-              placeholder="Search projects..."
+              placeholder={i18n.t('Search projects...')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={listKeyDown}
@@ -693,7 +713,7 @@ export function AgentsProjectsTab() {
             <button
               onClick={() => openFolderMutation.mutate()}
               className="h-7 w-7 shrink-0 flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors cursor-pointer"
-              title="Add project folder"
+              title={i18n.t('Add project folder')}
             >
               <Plus className="h-4 w-4" />
             </button>
@@ -710,7 +730,7 @@ export function AgentsProjectsTab() {
             ) : !projects || projects.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-center px-4">
                 <FolderFilledIcon className="h-8 w-8 text-border mb-3" />
-                <p className="text-sm text-muted-foreground mb-1">No projects</p>
+                <p className="text-sm text-muted-foreground mb-1">{i18n.t('No projects')}</p>
                 <button
                   onClick={() => openFolderMutation.mutate()}
                   className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
@@ -720,7 +740,7 @@ export function AgentsProjectsTab() {
               </div>
             ) : filteredProjects.length === 0 ? (
               <div className="flex items-center justify-center py-8">
-                <p className="text-xs text-muted-foreground">No results found</p>
+                <p className="text-xs text-muted-foreground">{i18n.t('No results found')}</p>
               </div>
             ) : (
               <div className="space-y-0.5">

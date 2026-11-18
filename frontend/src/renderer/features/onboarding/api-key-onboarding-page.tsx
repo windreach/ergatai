@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
@@ -125,7 +126,7 @@ export function ApiKeyOnboardingPage() {
 
         {/* Back button - fixed in top left corner below traffic lights */}
         <button
-          aria-label="ChevronLeft"
+          aria-label={i18n.t('ChevronLeft')}
           onClick={handleBack}
           className="fixed top-12 left-4 flex items-center justify-center h-8 w-8 rounded-full hover:bg-foreground/5 transition-colors"
         >
@@ -168,7 +169,7 @@ export function ApiKeyOnboardingPage() {
                 value={apiKey}
                 onChange={handleApiKeyChange}
                 onKeyDown={handleApiKeyKeyDown}
-                placeholder="sk-ant-..."
+                placeholder={i18n.t('sk-ant-...')}
                 className="font-mono text-center pr-10"
                 autoFocus
                 disabled={isSubmitting}
@@ -199,7 +200,7 @@ export function ApiKeyOnboardingPage() {
 
       {/* Back button - fixed in top left corner below traffic lights */}
       <button
-        aria-label="ChevronLeft"
+        aria-label={i18n.t('ChevronLeft')}
         onClick={handleBack}
         className="fixed top-12 left-4 flex items-center justify-center h-8 w-8 rounded-full hover:bg-foreground/5 transition-colors"
       >
@@ -231,11 +232,11 @@ export function ApiKeyOnboardingPage() {
         <div className="space-y-4">
           {/* Model Name */}
           <div className="space-y-2">
-            <Label className="text-sm font-medium">Model name</Label>
+            <Label className="text-sm font-medium">{i18n.t('Model name')}</Label>
             <Input
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              placeholder="claude-sonnet-4-6"
+              placeholder={i18n.t('claude-sonnet-4-6')}
               className="w-full"
             />
             <p className="text-xs text-muted-foreground">
@@ -245,12 +246,12 @@ export function ApiKeyOnboardingPage() {
 
           {/* API Token */}
           <div className="space-y-2">
-            <Label className="text-sm font-medium">API token</Label>
+            <Label className="text-sm font-medium">{i18n.t('API token')}</Label>
             <Input
               type="password"
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              placeholder="sk-ant-..."
+              placeholder={i18n.t('sk-ant-...')}
               className="w-full"
             />
             <p className="text-xs text-muted-foreground">
@@ -260,14 +261,14 @@ export function ApiKeyOnboardingPage() {
 
           {/* Base URL */}
           <div className="space-y-2">
-            <Label className="text-sm font-medium">Base URL</Label>
+            <Label className="text-sm font-medium">{i18n.t('Base URL')}</Label>
             <Input
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="https://api.anthropic.com"
+              placeholder={i18n.t('https://api.anthropic.com')}
               className="w-full"
             />
-            <p className="text-xs text-muted-foreground">API endpoint URL</p>
+            <p className="text-xs text-muted-foreground">{i18n.t('API endpoint URL')}</p>
           </div>
         </div>
 

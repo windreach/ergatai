@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useState, useMemo } from "react"
@@ -118,7 +119,7 @@ export const AgentWebSearchTool = memo(function AgentWebSearchTool({
               Searching
             </TextShimmer>
           ) : (
-            <span className="text-xs text-muted-foreground">Searched</span>
+            <span className="text-xs text-muted-foreground">{i18n.t('Searched')}</span>
           )}
           
           <span className="truncate text-foreground">
@@ -132,7 +133,7 @@ export const AgentWebSearchTool = memo(function AgentWebSearchTool({
             {isPending ? (
               <IconSpinner className="w-3 h-3" />
             ) : isError ? (
-              <span className="text-destructive">Failed</span>
+              <span className="text-destructive">{i18n.t('Failed')}</span>
             ) : (
               <span className="text-muted-foreground">
                 {resultCount} {resultCount === 1 ? "result" : "results"}
@@ -185,4 +186,3 @@ export const AgentWebSearchTool = memo(function AgentWebSearchTool({
     </div>
   )
 }, areToolPropsEqual)
-

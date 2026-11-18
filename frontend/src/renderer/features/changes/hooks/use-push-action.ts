@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback } from "react";
 import { toast } from "sonner";
 import { trpc } from "../../../lib/trpc";
@@ -17,12 +18,12 @@ export function usePushAction({
 		onSuccess: () => {
 			onSuccess?.();
 		},
-		onError: (error) => toast.error(`Push failed: ${error.message}`),
+		onError: (error) => toast.error(i18n.t("Push failed: {{message}}", { message: error.message })),
 	});
 
 	const push = useCallback(() => {
 		if (!worktreePath) {
-			toast.error("Worktree path is required");
+			toast.error(i18n.t('Worktree path is required'));
 			return;
 		}
 		pushMutation.mutate({ worktreePath, setUpstream: !hasUpstream });

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useState, useCallback, useEffect, useRef } from "react"
 import type { SearchAddon } from "@xterm/addon-search"
 import { X, ChevronUp, ChevronDown } from "lucide-react"
@@ -86,7 +87,7 @@ export function TerminalSearch({
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder="Find..."
+        placeholder={i18n.t('Find...')}
         className="w-40 bg-transparent px-2 py-1 text-sm outline-none placeholder:text-muted-foreground"
       />
       {matchCount !== null && (
@@ -97,21 +98,21 @@ export function TerminalSearch({
       <button
         onClick={() => handleSearch("prev")}
         className="rounded p-1 hover:bg-muted"
-        title="Previous match (Shift+Enter)"
+        title={i18n.t('Previous match (Shift+Enter)')}
       >
         <ChevronUp className="h-4 w-4 text-muted-foreground" />
       </button>
       <button
         onClick={() => handleSearch("next")}
         className="rounded p-1 hover:bg-muted"
-        title="Next match (Enter)"
+        title={i18n.t('Next match (Enter)')}
       >
         <ChevronDown className="h-4 w-4 text-muted-foreground" />
       </button>
       <button
         onClick={onClose}
         className="rounded p-1 hover:bg-muted"
-        title="Close (Escape)"
+        title={i18n.t('Close (Escape)')}
       >
         <X className="h-4 w-4 text-muted-foreground" />
       </button>

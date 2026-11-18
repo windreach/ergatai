@@ -1,31 +1,22 @@
+import i18n from "@/lib/i18n"
 "use client"
 
-import { useAtom, useAtomValue, useSetAtom } from "jotai"
-import { ArrowUp, ChevronDown } from "lucide-react"
+import { useAtomValue } from "jotai"
+import { Square } from "lucide-react"
 // react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
-import { memo, useEffect, useMemo, useState } from "react"
+import { memo, useEffect, useState } from "react"
 import { Button } from "../../../components/ui/button"
-import { useFileChangeListener } from "../../../lib/hooks/use-file-change-listener"
-import { trpc } from "../../../lib/trpc"
 import { cn } from "../../../lib/utils"
 import { useExtensionMeta } from "../lib/extension-meta-store"
-import {
-  useSubagentRuns,
-  selectedSubagentSessionIdAtomFamily,
-} from "../lib/subagent-message-store"
+// TODO(subagent): temporarily not consumed. Subagent rail rendering disabled.
+// import {
+//   useSubagentRuns,
+//   selectedSubagentSessionIdAtomFamily,
+// } from "../lib/subagent-message-store"
 
 import { AgentTerminalOutput } from "./agent-terminal-output"
-import {
-  agentsFocusedDiffFileAtom,
-  agentStatusLineAtom,
-  diffSidebarOpenAtomFamily,
-  filteredDiffFilesAtom,
-  filteredConversationIdAtom,
-  selectedDiffFilePathAtom,
-  type ConversationFileChange,
-} from "../atoms"
-import { getFileIconByExtension } from "../mentions/file-icon-utils"
+import { agentStatusLineAtom } from "../atoms"
 // Removed Resume/history selector; restore status display in the status card header.
 // import { AgentHistorySelector } from "./agent-history-selector"
 
@@ -45,12 +36,9 @@ function AnimatedDots() {
 
 interface ConversationStatusCardProps {
   agentId?: string | null
-  chatId: string // Parent chat ID for per-chat diff sidebar state
-  conversationId: string // Conversation ID for filtering (used when Review is clicked)
+  chatId: string
   isStreaming: boolean
   isCompacting?: boolean
-  changedFiles: ConversationFileChange[]
-  worktreePath?: string | null // For git status check to hide committed files
   onStop?: () => void
   /** Whether there's a queue card above this one - affects border radius */
   hasQueueCardAbove?: boolean
@@ -62,35 +50,32 @@ interface ConversationStatusCardProps {
 export const ConversationStatusCard = memo(function ConversationStatusCard({
   agentId,
   chatId,
-  conversationId,
   isStreaming,
   isCompacting,
-  changedFiles,
-  worktreePath,
   onStop,
   hasQueueCardAbove = false,
   hasAgentRailAbove = false,
 }: ConversationStatusCardProps) {
   const isBusy = isStreaming || isCompacting
   const agentStatusLine = useAtomValue(agentStatusLineAtom)
-  const [isExpanded, setIsExpanded] = useState(false)
   const [isRailExpanded, setIsRailExpanded] = useState(false)
   const [activeRailSection, setActiveRailSection] = useState<"subagents" | "terminal">("subagents")
   const [selectedTerminalKey, setSelectedTerminalKey] = useState<string | null>(null)
-  const [selectedSubagentSessionId, setSelectedSubagentSessionId] = useAtom(
-    selectedSubagentSessionIdAtomFamily(conversationId),
-  )
-  const subagentRuns = useSubagentRuns(agentId ?? null)
-
-  useEffect(() => {
-    if (
-      subagentRuns.length > 0 &&
-      (!selectedSubagentSessionId ||
-        !subagentRuns.some((run) => run.subagentSessionId === selectedSubagentSessionId))
-    ) {
-      setSelectedSubagentSessionId(subagentRuns[0].subagentSessionId)
-    }
-  }, [subagentRuns, selectedSubagentSessionId])
+  // TODO(subagent): temporarily not consumed. Subagent rail rendering disabled.
+  // const [selectedSubagentSessionId, setSelectedSubagentSessionId] = useAtom(
+  //   selectedSubagentSessionIdAtomFamily(conversationId),
+  // )
+  // const subagentRuns = useSubagentRuns(agentId ?? null)
+  //
+  // useEffect(() => {
+  //   if (
+  //     selectedSubagentSessionId &&
+  //     !subagentRuns.some((run) => run.subagentSessionId === selectedSubagentSessionId)
+  //   ) {
+  //     setSelectedSubagentSessionId(null)
+  //   }
+  // }, [subagentRuns, selectedSubagentSessionId])
+  const subagentRuns: any[] = []
   const extensionMeta = useExtensionMeta(agentId ?? chatId)
   const terminalPayload = extensionMeta?.["terminal_update"]
   const terminalEntries = (() => {
@@ -100,148 +85,29 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
     }
     return Object.entries(terminalPayload as Record<string, unknown>).map(([k, v]) => ({ key: k, value: v }))
   })()
-  // Use per-chat atom family instead of legacy global atom
-  const diffSidebarAtom = useMemo(
-    () => diffSidebarOpenAtomFamily(chatId),
-    [chatId],
-  )
-  const [, setDiffSidebarOpen] = useAtom(diffSidebarAtom)
-  const setFilteredDiffFiles = useSetAtom(filteredDiffFilesAtom)
-  const setFilteredConversationId = useSetAtom(filteredConversationIdAtom)
-  const setFocusedDiffFile = useSetAtom(agentsFocusedDiffFileAtom)
-  const setSelectedFilePath = useSetAtom(selectedDiffFilePathAtom)
-
-  // Listen for file changes from Claude Write/Edit tools
-  useFileChangeListener(worktreePath)
-
-  // Fetch git status to filter out committed files
-  const { data: branchData } = trpc.changes.getBranches.useQuery(
-    { worktreePath: worktreePath || "" },
-    { enabled: !!worktreePath && changedFiles.length > 0 }
-  )
-
-  const effectiveBaseBranch = branchData?.defaultBranch ?? "main"
-
-  const { data: gitStatus } = trpc.changes.getStatus.useQuery(
-    { worktreePath: worktreePath || "", defaultBranch: effectiveBaseBranch },
-    {
-      enabled: !!worktreePath && changedFiles.length > 0 && !isBusy,
-      // No polling - updates triggered by file-changed events from Claude tools
-      staleTime: 30000,
-      placeholderData: (prev) => prev,
-    },
-  )
-
-  // Filter changedFiles to only include files that are still uncommitted
-  const uncommittedFiles = useMemo(() => {
-    // If no git status yet, no worktreePath, or still busy - show all files
-    if (!gitStatus || !worktreePath || isBusy) {
-      return changedFiles
-    }
-
-    // Build set of all uncommitted file paths from git status
-    const uncommittedPaths = new Set<string>()
-    // Safely iterate - arrays might be undefined in edge cases
-    const allChangedFiles = [
-      ...(gitStatus.staged ?? []),
-      ...(gitStatus.unstaged ?? []),
-      ...(gitStatus.untracked ?? []),
-    ]
-    for (const file of allChangedFiles) {
-      uncommittedPaths.add(file.path)
-    }
-
-    // Filter changedFiles to only include files that are still uncommitted
-    return changedFiles.filter((file) => uncommittedPaths.has(file.displayPath))
-  }, [changedFiles, gitStatus, worktreePath, isBusy])
-
-  // Calculate totals from uncommitted files only
-  const totals = useMemo(() => {
-    let additions = 0
-    let deletions = 0
-    for (const file of uncommittedFiles) {
-      additions += file.additions
-      deletions += file.deletions
-    }
-    return { additions, deletions, fileCount: uncommittedFiles.length }
-  }, [uncommittedFiles])
-
-  // Check if there's expandable content (only files now)
-  const hasExpandableContent = uncommittedFiles.length > 0
-
-  // Keep the container mounted so the agent history selector stays persistent.
-  // Status details remain conditional below.
-
-  // Hide status box when ready (idle, no uncommitted file changes, no subagents).
-  if (!isBusy && uncommittedFiles.length === 0 && subagentRuns.length === 0) {
+  // Hide status box when ready (idle, no subagents).
+  if (!isBusy && subagentRuns.length === 0) {
     return null
-  }
-
-  const handleReview = () => {
-    // Set filter to only show files from this conversation
-    // Use displayPath (relative path) to match git diff paths
-    // filePaths is guaranteed non-empty: Review button only renders when uncommittedFiles.length > 0
-    const filePaths = uncommittedFiles.map((f) => f.displayPath)
-    setFilteredDiffFiles(filePaths)
-    // Also set conversation ID filter for ChangesPanel - use the prop, not activeConversationId from store
-    setFilteredConversationId(conversationId)
-    setDiffSidebarOpen(true)
   }
 
   return (
     <div
       className={cn(
-        "border border-border bg-muted/30 overflow-hidden flex flex-col transition-all duration-200",
+        // Only animate paint properties here. Animating padding/margin (via
+        // transition-all) would redo layout every frame when the rail toggles.
+        "border border-border bg-muted/30 overflow-hidden flex flex-col transition-colors duration-200",
         isRailExpanded ? "pb-2" : "border-b-0 pb-6 -mb-6",
         // If queue card or agent rail above - no top radius
         hasQueueCardAbove || hasAgentRailAbove ? "rounded-none" : "rounded-t-xl"
       )}
     >
       {/* Header - at top */}
-      <div
-        className={cn(
-          "flex items-center justify-between pr-1 pl-3 h-8 transition-colors duration-150 rounded-sm",
-          hasExpandableContent ? "cursor-pointer hover:bg-muted/50" : "cursor-default"
-        )}
-      >
+      <div className="flex items-center justify-between pr-1 pl-3 h-8 rounded-sm">
         <div className="flex items-center gap-2 text-xs min-w-0">
-          {/* Expand/Collapse chevron - only show when there are files to expand */}
-          {hasExpandableContent && (
-            <button
-              type="button"
-              onClick={() => setIsExpanded(!isExpanded)}
-              className="flex items-center justify-center w-5 h-5 rounded hover:bg-muted/60"
-              aria-expanded={isExpanded}
-              aria-label={`${isExpanded ? "Collapse" : "Expand"} status details`}
-            >
-              <ChevronDown
-                className={cn(
-                  "w-4 h-4 text-muted-foreground transition-transform duration-200",
-                  !isExpanded && "-rotate-90",
-                )}
-              />
-            </button>
-          )}
-
-          {/* Status display (restored from original layout) */}
+          {/* Status display */}
           {isBusy ? (
             <span className="text-xs text-muted-foreground">
               {isCompacting ? "Compacting" : "Generating"}<AnimatedDots />
-            </span>
-          ) : totals.fileCount > 0 ? (
-            <span className="text-xs text-muted-foreground">
-              {totals.fileCount} {totals.fileCount === 1 ? "file" : "files"}
-              {(totals.additions > 0 || totals.deletions > 0) && (
-                <>
-                  {" "}
-                  <span className="text-green-600 dark:text-green-400">
-                    +{totals.additions}
-                  </span>{" "}
-                  <span className="text-red-600 dark:text-red-400">
-                    -{totals.deletions}
-                  </span>
-                </>
-              )}
             </span>
           ) : null}
           {agentStatusLine && (
@@ -261,12 +127,12 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
               onClick={(e) => {
                 e.stopPropagation()
                 if (isBusy) onStop?.()
-                setIsRailExpanded((v) => !v)
               }}
-              className="h-6 w-6 p-0 text-xs font-normal rounded-md transition-transform duration-150 active:scale-[0.97]"
-              aria-label={isRailExpanded ? "Collapse" : "Expand"}
+              className="h-6 px-2 text-xs font-normal rounded-md transition-transform duration-150 active:scale-[0.97] flex items-center gap-1"
+              aria-label={i18n.t('Stop (Ctrl+C)')}
             >
-              <ArrowUp className={cn("h-4 w-4 transition-transform duration-200", isRailExpanded && "rotate-180")} />
+              <Square className="h-3 w-3" />
+              <span>{i18n.t('Ctrl+C')}</span>
             </Button>
           )}
 
@@ -283,96 +149,17 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
             </Button>
           )}
 
-          {/* Review button */}
-          {uncommittedFiles.length > 0 && (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={(e) => {
-                e.stopPropagation()
-                handleReview()
-              }}
-              className="h-6 px-3 text-xs font-medium rounded-md transition-transform duration-150 active:scale-[0.97]"
-            >
-              Review
-            </Button>
-          )}
         </div>
       </div>
-
-      {/* Expanded content - files */}
-      <AnimatePresence initial={false}>
-        {isExpanded && hasExpandableContent && (
-          <motion.div
-            // react-doctor-disable-next-line no-layout-property-animation
-            initial={{ height: 0, opacity: 0 }}
-            // react-doctor-disable-next-line no-layout-property-animation
-            animate={{ height: "auto", opacity: 1 }}
-            // react-doctor-disable-next-line no-layout-property-animation
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
-            className="overflow-hidden"
-          >
-            <div className="border-t border-border max-h-[200px] overflow-y-auto">
-              {uncommittedFiles.map((file) => {
-                const FileIcon = getFileIconByExtension(file.displayPath)
-
-                const handleFileClick = () => {
-                  // Set selected file and filter to just this file — avoids intermediate 2→1 file flash
-                  setSelectedFilePath(file.displayPath)
-                  setFilteredDiffFiles([file.displayPath])
-                  // Set focus on this specific file (for scroll-to)
-                  setFocusedDiffFile(file.displayPath)
-                  // Open diff sidebar
-                  setDiffSidebarOpen(true)
-                }
-
-                const handleKeyDown = (e: React.KeyboardEvent) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault()
-                    handleFileClick()
-                  }
-                }
-
-                return (
-                  <div
-                    key={file.filePath}
-                    // react-doctor-disable-next-line prefer-tag-over-role
-                    role="button"
-                    tabIndex={0}
-                    onClick={handleFileClick}
-                    onKeyDown={handleKeyDown}
-                    aria-label={`View diff for ${file.displayPath}`}
-                    className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/50 transition-colors cursor-pointer focus:outline-none rounded-sm"
-                  >
-                    {FileIcon && (
-                      <FileIcon className="w-4 h-4 flex-shrink-0 text-muted-foreground" />
-                    )}
-                    <span className="truncate flex-1 text-foreground">
-                      {file.displayPath}
-                    </span>
-                    <span className="flex-shrink-0 text-green-600 dark:text-green-400">
-                      +{file.additions}
-                    </span>
-                    <span className="flex-shrink-0 text-red-600 dark:text-red-400">
-                      -{file.deletions}
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* Expanded rail panel */}
       <AnimatePresence initial={false}>
         {isRailExpanded && (
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.16, ease: [0.23, 1, 0.32, 1] }}
             className="overflow-hidden border-t border-border bg-background/40"
           >
             <div className="h-8 border-b border-border/40" />
@@ -395,30 +182,10 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
               </div>
               <div className="flex-1 p-3 text-xs text-muted-foreground overflow-y-auto">
                 {activeRailSection === "subagents" ? (
-                  <div className="space-y-1 overflow-y-auto">
-                    {subagentRuns.length === 0 ? (
-                      <div className="text-xs text-muted-foreground">No subagents</div>
-                    ) : (
-                      subagentRuns.map((run) => (
-                        <button
-                          key={run.subagentSessionId}
-                          type="button"
-                          onClick={() => setSelectedSubagentSessionId(run.subagentSessionId)}
-                          className={cn(
-                            "block w-full rounded px-2 py-1 text-left text-xs",
-                            selectedSubagentSessionId === run.subagentSessionId
-                              ? "bg-muted text-foreground"
-                              : "text-muted-foreground hover:bg-muted/50",
-                          )}
-                        >
-                          <div className="truncate font-medium">{run.name}</div>
-                          <div className="truncate text-[10px] opacity-80">{run.state}</div>
-                        </button>
-                      ))
-                    )}
-                  </div>
+                  // TODO(subagent): temporarily not consumed.
+                  <div className="text-xs text-muted-foreground">{i18n.t('Subagents temporarily disabled')}</div>
                 ) : terminalEntries.length === 0 ? (
-                  <div>No terminal data</div>
+                  <div>{i18n.t('No terminal data')}</div>
                 ) : (
                   <div className="space-y-2">
                     <div className="space-y-1">

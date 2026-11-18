@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import * as TooltipPrimitive from "@radix-ui/react-tooltip"
 import * as React from "react"
 

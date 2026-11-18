@@ -17,8 +17,8 @@ describe("ChatErrorCard", () => {
       />,
     )
 
-    expect(screen.getByText("模型不可用")).toBeTruthy()
-    expect(screen.getByText("重复 3 次")).toBeTruthy()
-    expect(screen.getByText("技术详情")).toBeTruthy()
+    expect(screen.getByText("Model unavailable")).toBeTruthy()
+    expect(screen.getByText("Repeated 3 times")).toBeTruthy()
+    expect(screen.getByText("Technical details")).toBeTruthy()
   })
 })

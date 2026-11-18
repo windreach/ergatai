@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useAtom, type WritableAtom } from "jotai"
@@ -343,8 +344,8 @@ export function ResizableBottomPanel({
                       >
                         <CloseHint closeHotkey={closeHotkey} />
                         <div className="flex items-center gap-1 text-xs">
-                          <span>Resize</span>
-                          <span className="text-muted-foreground">Drag</span>
+                          <span>{i18n.t('Resize')}</span>
+                          <span className="text-muted-foreground">{i18n.t('Drag')}</span>
                         </div>
                       </div>
                     </motion.div>

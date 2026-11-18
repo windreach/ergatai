@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState, useRef, useEffect, memo, useMemo } from "react"
@@ -264,7 +265,7 @@ export const AgentUserMessageBubble = memo(function AgentUserMessageBubble({
                   parts.push(folderCount === 1 ? "folder" : `${folderCount} folders`)
                 }
 
-                return `Using ${parts.join(", ")}`
+                return i18n.t("Using {{parts}}", { parts: parts.join(", ") })
               })()}
             </div>
           ) : null}

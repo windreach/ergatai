@@ -10,7 +10,6 @@ use utoipa::ToSchema;
 
 use ergatai_runtime::profile_registry::AgentRegistration;
 
-use super::agents::{extract_models_from_config_options, parse_model_output, DetectedModels};
 use crate::services::profile_service;
 
 /// Request to register a new agent profile
@@ -609,248 +608,64 @@ pub async fn refresh_profile_models(Path(name): Path<String>) -> axum::response:
         }
     };
 
-    // 0. Agent-specific discovery (config files, CLI, SDK). Generic layer only
-    // dispatches by kind and persists the result.
-    {
-        let kind = crate::services::agent::resolve_kind(&profile);
-        let discovered = crate::services::agent::discover_models(kind, &name, None).await;
-        if !discovered.details.is_empty() {
-            if let Err(e) = crate::services::profile_service::persist_profile_models(
-                &name,
-                &discovered.details,
-                discovered.source,
-                &discovered.sources,
-                discovered.default_model.as_deref(),
-            )
-            .await
-            {
-                return crate::http_error::internal(e, "refresh_profile_models_save")
-                    .into_response();
-            }
-            let models: Vec<String> = discovered.details.iter().map(|d| d.id.clone()).collect();
-            let source = match discovered.source {
-                crate::services::profile_service::ProfileModelSource::ConfigFile => "config_file",
-                crate::services::profile_service::ProfileModelSource::AgentSdk => "agent_sdk",
-                crate::services::profile_service::ProfileModelSource::AcpConfigOptions => {
-                    "acp_config_options"
-                }
-                crate::services::profile_service::ProfileModelSource::None => "none",
-            };
-            return (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "status": "available",
-                    "source": source,
-                    "models": models,
-                    "model_details": discovered.details,
-                    "current": discovered.current,
-                })),
-            )
-                .into_response();
-        }
-    }
+    // Shared priority chain: live ACP > native CLI/SDK > models.dev cache >
+    // config file. The config file is always overlaid so custom providers
+    // survive a live read.
+    let kind = crate::services::agent::resolve_kind(&profile);
+    let running_agent_id = find_running_agent_for_profile(&profile.name).await.ok();
+    let ctx = crate::services::agent::ModelReadContext::new(&name)
+        .with_live_agent(running_agent_id.as_deref());
+    let discovered = crate::services::agent::discover_models(kind, &ctx).await;
 
-    // 2. Find a running agent for this profile
-    let running_agent_id =
-        match find_running_agent_for_profile(&profile.name).await {
-            Ok(agent_id) => agent_id,
-            Err(_e) => return (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "status": "no_agent",
-                    "source": "none",
-                    "models": [],
-                    "last_known_models": [],
-                    "current": null,
-                    "message": format!("No running agent found for profile '{}'.", profile.name),
-                })),
-            )
-                .into_response(),
-        };
-
-    // 3. Prefer the structured ACP model selector.
-    let mut models_result = None;
-    let mut acp_read_succeeded = false;
-    match crate::services::agent_service::get_agent_config_options(&running_agent_id).await {
-        Ok(Some(opts)) => {
-            acp_read_succeeded = true;
-            models_result = extract_models_from_config_options(&opts);
-        }
-        Ok(None) => {
-            tracing::warn!(agent_id = %running_agent_id, "Agent disappeared during model refresh");
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                agent_id = %running_agent_id,
-                "get_agent_config_options failed during model refresh"
-            );
-        }
-    }
-
-    // 4. Only fall back to text if the agent advertised the command. `/model`
-    // is a private command, not an ACP contract, so never send it blindly.
-    if models_result.is_none() && acp_read_succeeded {
-        let supports_model_command =
-            match crate::services::agent_service::get_agent_available_commands(&running_agent_id)
-                .await
-            {
-                Ok(Some(commands)) => commands.iter().any(|command| {
-                    let command_name = command.name.trim();
-                    command_name == "/model" || command_name.eq_ignore_ascii_case("model")
-                }),
-                Ok(None) => false,
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        agent_id = %running_agent_id,
-                        "Failed to read available commands during model refresh"
-                    );
-                    false
-                }
-            };
-
-        if supports_model_command {
-            match crate::services::agent_service::execute_agent_command(
-                &running_agent_id,
-                "/model",
-                3,
-            )
-            .await
-            {
-                Ok(output) => {
-                    models_result = parse_model_output(&output).map(|parsed| {
-                        let models = parsed
-                            .get("models")
-                            .and_then(serde_json::Value::as_array)
-                            .map(|values| {
-                                values
-                                    .iter()
-                                    .filter_map(serde_json::Value::as_str)
-                                    .map(ToString::to_string)
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default();
-                        DetectedModels {
-                            models,
-                            current: parsed
-                                .get("current")
-                                .and_then(serde_json::Value::as_str)
-                                .map(ToString::to_string),
-                            option_id: None,
-                        }
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        agent_id = %running_agent_id,
-                        "Declared /model command failed during model refresh"
-                    );
-                }
-            }
-        }
-    }
-
-    // 5. Persist only definitive results. A missing backend/read error leaves
-    // the previous cache untouched, but the response still explains why.
-    if let Some(detection) = models_result {
-        if detection.models.is_empty() {
-            return (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "status": "unsupported",
-                    "source": "slash_command",
-                    "models": [],
-                    "last_known_models": [],
-                    "current": detection.current,
-                    "message": "Declared /model command returned no parseable model list",
-                })),
-            )
-                .into_response();
-        }
-
-        if let Err(e) = profile_service::save_profile_models_by_name(
+    if discovered.success && !discovered.details.is_empty() {
+        if let Err(e) = crate::services::profile_service::persist_profile_models(
             &name,
-            &detection.models,
-            detection.option_id.as_deref(),
+            &discovered.details,
+            discovered.source,
+            &discovered.sources,
+            discovered.default_model.as_deref(),
         )
         .await
         {
             return crate::http_error::internal(e, "refresh_profile_models_save").into_response();
         }
-        let source = if crate::services::agent::resolve_kind_parts(
-            &profile.name,
-            &profile.command,
-            &profile.agent_type,
-        ) == crate::services::agent::AgentKind::Claude
-            && detection.option_id.is_none()
-        {
-            "cli_subprocess"
-        } else {
-            detection
-                .option_id
-                .as_deref()
-                .map(|_| "acp_config_options")
-                .unwrap_or("slash_command")
-        };
-        (
+        let models: Vec<String> = discovered.details.iter().map(|d| d.id.clone()).collect();
+        return (
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "available",
-                "source": source,
-                "models": detection.models,
-                "current": detection.current,
+                "source": discovered.source.as_str(),
+                "sources": discovered.sources,
+                "models": models,
+                "model_details": discovered.details,
+                "current": discovered.current,
             })),
         )
-            .into_response()
-    } else if acp_read_succeeded {
-        if let Err(e) = profile_service::mark_profile_models_unavailable_by_name(&name).await {
-            return crate::http_error::internal(e, "refresh_profile_models_unsupported")
-                .into_response();
-        }
-        let catalog = match profile_service::get_profile_models_by_name(&name).await {
-            Ok(catalog) => catalog,
-            Err(e) => {
-                return crate::http_error::internal(e, "refresh_profile_models_read")
-                    .into_response()
-            }
-        };
-        (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": catalog.status,
-                "source": catalog.source,
-                "models": catalog.models,
-                "last_known_models": catalog.last_known_models,
-                "current": catalog.current,
-                "verified_at": catalog.verified_at,
-                "message": "Agent did not expose a model selector",
-            })),
-        )
-            .into_response()
-    } else {
-        let previous = match profile_service::get_profile_models_by_name(&name).await {
-            Ok(catalog) => catalog,
-            Err(e) => {
-                return crate::http_error::internal(e, "refresh_profile_models_read")
-                    .into_response()
-            }
-        };
-        (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "detection_failed",
-                "source": "none",
-                "models": previous.models,
-                "last_known_models": previous.last_known_models,
-                "current": null,
-                "verified_at": previous.verified_at,
-                "message": "Could not read agent config options; previous cache was not changed",
-            })),
-        )
-            .into_response()
+            .into_response();
     }
+
+    // No source succeeded: preserve the previous cache and explain the failure.
+    let previous = match profile_service::get_profile_models_by_name(&name).await {
+        Ok(catalog) => catalog,
+        Err(e) => {
+            return crate::http_error::internal(e, "refresh_profile_models_read").into_response()
+        }
+    };
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": if running_agent_id.is_some() { "detection_failed" } else { "no_agent" },
+            "source": previous.source,
+            "sources": previous.sources,
+            "models": previous.models,
+            "last_known_models": previous.last_known_models,
+            "current": previous.current,
+            "verified_at": previous.verified_at,
+            "stale": previous.stale,
+            "message": "Could not read a higher-or-equal-ranked model source; previous cache was not changed",
+        })),
+    )
+        .into_response()
 }
 
 /// Find a running agent matching the profile name.

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback, useEffect, useRef } from "react"
 import { useAtom } from "jotai"
 import { toast } from "sonner"
@@ -24,9 +25,9 @@ export function useActiveChatConversationMeta({
   const renameConversationMutation = api.agents.renameConversation.useMutation({
     onError: (error: unknown) => {
       if ((error as { data?: { code?: string } })?.data?.code === "NOT_FOUND") {
-        toast.error("Send a message first before renaming this chat")
+        toast.error(i18n.t('Send a message first before renaming this chat'))
       } else {
-        toast.error("Failed to rename chat")
+        toast.error(i18n.t('Failed to rename chat'))
       }
     },
   })
@@ -50,7 +51,7 @@ export function useActiveChatConversationMeta({
       } catch {
         useAgentConversationStore
           .getState()
-          .updateConversationName(conversationId, conversationNameRef.current || "New Chat")
+          .updateConversationName(conversationId, conversationNameRef.current || i18n.t('New Chat'))
       }
     },
     [conversationId],
@@ -63,15 +64,15 @@ export function useActiveChatConversationMeta({
       utils.agents.getAgentChat.invalidate({ chatId: parentChatId })
     },
     onError: (error: unknown, variables: unknown) => {
-      if ((error as { message?: string })?.message === "Conversation not found") {
-        console.warn("Conversation not found in DB, keeping local mode state")
+      if ((error as { message?: string })?.message === i18n.t('Conversation not found')) {
+        console.warn(i18n.t('Conversation not found in DB, keeping local mode state'))
         return
       }
       const v = variables as { mode?: string; conversationId?: string }
       const revertedMode: AgentMode = v.mode === "plan" ? "agent" : "plan"
       setConversationMode(revertedMode)
       useAgentConversationStore.getState().updateConversationMode(v.conversationId ?? conversationId, revertedMode)
-      console.error("Failed to update conversation mode:", (error as { message?: string })?.message)
+      console.error(i18n.t('Failed to update conversation mode:'), (error as { message?: string })?.message)
     },
   })
 

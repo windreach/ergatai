@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useMemo } from "react"
@@ -110,7 +111,7 @@ function eventTitle(event: CollaborationContextEvent): string {
   const nodeId = readString(payload.nodeId)
   switch (event.type) {
     case "plan_revision_created":
-      return `Plan revision ${readNumber(payload.revision) ?? ""}`.trim()
+      return i18n.t("Plan revision {{revision}}", { revision: readNumber(payload.revision) ?? "" }).trim()
     case "plan_activated":
       return "Plan activated"
     case "plan_hot_swapped":
@@ -133,7 +134,7 @@ function eventTitle(event: CollaborationContextEvent): string {
     case "dag_recovered":
       return "DAG recovered"
     case "session_state_changed":
-      return `Session ${readString(payload.to) ?? "state changed"}`
+      return i18n.t("Session {{state}}", { state: readString(payload.to) ?? i18n.t("state changed") })
     default:
       return "Runtime update"
   }
@@ -156,13 +157,13 @@ function eventSummary(event: CollaborationContextEvent): string {
   if (error) return error
   if (task) return task
   if (summary) return summary
-  if (resultPath) return `Result: ${resultPath}`
+  if (resultPath) return i18n.t("Result: {{path}}", { path: resultPath })
   if (submittedNodes !== undefined) {
     return `${submittedNodes} node${submittedNodes === 1 ? "" : "s"} submitted`
   }
   if (failedNodes !== undefined) return `${failedNodes} node(s) failed`
   if (completedNodes !== undefined) return `${completedNodes} node(s) completed`
-  if (kind) return `Approval kind: ${kind}`
+  if (kind) return i18n.t("Approval kind: {{kind}}", { kind })
   if (from && to) return `${from} → ${to}`
   if (reason) return reason
   return "Collaboration runtime update"

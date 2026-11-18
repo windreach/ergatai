@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useEffect, useCallback, useMemo, useRef, useState } from "react"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { useTheme } from "next-themes"
@@ -92,7 +93,7 @@ function getNextTerminalName(terminals: TerminalInstance[]): string {
 
   const maxNumber =
     existingNumbers.length > 0 ? Math.max(...existingNumbers) : 0
-  return `Terminal ${maxNumber + 1}`
+  return i18n.t("Terminal {{number}}", { number: maxNumber + 1 })
 }
 
 const TERMINAL_MODES = [
@@ -409,40 +410,51 @@ export function TerminalSidebar({
     }
   }, [isOpen])
 
-  // Discover existing shared terminal sessions when sidebar opens.
-  // Never auto-create — terminals are created explicitly via the + button.
+  // When the sidebar opens, restore any existing shared terminal sessions
+  // (local mode) or auto-create a first terminal, so the panel is never
+  // left showing "No terminal open".
   useEffect(() => {
     if (!isOpen || terminals.length > 0) return
 
-    if (!isSharedTerminalScope(scopeKey)) return
-
-    // Shared scope (local mode): check backend for existing sessions
     let cancelled = false
-    trpcUtils.terminal.listSessionsByScopeKey
-      .fetch({ scopeKey })
-      .then((sessions) => {
-        if (cancelled || sessions.length === 0) return
-        // Reconstruct TerminalInstance records from existing backend sessions
-        const instances = sessions.map((s, i) => ({
-          id: s.paneId.split(":term:")[1] || generateTerminalId(),
-          paneId: s.paneId,
-          name: `Terminal ${i + 1}`,
-          createdAt: s.lastActive,
-        }))
-        setAllTerminals((prev) => ({ ...prev, [scopeKey]: instances }))
-        setAllActiveIds((prev) => ({
-          ...prev,
-          [scopeKey]: instances[0]?.id || null,
-        }))
-      })
-      .catch((error) => {
-        console.error("Failed to discover terminal sessions:", error)
-      })
+
+    if (isSharedTerminalScope(scopeKey)) {
+      // Shared scope (local mode): check backend for existing sessions
+      trpcUtils.terminal.listSessionsByScopeKey
+        .fetch({ scopeKey })
+        .then((sessions) => {
+          if (cancelled) return
+          if (sessions.length > 0) {
+            // Reconstruct TerminalInstance records from existing backend sessions
+            const instances = sessions.map((s, i) => ({
+              id: s.paneId.split(":term:")[1] || generateTerminalId(),
+              paneId: s.paneId,
+              name: i18n.t("Terminal {{number}}", { number: i + 1 }),
+              createdAt: s.lastActive,
+            }))
+            setAllTerminals((prev) => ({ ...prev, [scopeKey]: instances }))
+            setAllActiveIds((prev) => ({
+              ...prev,
+              [scopeKey]: instances[0]?.id || null,
+            }))
+          } else {
+            createTerminal()
+          }
+        })
+        .catch((error) => {
+          if (cancelled) return
+          console.error("Failed to discover terminal sessions:", error)
+          createTerminal()
+        })
+    } else {
+      // Isolated scope (worktree): auto-create a terminal on open
+      createTerminal()
+    }
 
     return () => {
       cancelled = true
     }
-  }, [isOpen, terminals.length, scopeKey, trpcUtils, setAllTerminals, setAllActiveIds])
+  }, [isOpen, terminals.length, scopeKey, trpcUtils, createTerminal, setAllTerminals, setAllActiveIds])
 
   // Note: Cmd+J keyboard shortcut is handled in active-chat.tsx
   // to ensure it works regardless of terminal display mode or focus state.
@@ -473,7 +485,7 @@ export function TerminalSidebar({
             size="icon"
             onClick={handleMobileClose}
             className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md"
-            aria-label="Back to chat"
+            aria-label={i18n.t('Back to chat')}
             style={{
               // @ts-expect-error - WebKit-specific property
               WebkitAppRegion: "no-drag",
@@ -571,7 +583,7 @@ export function TerminalSidebar({
                   size="icon"
                   onClick={closeSidebar}
                   className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
-                  aria-label="Close terminal"
+                  aria-label={i18n.t('Close terminal')}
                 >
                   <IconDoubleChevronRight className="h-4 w-4" />
                 </Button>
@@ -593,12 +605,12 @@ export function TerminalSidebar({
                   size="icon"
                   onClick={createTerminal}
                   className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] rounded-md flex-shrink-0"
-                  aria-label="New terminal"
+                  aria-label={i18n.t('New terminal')}
                 >
                   <PlusIcon className="h-3.5 w-3.5" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="bottom">New terminal</TooltipContent>
+              <TooltipContent side="bottom">{i18n.t('New terminal')}</TooltipContent>
             </Tooltip>
           )}
 
@@ -835,7 +847,7 @@ export function TerminalBottomPanelContent({
             const instances = sessions.map((s, i) => ({
               id: s.paneId.split(":term:")[1] || generateTerminalId(),
               paneId: s.paneId,
-              name: `Terminal ${i + 1}`,
+              name: i18n.t("Terminal {{number}}", { number: i + 1 }),
               createdAt: s.lastActive,
             }))
             setAllTerminals((prev) => ({ ...prev, [scopeKey]: instances }))
@@ -871,7 +883,7 @@ export function TerminalBottomPanelContent({
                 size="icon"
                 onClick={onClose}
                 className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
-                aria-label="Close terminal"
+                aria-label={i18n.t('Close terminal')}
               >
                 <ChevronsDown className="h-4 w-4" />
               </Button>

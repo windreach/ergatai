@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useState, useCallback } from "react"
 import { Folder, FolderPlus, X } from "lucide-react"
 import { toast } from "sonner"
@@ -118,7 +119,7 @@ export function WorkspaceEditDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-[420px]">
         <DialogHeader>
-          <DialogTitle>Edit Workspace</DialogTitle>
+          <DialogTitle>{i18n.t('Edit Workspace')}</DialogTitle>
           <DialogDescription>
             Change the workspace name and manage source folders.
           </DialogDescription>
@@ -131,14 +132,14 @@ export function WorkspaceEditDialog({
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Workspace name"
+              placeholder={i18n.t('Workspace name')}
               className="pl-9"
             />
           </div>
 
           {/* Source folders */}
           <div className="space-y-2">
-            <div className="text-xs font-medium text-muted-foreground">Source Folders</div>
+            <div className="text-xs font-medium text-muted-foreground">{i18n.t('Source Folders')}</div>
             <div className="space-y-1.5">
               {(projects ?? []).map((project) => (
                 <div

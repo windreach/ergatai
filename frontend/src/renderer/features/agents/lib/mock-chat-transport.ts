@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import type { ChatTransport, UIMessage, UIMessageChunk } from "ai"
 
 import type { CoreAgentOption } from "./agent-contract-api"
@@ -39,11 +40,11 @@ export function getMockGroupAgentConversation(
   agent: CoreAgentOption,
   prompt: string,
 ) {
-  const topic = prompt || "当前任务"
+  const topic = prompt || i18n.t("mock.currentTask")
 
   return {
-    thinking: `${agent.name} 正在拆解「${topic}」。先确认目标，再检查上下文和风险，最后组织可执行回复。`,
-    response: `${agent.name} 的回复：围绕「${topic}」，我会先给出结论，再补充关键步骤和注意事项。`,
+    thinking: i18n.t("mock.breakingDown", { agent: agent.name, topic }),
+    response: i18n.t("mock.reply", { agent: agent.name, topic }),
   }
 }
 
@@ -141,8 +142,8 @@ export class MockChatTransport implements ChatTransport<UIMessage> {
       ? getMockGroupAgentConversation(responseAgent, prompt)
       : null
     const acknowledgmentText = responseAgent
-      ? `${responseAgent.name}: 收到，任务正在执行。详细情况点击下方 ${responseAgent.name} 查看完整信息。`
-      : `收到：${prompt || "空消息"}。这是统一 mock 通道返回的回复，用于验证真实消息链路。`
+      ? i18n.t("mock.receivedRunning", { agent: responseAgent.name })
+      : i18n.t("mock.receivedEmpty", { prompt: prompt || i18n.t("mock.emptyMessage") })
     const finalText = conversation?.response ?? acknowledgmentText
     if (chatId && taskAgents.length > 0) {
       setGroupAgentRuntimeStatuses(chatId, {
@@ -188,7 +189,7 @@ export class MockChatTransport implements ChatTransport<UIMessage> {
           controller,
           thinkingId,
           "Thinking",
-          { text: "用户想验证思考记录的展示样式。先确认用户意图，再整理回复结构。" },
+          { text: i18n.t("mock.thinkingStyle") },
           { completed: true },
         )
 
@@ -199,7 +200,7 @@ export class MockChatTransport implements ChatTransport<UIMessage> {
           { query: "mock chat reply streaming" },
           {
             results: [
-              { title: "Mock search result", url: "https://example.com/mock-search" },
+              { title: i18n.t('Mock search result'), url: "https://example.com/mock-search" },
             ],
           },
         )

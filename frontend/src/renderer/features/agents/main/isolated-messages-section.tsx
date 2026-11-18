@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useEffect, useMemo } from "react"
@@ -65,6 +66,10 @@ interface IsolatedMessagesSectionProps {
   }>
   MessageGroupWrapper: React.ComponentType<{ children: React.ReactNode; isLastGroup?: boolean }>
   toolRegistry: Record<string, { icon: ToolIcon; title: (args: ToolPart) => string }>
+  /** Rendered at the end of the last group so it stays in the message flow. */
+  footer?: React.ReactNode
+  /** Hide error cards in the last group while an automatic retry is active. */
+  suppressErrorCards?: boolean
 }
 
 /**
@@ -97,6 +102,8 @@ export const IsolatedMessagesSection = memo(function IsolatedMessagesSection({
   ToolCallComponent,
   MessageGroupWrapper,
   toolRegistry,
+  footer,
+  suppressErrorCards = false,
 }: IsolatedMessagesSectionProps) {
   // Per-conversation selector - split panes render fully independently.
   const userMsgIds = useAtomValue(userMessageIdsPerChatAtom(conversationId))
@@ -159,8 +166,11 @@ export const IsolatedMessagesSection = memo(function IsolatedMessagesSection({
           ToolCallComponent={ToolCallComponent}
           MessageGroupWrapper={MessageGroupWrapper}
           toolRegistry={toolRegistry}
+          footer={footer}
+          suppressErrorCards={suppressErrorCards}
         />
       ))}
+      {validUserMsgIds.length === 0 ? footer : null}
     </>
   )
 }, shallowEqualProps as (a: IsolatedMessagesSectionProps, b: IsolatedMessagesSectionProps) => boolean)

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { trpc } from "../../../lib/trpc"
 import { GitPullRequest } from "lucide-react"
 import { IconSpinner } from "../../../components/ui/icons"

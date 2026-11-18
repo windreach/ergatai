@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { Button } from "../../../../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../../components/ui/tooltip";
 import { useState } from "react";
@@ -66,10 +67,10 @@ export function CommitInput({
 	// Build dynamic commit label
 	const getCommitLabel = () => {
 		if (stagedCount && stagedCount > 0 && currentBranch) {
-			return `Commit ${stagedCount} to ${currentBranch}`;
+			return i18n.t("Commit {{count}} to {{branch}}", { count: stagedCount, branch: currentBranch });
 		}
 		if (currentBranch) {
-			return `Commit to ${currentBranch}`;
+			return i18n.t("Commit to {{branch}}", { branch: currentBranch });
 		}
 		return "Commit";
 	};
@@ -86,7 +87,7 @@ export function CommitInput({
 			{/* react-doctor-disable-next-line no-placeholder-only-field */}
 			<input
 				type="text"
-				placeholder="Commit message"
+				placeholder={i18n.t('Commit message')}
 				value={summary}
 				onChange={(e) => setSummary(e.target.value)}
 				className={cn(
@@ -106,7 +107,7 @@ export function CommitInput({
 			{/* Description textarea - multiline */}
 			{/* react-doctor-disable-next-line no-placeholder-only-field */}
 			<textarea
-				placeholder="Description"
+				placeholder={i18n.t('Description')}
 				value={description}
 				onChange={(e) => setDescription(e.target.value)}
 				className={cn(

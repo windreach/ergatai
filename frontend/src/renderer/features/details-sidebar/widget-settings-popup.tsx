@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react"
 import { useAtom } from "jotai"
+import { useTranslation } from "react-i18next"
 import { GripVertical, TerminalSquare, ListTodo, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -46,6 +47,7 @@ function getWidgetIcon(widgetId: WidgetId) {
 }
 
 export function WidgetSettingsPopup({ workspaceId, isRemoteChat = false }: WidgetSettingsPopupProps) {
+  const { t } = useTranslation()
   const visibilityAtom = useMemo(
     () => widgetVisibilityAtomFamily(workspaceId),
     [workspaceId],
@@ -218,7 +220,7 @@ export function WidgetSettingsPopup({ workspaceId, isRemoteChat = false }: Widge
                   className="h-4 w-4 pointer-events-none"
                 />
                 <Icon className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                <span className="text-sm flex-1">{widget.label}</span>
+                <span className="text-sm flex-1">{t(widget.label)}</span>
               </div>
             )
           })}

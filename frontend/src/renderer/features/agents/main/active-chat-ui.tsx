@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import {
@@ -50,7 +51,7 @@ export function CopyButton({
 
   return (
     <button
-      aria-label="Copy"
+      aria-label={i18n.t('Copy')}
       onClick={handleCopy}
       className="p-1.5 rounded-md transition-[background-color,transform] duration-150 ease-out hover:bg-accent active:scale-[0.97]"
     >
@@ -172,7 +173,7 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
                 // Narrow screen (container <= 48rem): button lifts above the input
                 bottom: "clamp(0.75rem, (48rem - var(--chat-container-width, 0px)) * 1000, calc(var(--chat-input-height, 4rem) + 1rem))",
               }}
-              aria-label="Scroll to bottom"
+              aria-label={i18n.t('Scroll to bottom')}
             >
               <ArrowDown className="h-4 w-4 text-muted-foreground" />
             </motion.button>
@@ -220,4 +221,3 @@ export function CollapsibleSteps({
     </div>
   )
 }
-

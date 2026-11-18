@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 export type ImplicitCollaborationStatus =
   | "pending"
   | "running"
@@ -112,7 +113,7 @@ export function parseImplicitRuntimeEvent(
         sessionId,
         runId,
         chatId,
-        title: title || "Collaboration task",
+        title: title || i18n.t('Collaboration task'),
       }
     }
     case "agent_assigned": {
@@ -132,7 +133,7 @@ export function parseImplicitRuntimeEvent(
         sessionId,
         runId,
         chatId,
-        summary: summary || "Working on collaboration task",
+        summary: summary || i18n.t('Working on collaboration task'),
         status: "running",
       }
     }
@@ -144,7 +145,7 @@ export function parseImplicitRuntimeEvent(
         type,
         sessionId,
         chatId,
-        reason: reason || "Collaboration session failed",
+        reason: reason || i18n.t('Collaboration session failed'),
       }
     }
     default:
@@ -169,10 +170,10 @@ export function applyImplicitRuntimeEvent(
       {
         id: event.sessionId,
         sessionId: event.sessionId,
-        title: "Collaboration task",
+        title: i18n.t('Collaboration task'),
         status: "pending",
         agents: [],
-        summary: "Collaboration session created",
+        summary: i18n.t('Collaboration session created'),
         updatedAt,
       },
     ]
@@ -185,7 +186,7 @@ export function applyImplicitRuntimeEvent(
     nextTask.runId = event.runId
     nextTask.title = event.title
     nextTask.status = "running"
-    nextTask.summary = "Preparing agent execution"
+    nextTask.summary = i18n.t('Preparing agent execution')
   } else if (event.type === "agent_assigned") {
     nextTask.agents = Array.from(new Set([...task.agents, event.agentId]))
   } else if (event.type === "progress_updated") {
@@ -194,7 +195,7 @@ export function applyImplicitRuntimeEvent(
     nextTask.status = "running"
   } else if (event.type === "session_completed") {
     nextTask.status = "completed"
-    nextTask.summary = "Collaboration session completed"
+    nextTask.summary = i18n.t('Collaboration session completed')
   } else if (event.type === "session_failed") {
     nextTask.status = "failed"
     nextTask.summary = event.reason

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import React, { useMemo, useCallback } from "react"
 import { MoreVertical } from "lucide-react"
 import {
@@ -129,7 +130,7 @@ export function ConversationDropdownMenu({
         <button
           type="button"
           tabIndex={-1}
-          aria-label={`Manage ${label} ${conversation.name || conversation.id}`}
+          aria-label={i18n.t("Manage {{label}} {{name}}", { label, name: conversation.name || conversation.id })}
           onClick={(event) => event.stopPropagation()}
           className="flex-shrink-0 rounded-md p-0.5 text-muted-foreground hover:text-foreground active:text-foreground transition-[opacity,transform,color] duration-150 ease-out opacity-0 scale-95 pointer-events-none group-hover:opacity-100 group-hover:scale-100 group-hover:pointer-events-auto active:scale-[0.97]"
         >
@@ -138,7 +139,7 @@ export function ConversationDropdownMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48">
         <DropdownMenuItem onSelect={() => onTogglePin(conversation.id)}>
-          {isPinned ? `Unpin ${label}` : `Pin ${label}`}
+          {isPinned ? i18n.t("Unpin {{label}}", { label }) : i18n.t("Pin {{label}}", { label })}
         </DropdownMenuItem>
         {onRename && (
           <DropdownMenuItem onSelect={() => onRename(conversation)}>

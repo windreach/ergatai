@@ -9,6 +9,7 @@ import {
   router,
   z,
 } from "./ergatai-shared"
+import { t } from "../../i18n"
 
 export const projectsRouter = router({
 
@@ -94,13 +95,16 @@ export const projectsRouter = router({
     )
     .mutation(async ({ input }): Promise<Project> => {
       let workspaceId: string | null = null
+      let workspaceHasDefaultProject = false
       try {
         const workspaces = await ergataiFetch<BackendManagedWorkspace[]>(
           `/api/v1/workspaces/managed`,
         )
         // Use first existing workspace, or create one named after the project
         if (workspaces.length > 0) {
-          workspaceId = workspaces[0]!.workspace_id.toString()
+          const workspace = workspaces[0]!
+          workspaceId = workspace.workspace_id.toString()
+          workspaceHasDefaultProject = Boolean(workspace.default_project_id)
         } else {
           // Auto-create workspace named after the project
           const newWs = await ergataiFetch<BackendManagedWorkspace>(
@@ -138,8 +142,10 @@ export const projectsRouter = router({
           },
         )
 
-        // Set this project as the default project for the workspace
-        if (project.project_id) {
+        // Set this project as the default project only when the workspace has
+        // no default yet. Opening a folder must not silently replace an
+        // existing default project (e.g. the Default Workspace's ~/.ergatai).
+        if (project.project_id && !workspaceHasDefaultProject) {
           await ergataiFetch<BackendManagedWorkspace>(
             `/api/v1/workspaces/managed/${encodeURIComponent(workspaceId)}`,
             {
@@ -154,7 +160,7 @@ export const projectsRouter = router({
         return mapWorkspaceProjectToProject(project)
       } catch (error) {
         console.error("[Projects] Failed to create project:", error)
-        throw new Error(`Failed to create project: ${error instanceof Error ? error.message : String(error)}`)
+        throw new Error(t('Failed to create project: {{error instanceof Error ? error.message : String(error)}}'))
       }
     }),
 

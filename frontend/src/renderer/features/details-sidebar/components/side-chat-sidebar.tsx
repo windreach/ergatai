@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useEffect, useState } from "react"
@@ -88,16 +89,16 @@ export function SideChatSidebar({ chatId, projectPath, repository, sandboxId, te
                   size="icon"
                   onClick={() => setIsOpen(false)}
                   className="h-6 w-6 p-0 text-foreground flex-shrink-0 rounded-md hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97]"
-                  aria-label="Close chat"
+                  aria-label={i18n.t('Close chat')}
                 >
                   <IconDoubleChevronRight className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="bottom">Close chat</TooltipContent>
+              <TooltipContent side="bottom">{i18n.t('Close chat')}</TooltipContent>
             </Tooltip>
             <span className="text-xs font-medium text-foreground">
               {activeSideChatInfo
-                ? `Chat · ${activeSideChatInfo.agent.name}`
+                ? i18n.t("Chat · {{name}}", { name: activeSideChatInfo.agent.name })
                 : "Chat"}
             </span>
           </div>

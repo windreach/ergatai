@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { Button } from "../../../components/ui/button"
@@ -133,7 +134,7 @@ export function AgentSendButton({
       if (isRecording) return "Click to stop"
       return (
         <div className="flex flex-col items-start gap-0.5">
-          <span>Voice input</span>
+          <span>{i18n.t('Voice input')}</span>
           {voiceHotkey && (
             <span className="text-muted-foreground">{voiceHotkey}</span>
           )}
@@ -143,11 +144,11 @@ export function AgentSendButton({
     if (isStreaming && !hasContent)
       return (
         <div className="flex flex-col items-start gap-1">
-          <span>Stop</span>
+          <span>{i18n.t('Stop')}</span>
           {stopHotkey.primary && (
             <span className="flex items-center gap-1.5">
               <Kbd>{stopHotkey.primary}</Kbd>
-              {stopHotkey.alt && <><span className="text-[10px] opacity-50">or</span><Kbd>{stopHotkey.alt}</Kbd></>}
+              {stopHotkey.alt && <><span className="text-[10px] opacity-50">{i18n.t('or')}</span><Kbd>{stopHotkey.alt}</Kbd></>}
             </span>
           )}
         </div>
@@ -159,9 +160,9 @@ export function AgentSendButton({
           <Kbd className="ms-0.5">
             <EnterIcon className="size-2.5 inline" />
           </Kbd>
-          <span className="text-muted-foreground/60">or</span>
+          <span className="text-muted-foreground/60">{i18n.t('or')}</span>
           Send now
-          <Kbd className="ms-0.5">Alt</Kbd>
+          <Kbd className="ms-0.5">{i18n.t('Alt')}</Kbd>
           <Kbd className="-me-1">
             <EnterIcon className="size-2.5 inline" />
           </Kbd>
@@ -171,7 +172,7 @@ export function AgentSendButton({
     return (
       <div className="flex flex-col items-start gap-0.5">
         <div className="flex items-center gap-1">
-          <span>Send</span>
+          <span>{i18n.t('Send')}</span>
           <span className="text-muted-foreground inline-flex items-center gap-1">
             <Kbd>
               <EnterIcon className="size-2.5 inline" />
@@ -179,9 +180,9 @@ export function AgentSendButton({
           </span>
         </div>
         <div className="flex items-center gap-1">
-          <span>Send now</span>
+          <span>{i18n.t('Send now')}</span>
           <span className="text-muted-foreground inline-flex items-center gap-1">
-            <Kbd>Alt</Kbd>
+            <Kbd>{i18n.t('Alt')}</Kbd>
             <Kbd>
               <EnterIcon className="size-2.5 inline" />
             </Kbd>
@@ -274,4 +275,3 @@ export function AgentSendButton({
     </Tooltip>
   )
 }
-

@@ -1,6 +1,7 @@
 import {
   shell
 } from "electron";
+import { t } from "../i18n"
 import {
   simpleGit
 } from "simple-git";
@@ -31,6 +32,10 @@ import {
   hasUncommittedChanges,
   getRepositoryState
 } from "./git-factory";
+import {
+  mergeChatBranchIntoBase,
+  resolveProjectPathFromWorktree
+} from "./worktree";
 
 export { isUpstreamMissingError };
 
@@ -51,20 +56,20 @@ const PROTECTED_BRANCHES = ["main", "master", "develop", "production", "staging"
 /** Validate commit hash format (hex string, 7-40 chars) */
 function _validateCommitHash(hash: string): void {
 	if (!/^[0-9a-fA-F]{7,40}$/.test(hash)) {
-		throw new Error("Invalid commit hash format");
+		throw new Error(t('Invalid commit hash format'));
 	}
 }
 
 /** Validate branch name format */
 function validateBranchName(branch: string): void {
 	if (!branch || branch.length === 0) {
-		throw new Error("Branch name cannot be empty");
+		throw new Error(t('Branch name cannot be empty'));
 	}
 	if (branch.startsWith("-")) {
-		throw new Error("Branch name cannot start with -");
+		throw new Error(t('Branch name cannot start with -'));
 	}
 	if (!/^[a-zA-Z0-9._/-]+$/.test(branch)) {
-		throw new Error("Branch name contains invalid characters");
+		throw new Error(t('Branch name contains invalid characters'));
 	}
 }
 
@@ -112,9 +117,7 @@ export const createGitOperationsRouter = () => {
 				return withGitLock(input.worktreePath, async () => {
 					// Check for uncommitted changes before checkout
 					if (await hasUncommittedChanges(input.worktreePath)) {
-						throw new Error(
-							"Cannot switch branches: you have uncommitted changes. Please commit or stash your changes first."
-						);
+						throw new Error(t('Cannot switch branches: you have uncommitted changes. Please commit or stash your changes first.'));
 					}
 
 					const git = createGit(input.worktreePath);
@@ -196,7 +199,7 @@ export const createGitOperationsRouter = () => {
 
 					// Validate message
 					if (!input.message.trim()) {
-						throw new Error("Commit message cannot be empty");
+						throw new Error(t('Commit message cannot be empty'));
 					}
 
 					return withGitLock(input.worktreePath, async () => {
@@ -205,7 +208,7 @@ export const createGitOperationsRouter = () => {
 						// Check that there are staged changes
 						const status = await git.status();
 						if (status.staged.length === 0) {
-							throw new Error("No files staged for commit");
+							throw new Error(t('No files staged for commit'));
 						}
 
 						const result = await withLockRetry(input.worktreePath, () =>
@@ -232,12 +235,12 @@ export const createGitOperationsRouter = () => {
 
 					// Validate message
 					if (!input.message.trim()) {
-						throw new Error("Commit message cannot be empty");
+						throw new Error(t('Commit message cannot be empty'));
 					}
 
 					// Validate files
 					if (input.filePaths.length === 0) {
-						throw new Error("No files selected for commit");
+						throw new Error(t('No files selected for commit'));
 					}
 
 					return withGitLock(input.worktreePath, async () => {
@@ -256,7 +259,7 @@ export const createGitOperationsRouter = () => {
 						// Verify files were staged
 						const status = await git.status();
 						if (status.staged.length === 0) {
-							throw new Error("Failed to stage files for commit");
+							throw new Error(t('Failed to stage files for commit'));
 						}
 
 						// Commit
@@ -318,17 +321,13 @@ export const createGitOperationsRouter = () => {
 					// Safety check: prevent pull with uncommitted changes (data loss risk)
 					const hasChanges = await hasUncommittedChanges(input.worktreePath);
 					if (hasChanges && !input.autoStash) {
-						throw new Error(
-							"Cannot pull with uncommitted changes. Please commit or stash your changes first, or enable auto-stash."
-						);
+						throw new Error(t('Cannot pull with uncommitted changes. Please commit or stash your changes first, or enable auto-stash.'));
 					}
 
 					// Check for ongoing rebase/merge
 					const repoState = await getRepositoryState(input.worktreePath);
 					if (repoState.isRebasing || repoState.isMerging) {
-						throw new Error(
-							"Cannot pull: a rebase or merge is in progress. Please complete or abort it first."
-						);
+						throw new Error(t('Cannot pull: a rebase or merge is in progress. Please complete or abort it first.'));
 					}
 
 					try {
@@ -347,9 +346,7 @@ export const createGitOperationsRouter = () => {
 								await git.stash(["pop"]);
 							} catch {
 								// Stash pop failed (likely conflict)
-								throw new Error(
-									"Pull succeeded but failed to restore your stashed changes. Your changes are saved in git stash. Run 'git stash pop' to restore them."
-								);
+								throw new Error(t("Pull succeeded but failed to restore your stashed changes. Your changes are saved in git stash. Run 'git stash pop' to restore them."));
 							}
 						}
 					} catch (error) {
@@ -357,16 +354,14 @@ export const createGitOperationsRouter = () => {
 							error instanceof Error ? error.message : String(error);
 						if (isUpstreamMissingError(message)) {
 							throw new Error(
-								"No upstream branch to pull from. The remote branch may have been deleted.",
+								t("No upstream branch to pull from. The remote branch may have been deleted."),
 							);
 						}
 						// Check for rebase conflicts
 						if (message.includes("CONFLICT") || message.includes("could not apply")) {
 							// Abort the rebase
 							await git.rebase(["--abort"]).catch(() => {});
-							throw new Error(
-								"Pull failed due to conflicts. The operation has been aborted. Please resolve conflicts manually or try a different approach."
-							);
+							throw new Error(t('Pull failed due to conflicts. The operation has been aborted. Please resolve conflicts manually or try a different approach.'));
 						}
 						throw error;
 					}
@@ -391,17 +386,13 @@ export const createGitOperationsRouter = () => {
 					// Safety check: prevent sync with uncommitted changes
 					const hasChanges = await hasUncommittedChanges(input.worktreePath);
 					if (hasChanges && !input.autoStash) {
-						throw new Error(
-							"Cannot sync with uncommitted changes. Please commit or stash your changes first."
-						);
+						throw new Error(t('Cannot sync with uncommitted changes. Please commit or stash your changes first.'));
 					}
 
 					// Check for ongoing rebase/merge
 					const repoState = await getRepositoryState(input.worktreePath);
 					if (repoState.isRebasing || repoState.isMerging) {
-						throw new Error(
-							"Cannot sync: a rebase or merge is in progress. Please complete or abort it first."
-						);
+						throw new Error(t('Cannot sync: a rebase or merge is in progress. Please complete or abort it first.'));
 					}
 
 					try {
@@ -417,9 +408,7 @@ export const createGitOperationsRouter = () => {
 							try {
 								await git.stash(["pop"]);
 							} catch {
-								throw new Error(
-									"Sync pull succeeded but failed to restore your stashed changes. Your changes are saved in git stash."
-								);
+								throw new Error(t('Sync pull succeeded but failed to restore your stashed changes. Your changes are saved in git stash.'));
 							}
 						}
 					} catch (error) {
@@ -441,9 +430,7 @@ export const createGitOperationsRouter = () => {
 						// Check for rebase conflicts
 						if (message.includes("CONFLICT") || message.includes("could not apply")) {
 							await git.rebase(["--abort"]).catch(() => {});
-							throw new Error(
-								"Sync failed due to conflicts. The operation has been aborted. Please resolve conflicts manually."
-							);
+							throw new Error(t('Sync failed due to conflicts. The operation has been aborted. Please resolve conflicts manually.'));
 						}
 						throw error;
 					}
@@ -477,7 +464,7 @@ export const createGitOperationsRouter = () => {
 					// Check if it's a protected branch
 					if (PROTECTED_BRANCHES.includes(branch) && !input.confirmProtectedBranch) {
 						throw new Error(
-							`Cannot force push to protected branch '${branch}'. This action requires explicit confirmation.`
+							t("Cannot force push to protected branch '{{branch}}'. This action requires explicit confirmation.", { branch })
 						);
 					}
 
@@ -509,17 +496,13 @@ export const createGitOperationsRouter = () => {
 
 					// Safety check: prevent merge/rebase with uncommitted changes
 					if (await hasUncommittedChanges(input.worktreePath)) {
-						throw new Error(
-							"Cannot merge/rebase with uncommitted changes. Please commit or stash your changes first."
-						);
+						throw new Error(t('Cannot merge/rebase with uncommitted changes. Please commit or stash your changes first.'));
 					}
 
 					// Check for ongoing rebase/merge
 					const repoState = await getRepositoryState(input.worktreePath);
 					if (repoState.isRebasing || repoState.isMerging) {
-						throw new Error(
-							"Cannot merge/rebase: another merge or rebase is in progress. Please complete or abort it first."
-						);
+						throw new Error(t('Cannot merge/rebase: another merge or rebase is in progress. Please complete or abort it first.'));
 					}
 
 					// Fetch latest from remote first
@@ -536,7 +519,7 @@ export const createGitOperationsRouter = () => {
 							await git.raw(["rev-parse", "--verify", "origin/master"]);
 							defaultBranch = "master";
 						} catch {
-							throw new Error("Could not find default branch (main or master)");
+							throw new Error(t('Could not find default branch (main or master)'));
 						}
 					}
 
@@ -567,7 +550,7 @@ export const createGitOperationsRouter = () => {
 								await git.merge(["--abort"]).catch(() => {});
 							}
 							throw new Error(
-								`${input.useRebase ? "Rebase" : "Merge"} failed due to conflicts. The operation has been aborted. Please resolve conflicts manually or use a different strategy.`
+								t("{{op}} failed due to conflicts. The operation has been aborted. Please resolve conflicts manually or use a different strategy.", { op: input.useRebase ? "Rebase" : "Merge" })
 							);
 						}
 						throw error;
@@ -575,6 +558,69 @@ export const createGitOperationsRouter = () => {
 
 					invalidateGitStateCaches(input.worktreePath);
 					return { success: true };
+				});
+			}),
+
+		isBranchMerged: publicProcedure
+			.input(
+				z.object({
+					worktreePath: z.string(),
+					chatBranch: z.string(),
+					baseBranch: z.string(),
+				}),
+			)
+			.query(async ({ input }) => {
+				await assertRegisteredWorktree(input.worktreePath);
+				const projectPath = await resolveProjectPathFromWorktree(
+					input.worktreePath,
+				);
+				const git = simpleGit(projectPath);
+				try {
+					await git.raw([
+						"merge-base",
+						"--is-ancestor",
+						input.chatBranch,
+						input.baseBranch,
+					]);
+					return { merged: true };
+				} catch {
+					return { merged: false };
+				}
+			}),
+
+		resolveProjectPath: publicProcedure
+			.input(z.object({ worktreePath: z.string() }))
+			.query(async ({ input }) => {
+				await assertRegisteredWorktree(input.worktreePath);
+				const projectPath = await resolveProjectPathFromWorktree(
+					input.worktreePath,
+				);
+				return { projectPath };
+			}),
+
+		mergeChatBranch: publicProcedure
+			.input(
+				z.object({
+					worktreePath: z.string(),
+					chatBranch: z.string(),
+					baseBranch: z.string(),
+					push: z.boolean().optional().default(false),
+				}),
+			)
+			.mutation(async ({ input }) => {
+				await assertRegisteredWorktree(input.worktreePath);
+				const projectPath = await resolveProjectPathFromWorktree(
+					input.worktreePath,
+				);
+				return withGitLock(projectPath, async () => {
+					const result = await mergeChatBranchIntoBase(
+						projectPath,
+						input.chatBranch,
+						input.baseBranch,
+						{ push: input.push },
+					);
+					invalidateGitStateCaches(input.worktreePath);
+					return result;
 				});
 			}),
 
@@ -658,7 +704,7 @@ export const createGitOperationsRouter = () => {
 							.match(/github\.com[:/](.+?)(?:\.git)?$/);
 
 						if (!repoMatch) {
-							throw new Error("Could not determine GitHub repository URL");
+							throw new Error(t('Could not determine GitHub repository URL'));
 						}
 
 						const repo = repoMatch[1].replace(/\.git$/, "");

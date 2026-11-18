@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import {
 	AlertDialog,
 	AlertDialogContent,
@@ -145,8 +146,8 @@ export function FileItem({
 	const isDeleteAction = file.status === "untracked" || file.status === "added";
 	const discardLabel = isDeleteAction ? "Delete" : "Discard Changes";
 	const discardDialogTitle = isDeleteAction
-		? `Delete "${fileName}"?`
-		: `Discard changes to "${fileName}"?`;
+		? i18n.t('Delete "{{name}}"?', { name: fileName })
+		: i18n.t('Discard changes to "{{name}}"?', { name: fileName });
 	const discardDialogDescription = isDeleteAction
 		? "This will permanently delete this file. This action cannot be undone."
 		: "This will revert all changes to this file. This action cannot be undone.";
@@ -235,7 +236,7 @@ export function FileItem({
 									<HiMiniPlus className="size-3" />
 								</Button>
 							</TooltipTrigger>
-							<TooltipContent side="right">Stage</TooltipContent>
+							<TooltipContent side="right">{i18n.t('Stage')}</TooltipContent>
 						</Tooltip>
 					)}
 					{onUnstage && (
@@ -254,7 +255,7 @@ export function FileItem({
 									<HiMiniMinus className="size-3" />
 								</Button>
 							</TooltipTrigger>
-							<TooltipContent side="right">Unstage</TooltipContent>
+							<TooltipContent side="right">{i18n.t('Unstage')}</TooltipContent>
 						</Tooltip>
 					)}
 				</div>

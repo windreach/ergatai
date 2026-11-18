@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { cn } from "../../../lib/utils"
@@ -88,7 +89,7 @@ export function ScaleControl({
     >
       <PopoverAnchor asChild>
         <div
-          aria-label="Action"
+          aria-label={i18n.t('Action')}
           role="button"
           tabIndex={0}
           onKeyDown={(e) => {
@@ -112,7 +113,7 @@ export function ScaleControl({
         >
           {/* react-doctor-disable-next-line html-no-nested-interactive */}
           <input
-            aria-label="Action"
+            aria-label={i18n.t('Action')}
             ref={inputRef}
             type="text"
             value={inputValue}
@@ -157,4 +158,3 @@ export function ScaleControl({
     </Popover>
   )
 }
-

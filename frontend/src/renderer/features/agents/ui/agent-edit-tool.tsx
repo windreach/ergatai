@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useState, useEffect, useMemo, useCallback, useRef } from "react"
@@ -17,7 +18,7 @@ import {
 } from "../../../components/ui/tooltip"
 import { getDisplayPath, getToolStatus } from "./agent-tool-registry"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
-import { areToolPropsEqual } from "./agent-tool-utils"
+import { areToolPropsEqual, getToolFilePath } from "./agent-tool-utils"
 import type { MessagePart } from "../stores/message-store"
 import type { EditToolOutput } from "./tool-types"
 import { getFileIconByExtension } from "../mentions/file-icon-utils"
@@ -261,7 +262,7 @@ export const AgentEditTool = memo(function AgentEditTool({
     content?: string
   } | undefined
 
-  const filePath = toolInput?._locations?.[0]?.path || ""
+  const filePath = getToolFilePath(part)
   const _oldString = toolInput?.old_string || ""
   const newString = toolInput?.new_string || ""
 
@@ -604,7 +605,7 @@ export const AgentEditTool = memo(function AgentEditTool({
             ) : hasVisibleContent ? (
               // react-doctor-disable-next-line html-no-nested-interactive
               <button
-                aria-label="ExpandIcon"
+                aria-label={i18n.t('ExpandIcon')}
                 onClick={handleExpandButtonClick}
                 className="p-1 rounded-md hover:bg-accent transition-[background-color,transform] duration-150 ease-out active:scale-95"
               >

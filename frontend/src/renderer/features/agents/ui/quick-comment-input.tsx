@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState, useEffect, useRef, useCallback } from "react"
@@ -127,7 +128,7 @@ export function QuickCommentInput({
         {/* Preview of selected text */}
         <div className="px-2.5 py-1.5 border-b border-border bg-muted/30">
           <div className="flex items-center gap-1 text-[10px] text-muted-foreground mb-0.5">
-            <span>Replying to</span>
+            <span>{i18n.t('Replying to')}</span>
             <span className="font-medium text-foreground/70">{sourceLabel}</span>
           </div>
           <div className="text-xs text-muted-foreground font-mono line-clamp-2">
@@ -145,7 +146,7 @@ export function QuickCommentInput({
               value={comment}
               onChange={(e) => setComment(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Add your reply..."
+              placeholder={i18n.t('Add your reply...')}
               className="flex-1 text-xs bg-transparent outline-none text-foreground placeholder:text-muted-foreground px-1"
             />
             <button

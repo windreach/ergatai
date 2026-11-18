@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { memo, useMemo } from "react"
 import { cn } from "../../../lib/utils"
 import { KanbanCard, type KanbanCardData } from "./kanban-card"

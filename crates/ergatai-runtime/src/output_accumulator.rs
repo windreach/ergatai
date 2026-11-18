@@ -786,6 +786,7 @@ pub fn is_durable_event(event: &crate::backends::acp::AgentOutputEvent) -> bool 
             | AgentOutputEvent::ToolCallError { .. }
             | AgentOutputEvent::Error { .. }
             | AgentOutputEvent::SessionTitleUpdate { .. }
+            // TODO(subagent): frontend temporarily does not consume subagent events.
             | AgentOutputEvent::SubagentSpawned { .. }
             | AgentOutputEvent::SubagentStateUpdate { .. }
             | AgentOutputEvent::ExtensionUpdate { .. }
@@ -853,6 +854,7 @@ fn accumulate_chunk_event(
         AgentOutputEvent::Error { message, .. } => {
             acc.accumulate_text(message);
         }
+        // TODO(subagent): frontend temporarily does not consume subagent events.
         AgentOutputEvent::SubagentSpawned { name, task, .. } => {
             acc.accumulate_text(&format!("[subagent spawned: {} - {}]", name, task));
         }

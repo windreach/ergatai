@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useEffect, useState } from "react"
@@ -258,7 +259,7 @@ function GroupAgentSelector({
       {overflowCount > 0 && (
         <button
           type="button"
-          aria-label="More agents"
+          aria-label={i18n.t('More agents')}
           onClick={() => setOpen(true)}
           className="flex h-7 items-center rounded-md px-1 text-sm text-muted-foreground transition-[background-color,color] duration-150 ease-out hover:bg-muted/50 hover:text-foreground"
         >
@@ -270,7 +271,7 @@ function GroupAgentSelector({
         <PopoverTrigger asChild>
           <button
             type="button"
-            aria-label="Add agent"
+            aria-label={i18n.t('Add agent')}
             className="flex h-6 w-6 items-center justify-center rounded-full border border-dashed text-muted-foreground transition-[background-color,border-color,color] duration-150 ease-out hover:bg-muted/50 hover:text-foreground"
           >
             <Plus className="h-3 w-3" />
@@ -282,7 +283,7 @@ function GroupAgentSelector({
           onEscapeKeyDown={(event) => event.preventDefault()}
         >
           <div className="mb-1 flex items-center justify-between">
-            <span className="text-sm font-medium">Add agent</span>
+            <span className="text-sm font-medium">{i18n.t('Add agent')}</span>
           </div>
           <div className="space-y-0.5">
             {agents.map((agent) => {

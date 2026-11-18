@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { toast } from "sonner"
 import { trpcClient } from "../../../lib/trpc"
 import { findRollbackTargetSdkUuidForUserIndex, type MessageRole } from "../stores/message-store"
@@ -30,18 +31,18 @@ export interface RollbackMessageLike {
  */
 function coerceToMessages(raw: unknown): Message[] {
   if (!Array.isArray(raw)) {
-    throw new TypeError("Expected an array of messages")
+    throw new TypeError(i18n.t('Expected an array of messages'))
   }
   return raw.map((item, idx) => {
     if (!item || typeof item !== "object") {
-      throw new TypeError(`Invalid message at index ${idx}`)
+      throw new TypeError(i18n.t("Invalid message at index {{index}}", { index: idx }))
     }
     const obj = item as Record<string, unknown>
     if (typeof obj.id !== "string") {
-      throw new TypeError(`Message at index ${idx} missing string id`)
+      throw new TypeError(i18n.t("Message at index {{index}} missing string id", { index: idx }))
     }
     if (typeof obj.role !== "string") {
-      throw new TypeError(`Message at index ${idx} missing string role`)
+      throw new TypeError(i18n.t("Message at index {{index}} missing string role", { index: idx }))
     }
     return {
       id: obj.id,
@@ -100,11 +101,11 @@ export async function executeRollback(
   } = callbacks
 
   if (isRollingBack) {
-    toast.error("Rollback already in progress")
+    toast.error(i18n.t('Rollback already in progress'))
     return
   }
   if (isStreaming) {
-    toast.error("Cannot rollback while streaming")
+    toast.error(i18n.t('Cannot rollback while streaming'))
     return
   }
 
@@ -118,7 +119,7 @@ export async function executeRollback(
   // Find the index of this user message
   const userMsgIndex = messages.findIndex((m) => m.id === userMsg.id)
   if (userMsgIndex === -1) {
-    toast.error("Cannot rollback: message not found")
+    toast.error(i18n.t('Cannot rollback: message not found'))
     return
   }
 
@@ -139,7 +140,7 @@ export async function executeRollback(
   )
 
   if (!sdkUuid) {
-    toast.error("Cannot rollback: this turn is not rollbackable")
+    toast.error(i18n.t('Cannot rollback: this turn is not rollbackable'))
     return
   }
 
@@ -188,13 +189,13 @@ export async function executeRollback(
     })
   } catch (error) {
     console.error("[executeRollback] API call failed:", error)
-    toast.error("Failed to rollback")
+    toast.error(i18n.t('Failed to rollback'))
     setIsRollingBack(false)
     return
   }
 
   if (!result.success) {
-    toast.error(`Failed to rollback: ${result.error}`)
+    toast.error(i18n.t("Failed to rollback: {{error}}", { error: result.error }))
     setIsRollingBack(false)
     return
   }

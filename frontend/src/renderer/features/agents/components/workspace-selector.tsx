@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useState, useMemo } from "react"
 import { useAtom } from "jotai"
 import { toast } from "sonner"
@@ -314,7 +315,7 @@ export function WorkspaceSelector({
     >
       <PopoverTrigger asChild>
         <button
-          aria-label="Select workspace"
+          aria-label={i18n.t('Select workspace')}
           className={cn(
             "flex items-center gap-1.5 px-2 py-1 text-sm text-muted-foreground hover:text-foreground transition-[background-color,color] duration-150 ease-out rounded-md hover:bg-muted/50 outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70",
             triggerClassName,
@@ -347,7 +348,7 @@ export function WorkspaceSelector({
       >
         <Command shouldFilter={false}>
           <CommandInput
-            placeholder="Search workspaces..."
+            placeholder={i18n.t('Search workspaces...')}
             value={searchQuery}
             onValueChange={setSearchQuery}
           />
@@ -382,7 +383,7 @@ export function WorkspaceSelector({
                 })}
               </CommandGroup>
             ) : (
-              <CommandEmpty>No projects found.</CommandEmpty>
+              <CommandEmpty>{i18n.t('No projects found.')}</CommandEmpty>
             )}
           </CommandList>
           <div className="border-t border-border/50 py-1">
@@ -411,7 +412,7 @@ export function WorkspaceSelector({
               className="flex items-center gap-1.5 min-h-[32px] py-[5px] px-1.5 mx-1 w-[calc(100%-8px)] rounded-md text-sm cursor-default select-none outline-none dark:hover:bg-neutral-800 hover:text-foreground transition-colors"
             >
               <GitHubIcon className="h-4 w-4 text-muted-foreground" />
-              <span>Add from GitHub</span>
+              <span>{i18n.t('Add from GitHub')}</span>
             </button>
           </div>
         </Command>
@@ -431,7 +432,7 @@ export function WorkspaceSelector({
               Clone from GitHub
             </h2>
             <Input
-              placeholder="owner/repo or https://github.com/..."
+              placeholder={i18n.t('owner/repo or https://github.com/...')}
               value={githubUrl}
               onChange={(e) => setGithubUrl(e.target.value)}
               className="w-full h-11 text-sm"

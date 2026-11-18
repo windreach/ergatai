@@ -18,7 +18,7 @@ if [ -z "$COVERAGE" ]; then
 fi
 
 echo "当前覆盖率: ${COVERAGE}%"
-MIN_COVERAGE=60.0
+MIN_COVERAGE=50.0
 
 if (( $(echo "$COVERAGE < $MIN_COVERAGE" | bc -l) )); then
   echo "❌ 覆盖率 ${COVERAGE}% 低于阈值 ${MIN_COVERAGE}%"

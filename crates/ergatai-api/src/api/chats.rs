@@ -405,8 +405,7 @@ pub async fn list_chat_agents(
                 agents.push(serde_json::json!({
                     "agent_id": agent.agent_id,
                     "conversation_id": conversation_id_str,
-                    "state": format!("{:?}", agent.lifecycle),
-                    "profile": agent.profile,
+                    "state": agent.lifecycle.state_name(),                    "profile": agent.profile,
                     "last_heartbeat": agent.last_heartbeat,
                     "created_at": created_at,
                     "updated_at": updated_at,
@@ -426,7 +425,7 @@ pub async fn list_chat_agents(
         agents.push(serde_json::json!({
             "agent_id": format_id(binding.agent_id, IdType::Agent),
             "conversation_id": binding.conversation_id.to_string(),
-            "state": "Stopped",
+            "state": "stopped",
             "profile": binding.agent_command,
             "last_heartbeat": "",
             "created_at": binding.created_at,
@@ -437,18 +436,26 @@ pub async fn list_chat_agents(
     // 3. 统计状态
     let running = agents
         .iter()
-        .filter(|a| a["state"].as_str().unwrap_or("").contains("Processing"))
+        .filter(|a| a["state"].as_str().unwrap_or("").eq("processing"))
         .count();
     let idle = agents
         .iter()
-        .filter(|a| a["state"].as_str().unwrap_or("").contains("Idle"))
+        .filter(|a| a["state"].as_str().unwrap_or("").eq("idle"))
         .count();
+
+    let all_idle = agents.iter().all(|a| {
+        matches!(
+            a["state"].as_str().unwrap_or(""),
+            "idle" | "stopped" | "terminated"
+        )
+    });
 
     Json(serde_json::json!({
         "agents": agents,
         "total": agents.len(),
         "running": running,
-        "idle": idle
+        "idle": idle,
+        "all_idle": all_idle
     }))
     .into_response()
 }
@@ -563,8 +570,7 @@ pub async fn get_agent_graph(
         if let Some(agent) = registry.resolve_conversation_id(&conversation_id_str).await {
             if agent.lifecycle.is_alive() {
                 let agent_id = agent.agent_id.clone();
-                let state_str = format!("{:?}", agent.lifecycle);
-
+                let state_str = agent.lifecycle.state_name().to_string();
                 nodes.push(serde_json::json!({
                     "id": agent_id,
                     "conversation_id": conversation_id_str,
@@ -609,11 +615,11 @@ pub async fn get_agent_graph(
     let total_nodes = nodes.len();
     let running = nodes
         .iter()
-        .filter(|n| n["state"].as_str().unwrap_or("").contains("Processing"))
+        .filter(|n| n["state"].as_str().unwrap_or("").eq("processing"))
         .count();
     let idle = nodes
         .iter()
-        .filter(|n| n["state"].as_str().unwrap_or("").contains("Idle"))
+        .filter(|n| n["state"].as_str().unwrap_or("").eq("idle"))
         .count();
     let unique_sessions = session_to_agents.len();
 

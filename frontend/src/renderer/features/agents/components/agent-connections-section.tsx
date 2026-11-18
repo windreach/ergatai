@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useMemo, useState } from "react"
@@ -95,7 +96,7 @@ export function AgentConnectionsSection({
       resetForm()
     },
     onError: (error) => {
-      toast.error(`Failed to save provider: ${error.message}`)
+      toast.error(i18n.t("Failed to save provider: {{message}}", { message: error.message }))
     },
   })
 
@@ -106,7 +107,7 @@ export function AgentConnectionsSection({
         void utils.ergatai.listProviderConnections.invalidate()
       },
       onError: (error) => {
-        toast.error(`Failed to set default: ${error.message}`)
+        toast.error(i18n.t("Failed to set default: {{message}}", { message: error.message }))
       },
     })
 
@@ -117,17 +118,17 @@ export function AgentConnectionsSection({
       if (editingId) resetForm()
     },
     onError: (error) => {
-      toast.error(`Failed to delete provider: ${error.message}`)
+      toast.error(i18n.t("Failed to delete provider: {{message}}", { message: error.message }))
     },
   })
 
   const importMutation = trpc.ergatai.importNativeConnection.useMutation({
     onSuccess: (data) => {
-      toast.success(`Provider "${data.connection.name}" imported from ${agentDisplayName} config`)
+      toast.success(i18n.t("Provider \"{{name}}\" imported from {{agent}} config", { name: data.connection.name, agent: agentDisplayName }))
       void utils.ergatai.listProviderConnections.invalidate()
     },
     onError: (error) => {
-      toast.error(`Failed to import configuration: ${error.message}`)
+      toast.error(i18n.t("Failed to import configuration: {{message}}", { message: error.message }))
     },
   })
 
@@ -192,7 +193,7 @@ export function AgentConnectionsSection({
     // fixed-width dialog instead of ellipsizing.
     <div className="min-w-0 space-y-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-sm font-medium text-foreground">Providers</p>
+        <p className="text-sm font-medium text-foreground">{i18n.t('Providers')}</p>
         {!showForm && (
           <Button type="button" size="sm" variant="outline" onClick={startCreate}>
             <Plus className="mr-1 h-3.5 w-3.5" />
@@ -205,7 +206,7 @@ export function AgentConnectionsSection({
         <div className="space-y-3 rounded-lg border border-border bg-background p-3">
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2 space-y-1.5">
-              <Label htmlFor="agent-connection-name">Name</Label>
+              <Label htmlFor="agent-connection-name">{i18n.t('Name')}</Label>
               <Input
                 id="agent-connection-name"
                 value={form.name}
@@ -215,13 +216,13 @@ export function AgentConnectionsSection({
                     name: event.target.value,
                   }))
                 }
-                placeholder="Production key"
+                placeholder={i18n.t('Production key')}
                 autoComplete="off"
               />
             </div>
             {/* Protocol is derived automatically from the owning agent and is not user-editable. */}
             <div className="col-span-2 space-y-1.5">
-              <Label htmlFor="agent-connection-key">API key</Label>
+              <Label htmlFor="agent-connection-key">{i18n.t('API key')}</Label>
               <Input
                 id="agent-connection-key"
                 type="password"
@@ -239,7 +240,7 @@ export function AgentConnectionsSection({
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="agent-connection-base-url">Base URL</Label>
+              <Label htmlFor="agent-connection-base-url">{i18n.t('Base URL')}</Label>
               <Input
                 id="agent-connection-base-url"
                 value={form.base_url}
@@ -249,12 +250,12 @@ export function AgentConnectionsSection({
                     base_url: event.target.value,
                   }))
                 }
-                placeholder="https://..."
+                placeholder={i18n.t('https://...')}
                 autoComplete="off"
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="agent-connection-model">Default model</Label>
+              <Label htmlFor="agent-connection-model">{i18n.t('Default model')}</Label>
               <Input
                 id="agent-connection-model"
                 value={form.default_model}
@@ -264,7 +265,7 @@ export function AgentConnectionsSection({
                     default_model: event.target.value,
                   }))
                 }
-                placeholder="Provider default"
+                placeholder={i18n.t('Provider default')}
                 autoComplete="off"
               />
             </div>
@@ -448,7 +449,7 @@ export function AgentConnectionsSection({
                   className="h-7 w-7"
                   disabled={deleteMutation.isPending}
                   onClick={() => {
-                    if (window.confirm(`Delete ${connection.name}?`)) {
+                    if (window.confirm(i18n.t("Delete {{name}}?", { name: connection.name }))) {
                       deleteMutation.mutate({ id: connection.id })
                     }
                   }}

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import React, { useMemo, useCallback } from "react"
 import {
   ContextMenuContent,
@@ -125,7 +126,7 @@ export function ConversationContextMenu({
       </ContextMenuItem>
       {chatId && (
         <ContextMenuSub>
-          <ContextMenuSubTrigger>Export chat</ContextMenuSubTrigger>
+          <ContextMenuSubTrigger>{i18n.t('Export chat')}</ContextMenuSubTrigger>
           <ContextMenuSubContent sideOffset={6} alignOffset={-4}>
             <ContextMenuItem onClick={() => handleExport("markdown")}>
               Download as Markdown

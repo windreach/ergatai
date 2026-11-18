@@ -1,13 +1,15 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo } from "react"
 import type { RefObject } from "react"
 import type { UIMessage } from "@ai-sdk/react"
 import { cn } from "../../../lib/utils"
-import { useAtom } from "jotai"
+// import { useAtom } from "jotai"
 import { ChatMessagesRenderer } from "./chat-messages-renderer"
-import { selectedSubagentSessionIdAtomFamily } from "../lib/subagent-message-store"
-import { SubagentConversationView } from "../ui/subagent-conversation-view"
+// TODO(subagent): temporarily not consumed. Subagent conversation rendering disabled.
+// import { selectedSubagentSessionIdAtomFamily } from "../lib/subagent-message-store"
+// import { SubagentConversationView } from "../ui/subagent-conversation-view"
 import { useConversationHistoryImport } from "../hooks/use-conversation-history-import"
 // import { ImplicitCollaborationTaskCards } from "../collaboration/implicit-collaboration-task-cards"
 // import { CollaborationSessionEventCards } from "../collaboration/collaboration-session-event-cards"
@@ -41,6 +43,10 @@ interface ActiveChatMessagesProps {
   emptyState?: React.ReactNode
   /** Extra class names merged into the message content wrapper. */
   contentClassName?: string
+  /** Rendered after the last message, inside the scroll container. */
+  footer?: React.ReactNode
+  /** Hide error cards while an automatic retry is in progress. */
+  suppressErrorCards?: boolean
 }
 
 export const ActiveChatMessages = memo(function ActiveChatMessages({
@@ -65,6 +71,8 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
   loadingState,
   emptyState,
   contentClassName,
+  footer,
+  suppressErrorCards = false,
 }: ActiveChatMessagesProps) {
 
   const { importBanner } = useConversationHistoryImport({
@@ -73,23 +81,24 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
     containerRef: chatContainerRef,
   })
 
-  const [selectedSubagentSessionId, setSelectedSubagentSessionId] = useAtom(
-    selectedSubagentSessionIdAtomFamily(conversationId),
-  )
-
-  if (selectedSubagentSessionId) {
-    return (
-      <div className="flex-1 overflow-y-auto w-full relative allow-text-selection outline-none">
-        <div className="px-2 mx-auto max-w-2xl pb-8">
-          <SubagentConversationView
-            agentId={agentId ?? null}
-            subagentSessionId={selectedSubagentSessionId}
-            onBack={() => setSelectedSubagentSessionId(null)}
-          />
-        </div>
-      </div>
-    )
-  }
+  // TODO(subagent): temporarily not consumed. Subagent conversation rendering disabled.
+  // const [selectedSubagentSessionId, setSelectedSubagentSessionId] = useAtom(
+  //   selectedSubagentSessionIdAtomFamily(conversationId),
+  // )
+  //
+  // if (selectedSubagentSessionId) {
+  //   return (
+  //     <div className="flex-1 overflow-y-auto w-full relative allow-text-selection outline-none">
+  //       <div className="px-2 mx-auto max-w-2xl pb-8">
+  //         <SubagentConversationView
+  //           agentId={agentId ?? null}
+  //           subagentSessionId={selectedSubagentSessionId}
+  //           onBack={() => setSelectedSubagentSessionId(null)}
+  //         />
+  //       </div>
+  //     </div>
+  //   )
+  // }
 
   return (
     <ChatMessagesRenderer
@@ -145,6 +154,8 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
       }
       loadingState={loadingState}
       emptyState={emptyState === undefined ? null : emptyState}
+      footer={footer}
+      suppressErrorCards={suppressErrorCards}
       onRollback={handleRollback}
       onFork={handleForkFromMessage}
     />

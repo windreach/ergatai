@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useEffect, useRef } from "react"
 
 interface MessageGroupProps {

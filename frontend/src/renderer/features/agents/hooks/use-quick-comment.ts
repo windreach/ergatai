@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback, useState } from "react"
 import { toast } from "sonner"
 import { utf8ToBase64 } from "../utils/base64"
@@ -55,7 +56,7 @@ export function useQuickComment({
     if (isStreamingRef.current) {
       const item = createQueueItem(generateQueueId(), message)
       addToQueue(conversationId, item)
-      toast.success("Reply queued", { description: "Will be sent when current response completes" })
+      toast.success(i18n.t('Reply queued'), { description: i18n.t('Will be sent when current response completes') })
     } else {
       // Send directly with proper error handling
       ;(async () => {
@@ -64,10 +65,10 @@ export function useQuickComment({
             role: "user",
             parts: [{ type: "text", text: message }],
           })
-          toast.success("Reply sent")
+          toast.success(i18n.t('Reply sent'))
         } catch (error) {
           console.error("[useQuickComment] Failed to send reply:", error)
-          toast.error("Failed to send reply", { description: "Please try again" })
+          toast.error(i18n.t('Failed to send reply'), { description: i18n.t('Please try again') })
         }
       })()
     }

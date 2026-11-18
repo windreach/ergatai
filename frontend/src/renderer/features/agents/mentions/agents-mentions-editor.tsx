@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { cn } from "../../../lib/utils"
@@ -117,6 +118,8 @@ export type AgentsMentionsEditorHandle = {
   clearSlashCommand: () => void // Clear slash command text after selection
   /** Returns true if the given DOM node is inside the editor */
   contains: (node: Node) => boolean
+  /** Returns the underlying contenteditable DOM element (for attaching native listeners) */
+  getElement: () => HTMLElement | null
 }
 
 type AgentsMentionsEditorProps = {
@@ -1378,6 +1381,10 @@ export const AgentsMentionsEditor = memo(
 
           contains: (node: Node) => {
             return editorRef.current != null && editorRef.current.contains(node)
+          },
+
+          getElement: () => {
+            return editorRef.current
           },
         }),
         [onCloseTrigger, onCloseSlashTrigger, resolveMention, onContentChange, immediateSaveUndoState, handleInput],

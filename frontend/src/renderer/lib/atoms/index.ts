@@ -956,3 +956,12 @@ export type PendingToolApproval = {
 // MCP server identifiers denied during this session, so the watcher
 // does not immediately re-prompt for them
 export const deniedMcpIdentifiersAtom = atom<Set<string>>(new Set<string>())
+
+// Language preference
+export type LanguagePreference = "system" | "en" | "zh-CN"
+export const languagePreferenceAtom = atomWithStorage<LanguagePreference>(
+  "app-language-preference",
+  "system",
+  undefined,
+  { getOnInit: true },
+)

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useState, useCallback, useMemo } from "react";
 import { Input } from "../../../../components/ui/input";
 import { Button } from "../../../../components/ui/button";
@@ -98,7 +99,7 @@ export function ChangesFileFilter({
 					/>
 					{value && (
 						<button
-						  aria-label="LuX"
+						  aria-label={i18n.t('LuX')}
 							type="button"
 							onClick={() => onChange("")}
 							className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-muted-foreground/20 transition-colors"
@@ -115,7 +116,7 @@ export function ChangesFileFilter({
 						onOpenChange={setIsConversationFilterOpen}
 						items={conversations}
 						onSelect={handleConversationSelect}
-						placeholder="Search chats..."
+						placeholder={i18n.t('Search chats...')}
 						emptyMessage="No chats with changes"
 						getItemValue={(conversation) => `${conversation.name || "New Chat"} ${conversation.id}`}
 						renderItem={renderConversationItem}
@@ -144,7 +145,7 @@ export function ChangesFileFilter({
 								</TooltipTrigger>
 								<TooltipContent side="bottom">
 									{selectedConversation
-										? `Filtering: ${selectedConversation.name || "New Chat"}`
+										? i18n.t("Filtering: {{name}}", { name: selectedConversation.name || i18n.t("New Chat") })
 										: "Filter by chat"}
 								</TooltipContent>
 							</Tooltip>
@@ -169,7 +170,7 @@ export function ChangesFileFilter({
 						</span>
 					</div>
 					<button
-					  aria-label="LuX"
+					  aria-label={i18n.t('LuX')}
 						type="button"
 						onClick={handleClearConversationFilter}
 						className="p-0.5 rounded hover:bg-foreground/10 transition-colors flex-shrink-0"

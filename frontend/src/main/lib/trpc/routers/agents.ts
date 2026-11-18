@@ -1,6 +1,7 @@
 import {
   z
 } from "zod"
+import { t } from "../../i18n"
 import {
   router,
   publicProcedure
@@ -199,7 +200,7 @@ export const agentsRouter = router({
       // Check if already exists
       try {
         await fs.access(agentPath)
-        throw new Error(`Agent "${safeName}" already exists`)
+        throw new Error(t('Agent "{{safeName}}" already exists'))
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
           throw err
@@ -268,14 +269,14 @@ export const agentsRouter = router({
       try {
         await fs.access(originalPath)
       } catch {
-        throw new Error(`Agent "${safeOriginalName}" not found`)
+        throw new Error(t('Agent "{{safeOriginalName}}" not found'))
       }
 
       // If renaming, check new name doesn't exist
       if (safeOriginalName !== safeName) {
         try {
           await fs.access(newPath)
-          throw new Error(`Agent "${safeName}" already exists`)
+          throw new Error(t('Agent "{{safeName}}" already exists'))
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
             throw err

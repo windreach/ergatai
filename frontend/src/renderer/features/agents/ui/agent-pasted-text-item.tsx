@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState } from "react"
@@ -75,7 +76,7 @@ export function AgentPastedTextItem({
       {/* Remove button */}
       {onRemove && (
         <button
-          aria-label="Action"
+          aria-label={i18n.t('Action')}
           onClick={(e) => {
             e.stopPropagation()
             onRemove()

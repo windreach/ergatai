@@ -227,6 +227,9 @@ impl Watchdog {
             token_id: i64,
             session_id: String,
             kind: StateActionKind,
+            /// When true, reclaim even if the token holds no active locks (e.g. hard
+            /// TTL expiry) so the token is cleaned up and not leaked forever.
+            force_reclaim: bool,
         }
         enum StateActionKind {
             SetState(TimeoutState),
@@ -258,6 +261,7 @@ impl Watchdog {
                             token_id,
                             session_id,
                             kind: StateActionKind::RemoveState,
+                            force_reclaim: false,
                         });
                         continue;
                     }
@@ -277,6 +281,7 @@ impl Watchdog {
                         token_id,
                         session_id,
                         kind: StateActionKind::Reclaim,
+                        force_reclaim: true,
                     });
                     continue;
                 }
@@ -306,6 +311,7 @@ impl Watchdog {
                                 kind: StateActionKind::SetState(TimeoutState::GracePeriod1 {
                                     since: now,
                                 }),
+                                force_reclaim: false,
                             });
                         }
                         TimeoutState::GracePeriod1 { since } => {
@@ -323,6 +329,7 @@ impl Watchdog {
                                     kind: StateActionKind::SetState(TimeoutState::GracePeriod2 {
                                         since: now,
                                     }),
+                                    force_reclaim: false,
                                 });
                             }
                         }
@@ -339,6 +346,7 @@ impl Watchdog {
                                     token_id,
                                     session_id,
                                     kind: StateActionKind::Reclaim,
+                                    force_reclaim: false,
                                 });
                             }
                         }
@@ -349,6 +357,7 @@ impl Watchdog {
                         token_id,
                         session_id,
                         kind: StateActionKind::RemoveState,
+                        force_reclaim: false,
                     });
                 }
             }
@@ -377,6 +386,28 @@ impl Watchdog {
         // Phase 3: Reclaim locks (no timeout_states or busy_status held)
         for action in &actions {
             if let StateActionKind::Reclaim = action.kind {
+                // Skip reclaim for tokens that hold no active locks. Reclaiming a
+                // lock-less token has no dead-lock-prevention value (there is
+                // nothing to release) but would invalidate the session token and
+                // force the agent to re-establish it on next file operation.
+                // State has already been removed in Phase 2, so the token is
+                // simply left active for future use.
+                // Only skip reclaim for lock-less tokens when this is a
+                // heartbeat-timeout reclaim (not a hard-TTL expiry).
+                if !action.force_reclaim {
+                    let held_locks = lock_manager
+                        .get_locks_by_session(&action.session_id)
+                        .unwrap_or_default();
+                    if held_locks.is_empty() {
+                        debug!(
+                            token_id = %action.token_id,
+                            session_id = %action.session_id,
+                            "Token holds no active locks, skipping reclaim"
+                        );
+                        continue;
+                    }
+                }
+
                 if let Err(e) = Self::reclaim_locks_for_token(
                     lock_manager,
                     event_bus,

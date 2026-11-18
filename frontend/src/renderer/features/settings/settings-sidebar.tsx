@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { ChevronLeft } from "lucide-react"
 import { useCallback, useEffect, useMemo } from "react"
@@ -147,7 +148,7 @@ export function SettingsSidebar() {
           className="inline-flex items-center gap-2 w-full text-left px-3 py-1.5 text-sm h-7 rounded-md text-muted-foreground hover:text-foreground font-medium transition-colors cursor-pointer"
         >
           <ChevronLeft className="h-4 w-4" />
-          <span>Back</span>
+          <span>{i18n.t('Back')}</span>
         </button>
       </div>
 

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
@@ -131,7 +132,7 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
 
   const installMutation = trpc.ergatai.installAgent.useMutation({
     onSuccess: (_, variables) => {
-      toast.success(`${variables.name} installed`)
+      toast.success(i18n.t("{{name}} installed", { name: variables.name }))
     },
     onError: (error) => {
       toast.error("Install failed", { description: error.message })
@@ -143,7 +144,7 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
 
   const uninstallMutation = trpc.ergatai.uninstallAgent.useMutation({
     onSuccess: (_, variables) => {
-      toast.success(`${variables.name} uninstalled`)
+      toast.success(i18n.t("{{name}} uninstalled", { name: variables.name }))
     },
     onError: (error) => {
       toast.error("Uninstall failed", { description: error.message })
@@ -160,14 +161,14 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
   const handleCreateAgent = useCallback(
     (agent: AgentRegistration) => {
       setRegisteredAgents((current) => [...current, agent])
-      toast.success(`${agent.name} registered`)
+      toast.success(i18n.t("{{name}} registered", { name: agent.name }))
     },
     [setRegisteredAgents],
   )
 
   const deleteProfileMutation = trpc.ergatai.deleteProfile.useMutation({
     onSuccess: () => {
-      toast.success(`Profile deleted from backend`)
+      toast.success(i18n.t("Profile deleted from backend"))
     },
     onError: (error) => {
       toast.error("Failed to delete from backend", { description: error.message })
@@ -187,10 +188,10 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
         setRegisteredAgents((current) =>
           current.filter((registration) => registration.id !== agent.id),
         )
-        toast.success(`${agent.name} registration removed`)
+        toast.success(i18n.t("{{name}} registration removed", { name: agent.name }))
       } catch {
         // Backend deletion failed — keep local state in sync with backend and surface the error
-        toast.error(`Failed to delete ${agent.name}`, {
+        toast.error(i18n.t("Failed to delete {{name}}", { name: agent.name }), {
           description: "The registration was not removed. Please try again.",
         })
       }
@@ -238,8 +239,8 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
                         size="icon"
                         className="h-6 w-6 text-muted-foreground hover:text-foreground"
                         onClick={() => setConnectionsAgent(agent)}
-                        title="Manage providers"
-                        aria-label={`Manage providers for ${agent.name}`}
+                        title={i18n.t('Manage providers')}
+                        aria-label={i18n.t("Manage providers for {{name}}", { name: agent.name })}
                       >
                         <KeyRound className="h-3.5 w-3.5" />
                       </Button>
@@ -248,8 +249,8 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
                         size="icon"
                         className="h-6 w-6 text-muted-foreground hover:text-destructive"
                         onClick={() => handleDeleteRegistration(agent)}
-                        title="Delete registration only; the runtime binary remains installed"
-                        aria-label={`Delete registration for ${agent.name}`}
+                        title={i18n.t('Delete registration only; the runtime binary remains installed')}
+                        aria-label={i18n.t("Delete registration for {{name}}", { name: agent.name })}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
@@ -272,12 +273,12 @@ export function AddAgentPanel({ className }: AddAgentPanelProps) {
               type="button"
               onClick={handleAddClick}
               className="flex min-h-[132px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-background/60 px-3 py-4 text-muted-foreground transition-[background-color,border-color,color,box-shadow] duration-150 hover:border-primary/40 hover:bg-accent/40 hover:text-foreground hover:shadow-sm"
-              aria-label="Add Agent"
+              aria-label={i18n.t('Add Agent')}
             >
               <span className="flex h-8 w-8 items-center justify-center rounded-full border border-dashed">
                 <Plus className="h-4 w-4" />
               </span>
-              <span className="text-sm font-medium">Add agent</span>
+              <span className="text-sm font-medium">{i18n.t('Add agent')}</span>
             </button>
           </div>
         </section>

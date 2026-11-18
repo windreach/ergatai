@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback, useSyncExternalStore } from "react"
 
 import { agentContractApi, type AgentSummary } from "./agent-contract-api"
@@ -59,7 +60,7 @@ async function refreshAgents() {
   } catch (error) {
     setState({
       status: state.agents.length > 0 ? "stale" : "error",
-      error: error instanceof Error ? error.message : "Failed to load agent status",
+      error: error instanceof Error ? error.message : i18n.t('Failed to load agent status'),
     })
   } finally {
     refreshInFlight = false

@@ -232,6 +232,7 @@ export function useConversationChatSurface({
     persistedMessages: persistedMessages as any,
     persistedMessagesLoading,
     runtimeMessages: runtimeMessages as any,
+    runtimeRetry,
     existingChat: chatInstance as any,
     runtimeStatus: runtimeStatus as string | undefined,
     source,
@@ -612,19 +613,14 @@ export function useConversationChatSurface({
       // takes a moment (or fails) to acknowledge the cancellation.
       setStreamingStatus(runtimeConversationId, "ready")
     }
-    if (agentId) {
-      await trpcClient.ergatai.cancelPrompt
-        .mutate({ agentId })
-        .catch((error) => {
-          console.warn("[ConversationChatSurface] Failed to cancel backend prompt:", error)
-        })
-    }
+    // Backend cancel is performed inside stop() (single source of truth)
+    // to avoid duplicate cancelPrompt calls.
     try {
       await stop()
     } catch (error) {
       console.warn("[ConversationChatSurface] Failed to stop local stream:", error)
     }
-  }, [stop, runtimeConversationId, setLoadingConversations, agentId, setStreamingStatus])
+  }, [stop, runtimeConversationId, setLoadingConversations, setStreamingStatus])
 
   const [isStoppingRetry, setIsStoppingRetry] = useState(false)
   const handleStopRetry = useCallback(async () => {

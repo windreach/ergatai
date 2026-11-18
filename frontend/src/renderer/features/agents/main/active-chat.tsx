@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 import { ChatViewSidebars } from "./active-chat-sidebars"
 
@@ -227,6 +228,7 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       isGroupMode?: boolean
       workspaceName?: string | null
       workspaceBranch?: string | null
+      workspaceBaseBranch?: string | null
       workspaceRepoName?: string | null
       worktreePath?: string | null
       allowedPaths?: string[]
@@ -262,6 +264,7 @@ const ChatViewInner = memo(function ChatViewInner(props: {
       workspaceName: _workspaceName,
       workspaceBranch,
       workspaceRepoName,
+      workspaceBaseBranch,
       worktreePath,
       allowedPaths,
       workspaceId: _workspaceId,
@@ -275,6 +278,18 @@ const ChatViewInner = memo(function ChatViewInner(props: {
     const { data: branchData } = trpc.changes.getBranches.useQuery(
       { worktreePath: worktreePath || "" },
       { enabled: !!worktreePath },
+    )
+
+    const { data: mergedData } = trpc.changes.isBranchMerged.useQuery(
+      {
+        worktreePath: worktreePath || "",
+        chatBranch: workspaceBranch || "",
+        baseBranch: workspaceBaseBranch || "",
+      },
+      {
+        enabled:
+          !!worktreePath && !!workspaceBranch && !!workspaceBaseBranch,
+      },
     )
     const _branchUtils = api.useUtils()
     const _trpcUtils = trpc.useUtils()
@@ -608,7 +623,7 @@ const ChatViewInner = memo(function ChatViewInner(props: {
               >
                 <ChatTitleEditor
                   name={conversationName}
-                  placeholder="New Chat"
+                  placeholder={i18n.t('New Chat')}
                   onSave={handleRenameConversation}
                   isMobile={false}
                   entityId={conversationId}
@@ -629,7 +644,7 @@ const ChatViewInner = memo(function ChatViewInner(props: {
                             <button
                               type="button"
                               className="hover:text-foreground hover:underline underline-offset-2 transition-colors cursor-pointer"
-                              title="Switch branch"
+                              title={i18n.t('Switch branch')}
                             >
                               {workspaceBranch}
                             </button>
@@ -655,7 +670,7 @@ const ChatViewInner = memo(function ChatViewInner(props: {
                                     }`}
                                   >
                                     <span className="truncate flex-1">{b.branch}</span>
-                                    {isCurrent && <span className="text-[10px] opacity-60">current</span>}
+                                    {isCurrent && <span className="text-[10px] opacity-60">{i18n.t('current')}</span>}
                                   </button>
                                 )
                               })}
@@ -664,6 +679,9 @@ const ChatViewInner = memo(function ChatViewInner(props: {
                         </Popover>
                       ) : (
                         workspaceBranch && <span>{workspaceBranch}</span>
+                      )}
+                      {mergedData?.merged && (
+                        <span className="ml-1 text-[10px] text-green-600 font-medium">Merged</span>
                       )}
                     </span>
                   </div>
@@ -691,16 +709,13 @@ const ChatViewInner = memo(function ChatViewInner(props: {
               collaborationSession={collaborationSession}
               handleRollback={chatSurface.handleRollback}
               handleForkFromMessage={chatSurface.handleForkFromMessage}
+              footer={
+                chatSurface.runtimeRetry ? (
+                  <RetryStatusRow retry={chatSurface.runtimeRetry} />
+                ) : null
+              }
+              suppressErrorCards={!!chatSurface.runtimeRetry}
             />
-          }
-          afterMessagesSlot={
-            chatSurface.runtimeRetry ? (
-              <RetryStatusRow
-                retry={chatSurface.runtimeRetry}
-                onStop={chatSurface.handleStopRetry}
-                stopDisabled={chatSurface.isStoppingRetry}
-              />
-            ) : null
           }
         footerSlot={
       <ActiveChatDock
@@ -1167,6 +1182,29 @@ export function ChatView({
   })
 
   // Sync from main mutation (for resolving merge conflicts)
+  const mergeChatBranchMutation = trpc.changes.mergeChatBranch.useMutation({
+    onSuccess: (result) => {
+      if (result.status === "merged") {
+        toast.success("Merged into base branch", { position: "top-center" })
+      } else if (result.status === "nothing_to_merge") {
+        toast.info("Nothing to merge", { position: "top-center" })
+      } else if (result.status === "needs_manual_merge") {
+        toast.error(
+          result.reason === "conflict"
+            ? `Merge conflict: ${(result.conflictedFiles ?? []).join(", ")}`
+            : `Merge needs manual resolution: ${result.reason ?? ""}`,
+          { position: "top-center", duration: 8000 },
+        )
+      } else if (result.status === "error") {
+        toast.error(result.error || "Merge failed", { position: "top-center" })
+      }
+      refetchGitStatus()
+    },
+    onError: (error) => {
+      toast.error(error.message || "Merge failed", { position: "top-center" })
+    },
+  })
+
   const mergeFromDefaultMutation = trpc.changes.mergeFromDefault.useMutation({
     onSuccess: () => {
       toast.success("Branch synced with main. You can now merge the PR.", { position: "top-center" })
@@ -1890,12 +1928,12 @@ export function ChatView({
                           size="icon"
                           onClick={() => setIsPreviewSidebarOpen(true)}
                           className="h-6 w-6 p-0 hover:bg-foreground/10 transition-colors text-foreground flex-shrink-0 rounded-md ml-2"
-                          aria-label="Open preview"
+                          aria-label={i18n.t('Open preview')}
                         >
                           <IconOpenSidebarRight className="h-4 w-4" />
                         </Button>
                       </TooltipTrigger>
-                      <TooltipContent>Open preview</TooltipContent>
+                      <TooltipContent>{i18n.t('Open preview')}</TooltipContent>
                     </Tooltip>
                   ) : (
                     <PreviewSetupHoverCard>
@@ -1905,7 +1943,7 @@ export function ChatView({
                           size="icon"
                           disabled
                           className="h-6 w-6 p-0 text-muted-foreground flex-shrink-0 rounded-md cursor-not-allowed pointer-events-none"
-                          aria-label="Preview not available"
+                          aria-label={i18n.t('Preview not available')}
                         >
                           <IconOpenSidebarRight className="h-4 w-4" />
                         </Button>
@@ -1929,7 +1967,7 @@ export function ChatView({
                               size="icon"
                               onClick={() => setIsTerminalSidebarOpen(true)}
                               className="h-6 w-6 p-0 hover:bg-foreground/10 transition-colors text-foreground flex-shrink-0 rounded-md ml-2"
-                              aria-label="Open terminal"
+                              aria-label={i18n.t('Open terminal')}
                             >
                               <TerminalSquare className="h-4 w-4" />
                             </Button>
@@ -1951,10 +1989,10 @@ export function ChatView({
                         onClick={handleRestoreWorkspace}
                         disabled={restoreWorkspaceMutation.isPending}
                         className="h-6 px-2 gap-1.5 hover:bg-foreground/10 transition-colors text-foreground flex-shrink-0 rounded-md ml-2 flex items-center"
-                        aria-label="Restore workspace"
+                        aria-label={i18n.t('Restore workspace')}
                       >
                         <UnarchiveIcon className="h-4 w-4" />
-                        <span className="text-xs">Restore</span>
+                        <span className="text-xs">{i18n.t('Restore')}</span>
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent side="bottom">
@@ -2024,6 +2062,7 @@ export function ChatView({
                             isGroupMode={isGroupMode}
                             workspaceName={agentChat?.name ?? null}
                             workspaceBranch={agentChat?.branch ?? null}
+                            workspaceBaseBranch={(agentChat as any)?.baseBranch ?? null}
                             workspaceRepoName={(agentChat as unknown as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as unknown as ExtendedAgentChat | undefined)?.project?.name || null}
                             worktreePath={worktreePath}
                             workspaceId={agentChat?.workspaceId ?? null}
@@ -2080,6 +2119,7 @@ export function ChatView({
                                 isGroupMode={isGroupMode}
                                 workspaceName={agentChat?.name ?? null}
                                 workspaceBranch={agentChat?.branch ?? null}
+                            workspaceBaseBranch={(agentChat as any)?.baseBranch ?? null}
                                 workspaceRepoName={(agentChat as unknown as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as unknown as ExtendedAgentChat | undefined)?.project?.name || null}
                                 worktreePath={worktreePath}
                                 workspaceId={agentChat?.workspaceId ?? null}
@@ -2149,6 +2189,7 @@ export function ChatView({
                       isGroupMode={isGroupMode}
                       workspaceName={agentChat?.name ?? null}
                       workspaceBranch={agentChat?.branch ?? null}
+                      workspaceBaseBranch={(agentChat as any)?.baseBranch ?? null}
                       workspaceRepoName={(agentChat as unknown as ExtendedAgentChat | undefined)?.project?.gitRepo || (agentChat as unknown as ExtendedAgentChat | undefined)?.project?.name || null}
                       worktreePath={worktreePath}
                       workspaceId={agentChat?.workspaceId ?? null}
@@ -2185,7 +2226,7 @@ export function ChatView({
                             className="flex items-center gap-1.5 px-2 py-1 text-sm text-muted-foreground rounded-md cursor-not-allowed"
                           >
                             <AgentIcon className="h-3.5 w-3.5" />
-                            <span>Agent</span>
+                            <span>{i18n.t('Agent')}</span>
                             <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
                           </button>
 

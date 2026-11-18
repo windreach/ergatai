@@ -1,4 +1,5 @@
 import type { FileContents } from "../../../shared/changes-types";
+import { t } from "../i18n"
 import { detectLanguage } from "../../../shared/detect-language";
 import { simpleGit } from "simple-git";
 import { z } from "zod";
@@ -243,7 +244,7 @@ async function getFileVersions(
 
 		case "committed":
 			if (!commitHash) {
-				throw new Error("commitHash required for committed category");
+				throw new Error(t("commitHash required for committed category"));
 			}
 			return getCommittedVersions(git, filePath, originalPath, commitHash);
 
@@ -261,22 +262,22 @@ async function getFileVersions(
  */
 function validateGitRef(ref: string, name: string): void {
 	if (!ref || ref.length === 0) {
-		throw new Error(`${name} cannot be empty`);
+		throw new Error(t('{{name}} cannot be empty'));
 	}
 	if (ref.length > 250) {
-		throw new Error(`${name} too long (max 250 characters)`);
+		throw new Error(t('{{name}} too long (max 250 characters)'));
 	}
 	// Reject shell metacharacters and dangerous patterns
 	if (/[;&|`$(){}[\]!#]/.test(ref)) {
-		throw new Error(`${name} contains invalid characters`);
+		throw new Error(t('{{name}} contains invalid characters'));
 	}
 	// Reject paths with .. (path traversal)
 	if (ref.includes("..")) {
-		throw new Error(`${name} cannot contain path traversal`);
+		throw new Error(t('{{name}} cannot contain path traversal'));
 	}
 	// Reject refs starting with - (flag injection)
 	if (ref.startsWith("-")) {
-		throw new Error(`${name} cannot start with -`);
+		throw new Error(t('{{name}} cannot start with -'));
 	}
 }
 
@@ -285,7 +286,7 @@ function validateGitRef(ref: string, name: string): void {
  */
 function validateCommitHash(hash: string): void {
 	if (!/^[0-9a-fA-F]{7,40}$/.test(hash)) {
-		throw new Error("Invalid commit hash format");
+		throw new Error(t("Invalid commit hash format"));
 	}
 }
 
@@ -296,7 +297,7 @@ function validateBranchName(branch: string): void {
 	validateGitRef(branch, "Branch name");
 	// Additional branch name validation
 	if (!/^[a-zA-Z0-9._/-]+$/.test(branch)) {
-		throw new Error("Branch name contains invalid characters");
+		throw new Error(t("Branch name contains invalid characters"));
 	}
 }
 

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useState, useEffect, useRef } from "react"
@@ -135,7 +136,7 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
                   Thinking
                 </TextShimmer>
               ) : (
-                <span className="text-muted-foreground">Thinking</span>
+                <span className="text-muted-foreground">{i18n.t('Thinking')}</span>
               )}
             </span>
             {/* Elapsed time */}

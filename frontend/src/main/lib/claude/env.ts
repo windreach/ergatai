@@ -1,6 +1,7 @@
 import {
   app
 } from "electron"
+import { t } from "../i18n"
 import {
   spawnSync
 } from "node:child_process"
@@ -199,7 +200,7 @@ export function getClaudeShellEnvironment(): Record<string, string> {
     })
 
     if (result.error) throw result.error
-    if (result.status !== 0) throw new Error(`Shell exited with status ${result.status}`)
+    if (result.status !== 0) throw new Error(t('Shell exited with status {{result.status}}'))
 
     const output = result.stdout
     const env = parseEnvOutput(output)

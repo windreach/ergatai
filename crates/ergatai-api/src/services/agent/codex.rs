@@ -1,34 +1,26 @@
-use crate::services::agent::DiscoveredModels;
 use crate::services::profile_service::{ProfileModelDetail, ProfileModelSource};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 
-pub async fn discover_models(_profile_name: &str, _cwd: Option<&str>) -> DiscoveredModels {
-    let native_default = detect_native_config()
-        .ok()
-        .flatten()
-        .and_then(|cfg| cfg.default_model);
-    let config_details = crate::services::model_file_reader::read_codex_models();
+use super::source::SourceReading;
 
-    let mut merged: Vec<ProfileModelDetail> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut sources: Vec<ProfileModelSource> = Vec::new();
-
-    if !config_details.is_empty() {
-        sources.push(ProfileModelSource::ConfigFile);
-        for d in config_details {
-            if seen.insert(d.id.clone()) {
-                merged.push(d);
-            }
-        }
+/// Codex native model query. The current Codex integration has no model-list
+/// API, so this source usually reports unavailable and the config file wins.
+pub async fn read_sdk() -> SourceReading {
+    let sdk = crate::services::agent_sdk_service::discover("codex", None).await;
+    if let Some(error) = sdk.get("error").and_then(Value::as_str) {
+        return SourceReading::unavailable(ProfileModelSource::AgentSdk, error);
     }
 
-    // SDK discover (Codex may expose models via server API).
-    let sdk = crate::services::agent_sdk_service::discover("codex", None).await;
-    let sdk_details: Vec<ProfileModelDetail> = sdk
+    let default_model = sdk
+        .get("default_model")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let details: Vec<ProfileModelDetail> = sdk
         .get("models")
-        .and_then(|v| v.as_array())
+        .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
                 .filter_map(|m| {
@@ -37,7 +29,7 @@ pub async fn discover_models(_profile_name: &str, _cwd: Option<&str>) -> Discove
                         .or_else(|| m.get("value"))
                         .or_else(|| m.get("name"))
                         .or_else(|| m.get("model"))
-                        .and_then(|v| v.as_str())?
+                        .and_then(Value::as_str)?
                         .to_string();
                     if id.is_empty() {
                         return None;
@@ -45,19 +37,19 @@ pub async fn discover_models(_profile_name: &str, _cwd: Option<&str>) -> Discove
                     let name = m
                         .get("name")
                         .or_else(|| m.get("displayName"))
-                        .and_then(|v| v.as_str())
+                        .and_then(Value::as_str)
                         .unwrap_or(&id)
                         .to_string();
                     let description = m
                         .get("description")
-                        .and_then(|v| v.as_str())
+                        .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
                     let provider = m
                         .get("provider")
                         .or_else(|| m.get("providerID"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Codex")
                         .to_string();
                     Some(ProfileModelDetail {
                         id,
@@ -70,37 +62,10 @@ pub async fn discover_models(_profile_name: &str, _cwd: Option<&str>) -> Discove
         })
         .unwrap_or_default();
 
-    if !sdk_details.is_empty() {
-        sources.push(ProfileModelSource::AgentSdk);
-        for d in sdk_details {
-            if seen.insert(d.id.clone()) {
-                merged.push(d);
-            }
-        }
-    }
-
-    let default_model = native_default;
-
-    if merged.is_empty() {
-        DiscoveredModels {
-            details: Vec::new(),
-            source: ProfileModelSource::None,
-            sources: Vec::new(),
-            current: None,
-            default_model,
-        }
+    if details.is_empty() {
+        SourceReading::unavailable(ProfileModelSource::AgentSdk, "Codex SDK returned no models")
     } else {
-        let primary = sources
-            .first()
-            .copied()
-            .unwrap_or(ProfileModelSource::ConfigFile);
-        DiscoveredModels {
-            details: merged,
-            source: primary,
-            sources,
-            current: None,
-            default_model,
-        }
+        SourceReading::success(ProfileModelSource::AgentSdk, details, None, default_model)
     }
 }
 

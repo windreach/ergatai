@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useCallback, useMemo, useState, useEffect, useRef } from "react"
@@ -268,10 +269,10 @@ export const ChangesWidget = memo(function ChangesWidget({
 
           {/* Title + branch */}
           <div className="flex items-center gap-1 min-w-0">
-            <span className="text-xs font-medium text-foreground">Changes</span>
+            <span className="text-xs font-medium text-foreground">{i18n.t('Changes')}</span>
             {currentBranch && (
               <span className="text-xs text-muted-foreground flex items-center gap-1 min-w-0">
-                <span className="shrink-0">on</span>
+                <span className="shrink-0">{i18n.t('on')}</span>
                 <span className="truncate max-w-[120px] text-foreground">
                   {currentBranch}
                 </span>
@@ -300,7 +301,7 @@ export const ChangesWidget = memo(function ChangesWidget({
                   size="icon"
                   onClick={onExpand}
                   className="h-5 w-5 p-0 hover:bg-foreground/10 text-muted-foreground hover:text-foreground rounded-md opacity-0 group-hover:opacity-100 transition-[background-color,opacity,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0"
-                  aria-label="Expand changes"
+                  aria-label={i18n.t('Expand changes')}
                 >
                   <ArrowUpRight className="h-3 w-3" />
                 </Button>
@@ -392,8 +393,8 @@ export const ChangesWidget = memo(function ChangesWidget({
                   {isCommitting
                     ? (shouldCommitAndPush ? "Committing & pushing..." : "Committing...")
                     : (shouldCommitAndPush
-                      ? `Commit & Push${commitLabelSuffix}`
-                      : `Commit${commitLabelSuffix}`)}
+                      ? i18n.t("Commit & Push{{suffix}}", { suffix: commitLabelSuffix })
+                      : i18n.t("Commit{{suffix}}", { suffix: commitLabelSuffix }))}
                 </Button>
               )}
 

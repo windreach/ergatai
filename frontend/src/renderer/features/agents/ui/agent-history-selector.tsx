@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState } from "react"
@@ -78,7 +79,7 @@ export function AgentHistorySelector({ agentId, conversationId }: AgentHistorySe
           className="flex items-center gap-1.5 h-6 px-2 text-xs rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
         >
           <ClockIcon className="h-3.5 w-3.5" />
-          <span>Resume</span>
+          <span>{i18n.t('Resume')}</span>
           {sessions.length > 0 && (
             <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] tabular-nums">
               {sessions.length}

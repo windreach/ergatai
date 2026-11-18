@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import type {
   ShortcutAction,
   ShortcutActionId,
@@ -22,7 +23,7 @@ export const ALL_SHORTCUT_ACTIONS: ShortcutAction[] = [
   },
   {
     id: "open-settings",
-    label: "Settings",
+    label: i18n.t("Settings"),
     category: "general",
     defaultKeys: ["cmd", ","],
   },
@@ -180,7 +181,7 @@ export const ALL_SHORTCUT_ACTIONS: ShortcutAction[] = [
   },
   {
     id: "file-search",
-    label: "Go to file",
+    label: i18n.t("Go to file"),
     category: "agents",
     defaultKeys: ["cmd", "P"],
   },

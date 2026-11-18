@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import * as React from "react"
 import { Check } from "lucide-react"
 import { Button } from "@/components/ui/button"

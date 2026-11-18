@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 export type TerminalProviderId = "backend-managed" | "legacy-electron-local"
 
 export interface TerminalAttachRequest {
@@ -49,7 +50,7 @@ export interface TerminalProvider {
 
 export class TerminalProviderUnavailableError extends Error {
   constructor(providerId: TerminalProviderId, reason: string) {
-    super(`Terminal provider "${providerId}" is unavailable: ${reason}`)
+    super(i18n.t("Terminal provider \"{{id}}\" is unavailable: {{reason}}", { id: providerId, reason }))
     this.name = "TerminalProviderUnavailableError"
   }
 }

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useState, useEffect, useCallback, useRef, forwardRef, useImperativeHandle, useMemo } from "react"
@@ -5,12 +6,24 @@ import { ChevronUp, ChevronDown, CornerDownLeft } from "lucide-react"
 import { Button } from "../../../components/ui/button"
 import { cn } from "../../../lib/utils"
 import type { PendingUserQuestions } from "../atoms"
+import { useAgentQuestionKeyboard } from "./use-agent-question-keyboard"
 
 interface AgentUserQuestionProps {
   pendingQuestions: PendingUserQuestions
   onAnswer: (answers: Record<string, string>) => void
-  onSkip: () => void
+  onSkip: () => void | Promise<void>
   hasCustomText?: boolean
+  /**
+   * Stable keys used for structured submissions (e.g. OpenCode form fields
+   * `q0`, `q1`). When omitted, the question text is used as the key.
+   */
+  answerKeys?: string[]
+  /**
+   * When provided, submissions are returned keyed by `answerKeys` (or question
+   * text) so callers can forward them to non-Claude backends such as ACP form
+   * elicitations. `onAnswer` is then ignored.
+   */
+  onStructuredAnswer?: (answers: Record<string, string[]>) => void | Promise<void>
 }
 
 export interface AgentUserQuestionHandle {
@@ -19,18 +32,21 @@ export interface AgentUserQuestionHandle {
 
 // react-doctor-disable-next-line no-giant-component
 export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentUserQuestionProps>(
+  // react-doctor-disable-next-line no-high-complexity-react-function
   function AgentUserQuestion({
     pendingQuestions,
     onAnswer,
     onSkip,
     hasCustomText = false,
+    answerKeys,
+    onStructuredAnswer,
   }: AgentUserQuestionProps, ref) {
   const { questions, toolUseId } = pendingQuestions
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0)
   const [answers, setAnswers] = useState<Record<string, string[]>>({})
-  const [customAnswer, setCustomAnswer] = useState("")
-  const [isCustomSelected, setIsCustomSelected] = useState(false)
+  const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({})
   const [focusedOptionIndex, setFocusedOptionIndex] = useState(0)
+  const [isCustomInputFocused, setIsCustomInputFocused] = useState(false)
   const [isVisible, setIsVisible] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const prevIndexRef = useRef(currentQuestionIndex)
@@ -38,18 +54,49 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // Helper function to format answers for submission
-  const formatAnswers = useCallback((questions: typeof pendingQuestions.questions, answers: Record<string, string[]>) => {
-    const formattedAnswers: Record<string, string> = {}
-    for (const question of questions) {
-      const selected = answers[question.question] || []
-      if (selected.length > 0) {
-        formattedAnswers[question.question] = selected.join(", ")
+  const answerKeyFor = useCallback(
+    (question: { question: string }, index: number) =>
+      answerKeys?.[index] ?? question.question,
+    [answerKeys],
+  )
+
+  const combineAnswers = useCallback(
+    (question: { question: string }, index: number): string[] => {
+      const key = answerKeyFor(question, index)
+      const selected = [...(answers[key] ?? [])]
+      const custom = (customAnswers[key] ?? "").trim()
+      if (custom && !selected.includes(custom)) {
+        selected.push(custom)
       }
-    }
-    return formattedAnswers
-  // react-doctor-disable-next-line exhaustive-deps
-  }, [pendingQuestions])
+      return selected
+    },
+    [answerKeyFor, answers, customAnswers],
+  )
+
+  // Helper function to format answers for Claude's tool-approval payload.
+  const formatAnswers = useCallback(() => {
+    const formatted: Record<string, string> = {}
+    questions.forEach((question, index) => {
+      const combined = combineAnswers(question, index)
+      if (combined.length > 0) {
+        formatted[question.question] = combined.join(", ")
+      }
+    })
+    return formatted
+  }, [questions, combineAnswers])
+
+  // Helper function to format answers for ACP form elicitations.
+  const formatStructuredAnswers = useCallback(() => {
+    const structured: Record<string, string[]> = {}
+    questions.forEach((question, index) => {
+      const key = answerKeyFor(question, index)
+      const combined = combineAnswers(question, index)
+      if (combined.length > 0) {
+        structured[key] = combined
+      }
+    })
+    return structured
+  }, [questions, answerKeyFor, combineAnswers])
 
   // Cleanup timeout on unmount
   useEffect(() => {
@@ -62,8 +109,8 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
 
   // Expose getAnswers method to parent via ref
   useImperativeHandle(ref, () => ({
-    getAnswers: () => formatAnswers(questions, answers)
-  }), [answers, questions, formatAnswers])
+    getAnswers: formatAnswers,
+  }), [formatAnswers])
 
   // Reset when toolUseId changes (new question set)
   useEffect(() => {
@@ -75,11 +122,11 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
       // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setAnswers({})
       // react-doctor-disable-next-line no-adjust-state-on-prop-change
-      setCustomAnswer("")
-      // react-doctor-disable-next-line no-adjust-state-on-prop-change
-      setIsCustomSelected(false)
+      setCustomAnswers({})
       // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setFocusedOptionIndex(0)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
+      setIsCustomInputFocused(false)
       prevToolUseIdRef.current = toolUseId
     }
   }, [toolUseId])
@@ -99,38 +146,60 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
 
   const currentQuestion = questions[currentQuestionIndex]
   const currentOptions = useMemo(() => currentQuestion?.options || [], [currentQuestion?.options])
+  const currentAnswerKey = currentQuestion
+    ? answerKeyFor(currentQuestion, currentQuestionIndex)
+    : ""
+  const currentSelectedAnswers = answers[currentAnswerKey] ?? []
+  const currentCustomAnswer = customAnswers[currentAnswerKey] ?? ""
+  const isCustomSelected = currentCustomAnswer.trim().length > 0
+  const currentQuestionHasAnswer =
+    currentSelectedAnswers.length > 0 || isCustomSelected
 
-  const isOptionSelected = (questionText: string, optionLabel: string) => {
-    return answers[questionText]?.includes(optionLabel) || false
+  const isOptionSelected = (questionIndex: number, optionLabel: string) => {
+    const question = questions[questionIndex]
+    if (!question) return false
+    const key = answerKeyFor(question, questionIndex)
+    return answers[key]?.includes(optionLabel) || false
   }
 
   // Handle option click - auto-advance for single-select questions
   const handleOptionClick = useCallback(
-    (questionText: string, optionLabel: string, questionIndex: number) => {
+    (optionLabel: string, questionIndex: number) => {
       const question = questions[questionIndex]
-      const allowMultiple = question?.multiSelect || false
-      setIsCustomSelected(false)
+      if (!question) return
+      const key = answerKeyFor(question, questionIndex)
+      const allowMultiple = question.multiSelect || false
       const isLastQuestion = questionIndex === questions.length - 1
 
+      if (!allowMultiple) {
+        // Selecting a predefined option clears a custom answer.
+        setCustomAnswers((prev) => {
+          if (!prev[key]) return prev
+          const next = { ...prev }
+          next[key] = ""
+          return next
+        })
+      }
+
       setAnswers((prev) => {
-        const currentAnswers = prev[questionText] || []
+        const currentAnswers = prev[key] || []
 
         if (allowMultiple) {
           if (currentAnswers.includes(optionLabel)) {
             return {
               ...prev,
-              [questionText]: currentAnswers.filter((l) => l !== optionLabel),
+              [key]: currentAnswers.filter((l) => l !== optionLabel),
             }
           } else {
             return {
               ...prev,
-              [questionText]: [...currentAnswers, optionLabel],
+              [key]: [...currentAnswers, optionLabel],
             }
           }
         } else {
           return {
             ...prev,
-            [questionText]: [optionLabel],
+            [key]: [optionLabel],
           }
         }
       })
@@ -147,7 +216,7 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
         }, 150)
       }
     },
-    [questions],
+    [answerKeyFor, questions],
   )
 
   const handlePrevious = () => {
@@ -166,146 +235,104 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
 
   const handleContinue = useCallback(() => {
     if (isSubmitting) return
-
-    const currentAnswer = answers[currentQuestion?.question] || []
-    if (currentAnswer.length === 0) return
+    if (!currentQuestionHasAnswer) return
 
     if (currentQuestionIndex < questions.length - 1) {
       setCurrentQuestionIndex(currentQuestionIndex + 1)
       setFocusedOptionIndex(0)
-    } else {
-      // On the last question, validate ALL questions are answered before submit
-      const allAnswered = questions.every(
-        (q) => (answers[q.question] || []).length > 0,
-      )
-      if (allAnswered) {
-        setIsSubmitting(true)
-        onAnswer(formatAnswers(questions, answers))
-      }
+      return
     }
+
+    // On the last question, validate ALL questions are answered before submit
+    const allAnswered = questions.every((question, index) => {
+      const key = answerKeyFor(question, index)
+      return (
+        (answers[key] ?? []).length > 0 ||
+        (customAnswers[key] ?? "").trim().length > 0
+      )
+    })
+    if (!allAnswered) return
+
+    setIsSubmitting(true)
+    if (onStructuredAnswer) {
+      try {
+        void Promise.resolve(onStructuredAnswer(formatStructuredAnswers())).catch(() => {
+          setIsSubmitting(false)
+        })
+      } catch {
+        setIsSubmitting(false)
+      }
+      return
+    }
+    onAnswer(formatAnswers())
   }, [
     onAnswer,
+    onStructuredAnswer,
+    answerKeyFor,
     answers,
+    customAnswers,
+    currentQuestionHasAnswer,
     currentQuestionIndex,
     questions,
-    currentQuestion?.question,
     isSubmitting,
     formatAnswers,
+    formatStructuredAnswers,
   ])
 
   const handleSkipWithGuard = useCallback(() => {
     if (isSubmitting) return
     setIsSubmitting(true)
-    onSkip()
+    void (async () => {
+      try {
+        await onSkip()
+      } catch {
+        setIsSubmitting(false)
+      }
+    })()
   }, [isSubmitting, onSkip])
 
   const getOptionNumber = (index: number) => {
     return String(index + 1)
   }
 
-  const currentQuestionHasAnswer =
-    (answers[currentQuestion?.question] || []).length > 0
-
   const handleCustomAnswerChange = useCallback(
     (value: string) => {
-      setCustomAnswer(value)
-      const questionText = currentQuestion?.question
-      if (!questionText) return
-      if (value.trim()) {
-        setIsCustomSelected(true)
-        setAnswers((prev) => ({ ...prev, [questionText]: [value.trim()] }))
-      } else {
-        setIsCustomSelected(false)
+      const key = currentAnswerKey
+      if (!key) return
+      setCustomAnswers((prev) => ({ ...prev, [key]: value }))
+      // For single-select questions a custom answer replaces the selection.
+      if (!currentQuestion?.multiSelect) {
+        setAnswers((prev) => {
+          if ((prev[key] ?? []).length === 0) return prev
+          return { ...prev, [key]: [] }
+        })
       }
     },
-    [currentQuestion?.question],
+    [currentAnswerKey, currentQuestion?.multiSelect],
   )
-  const allQuestionsAnswered = questions.every(
-    (q) => (answers[q.question] || []).length > 0,
-  )
+
+  const allQuestionsAnswered = questions.every((question, index) => {
+    const key = answerKeyFor(question, index)
+    return (
+      (answers[key] ?? []).length > 0 ||
+      (customAnswers[key] ?? "").trim().length > 0
+    )
+  })
   const isLastQuestion = currentQuestionIndex === questions.length - 1
 
-  // Keyboard navigation
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (isSubmitting) return
-
-      // Only intercept events within this component's DOM tree
-      if (!containerRef.current?.contains(e.target as Node)) {
-        return
-      }
-
-      const activeEl = document.activeElement
-      if (
-        activeEl instanceof HTMLInputElement ||
-        activeEl instanceof HTMLTextAreaElement ||
-        activeEl?.getAttribute("contenteditable") === "true"
-      ) {
-        return
-      }
-
-      if (e.key === "ArrowDown") {
-        e.preventDefault()
-        if (focusedOptionIndex < currentOptions.length - 1) {
-          // react-doctor-disable-next-line rerender-functional-setstate
-          setFocusedOptionIndex(focusedOptionIndex + 1)
-        } else if (currentQuestionIndex < questions.length - 1) {
-          // react-doctor-disable-next-line rerender-functional-setstate
-          setCurrentQuestionIndex(currentQuestionIndex + 1)
-          setFocusedOptionIndex(0)
-        }
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault()
-        if (focusedOptionIndex > 0) {
-          // react-doctor-disable-next-line rerender-functional-setstate
-          setFocusedOptionIndex(focusedOptionIndex - 1)
-        } else if (currentQuestionIndex > 0) {
-          const prevQuestionOptions =
-            questions[currentQuestionIndex - 1]?.options || []
-          // react-doctor-disable-next-line rerender-functional-setstate
-          setCurrentQuestionIndex(currentQuestionIndex - 1)
-          setFocusedOptionIndex(prevQuestionOptions.length - 1)
-        }
-      } else if (e.key === "Enter") {
-        e.preventDefault()
-        if (currentQuestionHasAnswer) {
-          handleContinue()
-        } else if (currentOptions[focusedOptionIndex]) {
-          handleOptionClick(
-            currentQuestion.question,
-            currentOptions[focusedOptionIndex].label,
-            currentQuestionIndex,
-          )
-        }
-      } else if (e.key >= "1" && e.key <= "9") {
-        const numberIndex = parseInt(e.key, 10) - 1
-        if (numberIndex >= 0 && numberIndex < currentOptions.length) {
-          e.preventDefault()
-          handleOptionClick(
-            currentQuestion.question,
-            currentOptions[numberIndex].label,
-            currentQuestionIndex,
-          )
-          setFocusedOptionIndex(numberIndex)
-        }
-      }
-    }
-
-    document.addEventListener("keydown", handleKeyDown)
-    return () => document.removeEventListener("keydown", handleKeyDown)
-  }, [
-    currentOptions,
-    currentQuestion,
-    currentQuestionIndex,
-    focusedOptionIndex,
-    // react-doctor-disable-next-line prefer-use-effect-event
-    handleOptionClick,
-    currentQuestionHasAnswer,
-    // react-doctor-disable-next-line prefer-use-effect-event
-    handleContinue,
-    questions,
+  useAgentQuestionKeyboard({
+    containerRef,
     isSubmitting,
-  ])
+    focusedOptionIndex,
+    currentOptions,
+    questions,
+    currentQuestionIndex,
+    currentQuestionHasAnswer,
+    setFocusedOptionIndex,
+    setCurrentQuestionIndex,
+    handleOptionClick,
+    handleContinue,
+  })
 
   if (questions.length === 0) {
     return null
@@ -329,7 +356,7 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
         {questions.length > 1 && (
           <div className="flex items-center gap-1">
             <button
-              aria-label="ChevronUp"
+              aria-label={i18n.t('ChevronUp')}
               onClick={handlePrevious}
               disabled={currentQuestionIndex === 0}
               className="p-0.5 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed outline-none"
@@ -340,7 +367,7 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
               {currentQuestionIndex + 1} / {questions.length}
             </span>
             <button
-              aria-label="ChevronDown"
+              aria-label={i18n.t('ChevronDown')}
               onClick={handleNext}
               disabled={currentQuestionIndex === questions.length - 1}
               className="p-0.5 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed outline-none"
@@ -366,11 +393,14 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
         {/* Options */}
         <div className="space-y-1">
           {currentOptions.map((option, optIndex) => {
-            const isSelected = isOptionSelected(
-              currentQuestion.question,
-              option.label,
-            )
-            const isFocused = focusedOptionIndex === optIndex
+            const isSelected = isOptionSelected(currentQuestionIndex, option.label)
+            // The focus ring is a keyboard-navigation hint, not a selection.
+            // Hide it while the custom answer is active or being typed so it
+            // can't be mistaken for a selected option.
+            const isFocused =
+              focusedOptionIndex === optIndex &&
+              !isCustomInputFocused &&
+              !isCustomSelected
             const number = getOptionNumber(optIndex)
 
             return (
@@ -378,11 +408,7 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
                 key={option.label}
                 onClick={() => {
                   if (isSubmitting) return
-                  handleOptionClick(
-                    currentQuestion.question,
-                    option.label,
-                    currentQuestionIndex,
-                  )
+                  handleOptionClick(option.label, currentQuestionIndex)
                   setFocusedOptionIndex(optIndex)
                 }}
                 disabled={isSubmitting}
@@ -422,19 +448,20 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
       <div className="px-2 pb-2">
         <div
           className={cn(
-            "flex items-center gap-2 rounded-md border px-2 py-1.5",
-            isCustomSelected ? "border-foreground/40 bg-muted/70" : "border-border hover:bg-muted/50",
+            "flex items-center gap-2 rounded-md border px-2 py-1.5 transition-colors",
+            isCustomSelected || isCustomInputFocused
+              ? "border-foreground/40 bg-muted/70"
+              : "border-border hover:bg-muted/50",
           )}
         >
-          <span className="text-[12px] text-muted-foreground">Other:</span>
+          <span className="text-[12px] text-muted-foreground">{i18n.t('Other:')}</span>
           <input
             type="text"
-            value={customAnswer}
+            value={currentCustomAnswer}
             onChange={(e) => handleCustomAnswerChange(e.target.value)}
-            onFocus={() => {
-              if (customAnswer.trim()) setIsCustomSelected(true)
-            }}
-            placeholder="Type your own answer"
+            onFocus={() => setIsCustomInputFocused(true)}
+            onBlur={() => setIsCustomInputFocused(false)}
+            placeholder={i18n.t('Type your own answer')}
             disabled={isSubmitting}
             className="flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground/60"
           />

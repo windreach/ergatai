@@ -11,6 +11,7 @@
  * Usage:
  *   import { platform, getPlatformProvider } from './platform'
  *
+
  *   // Use singleton (recommended)
  *   const shell = platform.getDefaultShell()
  *   const env = platform.buildEnvironment()
@@ -18,6 +19,8 @@
  *   // Or get provider for specific platform
  *   const winProvider = getPlatformProvider('win32')
  */
+import { t } from "../i18n"
+
 
 import type { PlatformProvider } from "./types"
 import { WindowsPlatformProvider } from "./windows"
@@ -61,7 +64,7 @@ export function getPlatformProvider(
       }
       return linuxProvider
     default:
-      throw new Error(`Unsupported platform: ${platformId}`)
+      throw new Error(t('Unsupported platform: {{platformId}}'))
   }
 }
 

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { trpc } from "../../../lib/trpc"
 
 interface UseAgentExtensionMetaOptions {
@@ -27,7 +28,7 @@ export function useAgentExtensionMeta({
     extensionMeta: query.data?.extension_meta ?? null,
     isLoading: query.isLoading,
     error: query.error
-      ? new Error(query.error.message ?? "Unknown error")
+      ? new Error(query.error.message ?? i18n.t('Unknown error'))
       : null,
     refetch: query.refetch,
   }

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 // react-doctor-disable-next-line prefer-dynamic-import
 import Editor, { type Monaco } from "@monaco-editor/react"
@@ -96,7 +97,7 @@ function LoadingSpinner() {
     <div className="flex-1 flex items-center justify-center">
       <div className="flex flex-col items-center gap-3 text-muted-foreground">
         <Loader2 className="h-8 w-8 animate-spin" />
-        <span className="text-sm">Loading file...</span>
+        <span className="text-sm">{i18n.t('Loading file...')}</span>
       </div>
     </div>
   )
@@ -137,7 +138,7 @@ function UnsupportedViewer({
       <div className="flex-1 flex items-center justify-center p-4">
         <div className="flex flex-col items-center gap-3 text-center max-w-[300px]">
           <FileWarning className="h-10 w-10 text-muted-foreground" />
-          <p className="font-medium text-foreground">Cannot view this file</p>
+          <p className="font-medium text-foreground">{i18n.t('Cannot view this file')}</p>
         </div>
       </div>
     </div>
@@ -394,7 +395,7 @@ function EditorContextMenu({
       {/* react-doctor-disable-next-line interactive-supports-focus */}
       <div className={itemClass} onClick={() => handleEditorAction("editor.action.quickCommand")} role="button" onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); (e.currentTarget as HTMLElement).click() } }}>
         Command Palette
-        <span className={shortcutClass}>F1</span>
+        <span className={shortcutClass}>{i18n.t('F1')}</span>
       </div>
     </div>
   )

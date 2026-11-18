@@ -1,108 +1,110 @@
-use crate::services::agent::DiscoveredModels;
 use crate::services::profile_service::{ProfileModelDetail, ProfileModelSource};
 use serde_json::Value;
 
-pub async fn discover_models(_profile_name: &str, _cwd: Option<&str>) -> DiscoveredModels {
-    let native_default = detect_native_config()
-        .ok()
-        .flatten()
-        .and_then(|cfg| cfg.default_model);
+use super::source::SourceReading;
 
-    let mut merged: Vec<ProfileModelDetail> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut sources: Vec<ProfileModelSource> = Vec::new();
-    let mut current: Option<String> = None;
-
-    // 1. Config file (includes configured model slots).
-    let config_details = crate::services::model_file_reader::read_claude_models();
-    if !config_details.is_empty() {
-        sources.push(ProfileModelSource::ConfigFile);
-        for d in config_details {
-            if seen.insert(d.id.clone()) {
-                merged.push(d);
-            }
-        }
-    }
-
-    // 2. CLI /model.
+/// Claude Code CLI `/model` query. Ranked below live ACP but above the SDK:
+/// it reflects the CLI's own view of usable models.
+pub async fn read_cli_models() -> SourceReading {
     let claude = if std::path::Path::new("/root/.local/bin/claude").exists() {
         "/root/.local/bin/claude"
     } else {
         "claude"
     };
-    if let Ok(output) = tokio::process::Command::new(claude)
+    let output = match tokio::process::Command::new(claude)
         .arg("/model")
         .output()
         .await
     {
-        let text = String::from_utf8_lossy(&output.stdout);
-        if let Some(parsed) = crate::api::agents::parse_model_output(&text) {
-            let cli_current = parsed
-                .get("current")
-                .and_then(Value::as_str)
-                .map(ToString::to_string);
-            if current.is_none() {
-                current = cli_current;
-            }
-            let is_gateway = current
-                .as_ref()
-                .map(|c| {
-                    let l = c.to_lowercase();
-                    !(l.contains("sonnet")
-                        || l.contains("opus")
-                        || l.contains("haiku")
-                        || l.contains("fable")
-                        || l.contains("claude"))
-                })
-                .unwrap_or(false);
-
-            let models: Vec<String> = parsed
-                .get("models")
-                .and_then(Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .filter(|m| {
-                            if !is_gateway {
-                                return true;
-                            }
-                            let lower = m.to_lowercase();
-                            !lower.contains('[')
-                                && lower != "best"
-                                && lower != "opusplan"
-                                && lower != "default"
-                        })
-                        .map(ToString::to_string)
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            if !models.is_empty() {
-                sources.push(ProfileModelSource::AcpConfigOptions);
-                let details: Vec<ProfileModelDetail> = models
-                    .into_iter()
-                    .map(|m| ProfileModelDetail {
-                        id: m.clone(),
-                        name: m.clone(),
-                        description: String::new(),
-                        provider: "Anthropic".to_string(),
-                    })
-                    .collect();
-                for d in details {
-                    if seen.insert(d.id.clone()) {
-                        merged.push(d);
-                    }
-                }
-            }
+        Ok(output) => output,
+        Err(error) => {
+            return SourceReading::unavailable(
+                ProfileModelSource::CliModelCommand,
+                format!("failed to run claude /model: {error}"),
+            )
         }
+    };
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let Some(parsed) = crate::api::agents::parse_model_output(&text) else {
+        return SourceReading::unavailable(
+            ProfileModelSource::CliModelCommand,
+            "claude /model returned no parseable model list",
+        );
+    };
+
+    let current = parsed
+        .get("current")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let is_gateway = current
+        .as_ref()
+        .map(|c| {
+            let lower = c.to_lowercase();
+            !(lower.contains("sonnet")
+                || lower.contains("opus")
+                || lower.contains("haiku")
+                || lower.contains("fable")
+                || lower.contains("claude"))
+        })
+        .unwrap_or(false);
+
+    let models: Vec<String> = parsed
+        .get("models")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|m| {
+                    if !is_gateway {
+                        return true;
+                    }
+                    let lower = m.to_lowercase();
+                    !lower.contains('[')
+                        && lower != "best"
+                        && lower != "opusplan"
+                        && lower != "default"
+                })
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if models.is_empty() {
+        return SourceReading::unavailable(
+            ProfileModelSource::CliModelCommand,
+            "claude /model returned an empty model list",
+        );
     }
 
-    // SDK discover (optional).
+    let details = models
+        .into_iter()
+        .map(|model| ProfileModelDetail {
+            id: model.clone(),
+            name: model,
+            description: String::new(),
+            provider: "Anthropic".to_string(),
+        })
+        .collect();
+    SourceReading::success(ProfileModelSource::CliModelCommand, details, current, None)
+}
+
+/// Claude Agent SDK `supportedModels()`.
+pub async fn read_sdk() -> SourceReading {
     let sdk = crate::services::agent_sdk_service::discover("claude", None).await;
-    let sdk_details: Vec<ProfileModelDetail> = sdk
+    if let Some(error) = sdk.get("error").and_then(Value::as_str) {
+        return SourceReading::unavailable(ProfileModelSource::AgentSdk, error);
+    }
+
+    let default_model = sdk
+        .get("default_model")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let details: Vec<ProfileModelDetail> = sdk
         .get("models")
-        .and_then(|v| v.as_array())
+        .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
                 .filter_map(|m| {
@@ -111,7 +113,7 @@ pub async fn discover_models(_profile_name: &str, _cwd: Option<&str>) -> Discove
                         .or_else(|| m.get("value"))
                         .or_else(|| m.get("name"))
                         .or_else(|| m.get("model"))
-                        .and_then(|v| v.as_str())?
+                        .and_then(Value::as_str)?
                         .to_string();
                     if id.is_empty() {
                         return None;
@@ -119,19 +121,20 @@ pub async fn discover_models(_profile_name: &str, _cwd: Option<&str>) -> Discove
                     let name = m
                         .get("name")
                         .or_else(|| m.get("displayName"))
-                        .and_then(|v| v.as_str())
+                        .and_then(Value::as_str)
                         .unwrap_or(&id)
                         .to_string();
                     let description = m
                         .get("description")
-                        .and_then(|v| v.as_str())
+                        .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
                     let provider = m
                         .get("provider")
                         .or_else(|| m.get("providerID"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
+                        .and_then(Value::as_str)
+                        .filter(|provider| !provider.is_empty())
+                        .unwrap_or("Anthropic")
                         .to_string();
                     Some(ProfileModelDetail {
                         id,
@@ -143,58 +146,14 @@ pub async fn discover_models(_profile_name: &str, _cwd: Option<&str>) -> Discove
                 .collect()
         })
         .unwrap_or_default();
-    if !sdk_details.is_empty() {
-        sources.push(ProfileModelSource::AgentSdk);
-        for d in sdk_details {
-            if seen.insert(d.id.clone()) {
-                merged.push(d);
-            }
-        }
-    }
 
-    let default_model = native_default;
-
-    if merged.is_empty() {
-        // Base catalog fallback so the selector is never empty.
-        let fallback = vec![
-            ProfileModelDetail {
-                id: "opus".to_string(),
-                name: "Opus".to_string(),
-                description: String::new(),
-                provider: "Anthropic".to_string(),
-            },
-            ProfileModelDetail {
-                id: "sonnet".to_string(),
-                name: "Sonnet".to_string(),
-                description: String::new(),
-                provider: "Anthropic".to_string(),
-            },
-            ProfileModelDetail {
-                id: "haiku".to_string(),
-                name: "Haiku".to_string(),
-                description: String::new(),
-                provider: "Anthropic".to_string(),
-            },
-        ];
-        return DiscoveredModels {
-            details: fallback,
-            source: ProfileModelSource::ConfigFile,
-            sources: vec![ProfileModelSource::ConfigFile],
-            current,
-            default_model,
-        };
-    }
-
-    let primary = sources
-        .first()
-        .copied()
-        .unwrap_or(ProfileModelSource::ConfigFile);
-    DiscoveredModels {
-        details: merged,
-        source: primary,
-        sources,
-        current,
-        default_model,
+    if details.is_empty() {
+        SourceReading::unavailable(
+            ProfileModelSource::AgentSdk,
+            "Claude SDK returned no models",
+        )
+    } else {
+        SourceReading::success(ProfileModelSource::AgentSdk, details, None, default_model)
     }
 }
 
@@ -401,6 +360,18 @@ fn resolve_configured_provider(model_id: &str) -> String {
         .filter(|provider| !provider.is_empty())
         .unwrap_or("Anthropic")
         .to_string()
+}
+
+pub(crate) fn base_catalog() -> Vec<ProfileModelDetail> {
+    ["opus", "sonnet", "haiku"]
+        .into_iter()
+        .map(|model| ProfileModelDetail {
+            id: model.to_string(),
+            name: model.to_string(),
+            description: String::new(),
+            provider: "Anthropic".to_string(),
+        })
+        .collect()
 }
 
 pub fn read_models(

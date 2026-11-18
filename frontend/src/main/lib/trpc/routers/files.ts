@@ -1,6 +1,7 @@
 import {
   z
 } from "zod"
+import { t } from "../../i18n"
 import {
   router,
   publicProcedure
@@ -170,16 +171,16 @@ function isScanRelevantPath(filename: string): boolean {
  */
 function validatePathSafe(targetPath: string, allowedParent?: string): void {
   if (targetPath.includes("\0")) {
-    throw new Error("Path contains invalid characters")
+    throw new Error(t("Path contains invalid characters"))
   }
   if (!isAbsolute(targetPath)) {
-    throw new Error("Path must be absolute")
+    throw new Error(t("Path must be absolute"))
   }
   const resolved = resolve(targetPath)
   if (allowedParent) {
     const resolvedParent = resolve(allowedParent)
     if (!resolved.startsWith(resolvedParent + "/") && resolved !== resolvedParent) {
-      throw new Error("Path escapes allowed directory")
+      throw new Error(t("Path escapes allowed directory"))
     }
   }
 }
@@ -204,7 +205,7 @@ async function assertPathInRegisteredScope(filePath: string): Promise<void> {
     const parent = dirname(current)
     if (parent === current) {
       // Reached filesystem root without finding a registered path
-      throw new Error("Path is not within a registered project or worktree")
+      throw new Error(t("Path is not within a registered project or worktree"))
     }
     current = parent
   }
@@ -212,13 +213,13 @@ async function assertPathInRegisteredScope(filePath: string): Promise<void> {
 
 function validateFileName(name: string): void {
   if (name.includes("/") || name.includes("\\")) {
-    throw new Error("File name cannot contain path separators")
+    throw new Error(t("File name cannot contain path separators"))
   }
   if (name.includes("\0")) {
-    throw new Error("File name contains invalid characters")
+    throw new Error(t("File name contains invalid characters"))
   }
   if (name === "." || name === "..") {
-    throw new Error("Invalid file name")
+    throw new Error(t("Invalid file name"))
   }
 }
 
@@ -578,7 +579,7 @@ export const filesRouter = router({
         return content
       } catch (error) {
         console.error(`[files] Error reading file ${filePath}:`, error)
-        throw new Error(`Failed to read file: ${error instanceof Error ? error.message : "Unknown error"}`)
+        throw new Error(t('Failed to read file: {{error instanceof Error ? error.message : "Unknown error"}}'))
       }
     }),
 
@@ -616,7 +617,7 @@ export const filesRouter = router({
         if (msg.includes("ENOENT") || msg.includes("no such file")) {
           return { ok: false as const, reason: "not-found" as const, byteLength: 0 }
         }
-        throw new Error(`Failed to read file: ${msg}`)
+        throw new Error(t('Failed to read file: {{msg}}'))
       }
     }),
 
@@ -665,7 +666,7 @@ export const filesRouter = router({
         if (msg.includes("ENOENT") || msg.includes("no such file")) {
           return { ok: false as const, reason: "not-found" as const, byteLength: 0 }
         }
-        throw new Error(`Failed to read binary file: ${msg}`)
+        throw new Error(t('Failed to read binary file: {{msg}}'))
       }
     }),
 

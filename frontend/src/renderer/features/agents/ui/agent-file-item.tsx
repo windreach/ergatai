@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState } from "react"
@@ -96,7 +97,7 @@ export function AgentFileItem({
                      text-muted-foreground hover:text-foreground
                      ${isHovered ? "opacity-100" : "opacity-0"}`}
           type="button"
-          aria-label={`Remove ${filename}`}
+          aria-label={i18n.t("Remove {{name}}", { name: filename })}
         >
           <X className="size-3" />
         </button>

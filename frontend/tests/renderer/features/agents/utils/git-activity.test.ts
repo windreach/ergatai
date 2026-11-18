@@ -71,4 +71,16 @@ describe("extractChangedFiles", () => {
     ]
     expect(extractChangedFiles(parts)).toEqual([])
   })
+  it("resolves persisted parts that only carry input.path", () => {
+    const parts = [
+      {
+        type: "tool-Write",
+        input: { path: "/wt/HelloWorld.java", content: "class HelloWorld {}" },
+      },
+    ]
+    const res = extractChangedFiles(parts, "/wt")
+    expect(res).toHaveLength(1)
+    expect(res[0].filePath).toBe("/wt/HelloWorld.java")
+    expect(res[0].displayPath).toBe("HelloWorld.java")
+  })
 })

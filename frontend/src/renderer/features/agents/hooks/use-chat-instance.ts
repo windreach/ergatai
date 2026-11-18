@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react"
 import { Chat, useChat, type UIMessage } from "@ai-sdk/react"
 import { useSetAtom } from "jotai"
@@ -88,7 +89,7 @@ export function useChatInstance({
       messages: [],
       transport,
       onError: (error) => {
-        toast.error(error.message || "Failed to send message")
+        toast.error(error.message || i18n.t('Failed to send message'))
       },
       onFinish: () => {
         noopPersist(chat.messages)
@@ -141,7 +142,7 @@ export function useChatInstance({
   const handleSend = useCallback(
     async (parts: UIMessage<AgentMessageMetadata>["parts"]) => {
       if (!backendConversationId || !agentId) {
-        toast.error("Chat is not bound to a backend agent conversation.")
+        toast.error(i18n.t('Chat is not bound to a backend agent conversation.'))
         return
       }
 
@@ -171,7 +172,7 @@ export function useChatInstance({
   const sendAgentMessage = useCallback(
     async (parts: UIMessage<AgentMessageMetadata>["parts"]) => {
       if (!backendConversationId || !agentId || !fromAgentId) {
-        toast.error("Agent-to-agent communication not configured.")
+        toast.error(i18n.t('Agent-to-agent communication not configured.'))
         return
       }
 

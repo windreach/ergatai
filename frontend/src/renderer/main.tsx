@@ -1,9 +1,11 @@
+import i18n from "@/lib/i18n"
 // Why Did You Render - MUST be first import (before React)
 import "./wdyr"
 
 import ReactDOM from "react-dom/client"
 import { App } from "./App"
 import "./styles/globals.css"
+import "./lib/i18n"
 import { preloadDiffHighlighter } from "./lib/themes/diff-view-highlighter"
 import {
   migrateStorageKey,

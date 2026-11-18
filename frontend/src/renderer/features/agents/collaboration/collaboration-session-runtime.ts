@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -298,9 +299,9 @@ export function useCollaborationSession({
     if (!existing) return null
 
     const detail = normalizeDetail(existing)
-    if (!detail) throw new Error("Invalid collaboration session response")
+    if (!detail) throw new Error(i18n.t('Invalid collaboration session response'))
     if (detail.mode !== mode) {
-      throw new Error(`Chat session is in ${detail.mode} mode, expected ${mode}`)
+      throw new Error(i18n.t("Chat session is in {{actual}} mode, expected {{expected}}", { actual: detail.mode, expected: mode }))
     }
 
     setSession(detail)
@@ -325,7 +326,7 @@ export function useCollaborationSession({
       participants,
     })
     const detail = normalizeDetail(created)
-    if (!detail) throw new Error("Invalid collaboration session response")
+    if (!detail) throw new Error(i18n.t('Invalid collaboration session response'))
     setSession(detail)
     setError(null)
     await loadEvents(detail.id, true)
@@ -389,8 +390,8 @@ export function useCollaborationSession({
 
     void loadExistingSession().catch((caught: unknown) => {
       if (cancelled) return
-      log.debug("Runtime unavailable", caught as Error)
-      setError(caught instanceof Error ? caught.message : "Collaboration runtime unavailable")
+      log.debug(i18n.t('Runtime unavailable'), caught as Error)
+      setError(caught instanceof Error ? caught.message : i18n.t('Collaboration runtime unavailable'))
     })
 
     return () => {
@@ -435,7 +436,7 @@ export function useCollaborationSession({
           },
           onError: (caught) => {
             if (!isActive) return
-            setError(caught instanceof Error ? caught.message : "Collaboration stream failed")
+            setError(caught instanceof Error ? caught.message : i18n.t('Collaboration stream failed'))
             scheduleReconnect()
           },
           onComplete: () => {

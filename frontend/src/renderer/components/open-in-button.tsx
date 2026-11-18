@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import type { ExternalApp } from "../../shared/external-apps";
 import { useAtom } from "jotai";
 import { useCallback, useEffect } from "react";
@@ -157,7 +158,7 @@ export function OpenInButton({ path, label }: OpenInButtonProps) {
 						className={label ? "rounded-l-none focus:z-10 gap-1" : "gap-1 focus:z-10"}
 						disabled={!path}
 					>
-						<span>Open</span>
+						<span>{i18n.t('Open')}</span>
 						<ChevronDown className="size-3" />
 					</Button>
 				</DropdownMenuTrigger>
@@ -175,7 +176,7 @@ export function OpenInButton({ path, label }: OpenInButtonProps) {
 					<DropdownMenuSub>
 						<DropdownMenuSubTrigger className="flex items-center gap-2">
 							<img src={vscodeIcon} alt="" className="size-4 object-contain" />
-							<span>VS Code</span>
+							<span>{i18n.t('VS Code')}</span>
 						</DropdownMenuSubTrigger>
 						<DropdownMenuSubContent className="w-48" sideOffset={6} alignOffset={-4}>
 							{VSCODE_OPTIONS.map((app) => (
@@ -193,7 +194,7 @@ export function OpenInButton({ path, label }: OpenInButtonProps) {
 					<DropdownMenuSub>
 						<DropdownMenuSubTrigger className="flex items-center gap-2">
 							<img src={jetbrainsIcon} alt="" className="size-4 object-contain" />
-							<span>JetBrains</span>
+							<span>{i18n.t('JetBrains')}</span>
 						</DropdownMenuSubTrigger>
 						<DropdownMenuSubContent className="w-48" sideOffset={6} alignOffset={-4}>
 							{JETBRAINS_OPTIONS.map((app) => (
@@ -215,7 +216,7 @@ export function OpenInButton({ path, label }: OpenInButtonProps) {
 					>
 						<div className="flex items-center gap-2">
 							<Copy className="size-4" />
-							<span>Copy path</span>
+							<span>{i18n.t('Copy path')}</span>
 						</div>
 						<span className="text-xs text-muted-foreground">⇧⌘C</span>
 					</DropdownMenuItem>

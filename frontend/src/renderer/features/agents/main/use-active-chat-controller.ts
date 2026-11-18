@@ -219,7 +219,7 @@ const [pendingInitialPrompt, setPendingInitialPrompt] = useAtom(
   )
 
 const isVisiblePaneRef = useRef(isVisiblePane)
-
+const stopInProgressRef = useRef(false)
 // react-doctor-disable-next-line no-ref-current-in-render
 isVisiblePaneRef.current = isVisiblePane
 
@@ -534,35 +534,33 @@ const setLoadingConversations = useSetAtom(loadingConversationsAtom)
 const setStreamingStatus = useStreamingStatusStore((store) => store.setStatus)
 
 const handleStop = useCallback(async () => {
-    // Mark as manually aborted to prevent completion sound
-    agentChatStore.setManuallyAborted(conversationId, true)
+    // Deduplicate concurrent stop requests (button spam / repeated events).
+    if (stopInProgressRef.current) return
+    stopInProgressRef.current = true
 
-    // Force the UI out of the streaming state immediately so the Stop
-    // button has a visible effect even if backend/transport is slow.
-    clearLoading(setLoadingConversations, conversationId)
-    setStreamingStatus(conversationId, "ready")
-
-    // Always cancel the backend agent when an id is available: a locally
-    // streaming turn still runs an agent on the backend, and relying on
-    // session.status being "streaming" (which may lag) would skip the cancel.
-    if (backendAgentId) {
-      await trpcClient.ergatai.cancelPrompt
-        .mutate({ agentId: backendAgentId })
-        .catch((error) => {
-          console.warn("[ActiveChat] Failed to cancel backend prompt:", error)
-        })
-    }
-
-    // Unified stop: aborts the local AI SDK transport (if streaming) AND
-    // notifies the backend to cancel the prompt. Replaces the previous
-    // AI-SDK-only stop, which left the backend agent running.
     try {
-      await chatInvocation.stop()
-    } catch (error) {
-      console.warn("[ActiveChat] Failed to stop local stream:", error)
+      // Mark as manually aborted to prevent completion sound
+      agentChatStore.setManuallyAborted(conversationId, true)
+
+      // Force the UI out of the streaming state immediately so the Stop
+      // button has a visible effect even if backend/transport is slow.
+      clearLoading(setLoadingConversations, conversationId)
+      setStreamingStatus(conversationId, "ready")
+
+      // Unified stop: aborts the local AI SDK transport (if streaming) AND
+      // notifies the backend to cancel the prompt. Backend cancel is performed
+      // inside chatInvocation.stop() (single source of truth) to avoid
+      // duplicate cancelPrompt calls.
+      try {
+        await chatInvocation.stop()
+      } catch (error) {
+        console.warn("[ActiveChat] Failed to stop local stream:", error)
+      }
+    } finally {
+      stopInProgressRef.current = false
     }
   // react-doctor-disable-next-line exhaustive-deps
-  }, [backendAgentId, conversationId, isBackendStreaming, chatInvocation, setLoadingConversations, setStreamingStatus])
+  }, [conversationId, chatInvocation, setLoadingConversations, setStreamingStatus])
 
 useActiveChatEffects({
     conversationId,
@@ -613,7 +611,7 @@ useKeyboardStop({
     isActive,
     isStreaming,
     conversationId,
-    stop,
+    stop: chatInvocation.stop,
     displayQuestions,
     handleQuestionsSkip,
   })
@@ -768,8 +766,7 @@ useSearchScroll({ chatContainerRef })
 
 const searchBarTopOffset = isConversationsSidebarOpen ? "52px" : undefined
 
-const shouldShowStatusCard =
-    isStreaming || isCompacting || changedFilesForConversation.length > 0
+const shouldShowStatusCard = isStreaming || isCompacting
 
 const shouldShowStackedCards =
     !displayQuestions && (queue.length > 0 || shouldShowStatusCard)

@@ -65,6 +65,13 @@ export interface ChatInstanceAPI {
 }
 
 /**
+ * Delay before reconciling a terminal runtime turn into durable history.
+ * Gives a delivery-retry event emitted right after a failed attempt time to
+ * arrive, so retries stay a pure in-place stream update.
+ */
+const RUNTIME_RECONCILE_DELAY_MS = 600
+
+/**
  * Main chat invocation hook.
  *
  * This hook bridges an existing Chat instance with the new
@@ -82,6 +89,7 @@ export function useMainChatInvocation({
   persistedMessages,
   persistedMessagesLoading,
   runtimeMessages = [],
+  runtimeRetry,
   existingChat,
   runtimeStatus,
   source,
@@ -98,6 +106,11 @@ export function useMainChatInvocation({
   persistedMessagesLoading?: boolean
   /** Live output events for turns started by the backend scheduler. */
   runtimeMessages?: RawMessage[]
+  /**
+   * Automatic delivery retry state. Retry attempts are streamed in place, so
+   * durable-history reconciliation is deferred until the loop settles.
+   */
+  runtimeRetry?: { attempt?: number } | null
   /** Existing Chat instance to avoid creating duplicate */
   existingChat?: ChatInstanceAPI
   /** Backend runtime status for turns started outside the local Chat transport. */
@@ -116,6 +129,11 @@ export function useMainChatInvocation({
   const sessionState = useSessionState(runtimeConversationId)
   const trpcUtils = trpc.useUtils()
   const reconciledRuntimeTurnsRef = useRef<Set<string>>(new Set())
+  const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const retryActiveRef = useRef(false)
+  // A retry may start between the effect run and its delayed reconcile timer.
+  // react-doctor-disable-next-line no-ref-current-in-render
+  retryActiveRef.current = Boolean(runtimeRetry)
 
   const safePersistedMessages = persistedMessages ?? EMPTY_PERSISTED_MESSAGES
   const persistedSessionMessages = useMemo(
@@ -186,9 +204,22 @@ export function useMainChatInvocation({
    * As soon as a runtime projection completes, refresh the durable snapshot so
    * a later `TurnStarted` can discard that runtime projection without losing
    * the canonical message.
+   *
+   * Automatic retries are different: every failed attempt is a terminal runtime
+   * turn, but invalidating the durable history on each one makes the whole
+   * conversation refetch (visually a page reload). Defer reconciliation while a
+   * retry is active, and delay it slightly so a retry event emitted right after
+   * a failed attempt can arrive first.
    */
   useEffect(() => {
     if (!chatId || !runtimeConversationId || isLocalStreaming) return
+    if (runtimeRetry) {
+      if (reconcileTimerRef.current) {
+        clearTimeout(reconcileTimerRef.current)
+        reconcileTimerRef.current = null
+      }
+      return
+    }
 
     const completedRuntimeMessage = [...runtimeMessages]
       .reverse()
@@ -208,19 +239,35 @@ export function useMainChatInvocation({
       : 0
     const reconcileKey = `${runtimeConversationId}:${turnId}:${runtimeSequence}`
     if (reconciledRuntimeTurnsRef.current.has(reconcileKey)) return
-    reconciledRuntimeTurnsRef.current.add(reconcileKey)
 
-    void Promise.all([
-      trpcUtils.chats.get.invalidate({ id: chatId }),
-      trpcUtils.ergatai.listConversationMessages.invalidate({
-        conversationId: runtimeConversationId,
-      }),
-    ])
+    if (reconcileTimerRef.current) {
+      clearTimeout(reconcileTimerRef.current)
+    }
+    reconcileTimerRef.current = setTimeout(() => {
+      reconcileTimerRef.current = null
+      if (retryActiveRef.current) return
+      if (reconciledRuntimeTurnsRef.current.has(reconcileKey)) return
+      reconciledRuntimeTurnsRef.current.add(reconcileKey)
+      void Promise.all([
+        trpcUtils.chats.get.invalidate({ id: chatId }),
+        trpcUtils.ergatai.listConversationMessages.invalidate({
+          conversationId: runtimeConversationId,
+        }),
+      ])
+    }, RUNTIME_RECONCILE_DELAY_MS)
+
+    return () => {
+      if (reconcileTimerRef.current) {
+        clearTimeout(reconcileTimerRef.current)
+        reconcileTimerRef.current = null
+      }
+    }
   }, [
     chatId,
     isLocalStreaming,
     runtimeConversationId,
     runtimeMessages,
+    runtimeRetry,
     trpcUtils,
   ])
 

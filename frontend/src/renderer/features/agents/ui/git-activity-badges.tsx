@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useCallback, useMemo, useState } from "react"
@@ -5,6 +6,7 @@ import { GitCommit, GitPullRequest } from "lucide-react"
 import { useAtomValue, useSetAtom } from "jotai"
 // react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
+import { toast } from "sonner"
 import {
   ExpandIcon,
   CollapseIcon,
@@ -27,6 +29,7 @@ import {
 import { cn } from "../../../lib/utils"
 import { getFileIconByExtension } from "../mentions/file-icon-utils"
 import { useFileOpen } from "../mentions"
+import { useWorkspaceChatsStore } from "../stores/workspace-chats-store"
 
 // Utility to build GitHub commit URL
 function buildGitHubCommitUrl(owner: string, repo: string, hash: string): string {
@@ -57,11 +60,19 @@ export const GitActivityBadges = memo(function GitActivityBadges({
   const setSelectedFilePath = useSetAtom(selectedDiffFilePathAtom)
   const setFocusedDiffFile = useSetAtom(agentsFocusedDiffFileAtom)
   const onOpenFile = useFileOpen()
+  // The agent works inside the chat's worktree, so changed-file paths must be
+  // resolved against it — not against the workspace root. Using the workspace
+  // root here produced paths like `worktrees/<branch>/src/a.ts`, which never
+  // matched the diff rail's worktree-relative paths.
+  const worktreePath = useWorkspaceChatsStore(
+    (state) => state.chats.find((chat) => chat.id === chatId)?.worktreePath ?? null,
+  )
+  const pathRoot = worktreePath ?? selectedWorkspace?.path
 
   const [isExpanded, setIsExpanded] = useState(false)
 
   const activity = useMemo(() => extractGitActivity(parts), [parts])
-  const changedFiles = useMemo(() => extractChangedFiles(parts, selectedWorkspace?.path), [parts, selectedWorkspace?.path])
+  const changedFiles = useMemo(() => extractChangedFiles(parts, pathRoot), [parts, pathRoot])
 
   const totals = useMemo(() => {
     let additions = 0
@@ -106,16 +117,34 @@ export const GitActivityBadges = memo(function GitActivityBadges({
     if (filesCommitted) {
       // Files already committed — open file preview
       onOpenFile?.(file.filePath)
-    } else {
-      // Files not yet committed — open diff view with this file selected
-      setSelectedFilePath(file.displayPath)
-      setFilteredDiffFiles([file.displayPath])
-      setFocusedDiffFile(file.displayPath)
-      setFilteredConversationId(conversationId)
-      setDiffActiveTab("changes")
-      setDiffSidebarOpen(true)
+      return
     }
-  }, [filesCommitted, onOpenFile, conversationId, setSelectedFilePath, setFilteredDiffFiles, setFocusedDiffFile, setFilteredConversationId, setDiffActiveTab, setDiffSidebarOpen])
+
+    const normalizedRoot = worktreePath?.replace(/\/+$/, "")
+    const isInsideWorktree =
+      !normalizedRoot ||
+      !file.filePath.startsWith("/") ||
+      file.filePath === normalizedRoot ||
+      file.filePath.startsWith(`${normalizedRoot}/`)
+
+    if (!isInsideWorktree) {
+      // The file lives outside this chat's worktree (for example a legacy
+      // session that ran with the workspace root as cwd). The diff rail is
+      // scoped to the worktree, so filtering it by this path would show an
+      // empty "No files match filter" state. Show the file instead.
+      toast.info("This file is outside this chat's worktree, so it has no diff in the Changes panel.")
+      onOpenFile?.(file.filePath)
+      return
+    }
+
+    // Files not yet committed — open diff view with this file selected
+    setSelectedFilePath(file.displayPath)
+    setFilteredDiffFiles([file.displayPath])
+    setFocusedDiffFile(file.displayPath)
+    setFilteredConversationId(conversationId)
+    setDiffActiveTab("changes")
+    setDiffSidebarOpen(true)
+  }, [filesCommitted, worktreePath, onOpenFile, conversationId, setSelectedFilePath, setFilteredDiffFiles, setFocusedDiffFile, setFilteredConversationId, setDiffActiveTab, setDiffSidebarOpen])
 
   if (!activity && changedFiles.length === 0) return null
 
@@ -153,7 +182,7 @@ export const GitActivityBadges = memo(function GitActivityBadges({
               <div className="w-6 h-6 flex items-center justify-center">
                 {/* react-doctor-disable-next-line html-no-nested-interactive */}
                 <button
-                  aria-label="ExpandIcon"
+                  aria-label={i18n.t('ExpandIcon')}
                   onClick={(e) => {
                     e.stopPropagation()
                     setIsExpanded(!isExpanded)

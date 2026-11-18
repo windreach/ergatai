@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useState, useCallback, useEffect, useMemo, useRef } from "react"
@@ -162,7 +163,7 @@ export const PlanWidget = memo(function PlanWidget({
         {/* Header - same as original WidgetCard but with expand button added */}
         <div className="flex items-center gap-2 px-2 h-8 select-none group bg-muted/30">
           <PlanIcon className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-          <span className="text-xs font-medium text-foreground flex-1">Plan</span>
+          <span className="text-xs font-medium text-foreground flex-1">{i18n.t('Plan')}</span>
 
           {/* Original buttons: View plan + Approve */}
           <div className="flex items-center">
@@ -225,11 +226,11 @@ export const PlanWidget = memo(function PlanWidget({
             </div>
           ) : showError ? (
             <div className="px-3 py-4 text-center">
-              <p className="text-xs text-muted-foreground">Failed to load plan</p>
+              <p className="text-xs text-muted-foreground">{i18n.t('Failed to load plan')}</p>
             </div>
           ) : !displayContent ? (
             <div className="px-3 py-4 text-center">
-              <p className="text-xs text-muted-foreground">No plan content</p>
+              <p className="text-xs text-muted-foreground">{i18n.t('No plan content')}</p>
             </div>
           ) : (
             <div className="relative">
@@ -259,10 +260,10 @@ export const PlanWidget = memo(function PlanWidget({
       </div>
       {asyncTaskList.length > 0 ? (
         <div className="mt-3 border-t border-border/40 pt-2">
-          <div className="mb-1 text-xs font-medium text-muted-foreground">Async Tasks</div>
+          <div className="mb-1 text-xs font-medium text-muted-foreground">{i18n.t('Async Tasks')}</div>
           <div className="space-y-1">
             {asyncTaskList.map((t, i) => {
-              const name = String(t.name ?? t.title ?? t.id ?? `Task ${i + 1}`)
+              const name = String(t.name ?? t.title ?? t.id ?? i18n.t("Task {{number}}", { number: i + 1 }))
               const status = String(t.status ?? t.state ?? "")
               return (
                 <div key={String(t.id ?? t.name ?? t.title ?? JSON.stringify(t))} className="flex items-center gap-2 text-xs">

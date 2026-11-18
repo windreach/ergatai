@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import type { ChangedFile } from "../../../../../shared/changes-types";
 import type { ChangesViewMode } from "../../types";
 import { FileListGrouped } from "./file-list-grouped";

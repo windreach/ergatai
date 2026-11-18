@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { X } from "lucide-react"
@@ -89,7 +90,7 @@ export function AgentDiffTextContextItem({
                      text-muted-foreground hover:text-foreground
                      opacity-0 group-hover:opacity-100`}
           type="button"
-          aria-label="Remove"
+          aria-label={i18n.t('Remove')}
         >
           <X className="size-3" />
         </button>

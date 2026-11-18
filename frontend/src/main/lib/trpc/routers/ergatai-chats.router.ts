@@ -23,6 +23,7 @@ import {
   subscribeRawAgentStream,
   z,
 } from "./ergatai-shared"
+import { t } from "../../i18n"
 
 export const chatsRouter = router({
 
@@ -177,7 +178,7 @@ export const chatsRouter = router({
     .input(z.object({ chatId: chatIdSchema }))
     .query(async ({ input }) => {
       if (!isValidChatId(input.chatId, "getChatAgents")) {
-        return []
+        return { agents: [], all_idle: true }
       }
 
       try {
@@ -189,12 +190,20 @@ export const chatsRouter = router({
             profile: string | null
             last_heartbeat: string
           }>
+          all_idle?: boolean
         }>(`/api/v1/chats/${encodeURIComponent(input.chatId)}/agents`)
-        return response.agents
+        const setIdledStates = new Set(["idle", "stopped", "terminated"])
+         const allIdle =
+           response.all_idle ??
+           (response.agents.length === 0 ||
+             response.agents.every((a) =>
+               setIdledStates.has(String(a.state ?? "").toLowerCase()),
+             ))
+         return { agents: response.agents, all_idle: allIdle }
       } catch (err) {
         // Backend endpoint not yet implemented — return empty
         console.warn("[ergatai] getChatAgents failed (backend may not support it yet):", err)
-        return []
+        return { agents: [], all_idle: true }
       }
     }),
 
@@ -841,7 +850,7 @@ export const chatsRouter = router({
 
             if (!response.ok) {
               const detail = await response.text().catch(() => "unknown error")
-              throw new Error(`Session stream failed (${response.status}): ${detail}`)
+              throw new Error(t('Session stream failed ({{response.status}}): {{detail}}'))
             }
             if (!response.body) {
               throw new Error("Session stream has no readable body")

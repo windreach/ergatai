@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useCallback, useMemo, useState } from "react"
@@ -120,7 +121,7 @@ export function MobileChatHeader({
           size="icon"
           onClick={onBackToChats}
           className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md"
-          aria-label="All projects"
+          aria-label={i18n.t('All projects')}
           style={{
             // @ts-expect-error - WebKit-specific property
             WebkitAppRegion: "no-drag",
@@ -136,7 +137,7 @@ export function MobileChatHeader({
         onOpenChange={setIsHistoryOpen}
         items={sortedConversations}
         onSelect={handleSelectFromHistory}
-        placeholder="Search chats..."
+        placeholder={i18n.t('Search chats...')}
         emptyMessage="No results"
         align="start"
         side="bottom"
@@ -277,7 +278,7 @@ export function MobileChatHeader({
             className="h-7 px-2 gap-1.5 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] rounded-md flex items-center"
           >
             <IconTextUndo className="h-4 w-4" />
-            <span className="text-xs">Restore</span>
+            <span className="text-xs">{i18n.t('Restore')}</span>
           </Button>
         )}
       </div>

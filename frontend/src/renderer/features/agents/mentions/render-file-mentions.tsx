@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { createContext, useContext, useMemo } from "react"
@@ -136,7 +137,7 @@ function MentionChip({ mention }: { mention: ParsedMention }) {
             {fileName}
           </span>
           <span className="text-xs text-muted-foreground">
-            {mention.lineNumber ? `Line ${mention.lineNumber}` : "Code selection"}
+            {mention.lineNumber ? i18n.t("Line {{number}}", { number: mention.lineNumber }) : i18n.t("Code selection")}
           </span>
         </span>
       </span>
@@ -155,9 +156,9 @@ function MentionChip({ mention }: { mention: ParsedMention }) {
   const Icon = getIcon()
 
   const getTitle = () => {
-    if (mention.type === "skill") return `Skill: ${mention.label}`
-    if (mention.type === "agent") return `Agent: ${mention.label}`
-    if (mention.type === "tool") return `MCP Tool: ${mention.path}`
+    if (mention.type === "skill") return i18n.t("Skill: {{label}}", { label: mention.label })
+    if (mention.type === "agent") return i18n.t("Agent: {{label}}", { label: mention.label })
+    if (mention.type === "tool") return i18n.t("MCP Tool: {{path}}", { path: mention.path })
     return `${mention.repository}:${mention.path}`
   }
   const title = getTitle()
@@ -358,8 +359,8 @@ export function TextMentionBlock({ mention }: { mention: ParsedMention }) {
   const getSubtitle = () => {
     if (mention.type === "chatHistory") return "Past chat"
     if (mention.type === "quote") return "Selected Text"
-    if (mention.type === "pasted") return `Pasted Text · ${formatSize(mention.size || 0)}`
-    if (mention.lineNumber) return `Line ${mention.lineNumber}`
+    if (mention.type === "pasted") return i18n.t("Pasted Text · {{size}}", { size: formatSize(mention.size || 0) })
+    if (mention.lineNumber) return i18n.t("Line {{number}}", { number: mention.lineNumber })
     return "Code selection"
   }
   const subtitle = getSubtitle()

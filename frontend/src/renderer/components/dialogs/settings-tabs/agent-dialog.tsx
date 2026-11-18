@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useState, useEffect } from "react"
 import { X } from "lucide-react"
 // react-doctor-disable-next-line use-lazy-motion
@@ -221,7 +222,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
                     type="text"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="code-reviewer"
+                    placeholder={i18n.t('code-reviewer')}
                     className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   />
                   <p className="text-xs text-muted-foreground">
@@ -239,7 +240,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
                     type="text"
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
-                    placeholder="Reviews code for quality and best practices"
+                    placeholder={i18n.t('Reviews code for quality and best practices')}
                     className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   />
                   <p className="text-xs text-muted-foreground">
@@ -271,7 +272,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
 
                 {/* Model */}
                 <div className="space-y-1.5">
-                  <span className="text-sm font-medium text-foreground">Model</span>
+                  <span className="text-sm font-medium text-foreground">{i18n.t('Model')}</span>
                   <div className="flex flex-wrap gap-2">
                     {(["inherit", "sonnet", "opus", "haiku"] as const).map((m) => (
                       <button
@@ -293,7 +294,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
 
                 {/* Tools */}
                 <div className="space-y-3">
-                  <span className="text-sm font-medium text-foreground">Tools</span>
+                  <span className="text-sm font-medium text-foreground">{i18n.t('Tools')}</span>
                   <div className="flex flex-wrap gap-2">
                     {(["all", "allowlist", "denylist"] as const).map((mode) => (
                       <button
@@ -329,7 +330,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
                 {/* Source (only for new agents) */}
                 {!isEditing && (
                   <div className="space-y-1.5">
-                    <span className="text-sm font-medium text-foreground">Location</span>
+                    <span className="text-sm font-medium text-foreground">{i18n.t('Location')}</span>
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"

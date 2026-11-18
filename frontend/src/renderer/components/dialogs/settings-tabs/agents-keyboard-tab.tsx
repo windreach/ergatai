@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useCallback, useMemo, useState, useRef, useEffect } from "react"
@@ -235,7 +236,7 @@ function ShortcutDetailPanel({
       {/* Title */}
       <h3 className="text-base font-medium text-foreground mb-1">{action.label}</h3>
       <p className="text-sm text-muted-foreground mb-8">
-        {action.isDynamic ? action.dynamicDescription : `${CATEGORY_LABELS[action.category]} shortcut`}
+        {action.isDynamic ? action.dynamicDescription : i18n.t("{{category}} shortcut", { category: CATEGORY_LABELS[action.category] })}
       </p>
 
       {/* Hotkey display / recorder */}
@@ -282,7 +283,7 @@ function ShortcutDetailPanel({
               </div>
             )
           }
-          return <span className="text-sm text-muted-foreground">Not set</span>
+          return <span className="text-sm text-muted-foreground">{i18n.t('Not set')}</span>
         })()}
       </button>
 
@@ -302,7 +303,7 @@ function ShortcutDetailPanel({
             className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground hover:text-foreground bg-secondary/50 hover:bg-secondary border border-border rounded-lg transition-colors"
           >
             <RotateCcw className="h-3 w-3" />
-            <span>Reset to</span>
+            <span>{i18n.t('Reset to')}</span>
             <div className="flex items-center gap-0.5">
               {defaultKeys.map((key, index) => (
                 // react-doctor-disable-next-line no-array-index-as-key
@@ -528,7 +529,7 @@ export function AgentsKeyboardTab() {
             <input
               ref={searchInputRef}
               type="text"
-              placeholder="Search shortcuts..."
+              placeholder={i18n.t('Search shortcuts...')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="h-7 w-full rounded-lg text-sm bg-muted border border-input px-3 placeholder:text-muted-foreground/40 outline-none"

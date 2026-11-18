@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState } from "react"
@@ -112,7 +113,7 @@ export function SelectRepoPage() {
 
         {/* Back button */}
         <button
-          aria-label="ChevronLeft"
+          aria-label={i18n.t('ChevronLeft')}
           onClick={handleBack}
           disabled={cloneFromGitHub.isPending}
           className="fixed top-12 left-4 flex items-center justify-center h-8 w-8 rounded-full hover:bg-foreground/5 transition-colors disabled:opacity-50"
@@ -152,7 +153,7 @@ export function SelectRepoPage() {
                     handleCloneFromGitHub()
                   }
                 }}
-                placeholder="owner/repo"
+                placeholder={i18n.t('owner/repo')}
                 className="text-center pr-10"
                 autoFocus
                 disabled={cloneFromGitHub.isPending}

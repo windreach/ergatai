@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback } from "react"
 import { toast } from "sonner"
 import type { UIMessage } from "@ai-sdk/react"
@@ -65,7 +66,7 @@ export function useConversationActions({
         )
       } catch (error) {
         console.error("[use-conversation-actions] Rollback failed:", error)
-        toast.error("Failed to rollback conversation. Please try again.")
+        toast.error(i18n.t('Failed to rollback conversation. Please try again.'))
       }
     },
     [

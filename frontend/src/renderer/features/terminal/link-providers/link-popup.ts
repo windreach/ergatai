@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 /**
  * Link popup utilities for terminal links.
  * Shows a tooltip with the URL and instructions when hovering over links.
@@ -88,7 +89,7 @@ export function removeLinkPopup(): void {
  * Show a popup with the link URL and instructions.
  * @param event - The mouse event
  * @param text - The URL text to display
- * @param onOpen - Optional callback to open the link when "Follow link" is clicked
+ * @param onOpen - Optional callback to open the link when i18n.t('Follow link') is clicked
  */
 export function showLinkPopup(
   event: MouseEvent,
@@ -151,9 +152,9 @@ function createAndShowPopup(
     forceRemoveLinkPopup()
   })
 
-  // "Follow link" clickable text
+  // i18n.t('Follow link') clickable text
   const followLink = document.createElement("span")
-  followLink.innerText = "Follow link"
+  followLink.innerText = i18n.t('Follow link')
   followLink.style.color = "#2563eb" // blue-600
   followLink.style.cursor = "pointer"
   followLink.style.textDecoration = "underline"

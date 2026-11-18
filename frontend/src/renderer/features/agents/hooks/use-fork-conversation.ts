@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useEffect, useCallback, useRef } from "react"
 import { toast } from "sonner"
 
@@ -28,7 +29,7 @@ export function useForkConversation({
     async (_messageId: string) => {
       // Backend no longer supports forking conversations
       console.warn("[use-fork-conversation] forkConversation is no longer supported")
-      toast.error("Forking conversations is no longer supported")
+      toast.error(i18n.t('Forking conversations is no longer supported'))
     },
     [],
   )

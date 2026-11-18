@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo } from "react"
@@ -140,7 +141,7 @@ export const FileListItem = memo(function FileListItem({
       <ContextMenuTrigger asChild>{content}</ContextMenuTrigger>
       <ContextMenuContent className="w-52">
         {onCopyPath && (
-          <ContextMenuItem onClick={onCopyPath}>Copy Path</ContextMenuItem>
+          <ContextMenuItem onClick={onCopyPath}>{i18n.t('Copy Path')}</ContextMenuItem>
         )}
         {onCopyRelativePath && (
           <ContextMenuItem onClick={onCopyRelativePath}>

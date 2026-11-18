@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState } from "react"
@@ -93,7 +94,7 @@ export function AgentsHelpPopover({
       <DropdownMenuContent side="top" align="start" className="w-56">
         <DropdownMenuItem onClick={handleCommunityClick} className="gap-2">
           <DiscordIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          <span className="flex-1">Discord</span>
+          <span className="flex-1">{i18n.t('Discord')}</span>
         </DropdownMenuItem>
 
         {!isMobile && (
@@ -102,7 +103,7 @@ export function AgentsHelpPopover({
             className="gap-2"
           >
             <KeyboardIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-            <span className="flex-1">Shortcuts</span>
+            <span className="flex-1">{i18n.t('Shortcuts')}</span>
           </DropdownMenuItem>
         )}
 
@@ -134,7 +135,7 @@ export function AgentsHelpPopover({
                 <div className="w-1.5 h-1.5 rounded-full bg-foreground shrink-0" />
                 <div className="w-px flex-1 border-l border-dashed border-muted-foreground/30" />
               </div>
-              <span className="flex-1 text-xs pl-2 py-1.5">Full changelog</span>
+              <span className="flex-1 text-xs pl-2 py-1.5">{i18n.t('Full changelog')}</span>
               <ArrowUpRight className="h-3 w-3 text-muted-foreground shrink-0 self-center" />
             </DropdownMenuItem>
           </>

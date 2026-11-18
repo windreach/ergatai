@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useTheme } from "next-themes"
 import { useState, useEffect, useCallback, useMemo } from "react"
 import { IconSpinner } from "../../../icons"
@@ -123,7 +124,7 @@ function ThemePreviewBox({
         className={cn("rounded-full flex-shrink-0", dotSize)}
         style={{ backgroundColor: accentColor }}
       />
-      <span style={{ color: isDark ? "#fff" : "#000", opacity: 0.9 }}>Aa</span>
+      <span style={{ color: isDark ? "#fff" : "#000", opacity: 0.9 }}>{i18n.t('Aa')}</span>
     </div>
   )
 }
@@ -390,7 +391,7 @@ export function AgentsAppearanceTab() {
       {/* Header - hidden on narrow screens since it's in the navigation bar */}
       {!isNarrowScreen && (
         <div className="flex flex-col gap-1.5 text-center sm:text-left">
-          <h3 className="text-sm font-semibold text-foreground">Appearance</h3>
+          <h3 className="text-sm font-semibold text-foreground">{i18n.t('Appearance')}</h3>
           <p className="text-xs text-muted-foreground">
             Customize the look and feel of the interface
           </p>
@@ -425,7 +426,7 @@ export function AgentsAppearanceTab() {
                           : (systemLightTheme ?? null)
                       }
                     />
-                    <span className="text-xs truncate">System preference</span>
+                    <span className="text-xs truncate">{i18n.t('System preference')}</span>
                   </>
                 ) : (
                   <>
@@ -449,7 +450,7 @@ export function AgentsAppearanceTab() {
                     }
                     size="sm"
                   />
-                  <span className="truncate">System preference</span>
+                  <span className="truncate">{i18n.t('System preference')}</span>
                 </div>
               </SelectItem>
 
@@ -499,7 +500,7 @@ export function AgentsAppearanceTab() {
                   <SelectSeparator />
                   <div className="flex items-center gap-2 px-2 py-1.5 text-xs text-muted-foreground">
                     <IconSpinner className="h-3 w-3" />
-                    <span>Loading themes from editors...</span>
+                    <span>{i18n.t('Loading themes from editors...')}</span>
                   </div>
                 </>
               )}

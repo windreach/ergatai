@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import {
   ArrowUpRight,
   TerminalSquare,
@@ -91,12 +92,12 @@ export function WidgetCard({
                   size="icon"
                   onClick={onExpand}
                   className="h-5 w-5 p-0 hover:bg-foreground/10 text-muted-foreground hover:text-foreground rounded-md opacity-0 group-hover:opacity-100 transition-[background-color,opacity,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0"
-                  aria-label={`Expand ${widgetId}`}
+                  aria-label={i18n.t("Expand {{id}}", { id: widgetId })}
                 >
                   <ArrowUpRight className="h-3 w-3" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="left">Expand to sidebar</TooltipContent>
+              <TooltipContent side="left">{i18n.t('Expand to sidebar')}</TooltipContent>
             </Tooltip>
           )}
         </div>

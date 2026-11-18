@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import React, { useMemo, useState, useCallback, useRef, useEffect, memo } from "react"
@@ -225,7 +226,7 @@ const ChatItem = memo(function ChatItem({
                 >
                   <TypewriterText
                     text={chat.name || ""}
-                    placeholder="New Chat"
+                    placeholder={i18n.t('New Chat')}
                     id={chat.id}
                     isJustCreated={isJustCreated}
                     showPlaceholder={true}
@@ -256,7 +257,7 @@ const ChatItem = memo(function ChatItem({
               <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60 min-w-0">
                 {draftText ? (
                   <span className="truncate flex-1 min-w-0">
-                    <span className="text-blue-500">Draft:</span> {draftText}
+                    <span className="text-blue-500">{i18n.t('Draft:')}</span> {draftText}
                   </span>
                 ) : (
                   <span className="truncate flex-1 min-w-0">
@@ -616,12 +617,12 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
                 onClick={onBackToChats}
                 tabIndex={-1}
                 className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
-                aria-label="Toggle agents sidebar"
+                aria-label={i18n.t('Toggle agents sidebar')}
               >
                 <AlignJustify className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="bottom">Open chats sidebar</TooltipContent>
+            <TooltipContent side="bottom">{i18n.t('Open chats sidebar')}</TooltipContent>
           </Tooltip>
         </div>
       )}
@@ -642,12 +643,12 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
                 onClick={onClose}
                 tabIndex={-1}
                 className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
-                aria-label="Close sidebar"
+                aria-label={i18n.t('Close sidebar')}
               >
                 <IconDoubleChevronLeft className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="bottom">Close chats pane</TooltipContent>
+            <TooltipContent side="bottom">{i18n.t('Close chats pane')}</TooltipContent>
           </Tooltip>
         </div>
       )}
@@ -666,7 +667,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
             } as React.CSSProperties}
           >
             <Input
-              placeholder="Search chats..."
+              placeholder={i18n.t('Search chats...')}
               value={filterQuery}
               onChange={(e) => setFilterQuery(e.target.value)}
               className="h-7 w-full rounded-lg text-sm bg-muted border border-input placeholder:text-muted-foreground/40"
@@ -688,7 +689,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
                   size="sm"
                   className="h-7 px-2 w-full hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground rounded-lg"
                 >
-                  <span className="text-sm font-medium">New Chat</span>
+                  <span className="text-sm font-medium">{i18n.t('New Chat')}</span>
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">
@@ -727,7 +728,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
             <div className="mb-4 -mx-1">
               {pinnedChats.length > 0 && (
                 <ChatSection
-                  title="Pinned Chats"
+                  title={i18n.t('Pinned Chats')}
                   items={pinnedChats}
                   startIndex={0}
                   bottomMargin
@@ -735,7 +736,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
                 />
               )}
               <ChatSection
-                title="Chats"
+                title={i18n.t('Chats')}
                 items={unpinnedChats}
                 startIndex={pinnedChats.length}
                 renderChatItem={renderChatItem}
@@ -758,7 +759,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
               className="fixed bottom-4 right-4 z-50"
             >
               <div className="rounded-lg bg-popover p-4 shadow-lg border">
-                <p className="text-sm">Chat archived</p>
+                <p className="text-sm">{i18n.t('Chat archived')}</p>
                 <Button
                   variant="link"
                   size="sm"

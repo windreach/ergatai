@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
@@ -10,6 +11,9 @@ import {
   type PendingMcpServerApproval,
   type PendingToolApproval,
 } from "../../lib/atoms"
+import { parsePendingElicitation, type PendingElicitation } from "./elicitation-form"
+import { ElicitationQuestionPanel } from "./elicitation-question-panel"
+import { PermissionToolPreview } from "./permission-tool-preview"
 
 const MCP_POLL_INTERVAL_MS = 30_000
 const APPROVED_POLL_INTERVAL_MS = 15_000
@@ -160,22 +164,40 @@ export function PermissionApprovalPanel({
     return normalizePendingRequests(pendingPermissionsQuery.data)
   }, [pendingPermissionsQuery.data])
 
+  const conversationAgentIds = useMemo(() => {
+    return new Set(
+      (agentBindingsQuery.data ?? [])
+        .filter((binding) => binding.conversationId === conversationId)
+        .map((binding) => binding.agentId),
+    )
+  }, [agentBindingsQuery.data, conversationId])
+
+  const backendElicitations = useMemo<PendingElicitation[]>(() => {
+    return backendPendingRequests
+      .filter(
+        (request) =>
+          request.agentId != null &&
+          conversationAgentIds.has(request.agentId) &&
+          !dismissedToolIds.has(request.requestId),
+      )
+      .map(parsePendingElicitation)
+      .filter((elicitation): elicitation is PendingElicitation => elicitation != null)
+  }, [backendPendingRequests, conversationAgentIds, dismissedToolIds])
+
   const backendToolApprovals = useMemo<(PendingToolApproval | PendingMcpServerApproval)[]>(
     () =>
       backendPendingRequests
-        .filter((request) => {
-          const conversationAgentIds = (agentBindingsQuery.data ?? [])
-            .filter((binding) => binding.conversationId === conversationId)
-            .map((binding) => binding.agentId)
-          return (
+        .filter(
+          (request) =>
             request.agentId != null &&
-            conversationAgentIds.includes(request.agentId)
-          )
-        })
+            conversationAgentIds.has(request.agentId),
+        )
         .filter(
           (request) =>
             (request.kind === "tool" || request.kind === "mcp-server") &&
-            request.source !== "elicitation",
+            // Parsed elicitation forms are rendered by AgentUserQuestion above.
+            (request.source !== "elicitation" ||
+              parsePendingElicitation(request) == null),
         )
         .filter((request) => !dismissedToolIds.has(request.requestId))
         .map((request) => {
@@ -204,9 +226,8 @@ export function PermissionApprovalPanel({
           }
         }),
     [
-      agentBindingsQuery.data,
       backendPendingRequests,
-      conversationId,
+      conversationAgentIds,
       dismissedToolIds,
     ],
   )
@@ -254,14 +275,15 @@ export function PermissionApprovalPanel({
     [backendToolApprovals, pendingMcpApprovals],
   )
   const current = queue[0]
+  const currentElicitation = backendElicitations[0]
   const pendingCount = queue.length - 1
 
   useEffect(() => {
     // react-doctor-disable-next-line no-pass-live-state-to-parent
     // react-doctor-disable-next-line no-pass-data-to-parent
     // react-doctor-disable-next-line no-prop-callback-in-effect
-    onHasPendingChange?.(current != null)
-  }, [current, onHasPendingChange])
+    onHasPendingChange?.(currentElicitation != null || current != null)
+  }, [currentElicitation, current, onHasPendingChange])
 
   const handleMcpAllow = async () => {
     if (!current || current.kind !== "mcp-server") return
@@ -296,7 +318,7 @@ export function PermissionApprovalPanel({
         serverNames: samePlugin.map((request) => request.serverName),
       })
       toast.success("All MCP servers approved", {
-        description: `${samePlugin.length} server(s) from ${current.pluginSource}`,
+        description: i18n.t("{{count}} server(s) from {{source}}", { count: samePlugin.length, source: current.pluginSource }),
       })
       await utils.claudeSettings.getApprovedPluginMcpServers.invalidate()
     } catch (error) {
@@ -328,6 +350,19 @@ export function PermissionApprovalPanel({
         error instanceof Error ? error.message : "Failed to respond"
       toast.error(message)
     }
+  }
+
+  if (currentElicitation) {
+    return (
+      <ElicitationQuestionPanel
+        elicitation={currentElicitation}
+        conversationId={conversationId}
+        chatId={chatId}
+        onResolved={(requestId) =>
+          setDismissedToolIds((prev) => new Set(prev).add(requestId))
+        }
+      />
+    )
   }
 
   if (!current) return null
@@ -363,13 +398,13 @@ export function PermissionApprovalPanel({
         {isMcpServer ? (
           <div className="mx-2 rounded-md border border-border/60 bg-background/50 p-2 text-[12px]">
             <div className="flex gap-2">
-              <span className="w-14 shrink-0 text-muted-foreground">Plugin</span>
+              <span className="w-14 shrink-0 text-muted-foreground">{i18n.t('Plugin')}</span>
               <span className="text-foreground font-medium">
                 {current.pluginSource}
               </span>
             </div>
             <div className="mt-1 flex gap-2">
-              <span className="w-14 shrink-0 text-muted-foreground">Server</span>
+              <span className="w-14 shrink-0 text-muted-foreground">{i18n.t('Server')}</span>
               <span className="text-foreground font-mono">{current.serverName}</span>
             </div>
             {typeof current.config.command === "string" &&
@@ -389,7 +424,7 @@ export function PermissionApprovalPanel({
             {typeof current.config.url === "string" &&
               current.config.url.length > 0 && (
                 <div className="mt-1 flex gap-2">
-                  <span className="w-14 shrink-0 text-muted-foreground">URL</span>
+                  <span className="w-14 shrink-0 text-muted-foreground">{i18n.t('URL')}</span>
                   <span className="break-all font-mono text-foreground">
                     {current.config.url}
                   </span>
@@ -398,11 +433,10 @@ export function PermissionApprovalPanel({
           </div>
         ) : (
           current.input != null && (
-            <pre className="mx-2 max-h-32 overflow-auto rounded-md border border-border/60 bg-background/50 p-2 text-[12px] font-mono whitespace-pre-wrap break-all">
-              {typeof current.input === "string"
-                ? current.input
-                : JSON.stringify(current.input, null, 2)}
-            </pre>
+            <PermissionToolPreview
+              input={current.input}
+              toolName={current.toolName}
+            />
           )
         )}
       </div>

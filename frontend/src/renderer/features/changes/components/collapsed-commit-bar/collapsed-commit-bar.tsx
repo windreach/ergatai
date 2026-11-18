@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { Button } from "../../../../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../../components/ui/tooltip";
 import { ChevronUp } from "lucide-react";
@@ -25,10 +26,10 @@ export function CollapsedCommitBar({
 
 	const getCommitLabel = () => {
 		if (stagedCount > 0 && currentBranch) {
-			return `Commit ${stagedCount} to ${currentBranch}`;
+			return i18n.t("Commit {{stagedCount}} to {{currentBranch}}", { stagedCount, currentBranch });
 		}
 		if (currentBranch) {
-			return `Commit to ${currentBranch}`;
+			return i18n.t("Commit to {{currentBranch}}", { currentBranch });
 		}
 		return "Commit";
 	};
@@ -52,7 +53,7 @@ export function CollapsedCommitBar({
 				)}
 			>
 				<ChevronUp className="size-3.5 text-muted-foreground flex-shrink-0" />
-				<span className="text-xs font-medium">Changes</span>
+				<span className="text-xs font-medium">{i18n.t('Changes')}</span>
 				<span className="text-xs text-muted-foreground">
 					({fileCount} file{fileCount !== 1 ? "s" : ""})
 				</span>

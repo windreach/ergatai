@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useState, useEffect, useCallback, useRef } from "react"
 import { Input } from "../../ui/input"
 import { Label } from "../../ui/label"
@@ -85,14 +86,14 @@ export function AgentsProfileTab() {
         {/* Header - hidden on narrow screens since it's in the navigation bar */}
         {!isNarrowScreen && (
           <div className="flex items-center justify-between pb-3 mb-4">
-            <h3 className="text-sm font-medium text-foreground">Account</h3>
+            <h3 className="text-sm font-medium text-foreground">{i18n.t('Account')}</h3>
           </div>
         )}
         <div className="bg-background rounded-lg border border-border overflow-hidden">
           {/* Full Name Field */}
           <div className="flex items-center justify-between p-4">
             <div className="flex-1">
-              <Label className="text-sm font-medium">Full Name</Label>
+              <Label className="text-sm font-medium">{i18n.t('Full Name')}</Label>
               <p className="text-sm text-muted-foreground">
                 This is your display name
               </p>
@@ -103,7 +104,7 @@ export function AgentsProfileTab() {
                 onChange={(e) => setFullName(e.target.value)}
                 onBlur={handleBlurSave}
                 className="w-full"
-                placeholder="Enter your name"
+                placeholder={i18n.t('Enter your name')}
               />
             </div>
           </div>
@@ -111,7 +112,7 @@ export function AgentsProfileTab() {
           {/* Email Field (read-only) */}
           <div className="flex items-center justify-between p-4 border-t border-border">
             <div className="flex-1">
-              <Label className="text-sm font-medium">Email</Label>
+              <Label className="text-sm font-medium">{i18n.t('Email')}</Label>
               <p className="text-sm text-muted-foreground">
                 Your account email
               </p>

@@ -8,6 +8,7 @@ import {
   router,
   z,
 } from "./ergatai-shared"
+import { t } from "../../i18n"
 
 export const statusRouter = router({
 
@@ -89,7 +90,7 @@ export const statusRouter = router({
 
           if (!response.ok) {
             const detail = await response.text().catch(() => "unknown error")
-            throw new Error(`Activity stream failed (${response.status}): ${detail}`)
+            throw new Error(t('Activity stream failed ({{response.status}}): {{detail}}'))
           }
           if (!response.body) {
             throw new Error("Activity stream response has no readable body")
@@ -209,7 +210,7 @@ export const statusRouter = router({
 
             if (!response.ok) {
               const detail = await response.text().catch(() => "unknown error")
-              throw new Error(`Terminal stream failed (${response.status}): ${detail}`)
+              throw new Error(t('Terminal stream failed ({{response.status}}): {{detail}}'))
             }
             if (!response.body) {
               throw new Error("Terminal stream has no readable body")

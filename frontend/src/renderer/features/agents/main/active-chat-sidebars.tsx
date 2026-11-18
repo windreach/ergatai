@@ -1,10 +1,11 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useState, useMemo } from "react"
 import { Button } from "../../../components/ui/button"
 import { ResizableSidebar } from "../../../components/ui/resizable-sidebar"
 import { IconCloseSidebarRight } from "../../../components/ui/icons"
-import { PanelRight, GitCompare, TerminalSquare, Folder, GitBranch, Kanban } from "lucide-react"
+import { PanelRight, GitCompare, TerminalSquare, Folder, GitBranch } from "lucide-react"
 import { DiffCenterPeekDialog } from "../../changes"
 import { DiffFullPageView } from "../../changes"
 import { DetailsSidebar } from "../../details-sidebar"
@@ -399,6 +400,7 @@ export function ChatViewSidebars(props: any) {
             chatId={chatId}
             worktreePath={worktreePath}
             branch={meta?.branch ?? null}
+            terminalScopeKey={terminalScopeKey}
             planPath={currentPlanPath}
             mode={currentMode}
             onBuildPlan={handleApprovePlanFromSidebar}
@@ -482,8 +484,8 @@ export function ChatViewSidebars(props: any) {
             {worktreePath && (
             <button
               type="button"
-              title="Detail"
-              aria-label="Open details"
+              title={i18n.t('Detail')}
+              aria-label={i18n.t('Open details')}
               onClick={() => {
                 if (isDetailsSidebarOpen && detailsSidebarTab === "details") setIsDetailsSidebarOpen(false)
                 else {
@@ -506,7 +508,7 @@ export function ChatViewSidebars(props: any) {
             {worktreePath && (
             <button
               type="button"
-              title="Files"
+              title={i18n.t('Files')}
               onClick={() => {
                 if (isDetailsSidebarOpen && detailsSidebarTab === "files") setIsDetailsSidebarOpen(false)
                 else {
@@ -529,7 +531,7 @@ export function ChatViewSidebars(props: any) {
             {worktreePath && (
             <button
               type="button"
-              title="Git"
+              title={i18n.t('Git')}
               onClick={() => {
                 if (isDetailsSidebarOpen && detailsSidebarTab === "git") setIsDetailsSidebarOpen(false)
                 else {
@@ -551,29 +553,7 @@ export function ChatViewSidebars(props: any) {
             )}
             <button
               type="button"
-              title="Task Board"
-              aria-label="Open task board"
-              onClick={() => {
-                if (isDetailsSidebarOpen && detailsSidebarTab === "task-board") setIsDetailsSidebarOpen(false)
-                else {
-                  setDetailsSidebarTab("task-board")
-                  setIsDetailsSidebarOpen(true)
-                  setIsSideChatSidebarOpen(false)
-                  setIsTerminalSidebarOpen(false)
-                  setIsDiffSidebarOpen(false)
-                }
-              }}
-              className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
-                isDetailsSidebarOpen && detailsSidebarTab === "task-board"
-                  ? "bg-foreground/10 text-foreground"
-                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
-              }`}
-            >
-              <Kanban className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              title="Changes"
+              title={i18n.t('Changes')}
               onClick={() => {
                 if (isDiffSidebarOpen) setIsDiffSidebarOpen(false)
                 else {
@@ -593,7 +573,7 @@ export function ChatViewSidebars(props: any) {
             </button>
             <button
               type="button"
-              title="Terminal"
+              title={i18n.t('Terminal')}
               onClick={() => {
                 if (isTerminalSidebarOpen) setIsTerminalSidebarOpen(false)
                 else {

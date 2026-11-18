@@ -1,6 +1,7 @@
 import {
   z
 } from "zod"
+import { t } from "../i18n"
 import {
   getErgataiAuthConfig
 } from "./api"
@@ -57,11 +58,11 @@ function createSseStream(
 
       if (!response.ok) {
         const detail = await response.text().catch(() => "unknown error")
-        throw new Error(`SSE request failed: ${response.status} ${detail.trim()}`)
+        throw new Error(t('SSE request failed: {{response.status}} {{detail.trim()}}'))
       }
 
       if (!response.body) {
-        throw new Error("SSE response has no readable body")
+        throw new Error(t("SSE response has no readable body"))
       }
 
       let buffer = ""
@@ -497,11 +498,11 @@ export function subscribeAgentStream(
 
       if (!response.ok) {
         const detail = await response.text()
-        throw new Error(`SSE request failed: ${response.status} ${detail.trim()}`)
+        throw new Error(t('SSE request failed: {{response.status}} {{detail.trim()}}'))
       }
 
       if (!response.body) {
-        throw new Error("SSE response has no readable body")
+        throw new Error(t("SSE response has no readable body"))
       }
 
       let inTextBlock = false
@@ -853,7 +854,7 @@ export async function promptAgent(
 
   if (!response.ok) {
     const error = await response.text()
-    throw new Error(`Failed to send prompt: ${response.status} ${error}`)
+    throw new Error(t('Failed to send prompt: {{response.status}} {{error}}'))
   }
 
   return response.json()
@@ -872,7 +873,7 @@ export async function cancelPrompt(agentId: string): Promise<void> {
 
   if (!response.ok) {
     const error = await response.text()
-    throw new Error(`Failed to cancel prompt: ${response.status} ${error}`)
+    throw new Error(t('Failed to cancel prompt: {{response.status}} {{error}}'))
   }
 }
 

@@ -1,6 +1,7 @@
 import {
   z
 } from "zod"
+import { t } from "../../i18n"
 import {
   router,
   publicProcedure
@@ -29,7 +30,7 @@ function isTestMode(): boolean {
 // 测试模式保护器
 const testProcedure = publicProcedure.use(async ({ next }) => {
   if (!isTestMode()) {
-    throw new Error("Test router is only available in test mode (NODE_ENV=test or ELECTRON_TEST_MODE=true)")
+    throw new Error(t("Test router is only available in test mode (NODE_ENV=test or ELECTRON_TEST_MODE=true)"))
   }
   return next()
 })
@@ -500,7 +501,7 @@ export const testRouter = router({
       .query(async ({ input }) => {
         const project = testProjectStore.get(input.id)
         if (!project) {
-          throw new Error('Project not found')
+          throw new Error(t('Project not found'))
         }
         return project
       }),
@@ -555,7 +556,7 @@ export const testRouter = router({
       .query(async ({ input }) => {
         const workspace = testWorkspaceStore.get(input.id)
         if (!workspace) {
-          throw new Error('Workspace not found')
+          throw new Error(t('Workspace not found'))
         }
         return workspace
       }),
@@ -602,7 +603,7 @@ export const testRouter = router({
       .query(async ({ input }) => {
         const chat = testChatStore.get(input.id)
         if (!chat) {
-          throw new Error('Chat not found')
+          throw new Error(t('Chat not found'))
         }
         return chat
       }),
@@ -683,7 +684,7 @@ export const testRouter = router({
           const content = await fs.readFile(fullPath, 'utf-8')
           return { success: true, content, path: fullPath }
         } catch {
-          throw new Error(`File not found: ${fullPath}`)
+          throw new Error(t('File not found: {{fullPath}}'))
         }
       }),
 
@@ -703,7 +704,7 @@ export const testRouter = router({
           })
           return { success: true }
         } catch {
-          throw new Error(`File not found: ${fullPath}`)
+          throw new Error(t('File not found: {{fullPath}}'))
         }
       }),
 
@@ -792,7 +793,7 @@ export const testRouter = router({
       .mutation(async ({ input }) => {
         const safeName = input.name.toLowerCase().replace(/[^a-z0-9-]/g, "-")
         if (!safeName) {
-          throw new Error("Invalid agent name")
+          throw new Error(t("Invalid agent name"))
         }
 
         // SECURITY: Enforce test- prefix for user agents to prevent overwriting real agents
@@ -806,7 +807,7 @@ export const testRouter = router({
         let targetDir: string
         if (input.source === "project") {
           if (!input.cwd) {
-            throw new Error("Project path (cwd) required for project agents")
+            throw new Error(t("Project path (cwd) required for project agents"))
           }
           const validatedCwd = validateTestPath(input.cwd)
           targetDir = path.join(validatedCwd, ".claude", "agents")
@@ -864,7 +865,7 @@ ${input.prompt}
         let targetDir: string
         if (input.source === "project") {
           if (!input.cwd) {
-            throw new Error("Project path (cwd) required for project agents")
+            throw new Error(t("Project path (cwd) required for project agents"))
           }
           const validatedCwd = validateTestPath(input.cwd)
           targetDir = path.join(validatedCwd, ".claude", "agents")
@@ -898,7 +899,7 @@ ${input.prompt}
       .query(({ input }) => {
         const agent = testErgataiAgentStore.get(input.agentId)
         if (!agent) {
-          throw new Error(`Agent not found: ${input.agentId}`)
+          throw new Error(t('Agent not found: {{input.agentId}}'))
         }
         return agent
       }),
@@ -1024,7 +1025,7 @@ ${input.prompt}
       .query(({ input }) => {
         const conversation = testErgataiConversationStore.get(input.id)
         if (!conversation) {
-          throw new Error(`Conversation not found: ${input.id}`)
+          throw new Error(t('Conversation not found: {{input.id}}'))
         }
         return conversation
       }),
@@ -1046,7 +1047,7 @@ ${input.prompt}
       .query(({ input }) => {
         const workspace = testWorkspaceStore.get(input.id)
         if (!workspace) {
-          throw new Error(`Workspace not found: ${input.id}`)
+          throw new Error(t('Workspace not found: {{input.id}}'))
         }
         return workspace
       }),
@@ -1323,7 +1324,7 @@ ${input.prompt}
       .query(({ input }) => {
         const profile = testAgentProfileStore.get(input.name)
         if (!profile) {
-          throw new Error(`Agent profile not found: ${input.name}`)
+          throw new Error(t('Agent profile not found: {{input.name}}'))
         }
         return profile
       }),
@@ -1338,7 +1339,7 @@ ${input.prompt}
       }))
       .mutation(({ input }) => {
         if (testAgentProfileStore.get(input.name)) {
-          throw new Error(`Agent profile already exists: ${input.name}`)
+          throw new Error(t('Agent profile already exists: {{input.name}}'))
         }
         const profile: TestAgentProfile = {
           name: input.name,

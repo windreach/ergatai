@@ -8,8 +8,12 @@ import { TooltipProvider } from "./components/ui/tooltip"
 import { TRPCProvider } from "./contexts/TRPCProvider"
 import { WindowProvider, getInitialWindowParams } from "./contexts/WindowContext"
 import { chatClaimStateAtom, selectedAgentChatIdAtom } from "./features/agents"
+import { languagePreferenceAtom } from "./lib/atoms"
+import i18n from "./lib/i18n"
+import { resolveLanguage } from "./lib/language"
 import { useAgentConversationStore } from "./features/agents"
 import { AgentsLayout } from "./features/layout"
+import { AutoMergeManager } from "./features/agents/components/auto-merge-manager"
 import { identify, initAnalytics, shutdown } from "./lib/analytics"
 import { appStore } from "./lib/jotai-store"
 import { VSCodeThemeProvider } from "./lib/themes/theme-provider"
@@ -160,10 +164,24 @@ function AppContent() {
   // 原因：这段代码会导致竞态条件和数据不一致
   // 用户应该手动选择或创建项目，而不是自动创建"默认项目"
 
-  return <AgentsLayout />
+  return (
+    <>
+      <AutoMergeManager />
+      <AgentsLayout />
+    </>
+  )
 }
 
 export function App() {
+  const [languagePreference] = useAtom(languagePreferenceAtom)
+
+  useEffect(() => {
+    void i18n.changeLanguage(resolveLanguage(languagePreference))
+    // Native dialogs/menus live in the main process; mirror the preference so
+    // they follow the in-app language instead of the OS locale.
+    void window.desktopApi?.setLanguagePreference?.(languagePreference)
+  }, [languagePreference])
+
   useEffect(() => {
     initAnalytics()
 

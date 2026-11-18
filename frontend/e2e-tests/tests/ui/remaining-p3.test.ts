@@ -671,38 +671,4 @@ test.describe.serial("Remaining P3 (Ergatai Electron UI) @extended", () => {
       test.skip(true, `Debug tab gating unavailable: ${e}`)
     }
   })
-
-  // ---------- UI-TB-003 ----------
-  test("UI-TB-003 Task Board renders columns/cards @extended", async () => {
-    try {
-      const taskBoardButton = page.getByRole("button", { name: "Open task board" }).first()
-      await expect(taskBoardButton).toBeVisible({ timeout: 10_000 })
-      await taskBoardButton.focus()
-      await page.keyboard.press("Enter")
-      await expect(
-        page.getByRole("heading", { level: 1, name: "Task Board" }),
-      ).toBeVisible({ timeout: 10_000 })
-      for (const col of ["Queued", "Running", "Completed", "Failed"]) {
-        await page.getByText(col).first().waitFor({ state: "visible", timeout: 5_000 }).catch(() => {})
-      }
-      await expect(page.locator("main, #root").first()).toBeVisible()
-    } catch (e) {
-      test.skip(true, `Task Board columns unavailable: ${e}`)
-    }
-  })
-
-  // ---------- UI-TB-004 ----------
-  test("UI-TB-004 Task Board empty state @extended", async () => {
-    try {
-      const taskBoardButton = page.getByRole("button", { name: "Open task board" }).first()
-      if (await taskBoardButton.isVisible().catch(() => false)) {
-        await taskBoardButton.focus()
-        await page.keyboard.press("Enter")
-        await page.waitForTimeout(500)
-      }
-      await expect(page.locator("main, #root").first()).toBeVisible()
-    } catch (e) {
-      test.skip(true, `Task Board empty state unavailable: ${e}`)
-    }
-  })
 })

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useState, useCallback, useEffect } from "react"
@@ -90,14 +91,14 @@ const QueueItemRow = memo(function QueueItemRow({
             <TooltipTrigger asChild>
               {/* react-doctor-disable-next-line no-transition-all */}
               <button
-                aria-label="ArrowUp"
+                aria-label={i18n.t('ArrowUp')}
                 onClick={handleSendNow}
                 className="flex-shrink-0 p-1 hover:bg-foreground/10 rounded text-muted-foreground hover:text-foreground transition-all"
               >
                 <ArrowUp className="w-3.5 h-3.5" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="top">Send now</TooltipContent>
+            <TooltipContent side="top">{i18n.t('Send now')}</TooltipContent>
           </Tooltip>
         )}
         {onRemove && (
@@ -112,7 +113,7 @@ const QueueItemRow = memo(function QueueItemRow({
                 <X className="w-3.5 h-3.5" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="top">Remove</TooltipContent>
+            <TooltipContent side="top">{i18n.t('Remove')}</TooltipContent>
           </Tooltip>
         )}
       </div>

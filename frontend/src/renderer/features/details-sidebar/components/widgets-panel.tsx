@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useMemo } from "react"
 import { useAtomValue } from "jotai"
 import { widgetVisibilityAtomFamily, widgetOrderAtomFamily } from "../atoms"
@@ -20,6 +21,8 @@ interface WidgetsPanelProps {
   worktreePath: string | null
   /** Chat branch - used to compute the terminal scope key (must match TerminalSidebar) */
   branch?: string | null
+  /** Terminal scope key - must match TerminalSidebar's scopeKey so rail/widget terminals share data */
+  terminalScopeKey?: string
   planPath: string | null
   activeConversationId?: string | null
   mode: AgentMode
@@ -56,6 +59,7 @@ export function WidgetsPanel({
   chatId,
   worktreePath,
   branch,
+  terminalScopeKey,
   planPath,
   activeConversationId,
   mode,
@@ -94,16 +98,31 @@ export function WidgetsPanel({
   )
   const widgetOrder = useAtomValue(widgetOrderAtom)
 
-  // Same scope key as TerminalSidebar so the task list maps 1:1 to sidebar terminals
-  const terminalScopeKey = getTerminalScopeKey({
-    branch: branch ?? null,
-    worktreePath,
-    id: chatId,
-  })
+  // Same scope key as TerminalSidebar so the task list maps 1:1 to sidebar terminals.
+  // Prefer the explicitly passed scope key (guaranteed to match the rail) and fall
+  // back to recomputing from branch/worktree for callers that don't pass it.
+  const resolvedTerminalScopeKey =
+    terminalScopeKey ??
+    getTerminalScopeKey({
+      branch: branch ?? null,
+      worktreePath,
+      id: chatId,
+    })
 
   const extensionMeta = useExtensionMeta(chatId)
   const asyncTasks = extensionMeta?.["async_tasks_update"]
   const goal = extensionMeta?.["goal"] ?? extensionMeta?.goal
+  const terminalPayload = extensionMeta?.["terminal_update"]
+  const terminalEntries = (() => {
+    if (!terminalPayload || typeof terminalPayload !== "object") return []
+    if (Array.isArray(terminalPayload)) {
+      return terminalPayload.map((item, i) => ({ key: String(i), value: item }))
+    }
+    return Object.entries(terminalPayload as Record<string, unknown>).map(([k, v]) => ({
+      key: k,
+      value: v,
+    }))
+  })()
 
   return (
     <>
@@ -150,8 +169,9 @@ export function WidgetsPanel({
             return (
               <TerminalWidget
                 key="terminal"
-                scopeKey={terminalScopeKey}
+                scopeKey={resolvedTerminalScopeKey}
                 onExpand={onExpandTerminal}
+                terminalEntries={terminalEntries}
               />
             )
 
@@ -189,7 +209,7 @@ export function WidgetsPanel({
           //     <WidgetCard
           //       key="mcp"
           //       widgetId="mcp"
-          //       title="MCP Servers"
+          //       title={i18n.t('MCP Servers')}
           //       hideExpand
           //     >
           //       <McpWidget />

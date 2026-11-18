@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { cn } from "../lib/utils"
 import { memo, useState, useCallback, useEffect, useMemo, type ComponentPropsWithoutRef, type ReactNode, type JSX } from "react"
 import { Streamdown, parseMarkdownIntoBlocks, type Components } from "streamdown"

@@ -157,7 +157,7 @@ function normalizePartsWithError(
 
   const error =
     metadataError ??
-    normalizeChatError({ message: rawText || "本轮执行失败" })
+    normalizeChatError({ message: rawText || "Execution failed" })
   if (rawText) error.rawText = rawText
   return [{ type: "error", error }, ...nonText]
 }
@@ -179,6 +179,22 @@ function isPureErrorMessage(message: Message): boolean {
   )
 }
 
+/**
+ * A turn can be persisted before the agent produces any output, leaving an
+ * assistant row with no renderable parts. Those rows are invisible, but they
+ * still sit between failed turns in sequence order. Treat them as transparent
+ * when checking whether two error cards are consecutive.
+ */
+function isEmptyTurnPlaceholder(message: Message): boolean {
+  if (message.role !== "assistant" && message.role !== "agent") return false
+  const parts = message.parts ?? []
+  return parts.every(
+    (part) =>
+      part.type === "step-start" ||
+      (part.type === "text" && !part.text?.trim()),
+  )
+}
+
 function errorKey(error: ChatErrorInfo): string {
   return [
     error.errorName ?? "",
@@ -186,6 +202,15 @@ function errorKey(error: ChatErrorInfo): string {
     error.code ?? "",
     cleanErrorMessage(error.message),
   ].join("|")
+}
+
+/** Keep the richest copy when repeated failures carry overlapping raw text. */
+function mergeRawText(previous?: string, current?: string): string | undefined {
+  if (!previous) return current
+  if (!current) return previous
+  if (previous.includes(current)) return previous
+  if (current.includes(previous)) return current
+  return `${previous}\n\n${current}`
 }
 
 /** Collapse consecutive identical failed turns into one card with a repeat count. */
@@ -199,7 +224,11 @@ function collapseConsecutiveErrors(messages: Message[]): Message[] {
       continue
     }
 
-    const previous = result[result.length - 1]
+    let previousIndex = result.length - 1
+    while (previousIndex >= 0 && isEmptyTurnPlaceholder(result[previousIndex])) {
+      previousIndex -= 1
+    }
+    const previous = previousIndex >= 0 ? result[previousIndex] : undefined
     const previousError = previous ? getMessageError(previous) : null
     if (
       previous &&
@@ -211,14 +240,16 @@ function collapseConsecutiveErrors(messages: Message[]): Message[] {
       const mergedError: ChatErrorInfo = {
         ...error,
         repeatCount,
-        rawText:
-          [previousError.rawText, error.rawText].filter(Boolean).join("\n\n") ||
-          undefined,
+        rawText: mergeRawText(previousError.rawText, error.rawText),
       }
-      result[result.length - 1] = {
+      result[previousIndex] = {
         ...message,
         parts: [{ type: "error", error: mergedError }],
         metadata: { ...(message.metadata ?? {}), repeatCount },
+      }
+      // Remove the invisible placeholders that separated the two cards.
+      if (previousIndex < result.length - 1) {
+        result.splice(previousIndex + 1)
       }
       continue
     }

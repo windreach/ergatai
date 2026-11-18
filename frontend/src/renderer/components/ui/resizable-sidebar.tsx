@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useAtom, type WritableAtom } from "jotai"
@@ -88,6 +89,9 @@ export function ResizableSidebar({
   const sidebarRef = useRef<HTMLDivElement>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
   const tooltipTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  // Pointer listeners are attached to document during a drag. They must be
+  // removable even if the component unmounts before pointerup/pointercancel.
+  const activeDragCleanupRef = useRef<(() => void) | null>(null)
   // Local width state for smooth resizing (avoids localStorage sync during resize)
   const [localWidth, setLocalWidth] = useState<number | null>(null)
   const [availableWidth, setAvailableWidth] = useState(() =>
@@ -95,17 +99,23 @@ export function ResizableSidebar({
       ? Number.POSITIVE_INFINITY
       : document.documentElement.clientWidth,
   )
+  // Width occupied by fixed sibling chrome (e.g. the always visible right
+  // rail). Other resizable sidebars manage their own width, so they are not
+  // counted here — factoring them in would make two panels shrink each other
+  // back and forth on every resize observation.
+  const [reservedWidth, setReservedWidth] = useState(0)
   // Use local width during resize, otherwise use persisted width
   const currentWidth = localWidth ?? sidebarWidth
-  // Reserve space for the main content area (which has a 350px minimum) so a
-  // sidebar can never be dragged wide enough to push the whole layout (and
-  // itself) off-screen. The 80% cap is kept as an additional safety limit.
+  // Reserve space for the main content area (which has a 350px minimum) and
+  // for non-shrinkable siblings so a sidebar can never be dragged wide enough
+  // to push the rest of the layout (and itself) off-screen. The 80% cap is
+  // kept as an additional safety limit.
   const maxAllowedWidth = Math.max(
     minWidth,
     Math.min(
       maxWidth,
       Math.floor(availableWidth * 0.8),
-      availableWidth - 350,
+      availableWidth - reservedWidth - 350,
     ),
   )
   // Keep the latest max allowed width available to in-flight drag handlers
@@ -168,23 +178,106 @@ export function ResizableSidebar({
     }
   }, [isOpen, animationDuration])
 
+  // react-doctor-disable-next-line effect-needs-cleanup -- the returned cleanup disconnects both observers (and unobserves every target) and removes the window resize listener; the detector cannot match observe() calls routed through observeTarget()/observeSiblings().
   useEffect(() => {
-    const updateAvailableWidth = () => {
-      const parent = sidebarRef.current?.parentElement
-      setAvailableWidth(parent?.clientWidth || document.documentElement.clientWidth)
+    const parent = sidebarRef.current?.parentElement
+    let disposed = false
+
+    // Fixed, in-flow siblings (e.g. the right rail) keep their width; flexible
+    // ones (the main content area) and other resizable sidebars do not need to
+    // be measured here.
+    const isFixedSibling = (sibling: Element) => {
+      if (sibling === sidebarRef.current) return false
+      if ((sibling as HTMLElement).dataset.resizableSidebar !== undefined) {
+        return false
+      }
+      const style = window.getComputedStyle(sibling)
+      if (Number.parseFloat(style.flexGrow || "0") > 0) return false
+      return style.position !== "absolute" && style.position !== "fixed"
     }
 
-    updateAvailableWidth()
-    const observer = new ResizeObserver(updateAvailableWidth)
-    if (sidebarRef.current?.parentElement) {
-      observer.observe(sidebarRef.current.parentElement)
+    const updateWidths = () => {
+      if (disposed) return
+
+      setAvailableWidth(
+        parent?.clientWidth || document.documentElement.clientWidth,
+      )
+
+      if (!parent) {
+        setReservedWidth(0)
+        return
+      }
+
+      let reserved = 0
+      for (const sibling of Array.from(parent.children)) {
+        if (!isFixedSibling(sibling)) continue
+        reserved += (sibling as HTMLElement).getBoundingClientRect().width
+      }
+      setReservedWidth(reserved)
     }
-    observer.observe(document.documentElement)
-    window.addEventListener("resize", updateAvailableWidth)
+
+    // Siblings can mount/unmount (e.g. the rail appears with a worktree) or
+    // change width, so track them in addition to the flex container itself.
+    const resizeObserver = new ResizeObserver(() => {
+      updateWidths()
+    })
+    const observedTargets = new Set<Element>()
+    const observeTarget = (target: Element) => {
+      if (disposed || observedTargets.has(target)) return
+      observedTargets.add(target)
+      resizeObserver.observe(target)
+    }
+    const observeSiblings = () => {
+      if (disposed || !parent) return
+      for (const sibling of Array.from(parent.children)) {
+        if (!isFixedSibling(sibling)) continue
+        observeTarget(sibling)
+      }
+    }
+
+    if (parent) {
+      observeTarget(parent)
+      observeSiblings()
+    }
+    observeTarget(document.documentElement)
+
+    const mutationObserver = new MutationObserver(() => {
+      if (disposed) return
+      observeSiblings()
+      updateWidths()
+    })
+    if (parent) {
+      mutationObserver.observe(parent, { childList: true })
+    }
+
+    const handleWindowResize = () => {
+      updateWidths()
+    }
+    window.addEventListener("resize", handleWindowResize)
+    updateWidths()
 
     return () => {
-      observer.disconnect()
-      window.removeEventListener("resize", updateAvailableWidth)
+      disposed = true
+      // Be explicit about every observed target: observer.disconnect() is
+      // enough, but unobserve() also documents ownership and keeps this safe
+      // if the setup grows more targets later.
+      for (const target of observedTargets) {
+        resizeObserver.unobserve(target)
+      }
+      resizeObserver.disconnect()
+      mutationObserver.disconnect()
+      window.removeEventListener("resize", handleWindowResize)
+    }
+    // Re-run when the panel is (re)rendered so the observers attach to the
+    // flex row even if the sidebar was closed on the component's first mount.
+  }, [isOpen])
+
+  // A drag attaches pointer listeners to document. If the sidebar unmounts
+  // before pointerup/pointercancel, release them (and pointer capture) here.
+  useEffect(() => {
+    return () => {
+      activeDragCleanupRef.current?.()
+      activeDragCleanupRef.current = null
     }
   }, [])
 
@@ -282,6 +375,11 @@ export function ResizableSidebar({
       event.preventDefault()
       event.stopPropagation()
 
+      // A previous drag should have cleaned up on pointerup/cancel, but make
+      // sure a missed event cannot leave duplicate document listeners behind.
+      activeDragCleanupRef.current?.()
+      activeDragCleanupRef.current = null
+
       const startX = event.clientX
       const startWidth = sidebarWidth
       const pointerId = event.pointerId
@@ -329,14 +427,22 @@ export function ResizableSidebar({
         }
       }
 
-      const finishResize = (pointerEvent?: PointerEvent) => {
-        if (handleElement.hasPointerCapture?.(pointerId)) {
-          handleElement.releasePointerCapture(pointerId)
-        }
-
+      const cleanupDrag = () => {
         document.removeEventListener("pointermove", handlePointerMove)
         document.removeEventListener("pointerup", handlePointerUp)
         document.removeEventListener("pointercancel", handlePointerCancel)
+        try {
+          if (handleElement.hasPointerCapture?.(pointerId)) {
+            handleElement.releasePointerCapture(pointerId)
+          }
+        } catch {
+          // The handle may already be detached during unmount.
+        }
+      }
+
+      const finishResize = (pointerEvent?: PointerEvent) => {
+        cleanupDrag()
+        activeDragCleanupRef.current = null
         setIsResizing(false)
 
         if (!hasMoved && pointerEvent && !disableClickToClose) {
@@ -368,6 +474,7 @@ export function ResizableSidebar({
         finishResize()
       }
 
+      activeDragCleanupRef.current = cleanupDrag
       document.addEventListener("pointermove", handlePointerMove)
       document.addEventListener("pointerup", handlePointerUp, { once: true })
       document.addEventListener("pointercancel", handlePointerCancel, {
@@ -464,6 +571,7 @@ export function ResizableSidebar({
             className={`bg-transparent flex flex-col text-xs h-full relative flex-shrink-0 flex-grow-0 ${className}`}
             data-resizing={isResizing || undefined}
             data-animating={shouldAnimate || undefined}
+            data-resizable-sidebar="true"
             style={{
               minWidth: 0,
               maxWidth: maxAllowedWidth,
@@ -649,8 +757,8 @@ export function ResizableSidebar({
                       >
                         {!disableClickToClose && <CloseHint closeHotkey={closeHotkey} />}
                         <div className="flex items-center gap-1 text-xs">
-                          <span>Resize</span>
-                          <span className="text-muted-foreground">Drag</span>
+                          <span>{i18n.t('Resize')}</span>
+                          <span className="text-muted-foreground">{i18n.t('Drag')}</span>
                         </div>
                       </div>
                     </motion.div>

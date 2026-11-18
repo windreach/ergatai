@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 export const CLAUDE_MODELS = [
   { id: "opus", name: "Opus", version: "4.6" },
   { id: "sonnet", name: "Sonnet", version: "4.6" },
@@ -38,6 +39,6 @@ export const CODEX_MODELS: CodexModel[] = [
 ]
 
 export function formatCodexThinkingLabel(thinking: CodexThinkingLevel): string {
-  if (thinking === "xhigh") return "Extra High"
+  if (thinking === "xhigh") return i18n.t('Extra High')
   return thinking.charAt(0).toUpperCase() + thinking.slice(1)
 }

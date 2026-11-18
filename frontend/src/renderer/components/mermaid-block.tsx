@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { memo, useState, useEffect, useRef, useCallback } from "react"
 import { useTheme } from "next-themes"
 import { Copy, Check, Download, AlertTriangle, RotateCcw, Maximize2, X, ZoomIn, ZoomOut, RotateCcw as ResetZoom } from "lucide-react"
@@ -141,7 +142,7 @@ function ZoomControls() {
         onClick={() => zoomOut()}
         className="p-1.5 rounded-full hover:bg-white/10 transition-colors text-white"
         type="button"
-        aria-label="Zoom out (-)"
+        aria-label={i18n.t('Zoom out (-)')}
       >
         <ZoomOut className="size-5" />
       </button>
@@ -149,7 +150,7 @@ function ZoomControls() {
         onClick={() => zoomIn()}
         className="p-1.5 rounded-full hover:bg-white/10 transition-colors text-white"
         type="button"
-        aria-label="Zoom in (+)"
+        aria-label={i18n.t('Zoom in (+)')}
       >
         <ZoomIn className="size-5" />
       </button>
@@ -158,7 +159,7 @@ function ZoomControls() {
         onClick={() => resetTransform()}
         className="p-1.5 rounded-full hover:bg-white/10 transition-colors text-white"
         type="button"
-        aria-label="Reset zoom (0)"
+        aria-label={i18n.t('Reset zoom (0)')}
       >
         <ResetZoom className="size-5" />
       </button>
@@ -180,7 +181,7 @@ const StreamingPlaceholder = memo(function StreamingPlaceholder() {
   return (
     <div className="relative mt-2 mb-4 rounded-[10px] bg-muted/50 overflow-hidden">
       <div className="p-4 min-h-[60px] flex items-center justify-center">
-        <span className="text-muted-foreground text-sm">Creating diagram...</span>
+        <span className="text-muted-foreground text-sm">{i18n.t('Creating diagram...')}</span>
       </div>
     </div>
   )
@@ -412,7 +413,7 @@ const MermaidBlockInner = memo(function MermaidBlockInner({
                 onClick={handleDownload}
                 tabIndex={-1}
                 className="p-1"
-                title="Download SVG"
+                title={i18n.t('Download SVG')}
               >
                 <Download className="w-3 h-3 text-muted-foreground hover:text-foreground transition-colors" />
               </button>
@@ -420,7 +421,7 @@ const MermaidBlockInner = memo(function MermaidBlockInner({
                 onClick={openFullscreen}
                 tabIndex={-1}
                 className="p-1"
-                title="View fullscreen"
+                title={i18n.t('View fullscreen')}
               >
                 <Maximize2 className="w-3 h-3 text-muted-foreground hover:text-foreground transition-colors" />
               </button>
@@ -439,13 +440,13 @@ const MermaidBlockInner = memo(function MermaidBlockInner({
           {(renderState.status === "loading" || renderState.status === "parsing") && (
             <div className="flex items-center gap-2 text-muted-foreground text-sm">
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-              <span>Creating diagram...</span>
+              <span>{i18n.t('Creating diagram...')}</span>
             </div>
           )}
 
           {renderState.status === "success" && (
             <div
-              aria-label="Action"
+              aria-label={i18n.t('Action')}
               // react-doctor-disable-next-line prefer-tag-over-role
               role="button"
               tabIndex={0}
@@ -501,7 +502,7 @@ const MermaidBlockInner = memo(function MermaidBlockInner({
             onPointerDownOutside={(e) => e.preventDefault()}
           >
             <VisuallyHidden.Root>
-              <DialogTitle>Mermaid Diagram Viewer</DialogTitle>
+              <DialogTitle>{i18n.t('Mermaid Diagram Viewer')}</DialogTitle>
             </VisuallyHidden.Root>
 
             {/* Close button */}
@@ -509,7 +510,7 @@ const MermaidBlockInner = memo(function MermaidBlockInner({
               onClick={closeFullscreen}
               className="absolute top-4 right-4 p-2 rounded-full bg-black/50 hover:bg-black/70 transition-colors text-white z-20"
               type="button"
-              aria-label="Close fullscreen (Esc)"
+              aria-label={i18n.t('Close fullscreen (Esc)')}
             >
               <X className="size-6" />
             </button>

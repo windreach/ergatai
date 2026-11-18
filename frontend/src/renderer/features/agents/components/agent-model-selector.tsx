@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { Brain, ChevronRight, Zap } from "lucide-react"
@@ -201,7 +202,7 @@ function CodexThinkingSubMenu({
       >
         <div className="flex items-center gap-1.5">
           <Brain className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          <span>Thinking</span>
+          <span>{i18n.t('Thinking')}</span>
         </div>
         <div className="flex items-center gap-1 text-muted-foreground">
           <span className="text-xs">
@@ -338,7 +339,7 @@ function CrossProviderConfirmDialog({
                       checked={dontShowAgain}
                       onCheckedChange={(v) => setDontShowAgain(v === true)}
                     />
-                    <span className="text-xs text-muted-foreground">Don't ask again</span>
+                    <span className="text-xs text-muted-foreground">{i18n.t("Don't ask again")}</span>
                   </label>
                   <div className="flex items-center gap-2">
                     <Button onClick={onClose} variant="ghost" className="rounded-md">
@@ -695,7 +696,7 @@ export function AgentModelSelector({
       >
         <Command shouldFilter={false}>
           <CommandInput
-            placeholder="Search models..."
+            placeholder={i18n.t('Search models...')}
             value={search}
             onValueChange={setSearch}
           />
@@ -711,7 +712,7 @@ export function AgentModelSelector({
               >
                 <div className="flex items-center gap-1.5">
                   <ThinkingIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                  <span className="text-sm">Thinking</span>
+                  <span className="text-sm">{i18n.t('Thinking')}</span>
                 </div>
                 <Switch
                   checked={claude.thinkingEnabled}
@@ -767,7 +768,7 @@ export function AgentModelSelector({
                             </span>
                           )}
                           {crossProvider && (
-                            <span className="text-[10px] text-muted-foreground shrink-0">New chat</span>
+                            <span className="text-[10px] text-muted-foreground shrink-0">{i18n.t('New chat')}</span>
                           )}
                           {selected && <CheckIcon className="h-4 w-4 shrink-0" />}
                         </CommandItem>
@@ -798,7 +799,7 @@ export function AgentModelSelector({
                                 >
                                   <span className="truncate flex-1">{getItemLabel(item)}</span>
                                   {crossProvider && (
-                                    <span className="text-[10px] text-muted-foreground shrink-0">New chat</span>
+                                    <span className="text-[10px] text-muted-foreground shrink-0">{i18n.t('New chat')}</span>
                                   )}
                                   {selected && (
                                     <CheckIcon className="h-4 w-4 shrink-0" />
@@ -827,7 +828,7 @@ export function AgentModelSelector({
                                 </span>
                               )}
                               {crossProvider && (
-                                <span className="text-[10px] text-muted-foreground shrink-0">New chat</span>
+                                <span className="text-[10px] text-muted-foreground shrink-0">{i18n.t('New chat')}</span>
                               )}
                               {selected && (
                                 <CheckIcon className="h-4 w-4 shrink-0" />
@@ -839,7 +840,7 @@ export function AgentModelSelector({
                 )}
               </>
             ) : (
-              <CommandEmpty>No models found.</CommandEmpty>
+              <CommandEmpty>{i18n.t('No models found.')}</CommandEmpty>
             )}
           </CommandList>
         </Command>

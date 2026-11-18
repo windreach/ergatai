@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { api } from "../../../lib/api-adapter"
@@ -701,7 +702,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
         <div className="flex items-center gap-2 px-2.5 py-1.5 mx-1 text-xs text-muted-foreground border-b border-border/50">
           <button
             type="button"
-            aria-label="Clear browse root"
+            aria-label={i18n.t('Clear browse root')}
             className="hover:text-foreground"
             onClick={() => onBrowseRootChange?.(null)}
           >
@@ -789,9 +790,9 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       {options.length === 0 && (
         <DropdownEmptyState>
           {error
-            ? `Error loading files: ${error.message}`
+            ? i18n.t("Error loading files: {{message}}", { message: error.message })
             : debouncedSearchText
-            ? `No items matching "${debouncedSearchText}"`
+            ? i18n.t("No items matching \"{{text}}\"", { text: debouncedSearchText })
             : "No items available"}
         </DropdownEmptyState>
       )}

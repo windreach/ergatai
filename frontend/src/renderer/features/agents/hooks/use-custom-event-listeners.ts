@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useEffect } from "react"
 import type { TextSelectionSource } from "../context/text-selection-context"
 import type { AgentsMentionsEditorHandle } from "../mentions"
@@ -16,7 +17,7 @@ export function useCustomEventListeners({
   addTextContext,
   editorRef,
 }: UseCustomEventListenersProps) {
-  // Listen for file-viewer "Add to Context" from the custom context menu
+  // Listen for file-viewer i18n.t('Add to Context') from the custom context menu
   useEffect(() => {
     if (!isActive) return
 
@@ -34,7 +35,7 @@ export function useCustomEventListeners({
     return () => window.removeEventListener("file-viewer-add-to-context", handler)
   }, [addTextContext, isActive, editorRef])
 
-  // Listen for file-tree "Add to Chat Context" — inserts file mention chip
+  // Listen for file-tree i18n.t('Add to Chat Context') — inserts file mention chip
   useEffect(() => {
     if (!isActive) return
 

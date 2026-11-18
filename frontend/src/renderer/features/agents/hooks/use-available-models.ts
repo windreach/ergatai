@@ -11,7 +11,7 @@
  */
 
 import { useAtomValue } from "jotai"
-import { useEffect, useMemo, useRef } from "react"
+import { useCallback, useEffect, useMemo, useRef } from "react"
 import { showOfflineModeFeaturesAtom } from "../../../lib/atoms"
 import { trpc } from "../../../lib/trpc"
 import { ergataiActiveAgentIdAtom } from "../lib/ergatai-agent-manager"
@@ -43,6 +43,7 @@ interface UseAvailableModelsReturn {
   recommendedModel: string | undefined
   isOffline: boolean
   hasOllama: boolean
+  refreshProfile: (profileName: string) => void
 }
 
 // ── Helper ──
@@ -263,6 +264,25 @@ export function useAvailableModels(agentId?: string | null, profileHint?: string
       staleTime: 5 * 60 * 1000,
       gcTime: 30 * 60 * 1000,
       placeholderData,
+      // Poll while the catalogue is stale or still below the live ACP/SDK
+      // source. Detection runs in the background after startup/spawn; without
+      // this the selector would keep the last-read list indefinitely.
+      refetchInterval: (query) => {
+        const data = query.state.data as
+          | { stale?: boolean; sources?: string[] }
+          | undefined
+        if (!data) return 5_000
+        if (data.stale) return 10_000
+        const sources = data.sources ?? []
+        if (
+          !sources.includes("acp_config_options") &&
+          !sources.includes("cli_model_command") &&
+          !sources.includes("agent_sdk")
+        ) {
+          return 15_000
+        }
+        return false
+      },
     },
   )
 
@@ -284,30 +304,32 @@ export function useAvailableModels(agentId?: string | null, profileHint?: string
     return raw ? normalizeModelId(raw) : null
   }, [activeAgent?.config_options, activeAgent?.current_model])
 
-  // Debug logging: only log when key values change (not on every render)
-  useEffect(() => {
-    console.log("[useAvailableModels] State:", {
-      agentId,
-      globalAgentId,
-      effectiveAgentId,
-      profileName,
-      modelCount: modelData?.models?.length ?? 0,
-    })
-  }, [agentId, globalAgentId, effectiveAgentId, profileName, modelData?.models?.length])
+  // (debug logging removed)
 
   // Refresh cache misses from an effect, never during render. Keep one request
   // per profile so a failed lookup cannot create a mutation loop.
   const requestedModelProfileRef = useRef<string | null>(null)
+  const refreshInFlightRef = useRef(false)
+  const refreshCooldownUntilRef = useRef(0)
+  const REFRESH_COOLDOWN_MS = 30_000
 
   const refreshMutation = trpc.ergatai.refreshAgentProfileModels.useMutation({
     onSuccess: (data) => {
-      console.log("[useAvailableModels] Refresh success:", { profileName, modelsCount: data.models?.length ?? 0 })
+      // refresh success
       refetch()
     },
     onError: (error) => {
-      console.error("[useAvailableModels] Refresh failed:", { profileName, error: error.message })
-      // Allow a retry after the agent becomes ready. This covers startup races
-      // where config options are not available yet.
+      // The backend rate-limits refreshes per profile. Respect the cooldown
+      // it reports instead of clearing the guard and hammering it again.
+      const waitSeconds = /wait (\d+) seconds/i.exec(error.message)?.[1]
+      const rateLimited = /429|rate limit/i.test(error.message)
+      if (rateLimited) {
+        refreshCooldownUntilRef.current =
+          Date.now() + (waitSeconds ? Number(waitSeconds) * 1000 + 500 : REFRESH_COOLDOWN_MS)
+      } else {
+        console.error("[useAvailableModels] Refresh failed:", { profileName, error: error.message })
+        refreshCooldownUntilRef.current = Date.now() + 5_000
+      }
       requestedModelProfileRef.current = null
     },
   })
@@ -316,24 +338,39 @@ export function useAvailableModels(agentId?: string | null, profileHint?: string
   // react-doctor-disable-next-line no-ref-current-in-render
   refreshMutationRef.current = refreshMutation
 
+  const refreshProfile = useCallback((name: string) => {
+    if (!name) return
+    if (refreshInFlightRef.current) return
+    if (Date.now() < refreshCooldownUntilRef.current) return
+    refreshInFlightRef.current = true
+    refreshCooldownUntilRef.current = Date.now() + REFRESH_COOLDOWN_MS
+    requestedModelProfileRef.current = name
+    refreshMutationRef.current.mutate(
+      { profileName: name },
+      { onSettled: () => { refreshInFlightRef.current = false } },
+    )
+  }, [])
+
   useEffect(() => {
     if (!modelData || !profileName) {
-      console.log("[useAvailableModels] Refresh skipped:", { hasModelData: !!modelData, profileName })
+      // refresh skipped
       return
     }
-    if (modelData.models.length > 0) return
+    // An empty list is not the only reason to refresh: a config-file-only or
+    // models.dev-cache catalogue is below the live ACP/CLI/SDK sources and
+    // should be upgraded as soon as the agent becomes reachable.
+    const sources = (modelData as { sources?: string[] }).sources ?? []
+    const hasAuthoritativeSource = sources.some((source) =>
+      ["acp_config_options", "cli_model_command", "agent_sdk"].includes(source),
+    )
+    if (modelData.models.length > 0 && hasAuthoritativeSource) return
     if (!canRefreshModels) {
-      console.log("[useAvailableModels] Refresh skipped: agent not running", {
-        profileName,
-        isAlive: activeAgent?.is_alive ?? false,
-      })
+      // refresh skipped: no profile
       return
     }
     if (requestedModelProfileRef.current === profileName) return
 
-    console.log("[useAvailableModels] Triggering refresh for profile:", profileName)
-    requestedModelProfileRef.current = profileName
-    refreshMutationRef.current.mutate({ profileName })
+    refreshProfile(profileName)
      
   // react-doctor-disable-next-line exhaustive-deps
   }, [modelData, profileName, canRefreshModels])
@@ -420,6 +457,7 @@ export function useAvailableModels(agentId?: string | null, profileHint?: string
       recommendedModel,
       isOffline,
       hasOllama: true,
+      refreshProfile,
     }
   }
 
@@ -436,5 +474,6 @@ export function useAvailableModels(agentId?: string | null, profileHint?: string
     recommendedModel,
     isOffline,
     hasOllama: false,
+    refreshProfile,
   }
 }

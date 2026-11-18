@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -45,7 +46,6 @@ import {
 } from "../../../lib/atoms"
 import { NewChatForm } from "../main/new-chat-form"
 import { AgentsDefaultView } from "./agents-default-view"
-import { TaskBoardView } from "../../task-board"
 import { AddAgentViewPage } from "../components/add-agent-view"
 import { ChatView } from "../main/active-chat"
 import { api } from "../../../lib/api-adapter"
@@ -1051,8 +1051,6 @@ export function AgentsContent() {
         {/* Mobile: Settings fullscreen view */}
         {desktopView === "settings" ? (
           <SettingsContent />
-        ) : desktopView === "task-board" ? (
-          <TaskBoardView />
         ) : desktopView === "add-agent" ? (
           <AddAgentViewPage />
         ) : mobileViewMode === "chats" ? (
@@ -1214,8 +1212,6 @@ export function AgentsContent() {
             >
               {desktopView === "settings" ? (
                 <SettingsContent />
-              ) : desktopView === "task-board" ? (
-                <TaskBoardView />
               ) : desktopView === "add-agent" ? (
                 <AddAgentViewPage />
               ) : !selectedWorkspaceId ? (

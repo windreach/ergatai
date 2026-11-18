@@ -1,3 +1,6 @@
+import i18n from "@/lib/i18n"
+import { getToolFilePath } from "../ui/agent-tool-utils"
+
 export interface GitCommitInfo {
   type: "commit"
   message: string
@@ -79,7 +82,7 @@ function extractPrInfo(command: string, stdout: string): GitPrInfo | null {
 
   // Extract title from --title flag in command
   const titleMatch = command.match(/--title\s+["']([^"']+)["']/)
-  const title = titleMatch?.[1] || `PR #${number || ""}`
+  const title = titleMatch?.[1] || i18n.t("PR #{{number}}", { number: number || "" })
 
   return { type: "pr", title, url, number }
 }
@@ -184,11 +187,11 @@ export function extractChangedFiles(parts: any[], projectPath?: string): Changed
 
   for (const part of parts) {
     if (part.type !== "tool-Edit" && part.type !== "tool-Write") continue
-    const filePath: string = part.input?._locations?.[0]?.path || ""
+    const filePath: string = getToolFilePath(part)
     if (!filePath) continue
 
     // Skip session/plan files
-    if (filePath.includes("claude-sessions") || filePath.includes("Application Support")) continue
+    if (filePath.includes("claude-sessions") || filePath.includes(i18n.t('Application Support'))) continue
 
     // Use relative path as display, full path as key
     const displayPath = toRelativePath(filePath, projectPath)

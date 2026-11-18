@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 /**
  * Desktop notifications hook - provides native OS notifications for agent events.
  * Uses Electron's Notification API via the IPC bridge in desktopApi.
@@ -104,14 +105,14 @@ export function useDesktopNotifications() {
       return
     }
 
-    const title = "Agent Complete"
-    const body = chatName ? `Finished working on "${chatName}"` : "Agent has completed its task"
+    const title = i18n.t('Agent Complete')
+    const body = chatName ? i18n.t("Finished working on \"{{name}}\"", { name: chatName }) : i18n.t('Agent has completed its task')
     showNotification(title, body, { priority: "complete" })
   }, [showNotification, notifyWhenFocused])
 
   const notifyAgentError = useCallback((errorMessage: string) => {
     // always notify on errors, even if window is focused
-    const title = "Agent Error"
+    const title = i18n.t('Agent Error')
     const body = errorMessage.length > 100 ? errorMessage.slice(0, 100) + "..." : errorMessage
     showNotification(title, body, { priority: "error" })
   }, [showNotification])
@@ -121,8 +122,8 @@ export function useDesktopNotifications() {
       return
     }
 
-    const title = "Input Required"
-    const body = chatName ? `"${chatName}" is waiting for your input` : "Agent is waiting for your input"
+    const title = i18n.t('Input Required')
+    const body = chatName ? `"${chatName}" is waiting for your input` : i18n.t('Agent is waiting for your input')
     showNotification(title, body, { priority: "input" })
   }, [showNotification, notifyWhenFocused])
 
@@ -131,8 +132,8 @@ export function useDesktopNotifications() {
       return
     }
 
-    const title = "Plan Ready"
-    const body = chatName ? `"${chatName}" has a plan ready for approval` : "A plan is ready for your approval"
+    const title = i18n.t('Plan Ready')
+    const body = chatName ? `"${chatName}" has a plan ready for approval` : i18n.t('A plan is ready for your approval')
     showNotification(title, body, { priority: "plan" })
   }, [showNotification, notifyWhenFocused])
 

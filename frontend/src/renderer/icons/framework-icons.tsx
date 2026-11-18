@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { useId } from "react"
@@ -794,7 +795,7 @@ export function KotlinIcon({ className }: FrameworkIconProps) {
       xmlns="http://www.w3.org/2000/svg"
       role="img"
     >
-      <title>Kotlin icon</title>
+      <title>{i18n.t('Kotlin icon')}</title>
       <path
         d="M1.3 24l11.3-11.5L24 24zM0 0h12L0 12.5zM13.4 0L0 14v10l12-12L24 0z"
         fill="#E37834"
@@ -1484,7 +1485,7 @@ export function CodeIcon({ className }: FrameworkIconProps) {
       className={cn("w-4 h-4 text-muted-foreground", className)}
       fill="currentColor"
       xmlns="http://www.w3.org/2000/svg"
-      aria-label="Ergatai Logo"
+      aria-label={i18n.t('Ergatai Logo')}
     >
       <path
         fillRule="evenodd"

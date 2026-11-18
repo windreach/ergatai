@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useState, useCallback } from "react"
 import { FolderOpen } from "lucide-react"
 import { useProjectIcon } from "../../lib/hooks/use-project-icon"

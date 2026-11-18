@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Kbd } from "@/components/ui/kbd"
 
@@ -20,7 +21,7 @@ export function OpenInEditorButton({
           onClick={onClick}
           className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer rounded-md px-1.5 py-1 hover:bg-accent hover:text-accent-foreground transition-colors"
         >
-          <span className="hidden @[400px]:inline">Open in</span>
+          <span className="hidden @[400px]:inline">{i18n.t('Open in')}</span>
           {iconSrc && (
             <img
               src={iconSrc}

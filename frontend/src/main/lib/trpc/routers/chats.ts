@@ -1,6 +1,7 @@
 import {
   BrowserWindow
 } from "electron"
+import { t } from "../../i18n"
 import * as fs from "fs/promises"
 import * as path from "path"
 import {
@@ -341,11 +342,9 @@ export const chatsRouter = router({
       workspaceId: z.string().optional(),
     }))
     .query(async ({ input }) => {
-      console.log("[chats.list] called with workspaceId:", input.workspaceId)
       const allChats = await trpcClient.listChats({
         workspaceId: input.workspaceId,
       })
-      console.log("[chats.list] received", allChats.length, "chats from backend")
 
       let includeArchived = false
       if (input?.workspaceId) {
@@ -364,7 +363,6 @@ export const chatsRouter = router({
         if (chat.archivedAt && !includeArchived) return false
         return true
       })
-      console.log("[chats.list] returning", filtered.length, "chats after filtering")
       return filtered
     }),
 
@@ -478,7 +476,7 @@ export const chatsRouter = router({
       // Resolve the selected project so the chat/worktree uses its real path.
       const backendProject = await trpcClient.getProject({ id: input.projectId })
       if (!backendProject) {
-        throw new Error(`Project not found: ${input.projectId}`)
+        throw new Error(t('Project not found: {{input.projectId}}'))
       }
       const project = {
         id: backendProject.id,
@@ -747,7 +745,28 @@ export const chatsRouter = router({
         const mainRepoPath = workspace?.workDir
 
         if (mainRepoPath) {
-          removeWorktree(mainRepoPath, chat.worktreePath).then(async (worktreeResult) => {
+          // Gate removal on ahead-count == 0 to avoid losing unmerged work.
+          let aheadCount = 0
+          try {
+            const baseBranch = chat.baseBranch || "main"
+            const { simpleGit } = await import("simple-git")
+            const git = simpleGit(mainRepoPath)
+            const out = await git.raw([
+              "rev-list",
+              "--count",
+              `${baseBranch}..${chat.branch}`,
+            ])
+            aheadCount = Number.parseInt(out.trim(), 10) || 0
+          } catch {
+            aheadCount = 0
+          }
+
+          if (aheadCount > 0) {
+            console.warn(
+              `[chats.archive] Skipping worktree cleanup for ${input.id}: chat branch has ${aheadCount} unmerged commit(s). Merge first.`,
+            )
+          } else {
+            removeWorktree(mainRepoPath, chat.worktreePath).then(async (worktreeResult) => {
             if (worktreeResult.success) {
               console.log(
                 `[chats.archive] Deleted worktree for workspace ${input.id}`,
@@ -765,6 +784,7 @@ export const chatsRouter = router({
           }).catch((error) => {
             console.error(`[chats.archive] Error removing worktree:`, error)
           })
+          }
         }
       }
 
@@ -836,9 +856,31 @@ export const chatsRouter = router({
         const workspace = await trpcClient.getManagedWorkspace({ id: chat.workspaceId })
         const mainRepoPath = workspace?.workDir
         if (mainRepoPath) {
-          const result = await removeWorktree(mainRepoPath, chat.worktreePath)
-          if (!result.success) {
-            console.warn(`[Worktree] Cleanup failed: ${result.error}`)
+          // Gate removal on ahead-count == 0 to avoid losing unmerged work.
+          let aheadCount = 0
+          try {
+            const baseBranch = chat.baseBranch || "main"
+            const { simpleGit } = await import("simple-git")
+            const git = simpleGit(mainRepoPath)
+            const out = await git.raw([
+              "rev-list",
+              "--count",
+              `${baseBranch}..${chat.branch}`,
+            ])
+            aheadCount = Number.parseInt(out.trim(), 10) || 0
+          } catch {
+            aheadCount = 0
+          }
+
+          if (aheadCount > 0) {
+            console.warn(
+              `[Worktree] Skipping worktree cleanup for ${input.id}: chat branch has ${aheadCount} unmerged commit(s). Merge first.`,
+            )
+          } else {
+            const result = await removeWorktree(mainRepoPath, chat.worktreePath)
+            if (!result.success) {
+              console.warn(`[Worktree] Cleanup failed: ${result.error}`)
+            }
           }
         }
       }

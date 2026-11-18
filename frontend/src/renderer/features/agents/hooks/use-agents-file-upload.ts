@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 // File upload hook for desktop app with base64 conversion for Claude API
 import { useState, useCallback, useEffect, useRef } from "react"
 import { toast } from "sonner"
@@ -72,7 +73,7 @@ export function useAgentsFileUpload() {
           base64Data = await blobToBase64(file)
         } catch (err) {
           console.error("[useAgentsFileUpload] Failed to convert image to base64:", err)
-          toast.error(`Failed to process image "${filename}"`)
+          toast.error(i18n.t("Failed to process image \"{{name}}\"", { name: filename }))
         }
 
         return {
@@ -94,7 +95,7 @@ export function useAgentsFileUpload() {
           base64Data = await blobToBase64(file)
         } catch (err) {
           console.error("[useAgentsFileUpload] Failed to convert file to base64:", err)
-          toast.error(`Failed to process file "${file.name}"`)
+          toast.error(i18n.t("Failed to process file \"{{name}}\"", { name: file.name }))
         }
         // react-doctor-disable-next-line no-create-object-url-without-revoke
         const url = URL.createObjectURL(file)

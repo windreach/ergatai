@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { Button } from "../../../components/ui/button"
@@ -36,7 +37,7 @@ export function AgentsHeaderControls({
           size="icon"
           onClick={onToggleSidebar}
           className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md relative"
-          aria-label="Open sidebar"
+          aria-label={i18n.t('Open sidebar')}
         >
           <AlignJustify className="h-4 w-4" />
           {/* Unseen changes indicator */}

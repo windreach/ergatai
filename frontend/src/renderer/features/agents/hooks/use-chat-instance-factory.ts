@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
  
 import { useEffect, useCallback, useRef } from "react"
 import { toast } from "sonner"
@@ -244,8 +245,8 @@ export function useChatInstanceFactory({
         transport: transport as any,
         onError: (error) => {
           console.error("[ChatSend] Failed", error)
-          toast.error("Message failed", {
-            description: error?.message || "Unknown error",
+          toast.error(i18n.t('Message failed'), {
+            description: error?.message || i18n.t('Unknown error'),
           })
           finalizeConversation(conversationId, newChat)
         },

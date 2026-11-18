@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import * as DialogPrimitive from "@radix-ui/react-dialog"
@@ -64,7 +65,7 @@ const DialogContent = React.forwardRef<
         {showCloseButton && (
           <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
             <Cross2Icon className="h-4 w-4" />
-            <span className="sr-only">Close</span>
+            <span className="sr-only">{i18n.t('Close')}</span>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Content>
@@ -129,7 +130,7 @@ const CanvasDialogContent = React.forwardRef<
       {showCloseButton && (
         <DialogPrimitive.Close className="absolute right-3 top-3 h-6 w-6 rounded-full flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors z-10">
           <Cross2Icon className="h-3.5 w-3.5" />
-          <span className="sr-only">Close</span>
+          <span className="sr-only">{i18n.t('Close')}</span>
         </DialogPrimitive.Close>
       )}
     </DialogPrimitive.Content>

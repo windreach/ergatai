@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { memo, useCallback, useEffect, useMemo, useState } from "react"
 import { useAtomValue } from "jotai"
 import { Check } from "lucide-react"
@@ -76,7 +77,7 @@ const DiffFileRow = memo(function DiffFileRow({
 				</span>
 			</div>
 			{isViewed && (
-				<span className="shrink-0 flex items-center text-primary" title="已查看">
+				<span className="shrink-0 flex items-center text-primary" title={i18n.t("common.viewed")}>
 					<Check className="size-3" strokeWidth={2.5} />
 				</span>
 			)}

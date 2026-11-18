@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useState, useEffect, useRef } from "react"
@@ -7,7 +8,7 @@ import { useFileOpen } from "../mentions"
 import { selectedWorkspaceAtom } from "../atoms"
 import { AgentToolRegistry, getToolStatus } from "./agent-tool-registry"
 import { AgentToolCall } from "./agent-tool-call"
-import { areExploringGroupPropsEqual } from "./agent-tool-utils"
+import { areExploringGroupPropsEqual, getToolFilePath, getToolErrorText } from "./agent-tool-utils"
 import { cn } from "../../../lib/utils"
 import type { MessagePart } from "../stores/message-store"
 
@@ -151,7 +152,7 @@ export const AgentExploringGroup = memo(function AgentExploringGroup({
                 )
               }
               const { isPending, isError } = getToolStatus(part, chatStatus)
-              const filePath = (part.input?._locations as Array<{ path?: string }>)?.[0]?.path
+              const filePath = getToolFilePath(part)
               const handleClick =
                 part.type === "tool-Read" && onOpenFile && filePath
                   ? () => onOpenFile(filePath)
@@ -166,6 +167,8 @@ export const AgentExploringGroup = memo(function AgentExploringGroup({
                   tooltipContent={meta.tooltipContent?.(part, projectPath)}
                   isPending={isPending}
                   isError={isError}
+                  errorText={isError ? getToolErrorText(part) : undefined}
+                  inlineError={meta.inlineError}
                   onClick={handleClick}
                 />
               )

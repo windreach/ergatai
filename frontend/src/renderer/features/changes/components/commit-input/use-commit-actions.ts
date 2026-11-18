@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n"
 import { useCallback, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAtomValue } from "jotai";
@@ -36,7 +37,7 @@ export function useCommitActions({
 	}, [queryClient, onRefresh, onCommitSuccess]);
 
 	const handleError = useCallback((error: { message?: string }) => {
-		toast.error(`Commit failed: ${error.message ?? "Unknown error"}`);
+		toast.error(`Commit failed: ${error.message ?? i18n.t('Unknown error')}`);
 	}, []);
 
 	// AI commit message generation
@@ -51,7 +52,7 @@ export function useCommitActions({
 	const commit = useCallback(
 		async ({ message, filePaths }: CommitActionInput): Promise<boolean> => {
 			if (!worktreePath) {
-				toast.error("Worktree path is required");
+				toast.error(i18n.t('Worktree path is required'));
 				return false;
 			}
 
@@ -69,7 +70,7 @@ export function useCommitActions({
 					onMessageGenerated?.(result.message);
 				} catch (error) {
 					console.error("[CommitActions] Failed to generate message:", error);
-					toast.error("Failed to generate commit message");
+					toast.error(i18n.t('Failed to generate commit message'));
 					return false;
 				} finally {
 					setIsGenerating(false);
@@ -77,7 +78,7 @@ export function useCommitActions({
 			}
 
 			if (!commitMessage) {
-				toast.error("Please enter a commit message");
+				toast.error(i18n.t('Please enter a commit message'));
 				return false;
 			}
 
