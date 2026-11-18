@@ -65,7 +65,7 @@ test.describe.serial("UI interactions", () => {
   })
 
   test("opens Task Board from the sidebar", async () => {
-    await pressEnterOn(page.getByRole("button", { name: "Task Board" }))
+    await pressEnterOn(page.getByRole("button", { name: "Open task board" }))
     await expect(page.getByRole("heading", { level: 1, name: "Task Board" })).toBeVisible()
   })
 

@@ -368,6 +368,7 @@ function mapConversation(conv: ConversationSummary, agentId?: string): AgentConv
 // ── tRPC Client (IPC to main process → Ergatai backend) ────────────────
 
 import { trpcClient } from "../../../lib/trpc"
+import { clearSubagentState } from "./subagent-message-store"
 
 // ── Real Implementation (via tRPC IPC) ─────────────────────────────────
 
@@ -438,6 +439,7 @@ export const agentContractApi: AgentContractApi = {
 
   async killAgent(agentId) {
     await trpcClient.ergatai.killAgent.mutate({ agentId })
+    clearSubagentState(agentId)
   },
 
   async sendMessage(agentId, message) {

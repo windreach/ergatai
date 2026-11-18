@@ -103,6 +103,7 @@ export function SideChat({
   const invocationQueue = surface.invocationQueue
   const handleSend = surface.handleSend
   const handleSendFromQueue = surface.handleSendFromQueue
+  const handleRemoveFromQueue = surface.handleRemoveFromQueue
   const stop = surface.stop
   const handleStop = stop
   const handleForceSend = surface.handleForceSend
@@ -297,7 +298,7 @@ export function SideChat({
               handleQuestionsSkip={handleQuestionsSkip}
               inputHasContent={inputHasContent}
               queue={invocationQueue}
-              handleRemoveFromQueue={() => {}}
+              handleRemoveFromQueue={handleRemoveFromQueue}
               handleSendFromQueue={handleSendFromQueue}
               shouldShowStatusCard={isStreaming || sideChangedFiles.length > 0}
               shouldShowStackedCards={invocationQueue.length > 0 || isStreaming || sideChangedFiles.length > 0}

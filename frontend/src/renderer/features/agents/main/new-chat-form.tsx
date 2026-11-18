@@ -2,6 +2,8 @@
 
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
+import { buildCodexUiModels } from "../lib/codex-ui-models"
+import { TEXT_FILE_EXTENSIONS } from "../lib/text-file-extensions"
 import { AlignJustify, Folder, GitBranch, GitCompare, MessageSquare, PanelRight, Plus, TerminalSquare } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "../../../components/ui/button"
@@ -154,7 +156,6 @@ import {
   markDraftVisible,
 } from "../lib/drafts"
 import {
-  ALL_THINKING_LEVELS,
   CODEX_MODELS,
   type CodexThinkingLevel,
 } from "../lib/models"
@@ -679,30 +680,7 @@ export function NewChatForm({
 
   const hiddenModels = useAtomValue(hiddenModelsAtom)
   const codexUiModels = useMemo(
-    () => {
-      const hiddenModelSet = new Set(hiddenModels)
-      const backend = availableModels.models ?? []
-      const fromBackend: { id: string; name: string; thinkings: CodexThinkingLevel[] }[] =
-        backend
-          .filter((m) => !hiddenModelSet.has(m.id))
-          .map((m) => ({
-            id: m.id,
-            name: m.name || m.id,
-            thinkings:
-              m.id.includes("codex") || m.id.startsWith("gpt-5")
-                ? ALL_THINKING_LEVELS
-                : (["medium", "high"] as CodexThinkingLevel[]),
-          }))
-      const backendIds = new Set(fromBackend.map((m) => m.id))
-      const extra = CODEX_MODELS.filter(
-        (m) => !backendIds.has(m.id) && !hiddenModelSet.has(m.id),
-      )
-      const merged =
-        fromBackend.length > 0
-          ? [...fromBackend, ...extra]
-          : [...CODEX_MODELS.filter((m) => !hiddenModelSet.has(m.id))]
-      return merged
-    },
+    () => buildCodexUiModels(availableModels.models, hiddenModels),
     [availableModels.models, hiddenModels],
   )
   const selectedCodexModel = useMemo(
@@ -1719,27 +1697,6 @@ export function NewChatForm({
   }, [])
 
   // Text file extensions that should have content read and attached
-  const TEXT_FILE_EXTENSIONS = useMemo(() => new Set([
-    // Code
-    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-    ".py", ".rb", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".cpp", ".h", ".hpp",
-    ".cs", ".php", ".lua", ".r", ".m", ".mm", ".scala", ".clj", ".ex", ".exs",
-    ".hs", ".elm", ".erl", ".fs", ".fsx", ".ml", ".v", ".vhdl", ".zig",
-    // Config/Data
-    ".json", ".yaml", ".yml", ".toml", ".xml", ".ini", ".env", ".conf", ".cfg",
-    ".properties", ".plist",
-    // Web
-    ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".astro",
-    // Documentation
-    ".md", ".mdx", ".rst", ".txt", ".text",
-    // Graphics (text-based)
-    ".svg",
-    // Shell/Scripts
-    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd",
-    // Other
-    ".sql", ".graphql", ".gql", ".prisma", ".dockerfile", ".makefile",
-    ".gitignore", ".gitattributes", ".editorconfig", ".eslintrc", ".prettierrc",
-  ]), [])
 
   const MAX_FILE_SIZE_FOR_CONTENT = 100 * 1024 // 100KB - files larger than this only get path mention
 
@@ -1908,7 +1865,7 @@ export function NewChatForm({
         })
       })
     },
-    [validatedProject?.path, handleAddAttachments, handleAddFolder, MAX_FILE_SIZE_FOR_CONTENT, TEXT_FILE_EXTENSIONS],
+    [validatedProject?.path, handleAddAttachments, handleAddFolder, MAX_FILE_SIZE_FOR_CONTENT],
   )
 
   // Context items for images, files, and pasted text files

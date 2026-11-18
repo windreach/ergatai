@@ -202,6 +202,13 @@ export function useChatInstance({
     [queue, removeFromQueue, runtimeConversationId, sendMessage]
   )
 
+  const handleRemoveFromQueue = useCallback(
+    (itemId: string) => {
+      removeFromQueue(runtimeConversationId, itemId)
+    },
+    [removeFromQueue, runtimeConversationId]
+  )
+
   // Memoize the returned object so consumers (e.g. useSideChatInvocation) that
   // depend on this hook's identity don't recompute on every render unless one
   // of the underlying values actually changed.
@@ -218,6 +225,7 @@ export function useChatInstance({
       queue,
       handleSend,
       handleSendFromQueue,
+      handleRemoveFromQueue,
       noopPersist,
     }),
     [
@@ -232,6 +240,7 @@ export function useChatInstance({
       queue,
       handleSend,
       handleSendFromQueue,
+      handleRemoveFromQueue,
       noopPersist,
     ],
   )

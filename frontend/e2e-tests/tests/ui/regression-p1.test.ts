@@ -74,14 +74,14 @@ test.describe.serial("P1 core regression (Ergatai Electron UI) @regression", () 
     await settingsButton.click()
 
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).toBeVisible({ timeout: 5_000 })
   }
 
   async function closeSettings() {
     await page.keyboard.press("Escape")
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).not.toBeVisible({ timeout: 3_000 })
   }
 
@@ -305,7 +305,7 @@ test.describe.serial("P1 core regression (Ergatai Electron UI) @regression", () 
       page.getByRole("button", { name: "New Workspace" }).first(),
     ).toBeVisible({ timeout: 10_000 })
     await expect(
-      page.getByRole("button", { name: "Task Board" }).first(),
+      page.getByRole("button", { name: "Open task board" }).first(),
     ).toBeVisible({ timeout: 10_000 })
     await expect(
       page.getByRole("button", { name: "Manage Agents" }).first(),
@@ -382,8 +382,8 @@ test.describe.serial("P1 core regression (Ergatai Electron UI) @regression", () 
   test("UI-SET-003 Tab switching updates aria-selected @regression", async () => {
     await openSettings()
 
-    const appearanceTab = page.getByRole("button", { name: "Appearance" }).first()
-    const keyboardTab = page.getByRole("button", { name: "Keyboard" }).first()
+    const appearanceTab = page.getByRole("tab", { name: "Appearance" }).first()
+    const keyboardTab = page.getByRole("tab", { name: "Keyboard" }).first()
 
     await appearanceTab.click()
     await expect(appearanceTab).toHaveAttribute("aria-selected", "true")
@@ -398,7 +398,7 @@ test.describe.serial("P1 core regression (Ergatai Electron UI) @regression", () 
 
   test("UI-TB-002 Task Board back navigation @regression", async () => {
     // Open task board
-    const taskBoardButton = page.getByRole("button", { name: "Task Board" }).first()
+    const taskBoardButton = page.getByRole("button", { name: "Open task board" }).first()
     await expect(taskBoardButton).toBeVisible({ timeout: 10_000 })
     await taskBoardButton.focus()
     await page.keyboard.press("Enter")

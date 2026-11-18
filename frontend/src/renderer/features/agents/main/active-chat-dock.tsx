@@ -106,7 +106,7 @@ export function ActiveChatDock(props: any) {
       {/* Combined status container - queue + status card */}
       {/* Hidden while a permission approval is pending - the approval panel covers the dock */}
       {!hasPermissionApproval && !displayQuestions && (
-        <div className="px-2 -mb-6 relative shadow-sm shadow-background">
+        <div className="px-2 relative shadow-sm shadow-background">
           <div className="w-full max-w-2xl mx-auto px-2">
             {/* Queue indicator card */}
             {queue.length > 0 && (

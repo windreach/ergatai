@@ -35,6 +35,7 @@ import { useConversationOllamaModel } from "../hooks/use-conversation-ollama-mod
 import { getRuntimeSessionStore } from "../../conversation"
 import { trpc } from "../../../lib/trpc"
 import { cn } from "../../../lib/utils"
+import { useExtensionMeta } from "../lib/extension-meta-store"
 import {
   areVisibleChatAgentLogosEqual,
   chatAgentLogosAtom,
@@ -73,11 +74,11 @@ import {
   saveConversationDraftWithAttachments,
 } from "../lib/drafts"
 import {
-  ALL_THINKING_LEVELS,
   CODEX_MODELS,
   type CodexThinkingLevel,
 } from "../lib/models"
 import type { DiffTextContext, SelectedTextContext } from "../lib/queue-utils"
+import { buildCodexUiModels } from "../lib/codex-ui-models"
 import {
   extractRuntimeModelFromConfigOptions,
   useAvailableModels,
@@ -108,28 +109,7 @@ import { getResolvedHotkey } from "../../../lib/hotkeys"
 import { customHotkeysAtom } from "../../../lib/atoms"
 import { toast } from "sonner"
 
-// Text file extensions that should have content read and cached for agent
-const TEXT_FILE_EXTENSIONS = new Set([
-  // Code
-  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-  ".py", ".rb", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".cpp", ".h", ".hpp",
-  ".cs", ".php", ".lua", ".r", ".m", ".mm", ".scala", ".clj", ".ex", ".exs",
-  ".hs", ".elm", ".erl", ".fs", ".fsx", ".ml", ".v", ".vhdl", ".zig",
-  // Config/Data
-  ".json", ".yaml", ".yml", ".toml", ".xml", ".ini", ".env", ".conf", ".cfg",
-  ".properties", ".plist",
-  // Web
-  ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".astro",
-  // Documentation
-  ".md", ".mdx", ".rst", ".txt", ".text",
-  // Graphics (text-based)
-  ".svg",
-  // Shell/Scripts
-  ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd",
-  // Other
-  ".sql", ".graphql", ".gql", ".prisma", ".dockerfile", ".makefile",
-  ".gitignore", ".gitattributes", ".editorconfig", ".eslintrc", ".prettierrc",
-])
+import { TEXT_FILE_EXTENSIONS } from "../lib/text-file-extensions"
 
 export interface ChatInputAreaProps {
   // Editor ref - passed from parent for external access
@@ -430,6 +410,29 @@ export const ChatInputArea = memo(function ChatInputArea({
 }: ChatInputAreaProps) {
   // Local state - changes here don't re-render parent
   const [hasContent, setHasContent] = useState(false)
+  const extensionMeta = useExtensionMeta(agentId ?? null)
+  const promptSuggestion = useMemo(() => {
+    const payload = extensionMeta?.["prompt_suggestions"]
+    if (!payload) return ""
+    if (typeof payload === "string") return payload
+    if (Array.isArray(payload)) {
+      const first = payload.find((x) => typeof x === "string")
+      return typeof first === "string" ? first : ""
+    }
+    if (typeof payload === "object") {
+      const obj = payload as Record<string, unknown>
+      const candidates = [obj.suggestions, obj.prompts, obj.items, obj.list]
+      for (const c of candidates) {
+        if (Array.isArray(c)) {
+          const first = c.find((x) => typeof x === "string")
+          if (typeof first === "string") return first
+        }
+      }
+      if (typeof obj.text === "string") return obj.text
+      if (typeof obj.suggestion === "string") return obj.suggestion
+    }
+    return ""
+  }, [extensionMeta])
   const [isFocused, setIsFocused] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
 
@@ -798,30 +801,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
   const { data: claudeCodeIntegration } =
     trpc.claudeCode.getIntegration.useQuery()
   const codexUiModels = useMemo(
-    () => {
-      const hiddenModelSet = new Set(hiddenModels)
-      const backend = availableModels.models ?? []
-      // Prefer the backend-enumerated Codex models (config.toml + catalog) so the
-      // selector reflects the user's actual configured models; fall back to the
-      // built-in list when nothing has been detected yet.
-      const fromBackend: { id: string; name: string; thinkings: CodexThinkingLevel[] }[] =
-        backend
-          .filter((m) => !hiddenModelSet.has(m.id))
-          .map((m) => ({
-            id: m.id,
-            name: m.name || m.id,
-            thinkings:
-              m.id.includes("codex") || m.id.startsWith("gpt-5")
-                ? ALL_THINKING_LEVELS
-                : (["medium", "high"] as CodexThinkingLevel[]),
-          }))
-      const backendIds = new Set(fromBackend.map((m) => m.id))
-      const extra = CODEX_MODELS.filter(
-        (m) => !backendIds.has(m.id) && !hiddenModelSet.has(m.id),
-      )
-      const merged = fromBackend.length > 0 ? [...fromBackend, ...extra] : [...CODEX_MODELS.filter((m) => !hiddenModelSet.has(m.id))]
-      return merged
-    },
+    () => buildCodexUiModels(availableModels.models, hiddenModels),
     [availableModels.models, hiddenModels],
   )
   const selectedCodexModel = useMemo(
@@ -1232,6 +1212,41 @@ const availableModels = useAvailableModels(agentId, profileHint)
     const draft = editorRef.current?.getValue() || ""
     currentDraftTextRef.current = draft
   }, [editorRef, onInputContentChange])
+
+  // Use ACP-surfaced model metadata as a runtime model hint when available.
+  useEffect(() => {
+    if (!isRuntimeModelProvider || !agentId) return
+    const payload = extensionMeta?.["model"] ?? extensionMeta?.model
+    const model =
+      typeof payload === "string"
+        ? payload
+        : payload && typeof payload === "object"
+          ? String((payload as Record<string, unknown>).model ?? (payload as Record<string, unknown>).id ?? "")
+          : ""
+    if (model && model !== "undefined" && model !== "null") {
+      setRuntimeModel(model)
+      setRuntimeModelKnown(true)
+      setIsDetectingRuntimeModel(false)
+    }
+  }, [agentId, isRuntimeModelProvider, extensionMeta])
+
+  // Tab accepts the inline prompt suggestion when input is empty.
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!editor) return
+    const handleTab = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return
+      if (hasContent || !promptSuggestion) return
+      e.preventDefault()
+      editor.setValue(promptSuggestion)
+      setHasContent(true)
+      onInputContentChange?.(true)
+      currentDraftTextRef.current = promptSuggestion
+    }
+    const el = editorRef.current as unknown as HTMLElement
+    el.addEventListener("keydown", handleTab, true)
+    return () => el.removeEventListener("keydown", handleTab, true)
+  }, [editorRef, hasContent, promptSuggestion, onInputContentChange])
 
   // Editor submit handler - handles Enter key with queue logic
   // If input is empty and queue has items, stop stream and send first from queue
@@ -1661,6 +1676,11 @@ const availableModels = useAvailableModels(agentId, profileHint)
             >
               <PromptInputContextItems />
               <div className="relative">
+                {!hasContent && promptSuggestion ? (
+                  <div className="pointer-events-none absolute inset-0 flex items-center px-1 text-muted-foreground/50 text-sm truncate">
+                    {promptSuggestion}
+                  </div>
+                ) : null}
                 <AgentsMentionsEditor
                   ref={editorRef}
                   onTrigger={({ searchText, rect, triggerChar }) => {
@@ -1844,7 +1864,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
                       {/* Context window indicator - click to compact */}
                       <AgentContextIndicator
                         tokenData={messageTokenData}
-                        // onCompact={onCompact}
+                        onCompact={onCompact}
                         isCompacting={isCompacting}
                         disabled={isStreaming}
                       />

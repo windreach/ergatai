@@ -76,6 +76,8 @@ type StreamDeltaEvent = {
   output?: unknown
   error?: string
   stop_reason?: string
+  kind?: string
+  payload?: unknown
 }
 
 type ConversationEvent =
@@ -237,6 +239,131 @@ function applyStreamDelta(state: ConversationState, event: StreamDeltaEvent): Co
       }
     }
 
+    case "extension_update": {
+      const payload = (event.payload ?? {}) as Record<string, unknown>
+      const kind = String(event.kind ?? "")
+      const id =
+        (typeof payload.id === "string" && payload.id) ||
+        (typeof payload.compactionId === "string" && payload.compactionId) ||
+        (typeof payload.compaction_id === "string" && payload.compaction_id) ||
+        (typeof payload.messageId === "string" && payload.messageId) ||
+        (typeof payload.message_id === "string" && payload.message_id) ||
+        "compact"
+      const status = typeof payload.status === "string" ? payload.status.toLowerCase() : ""
+
+      if (kind === "compaction_update" || kind.startsWith("compaction")) {
+        return {
+          ...state,
+          error: null,
+          messages: upsertPreview(state.messages, (preview) => ({
+            ...preview,
+            parts: [
+              ...(preview.parts as Array<Record<string, unknown>>),
+              {
+                type: "tool-Compact",
+                toolCallId: id,
+                state:
+                  status === "completed" ||
+                  status === "complete" ||
+                  status === "compacted" ||
+                  status === "failed" ||
+                  status === "error"
+                    ? status === "failed" || status === "error"
+                      ? "output-error"
+                      : "output-available"
+                    : "input-available",
+                input: payload,
+                output:
+                  status === "completed" ||
+                  status === "complete" ||
+                  status === "compacted" ||
+                  status === "failed" ||
+                  status === "error"
+                    ? payload
+                    : undefined,
+              },
+            ],
+          })),
+        }
+      }
+
+      if (kind === "extension_error") {
+        const payload = (event.payload ?? {}) as Record<string, unknown>
+        return {
+          ...state,
+          error: null,
+          messages: upsertPreview(state.messages, (preview) => ({
+            ...preview,
+            parts: [
+              ...(preview.parts as Array<Record<string, unknown>>),
+              {
+                type: "extension-error",
+                payload,
+              },
+            ],
+          })),
+        }
+      }
+
+      if (kind === "rate_limit_update") {
+        const payload = (event.payload ?? {}) as Record<string, unknown>
+        return {
+          ...state,
+          error: null,
+          messages: upsertPreview(state.messages, (preview) => ({
+            ...preview,
+            parts: [
+              ...(preview.parts as Array<Record<string, unknown>>),
+              {
+                type: "rate-limit-warning",
+                payload,
+              },
+            ],
+          })),
+        }
+      }
+
+      if (kind === "file_change_report") {
+        return {
+          ...state,
+          error: null,
+          messages: upsertPreview(state.messages, (preview) => ({
+            ...preview,
+            parts: [
+              ...(preview.parts as Array<Record<string, unknown>>),
+              {
+                type: "file-change-report",
+                payload,
+              },
+            ],
+          })),
+        }
+      }
+
+      if (kind === "compaction_summary_chunk") {
+        const delta =
+          (typeof payload.delta === "string" && payload.delta) ||
+          (typeof payload.summary === "string" && payload.summary) ||
+          (typeof payload.text === "string" && payload.text) ||
+          (typeof payload.chunk === "string" && payload.chunk) ||
+          ""
+        if (!delta) return state
+        return {
+          ...state,
+          error: null,
+          messages: upsertPreview(state.messages, (preview) => ({
+            ...preview,
+            parts: (preview.parts as Array<Record<string, unknown>>).map((part) =>
+              part.toolCallId === id
+                ? { ...part, state: "input-streaming", inputTextDelta: String(part.inputTextDelta ?? "") + delta }
+                : part,
+            ),
+          })),
+        }
+      }
+
+      return state
+    }
     // done / turn_started / session_title_update / message_inserted etc. carry
     // no renderable delta for the preview; the pipeline layer reacts to `done`.
     default:

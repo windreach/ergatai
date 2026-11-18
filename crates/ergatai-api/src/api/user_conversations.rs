@@ -802,7 +802,7 @@ pub async fn stream_conversation_runtime(
 
     enum RuntimeStreamState {
         Initial {
-            snapshot: ConversationRuntimeSnapshot,
+            snapshot: Box<ConversationRuntimeSnapshot>,
             snapshot_sent: bool,
             events: std::collections::VecDeque<RuntimeEvent>,
             receiver: tokio::sync::broadcast::Receiver<RuntimeEvent>,
@@ -822,7 +822,7 @@ pub async fn stream_conversation_runtime(
 
     let stream = futures::stream::unfold(
         RuntimeStreamState::Initial {
-            snapshot: initial.clone(),
+            snapshot: Box::new(initial.clone()),
             snapshot_sent: false,
             events: initial.events.into(),
             receiver,

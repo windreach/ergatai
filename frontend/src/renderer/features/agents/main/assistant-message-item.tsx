@@ -26,6 +26,7 @@ import { AgentAskUserQuestionTool } from "../ui/agent-ask-user-question-tool"
 import { AgentBashTool } from "../ui/agent-bash-tool"
 import { AgentGrepTool } from "../ui/agent-grep-tool"
 import { AgentEditTool } from "../ui/agent-edit-tool"
+import { AgentFileChangeReport } from "../ui/agent-file-change-report"
 import { AgentExploringGroup } from "../ui/agent-exploring-group"
 import { AgentTaskToolsGroup } from "../ui/agent-task-tools"
 import { AgentPlanFileTool } from "../ui/agent-plan-file-tool"
@@ -33,7 +34,7 @@ import { isPlanFile } from "../ui/agent-tool-utils"
 import { messageTypeVariantClass } from "../lib/message-type-styles"
 import type { CoreAgentId } from "../lib/agent-contract-api"
 import { ChatErrorCard } from "../ui/chat-error-card"
-import { chatErrorFromPart } from "../../../../shared/chat-error"
+import { chatErrorFromPart, normalizeChatError } from "../../../../shared/chat-error"
 import {
   AgentMessageUsage,
   type AgentMessageMetadata,
@@ -710,6 +711,51 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     if (part.toolCallId && nestedToolIds.has(part.toolCallId)) return null
     if (part.type === "exploring-group") return null
 
+    if (part.type === "extension-error") {
+      const payload = (part.payload ?? {}) as Record<string, unknown>
+      const error = normalizeChatError({
+        message: (typeof payload.message === "string" && payload.message) || "Extension error",
+        errorName: payload.error_name ?? payload.errorName,
+        service: payload.service,
+        code: payload.code,
+        data: payload,
+      })
+      return (
+        <ChatErrorCard
+          // react-doctor-disable-next-line no-array-index-as-key
+          key={`${messageRenderKey}-${idx}`}
+          error={error}
+        />
+      )
+    }
+
+    if (part.type === "rate-limit-warning") {
+      const payload = (part.payload ?? {}) as Record<string, unknown>
+      const error = normalizeChatError({
+        message: (typeof payload.message === "string" && payload.message) || "Rate limit reached",
+        code: payload.code,
+        service: payload.service,
+        data: payload,
+      })
+      return (
+        <ChatErrorCard
+          // react-doctor-disable-next-line no-array-index-as-key
+          key={`${messageRenderKey}-${idx}`}
+          error={error}
+        />
+      )
+    }
+
+    if (part.type === "file-change-report") {
+      return (
+        <AgentFileChangeReport
+          // react-doctor-disable-next-line no-array-index-as-key
+          key={`${messageRenderKey}-${idx}`}
+          payload={part.payload ?? part}
+        />
+      )
+    }
+
     if (part.type === "text") {
       if (!part.text?.trim()) return null
       const _isFinalText = isFinal && idx === collapseBeforeIndex
@@ -730,6 +776,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     if (chatError) {
       return (
         <ChatErrorCard
+          // react-doctor-disable-next-line no-array-index-as-key
           key={`${messageRenderKey}-${idx}`}
           error={chatError}
         />

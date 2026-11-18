@@ -82,18 +82,16 @@ pub fn find_project_for_path(path: &Path) -> Option<String> {
     // Canonicalize the path itself, falling back to its parent for not-yet-existing files.
     let canonical = if let Ok(p) = path.canonicalize() {
         p
-    } else if let Some(parent) = path.parent() {
+    } else {
+        let parent = path.parent()?;
         if let Ok(cp) = parent.canonicalize() {
-            if let Some(name) = path.file_name() {
+            {
+                let name = path.file_name()?;
                 cp.join(name)
-            } else {
-                return None;
             }
         } else {
             return None;
         }
-    } else {
-        return None;
     };
 
     let map = global_project_roots().read().unwrap();

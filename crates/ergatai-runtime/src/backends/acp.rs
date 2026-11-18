@@ -901,6 +901,60 @@ async fn send_output_event_internal(
                 AgentOutputEvent::SessionTitleUpdate { title, .. } => {
                     acc.set_session_title(title.clone());
                 }
+                AgentOutputEvent::ExtensionUpdate { kind, payload, .. } => {
+                    // Normalize compaction signals into a synthetic Compact tool call
+                    // so persisted history can rebuild a `tool-Compact` part.
+                    if kind == "compaction_update" {
+                        let status = payload
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("started");
+                        let id = payload
+                            .get("id")
+                            .or_else(|| payload.get("compactionId"))
+                            .or_else(|| payload.get("compaction_id"))
+                            .or_else(|| payload.get("messageId"))
+                            .or_else(|| payload.get("message_id"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("compact")
+                            .to_string();
+                        let terminal = matches!(
+                            status,
+                            "completed" | "complete" | "compacted" | "failed" | "error"
+                        );
+                        if terminal {
+                            let mapped = if matches!(status, "failed" | "error") {
+                                "failed".to_string()
+                            } else {
+                                "completed".to_string()
+                            };
+                            let error = if matches!(status, "failed" | "error") {
+                                payload
+                                    .get("error")
+                                    .or_else(|| payload.get("message"))
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string())
+                            } else {
+                                None
+                            };
+                            acc.record_tool_call_update(
+                                &id,
+                                Some(payload.clone()),
+                                Some(payload.clone()),
+                                mapped,
+                                error,
+                            );
+                        } else {
+                            acc.record_tool_call_start(
+                                id,
+                                "Compact".to_string(),
+                                None,
+                                payload.clone(),
+                                Vec::new(),
+                            );
+                        }
+                    }
+                }
                 AgentOutputEvent::ContextUsage { used, size, .. } => {
                     tracing::info!(used = used, size = size, "Accumulating context_usage event");
                     acc.set_context_usage(*used, *size, None);
@@ -1091,12 +1145,14 @@ async fn handle_standard_session_notification(
                     debug!(text_len = text.len(), "ACP agent message chunk");
                 }
                 out.append(text.as_bytes());
+                usage.append_subagent_message("text", text.clone());
                 send_output_event_with_turn_token(
                     turn_token,
                     conversation_id,
                     AgentOutputEvent::Text {
                         role: "assistant".to_string(),
                         delta: text,
+                        subagent_session_id: usage.active_subagent_session_id(),
                     },
                 )
                 .await;
@@ -1120,12 +1176,14 @@ async fn handle_standard_session_notification(
                         thinking.push_str(&text);
                     }
                 }
+                usage.append_subagent_message("thinking", text.clone());
                 send_output_event_with_turn_token(
                     turn_token,
                     conversation_id,
                     AgentOutputEvent::Thinking {
                         role: "assistant".to_string(),
                         delta: text,
+                        subagent_session_id: usage.active_subagent_session_id(),
                     },
                 )
                 .await;
@@ -1326,7 +1384,13 @@ async fn handle_standard_session_notification(
                 || title_lower.starts_with("edit ")
                 || title_lower == "write"
                 || title_lower.starts_with("write ");
-            let tool_name = if is_edit_family {
+            // Detect compaction-related tool calls through the shared ACP custom-field
+            // helper so Claude AIR, OpenCode, and title-based legacy calls stay aligned.
+            let is_compaction_tool = crate::acp_custom_fields::is_compaction_tool_call(tc);
+
+            let tool_name = if is_compaction_tool {
+                "Compact".to_string()
+            } else if is_edit_family {
                 let is_write = if let Some(diff) = tc.content.iter().find_map(|c| match c {
                     ToolCallContent::Diff(d) => Some(d),
                     _ => None,
@@ -1450,7 +1514,24 @@ async fn handle_standard_session_notification(
                 }
             }
 
+            let parent_tool_use_id =
+                crate::acp_custom_fields::extract_parent_tool_use_id(tc.meta.as_ref());
+            let claude_tool_name =
+                crate::acp_custom_fields::extract_claude_tool_name(tc.meta.as_ref());
+
             tool_calls.record_initial(tc);
+            usage.update_active_subagent_tool_call(
+                parent_tool_use_id.clone(),
+                claude_tool_name.clone(),
+            );
+            usage.append_subagent_message(
+                "tool_call",
+                format!(
+                    "{} {}",
+                    tool_name,
+                    serde_json::to_string(&event_input).unwrap_or_default()
+                ),
+            );
             send_output_event_with_turn_token(
                 turn_token,
                 conversation_id,
@@ -1460,15 +1541,9 @@ async fn handle_standard_session_notification(
                     name: tool_name,
                     input: event_input,
                     locations: derived_locations,
-                    parent_tool_use_id: tc.meta.as_ref().and_then(|m| {
-                        m.get("claudeCode")
-                            .or_else(|| m.get("claude_code"))
-                            .and_then(|v| {
-                                v.get("parentToolUseId")
-                                    .or_else(|| v.get("parent_tool_use_id"))
-                            })
-                            .and_then(|v| v.as_str().map(|s| s.to_string()))
-                    }),
+                    parent_tool_use_id,
+                    claude_tool_name,
+                    subagent_session_id: usage.active_subagent_session_id(),
                 },
             )
             .await;
@@ -1629,11 +1704,125 @@ async fn handle_standard_session_notification(
             // Consume extension metadata carried on session_info_update (e.g. promptSuggestions).
             if let Some(meta) = info.meta.as_ref() {
                 let ext = crate::acp_extension::parse_meta(Some(meta));
+                usage.update_active_subagent_extension(&ext);
                 if ext.prompt_suggestions.is_some() {
                     debug!(agent_id = %agent_id, "ACP session_info_update prompt suggestions received");
                 }
                 let unknown = crate::acp_extension::unknown_meta_keys(meta);
                 usage.record_unknown_keys(&unknown, agent_id);
+
+                // Normalize OpenCode compaction signals carried on session_info_update
+                // into a unified ExtensionUpdate event so the frontend can render a
+                // `tool-Compact` card without depending on adapter-specific meta.
+                if let Some(compaction) = ext.compaction.clone() {
+                    let previous = usage
+                        .get_extension_meta()
+                        .and_then(|m| m.compaction.clone());
+                    if previous.as_ref() != Some(&compaction) {
+                        send_output_event_with_turn_token(
+                            turn_token,
+                            conversation_id,
+                            AgentOutputEvent::ExtensionUpdate {
+                                role: "assistant".to_string(),
+                                kind: "compaction_update".to_string(),
+                                payload: compaction,
+                            },
+                        )
+                        .await;
+                    }
+                }
+
+                // Surface high-value AIR/terminal/custom-answer/prompt-suggestion
+                // fields as typed ExtensionUpdate events (only when changed).
+                let previous_meta = usage.get_extension_meta();
+                macro_rules! emit_if_changed {
+                    ($field:ident, $kind:expr) => {
+                        if let Some(payload) = ext.$field.clone() {
+                            let previous = previous_meta.as_ref().and_then(|m| m.$field.clone());
+                            if previous.as_ref() != Some(&payload) {
+                                send_output_event_with_turn_token(
+                                    turn_token,
+                                    conversation_id,
+                                    AgentOutputEvent::ExtensionUpdate {
+                                        role: "assistant".to_string(),
+                                        kind: $kind.to_string(),
+                                        payload: serde_json::to_value(&payload)
+                                            .unwrap_or(serde_json::Value::Null),
+                                    },
+                                )
+                                .await;
+                            }
+                        }
+                    };
+                }
+                emit_if_changed!(air_file_change_report, "file_change_report");
+                emit_if_changed!(air_worktrees, "worktrees_update");
+                emit_if_changed!(air_async_tasks, "async_tasks_update");
+                emit_if_changed!(air_diff_patch, "diff_patch");
+                emit_if_changed!(terminal, "terminal_update");
+                emit_if_changed!(air_custom_answer, "custom_answer");
+                emit_if_changed!(prompt_suggestions, "prompt_suggestions");
+                // Compaction sub-fields (P1-4).
+                emit_if_changed!(compaction_trigger, "compaction_trigger");
+                emit_if_changed!(compaction_pre_tokens, "compaction_pre_tokens");
+                emit_if_changed!(compaction_post_tokens, "compaction_post_tokens");
+                emit_if_changed!(compaction_duration_ms, "compaction_duration_ms");
+                emit_if_changed!(compaction_error, "compaction_error");
+
+                // Surface P2 status/diagnostic fields as typed ExtensionUpdate events
+                // when they change, so the frontend can react without polling the
+                // read-only extension-meta API.
+                // TODO(subagent-preview): thread_status can be used for subagent state preview/analytics; project already has its own state machine.
+                emit_if_changed!(thread_status, "thread_status");
+                emit_if_changed!(quota, "quota_update");
+                emit_if_changed!(rate_limit, "rate_limit_update");
+                // TODO(auth-ui): auth_status is used for system/login detection; UI for unauthenticated state will be added later.
+                emit_if_changed!(auth_status, "auth_status_update");
+                emit_if_changed!(error, "extension_error");
+
+                // Surface Claude metadata as a single `claude_code` ExtensionUpdate.
+                let claude_changed = previous_meta.as_ref().map(|m| {
+                    (
+                        m.claude_code.clone(),
+                        m.claude_vertex.clone(),
+                        m.claude_options.clone(),
+                        m.claude_non_execution_kind.clone(),
+                        m.claude_prompt_queueing,
+                    )
+                }) != Some((
+                    ext.claude_code.clone(),
+                    ext.claude_vertex.clone(),
+                    ext.claude_options.clone(),
+                    ext.claude_non_execution_kind.clone(),
+                    ext.claude_prompt_queueing,
+                ));
+                if claude_changed
+                    && (ext.claude_code.is_some()
+                        || ext.claude_vertex.is_some()
+                        || ext.claude_options.is_some()
+                        || ext.claude_non_execution_kind.is_some()
+                        || ext.claude_prompt_queueing.is_some())
+                {
+                    tracing::debug!(target: "claude", agent_id = %agent_id, claude_code = ?ext.claude_code, claude_vertex = ?ext.claude_vertex, claude_options = ?ext.claude_options, claude_non_execution_kind = ?ext.claude_non_execution_kind, claude_prompt_queueing = ?ext.claude_prompt_queueing, "Claude extension metadata");
+                    let payload = serde_json::json!({
+                        "claude_code": ext.claude_code,
+                        "claude_vertex": ext.claude_vertex,
+                        "claude_options": ext.claude_options,
+                        "claude_non_execution_kind": ext.claude_non_execution_kind,
+                        "claude_prompt_queueing": ext.claude_prompt_queueing,
+                    });
+                    send_output_event_with_turn_token(
+                        turn_token,
+                        conversation_id,
+                        AgentOutputEvent::ExtensionUpdate {
+                            role: "assistant".to_string(),
+                            kind: "claude_code".to_string(),
+                            payload,
+                        },
+                    )
+                    .await;
+                }
+
                 usage.update_extension_meta(ext);
             }
             if let Some(new_title) = info.title.value() {
@@ -1901,12 +2090,18 @@ pub enum AgentOutputEvent {
         /// Message role: "assistant" for local agent, "agent" for inter-agent
         role: String,
         delta: String,
+        /// Optional attribution to a subagent session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subagent_session_id: Option<String>,
     },
     /// Incremental thinking/reasoning content.
     Thinking {
         /// Message role: "assistant" for local agent, "agent" for inter-agent
         role: String,
         delta: String,
+        /// Optional attribution to a subagent session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subagent_session_id: Option<String>,
     },
     /// A tool call has started.
     ToolCallStart {
@@ -1918,6 +2113,12 @@ pub enum AgentOutputEvent {
         locations: Vec<ToolCallLocation>,
         /// Claude ACP `_meta.claudeCode.parentToolUseId` for nested/subagent tool calls.
         parent_tool_use_id: Option<String>,
+        /// Claude ACP `_meta.claudeCode.toolName` for the original Claude tool name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claude_tool_name: Option<String>,
+        /// Optional attribution to a subagent session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subagent_session_id: Option<String>,
     },
     /// Streaming tool call input (JSON delta).
     ToolCallInput {
@@ -2471,6 +2672,47 @@ impl ToolCallTracker {
     }
 }
 
+/// A temporary in-memory record of a subagent run.
+///
+/// Subagents are treated as ephemeral execution units of a parent agent, not
+/// as standalone ergatai agents. This record is intentionally not persisted.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SubagentMessage {
+    pub kind: String,
+    pub content: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SubagentRun {
+    pub agent_id: String,
+    pub conversation_id: Option<String>,
+    pub subagent_session_id: String,
+    pub name: String,
+    pub task: String,
+    pub state: String,
+    pub started_at: i64,
+    pub updated_at: i64,
+    pub parent_tool_use_id: Option<String>,
+    pub claude_tool_name: Option<String>,
+    pub is_subagent: Option<bool>,
+    pub file_change_report: Option<serde_json::Value>,
+    pub worktree: Option<bool>,
+    pub async_tasks: Option<serde_json::Value>,
+    pub messages: Vec<SubagentMessage>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SubagentRuntime {
+    pub runs: Vec<SubagentRun>,
+    pub native_subagent_sessions: Option<serde_json::Value>,
+    pub child_session_updates: Option<bool>,
+    pub air_subagent: Option<bool>,
+    pub file_change_report: Option<serde_json::Value>,
+    pub worktree: Option<bool>,
+    pub async_tasks: Option<serde_json::Value>,
+}
+
 /// Tracks token usage for an agent
 struct UsageTracker {
     input_tokens: AtomicUsize,
@@ -2479,6 +2721,22 @@ struct UsageTracker {
     extension_meta: RwLock<Option<crate::acp_extension::ExtensionMeta>>,
     /// Aggregated unknown extension keys encountered (drift detection).
     unknown_extension_keys: RwLock<std::collections::HashMap<String, usize>>,
+    /// Ephemeral in-memory registry of subagent runs for this agent.
+    subagent_runs: RwLock<std::collections::HashMap<String, SubagentRun>>,
+    /// Currently active subagent session, if any.
+    active_subagent_session_id: RwLock<Option<String>>,
+    /// Adapter-provided native subagent sessions.
+    native_subagent_sessions: RwLock<Option<serde_json::Value>>,
+    /// Whether child session updates are supported.
+    child_session_updates: RwLock<Option<bool>>,
+    /// Latest AIR subagent marker.
+    air_subagent: RwLock<Option<bool>>,
+    /// Latest AIR file change report.
+    file_change_report: RwLock<Option<serde_json::Value>>,
+    /// Latest AIR worktree marker.
+    worktree: RwLock<Option<bool>>,
+    /// Latest AIR async tasks.
+    async_tasks: RwLock<Option<serde_json::Value>>,
 }
 
 impl UsageTracker {
@@ -2488,6 +2746,14 @@ impl UsageTracker {
             output_tokens: AtomicUsize::new(0),
             extension_meta: RwLock::new(None),
             unknown_extension_keys: RwLock::new(std::collections::HashMap::new()),
+            subagent_runs: RwLock::new(std::collections::HashMap::new()),
+            active_subagent_session_id: RwLock::new(None),
+            native_subagent_sessions: RwLock::new(None),
+            child_session_updates: RwLock::new(None),
+            air_subagent: RwLock::new(None),
+            file_change_report: RwLock::new(None),
+            worktree: RwLock::new(None),
+            async_tasks: RwLock::new(None),
         }
     }
 
@@ -2520,6 +2786,21 @@ impl UsageTracker {
         if incoming.compaction.is_some() {
             merged.compaction = incoming.compaction;
         }
+        if incoming.compaction_trigger.is_some() {
+            merged.compaction_trigger = incoming.compaction_trigger;
+        }
+        if incoming.compaction_pre_tokens.is_some() {
+            merged.compaction_pre_tokens = incoming.compaction_pre_tokens;
+        }
+        if incoming.compaction_post_tokens.is_some() {
+            merged.compaction_post_tokens = incoming.compaction_post_tokens;
+        }
+        if incoming.compaction_duration_ms.is_some() {
+            merged.compaction_duration_ms = incoming.compaction_duration_ms;
+        }
+        if incoming.compaction_error.is_some() {
+            merged.compaction_error = incoming.compaction_error;
+        }
         if incoming.thread_status.is_some() {
             merged.thread_status = incoming.thread_status;
         }
@@ -2544,6 +2825,144 @@ impl UsageTracker {
         if incoming.claude_code.is_some() {
             merged.claude_code = incoming.claude_code;
         }
+        if incoming.claude_vertex.is_some() {
+            merged.claude_vertex = incoming.claude_vertex;
+        }
+        if incoming.claude_options.is_some() {
+            merged.claude_options = incoming.claude_options;
+        }
+        if incoming.claude_non_execution_kind.is_some() {
+            merged.claude_non_execution_kind = incoming.claude_non_execution_kind;
+        }
+        if incoming.claude_prompt_queueing.is_some() {
+            merged.claude_prompt_queueing = incoming.claude_prompt_queueing;
+        }
+        if incoming.air_archived.is_some() {
+            merged.air_archived = incoming.air_archived;
+        }
+        if incoming.air_client.is_some() {
+            merged.air_client = incoming.air_client;
+        }
+        if incoming.air_file_change_report.is_some() {
+            merged.air_file_change_report = incoming.air_file_change_report;
+        }
+        if incoming.air_kind.is_some() {
+            merged.air_kind = incoming.air_kind;
+        }
+        if incoming.air_list.is_some() {
+            merged.air_list = incoming.air_list;
+        }
+        if incoming.air_load_replay_end.is_some() {
+            merged.air_load_replay_end = incoming.air_load_replay_end;
+        }
+        if incoming.air_mcp.is_some() {
+            merged.air_mcp = incoming.air_mcp;
+        }
+        if incoming.air_permission.is_some() {
+            merged.air_permission = incoming.air_permission;
+        }
+        if incoming.air_plan_file.is_some() {
+            merged.air_plan_file = incoming.air_plan_file;
+        }
+        if incoming.air_raw_input_rendering.is_some() {
+            merged.air_raw_input_rendering = incoming.air_raw_input_rendering;
+        }
+        if incoming.air_recommended_value.is_some() {
+            merged.air_recommended_value = incoming.air_recommended_value;
+        }
+        if incoming.air_command_title.is_some() {
+            merged.air_command_title = incoming.air_command_title;
+        }
+        if incoming.air_skill.is_some() {
+            merged.air_skill = incoming.air_skill;
+        }
+        if incoming.air_skill_path.is_some() {
+            merged.air_skill_path = incoming.air_skill_path;
+        }
+        if incoming.air_subagent.is_some() {
+            merged.air_subagent = incoming.air_subagent;
+        }
+        if incoming.air_agent_file_change_report.is_some() {
+            merged.air_agent_file_change_report = incoming.air_agent_file_change_report;
+        }
+        if incoming.air_agent_worktree.is_some() {
+            merged.air_agent_worktree = incoming.air_agent_worktree;
+        }
+        if incoming.air_async_tasks.is_some() {
+            merged.air_async_tasks = incoming.air_async_tasks;
+        }
+        if incoming.air_backgrounded.is_some() {
+            merged.air_backgrounded = incoming.air_backgrounded;
+        }
+        if incoming.air_codex_hooks.is_some() {
+            merged.air_codex_hooks = incoming.air_codex_hooks;
+        }
+        if incoming.air_command_action.is_some() {
+            merged.air_command_action = incoming.air_command_action;
+        }
+        if incoming.air_content_delta.is_some() {
+            merged.air_content_delta = incoming.air_content_delta;
+        }
+        if incoming.air_custom_instructions.is_some() {
+            merged.air_custom_instructions = incoming.air_custom_instructions;
+        }
+        if incoming.air_custom_answer.is_some() {
+            merged.air_custom_answer = incoming.air_custom_answer;
+        }
+        if incoming.air_diff_patch.is_some() {
+            merged.air_diff_patch = incoming.air_diff_patch;
+        }
+        if incoming.air_forked_from.is_some() {
+            merged.air_forked_from = incoming.air_forked_from;
+        }
+        if incoming.air_last_prompt_at.is_some() {
+            merged.air_last_prompt_at = incoming.air_last_prompt_at;
+        }
+        if incoming.air_last_turn_ended_at.is_some() {
+            merged.air_last_turn_ended_at = incoming.air_last_turn_ended_at;
+        }
+        if incoming.air_message_phase.is_some() {
+            merged.air_message_phase = incoming.air_message_phase;
+        }
+        if incoming.air_native_subagent_sessions.is_some() {
+            merged.air_native_subagent_sessions = incoming.air_native_subagent_sessions;
+        }
+        if incoming.air_plan_content_delta.is_some() {
+            merged.air_plan_content_delta = incoming.air_plan_content_delta;
+        }
+        if incoming.air_session_index.is_some() {
+            merged.air_session_index = incoming.air_session_index;
+        }
+        if incoming.air_session_failure.is_some() {
+            merged.air_session_failure = incoming.air_session_failure;
+        }
+        if incoming.air_session_list_subscribe.is_some() {
+            merged.air_session_list_subscribe = incoming.air_session_list_subscribe;
+        }
+        if incoming.air_worktrees.is_some() {
+            merged.air_worktrees = incoming.air_worktrees;
+        }
+        if incoming.air_batch_get.is_some() {
+            merged.air_batch_get = incoming.air_batch_get;
+        }
+        if incoming.air_state.is_some() {
+            merged.air_state = incoming.air_state;
+        }
+        if incoming.additional_roots.is_some() {
+            merged.additional_roots = incoming.additional_roots;
+        }
+        if incoming.system_prompt.is_some() {
+            merged.system_prompt = incoming.system_prompt;
+        }
+        if incoming.disable_built_in_tools.is_some() {
+            merged.disable_built_in_tools = incoming.disable_built_in_tools;
+        }
+        if incoming.gateway.is_some() {
+            merged.gateway = incoming.gateway;
+        }
+        if incoming.terminal.is_some() {
+            merged.terminal = incoming.terminal;
+        }
         if incoming.model_usage.is_some() {
             merged.model_usage = incoming.model_usage;
         }
@@ -2553,6 +2972,15 @@ impl UsageTracker {
         if incoming.jetbrains.is_some() {
             merged.jetbrains = incoming.jetbrains;
         }
+        if incoming.codex.is_some() {
+            merged.codex = incoming.codex;
+        }
+        if incoming.opencode.is_some() {
+            merged.opencode = incoming.opencode;
+        }
+        if incoming.claude.is_some() {
+            merged.claude = incoming.claude;
+        }
         if incoming.goal.is_some() {
             merged.goal = incoming.goal;
         }
@@ -2561,6 +2989,179 @@ impl UsageTracker {
         }
         crate::acp_extension::normalize_extension_meta(&mut merged);
         *guard = Some(merged);
+    }
+
+    /// Upsert an ephemeral subagent run record.
+    fn upsert_subagent_run(&self, run: SubagentRun) {
+        let mut guard = self.subagent_runs.write();
+        let started_at = guard
+            .get(&run.subagent_session_id)
+            .map(|existing| existing.started_at)
+            .unwrap_or(run.started_at);
+        guard.insert(
+            run.subagent_session_id.clone(),
+            SubagentRun { started_at, ..run },
+        );
+    }
+
+    /// Update the state of an ephemeral subagent run.
+    fn update_subagent_state(&self, subagent_session_id: &str, state: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        if let Some(run) = self.subagent_runs.write().get_mut(subagent_session_id) {
+            run.state = state.to_string();
+            run.updated_at = now;
+        }
+    }
+
+    fn set_active_subagent(&self, id: Option<String>) {
+        *self.active_subagent_session_id.write() = id;
+    }
+
+    fn clear_active_subagent(&self, id: &str) {
+        let mut guard = self.active_subagent_session_id.write();
+        if guard.as_deref() == Some(id) {
+            *guard = None;
+        }
+    }
+
+    fn active_subagent_session_id(&self) -> Option<String> {
+        self.active_subagent_session_id.read().clone()
+    }
+
+    fn update_active_subagent_tool_call(
+        &self,
+        parent_tool_use_id: Option<String>,
+        claude_tool_name: Option<String>,
+    ) {
+        if let Some(id) = self.active_subagent_session_id() {
+            if let Some(run) = self.subagent_runs.write().get_mut(&id) {
+                if parent_tool_use_id.is_some() {
+                    run.parent_tool_use_id = parent_tool_use_id;
+                }
+                if claude_tool_name.is_some() {
+                    run.claude_tool_name = claude_tool_name;
+                }
+                run.updated_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+            }
+        }
+    }
+
+    fn update_active_subagent_extension(&self, ext: &crate::acp_extension::ExtensionMeta) {
+        if let Some(id) = self.active_subagent_session_id() {
+            if let Some(run) = self.subagent_runs.write().get_mut(&id) {
+                if ext.air_subagent.is_some() {
+                    run.is_subagent = ext.air_subagent;
+                }
+                if ext.air_agent_file_change_report.is_some() {
+                    run.file_change_report = ext.air_agent_file_change_report.clone();
+                }
+                if ext.air_agent_worktree.is_some() {
+                    run.worktree = ext.air_agent_worktree;
+                }
+                if ext.air_async_tasks.is_some() {
+                    run.async_tasks = ext.air_async_tasks.clone();
+                }
+                run.updated_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+            }
+        }
+        if ext.air_native_subagent_sessions.is_some() {
+            *self.native_subagent_sessions.write() = ext.air_native_subagent_sessions.clone();
+        }
+        if ext.child_session_updates.is_some() {
+            *self.child_session_updates.write() = ext.child_session_updates;
+        }
+        if ext.air_subagent.is_some() {
+            *self.air_subagent.write() = ext.air_subagent;
+        }
+        if ext.air_agent_file_change_report.is_some() {
+            *self.file_change_report.write() = ext.air_agent_file_change_report.clone();
+        }
+        if ext.air_agent_worktree.is_some() {
+            *self.worktree.write() = ext.air_agent_worktree;
+        }
+        if ext.air_async_tasks.is_some() {
+            *self.async_tasks.write() = ext.air_async_tasks.clone();
+        }
+    }
+
+    fn update_active_subagent_extension_update(&self, kind: &str, payload: &serde_json::Value) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        if let Some(id) = self.active_subagent_session_id() {
+            if let Some(run) = self.subagent_runs.write().get_mut(&id) {
+                match kind {
+                    "file_change_report" => run.file_change_report = Some(payload.clone()),
+                    "worktrees_update" => {
+                        // keep as a marker; detailed worktree data remains in payload
+                        run.worktree = Some(true);
+                    }
+                    "async_tasks_update" => run.async_tasks = Some(payload.clone()),
+                    "native_subagent_sessions_update" => {}
+                    _ => {}
+                }
+                run.updated_at = now;
+            }
+        }
+        match kind {
+            "native_subagent_sessions_update" => {
+                *self.native_subagent_sessions.write() = Some(payload.clone());
+            }
+            "file_change_report" => {
+                *self.file_change_report.write() = Some(payload.clone());
+            }
+            "worktrees_update" => {
+                *self.worktree.write() = Some(true);
+            }
+            "async_tasks_update" => {
+                *self.async_tasks.write() = Some(payload.clone());
+            }
+            _ => {}
+        }
+    }
+
+    fn append_subagent_message(&self, kind: &str, content: String) {
+        if let Some(id) = self.active_subagent_session_id() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            if let Some(run) = self.subagent_runs.write().get_mut(&id) {
+                run.messages.push(SubagentMessage {
+                    kind: kind.to_string(),
+                    content,
+                    created_at: now,
+                });
+                run.updated_at = now;
+            }
+        }
+    }
+
+    fn get_subagent_runtime(&self) -> SubagentRuntime {
+        SubagentRuntime {
+            runs: self.subagent_runs.read().values().cloned().collect(),
+            native_subagent_sessions: self.native_subagent_sessions.read().clone(),
+            child_session_updates: *self.child_session_updates.read(),
+            air_subagent: *self.air_subagent.read(),
+            file_change_report: self.file_change_report.read().clone(),
+            worktree: *self.worktree.read(),
+            async_tasks: self.async_tasks.read().clone(),
+        }
+    }
+
+    /// Snapshot of ephemeral subagent runs for this agent.
+    fn get_subagent_runs(&self) -> Vec<SubagentRun> {
+        self.subagent_runs.read().values().cloned().collect()
     }
 
     /// Record a batch of unknown extension keys (drift detection), incrementing
@@ -3619,6 +4220,33 @@ impl AcpBackend {
     }
 
     /// Get the latest parsed ACP extension metadata for an agent, if any.
+    /// Get the ephemeral in-memory subagent runs for an agent, if any.
+    pub fn get_agent_subagent_runs(&self, agent_id: &str) -> Vec<SubagentRun> {
+        self.reap_dead();
+        let agents = self.agents.read();
+        agents
+            .get(agent_id)
+            .map(|entry| entry.usage.get_subagent_runs())
+            .unwrap_or_default()
+    }
+
+    pub fn get_agent_subagent_runtime(&self, agent_id: &str) -> SubagentRuntime {
+        self.reap_dead();
+        let agents = self.agents.read();
+        agents
+            .get(agent_id)
+            .map(|entry| entry.usage.get_subagent_runtime())
+            .unwrap_or_else(|| SubagentRuntime {
+                runs: Vec::new(),
+                native_subagent_sessions: None,
+                child_session_updates: None,
+                air_subagent: None,
+                file_change_report: None,
+                worktree: None,
+                async_tasks: None,
+            })
+    }
+
     pub fn get_agent_extension_meta(
         &self,
         agent_id: &str,
@@ -4879,6 +5507,7 @@ impl AcpBackendInterface for AcpBackend {
                                     return Ok(());
                                 }
                                 ExtendedSessionNotification::ExtensionUpdate { kind, payload } => {
+                                    usage.update_active_subagent_extension_update(&kind, &payload);
                                     info!(agent_id = %notify_agent_id, kind = %kind, "ACP extension update received");
                                     append_adapter_field_log(
                                         notify_adapter_kind,
@@ -4937,6 +5566,30 @@ impl AcpBackendInterface for AcpBackend {
                                             "task": event.task,
                                         }),
                                     );
+                                    // Track this subagent as an ephemeral run of the parent agent.
+                                    let now = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs() as i64;
+                                    usage.upsert_subagent_run(SubagentRun {
+                                        agent_id: notify_agent_id.clone(),
+                                        conversation_id: Some(notify_conversation_id.clone()),
+                                        subagent_session_id: event.subagent_session_id.clone(),
+                                        name: event.name.clone(),
+                                        task: event.task.clone(),
+                                        state: "running".to_string(),
+                                        started_at: now,
+                                        updated_at: now,
+                                        parent_tool_use_id: None,
+                                        claude_tool_name: None,
+                                        is_subagent: None,
+                                        file_change_report: None,
+                                        worktree: None,
+                                        async_tasks: None,
+                                        messages: Vec::new(),
+                                    });
+                                    usage.set_active_subagent(Some(event.subagent_session_id.clone()));
+
                                     // Emit subagent event for upstream processing
                                     send_output_event_with_turn_token(
                                         &notify_turn_token,
@@ -4966,6 +5619,12 @@ impl AcpBackendInterface for AcpBackend {
                                             "state": event.state,
                                         }),
                                     );
+                                    // Update the ephemeral subagent run state.
+                                    usage.update_subagent_state(&event.subagent_session_id, &event.state);
+                                    if matches!(event.state.as_str(), "completed" | "failed" | "cancelled" | "disconnected") {
+                                        usage.clear_active_subagent(&event.subagent_session_id);
+                                    }
+
                                     // Emit subagent state update for upstream processing
                                     send_output_event_with_turn_token(
                                         &notify_turn_token,
@@ -7091,6 +7750,14 @@ impl AcpBackendInterface for AcpBackend {
         agent_id: &str,
     ) -> ErgataiResult<Option<crate::acp_extension::ExtensionMeta>> {
         Ok(self.get_agent_extension_meta(agent_id))
+    }
+
+    async fn subagent_runs(&self, agent_id: &str) -> ErgataiResult<Vec<crate::SubagentRun>> {
+        Ok(self.get_agent_subagent_runs(agent_id))
+    }
+
+    async fn subagent_runtime(&self, agent_id: &str) -> ErgataiResult<SubagentRuntime> {
+        Ok(self.get_agent_subagent_runtime(agent_id))
     }
 
     async fn unknown_extension_keys(

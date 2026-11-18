@@ -68,6 +68,7 @@ type RuntimePart = {
   reasoning?: string
   error?: ChatErrorInfo
   rawText?: string
+  claudeToolName?: string | null
 }
 
 function normalizeRuntimeMessageRole(role: string): RuntimeUIMessageRole {
@@ -395,6 +396,7 @@ export function buildRuntimeMessages(
           toolCallId: event.id,
           state: "input-streaming",
           input: event.input ?? {},
+          claudeToolName: event.claude_tool_name,
         })
         break
       }
@@ -410,6 +412,7 @@ export function buildRuntimeMessages(
           part.state = "output-available"
           if (event.input !== undefined) part.input = event.input
           part.output = event.output ?? { success: true }
+          if (event.claude_tool_name !== undefined) part.claudeToolName = event.claude_tool_name
         } else {
           parts.push({
             type: `tool-${normalizeRuntimeToolName(event.name)}`,
@@ -417,6 +420,7 @@ export function buildRuntimeMessages(
             state: "output-available",
             input: event.input ?? {},
             output: event.output ?? { success: true },
+            claudeToolName: event.claude_tool_name,
           })
         }
         break

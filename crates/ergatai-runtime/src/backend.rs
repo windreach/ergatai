@@ -231,6 +231,28 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
         Ok(None)
     }
 
+    /// Get ephemeral in-memory subagent runs for an agent.
+    ///
+    /// Default implementation returns an empty list for backends that do not track them.
+    async fn subagent_runs(&self, _agent_id: &str) -> ErgataiResult<Vec<crate::SubagentRun>> {
+        Ok(Vec::new())
+    }
+
+    /// Get the composed ephemeral subagent runtime for an agent.
+    ///
+    /// Default implementation returns an empty runtime for backends that do not track it.
+    async fn subagent_runtime(&self, _agent_id: &str) -> ErgataiResult<crate::SubagentRuntime> {
+        Ok(crate::SubagentRuntime {
+            runs: Vec::new(),
+            native_subagent_sessions: None,
+            child_session_updates: None,
+            air_subagent: None,
+            file_change_report: None,
+            worktree: None,
+            async_tasks: None,
+        })
+    }
+
     /// Get aggregated unknown extension keys (drift detection).
     async fn unknown_extension_keys(
         &self,

@@ -10,6 +10,7 @@
 
 import { atom } from "jotai"
 import { trpcClient } from "../../../lib/trpc"
+import { clearSubagentState } from "./subagent-message-store"
 import { createLogger } from "../../../../main/lib/logger"
 
 const log = createLogger("AgentManager")
@@ -123,6 +124,7 @@ export async function listAgents(): Promise<ErgataiAgent[]> {
  */
 export async function killAgent(agentId: string): Promise<void> {
   await trpcClient.ergatai.killAgent.mutate({ agentId })
+  clearSubagentState(agentId)
 }
 
 /**

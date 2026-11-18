@@ -143,7 +143,7 @@ export function AgentsRenameConversationDialog({
               <div className="bg-background rounded-2xl shadow-2xl overflow-hidden" data-canvas-dialog>
                 <div className="p-6">
                   <h2 className="text-xl font-semibold mb-4">
-                    Rename conversation
+                    Rename chat
                   </h2>
 
                   {/* Input */}
@@ -151,7 +151,7 @@ export function AgentsRenameConversationDialog({
                     ref={inputRef}
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="Conversation name"
+                    placeholder="Chat name"
                     className="w-full h-11 text-sm"
                     disabled={isSaving || isLoading}
                   />

@@ -34,15 +34,9 @@ test.describe.serial("Navigation/edge extended P2 (Ergatai Electron UI) @extende
 
   test("UI-NAV-005 Page history back/forward controls @extended", async () => {
     // Open settings to access history controls if present
-    const sidebar = page.locator('[data-sidebar="sidebar"]').first()
-    await expect(sidebar).toBeVisible({ timeout: 10_000 })
-    const sidebarBox = await sidebar.boundingBox()
-    if (sidebarBox) {
-      await page.mouse.move(sidebarBox.x + sidebarBox.width / 2, sidebarBox.y + sidebarBox.height - 50)
-    }
-    const settingsTooltip = page.getByText("Settings").first()
-    if (await settingsTooltip.isVisible().catch(() => false)) {
-      await settingsTooltip.click()
+    const settingsBtn = page.getByRole("button", { name: "Settings" }).first()
+    if (await settingsBtn.isVisible().catch(() => false)) {
+      await settingsBtn.click()
       await page.waitForTimeout(500)
     }
 

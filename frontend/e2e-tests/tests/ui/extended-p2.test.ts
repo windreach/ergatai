@@ -67,26 +67,18 @@ test.describe.serial("P2 extended (Ergatai Electron UI) @extended", () => {
   }
 
   async function openSettings() {
-    const sidebar = page.locator('[data-sidebar="sidebar"]').first()
-    await expect(sidebar).toBeVisible({ timeout: 10_000 })
-    const sidebarBox = await sidebar.boundingBox()
-    if (!sidebarBox) throw new Error("Sidebar not found")
-    await page.mouse.move(
-      sidebarBox.x + sidebarBox.width / 2,
-      sidebarBox.y + sidebarBox.height - 50,
-    )
-    const settingsTooltip = page.getByText("Settings").first()
-    await expect(settingsTooltip).toBeVisible({ timeout: 3_000 })
-    await settingsTooltip.click()
+    const settingsBtn = page.getByRole("button", { name: "Settings" }).first()
+    await expect(settingsBtn).toBeVisible({ timeout: 10_000 })
+    await settingsBtn.click()
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).toBeVisible({ timeout: 5_000 })
   }
 
   async function closeSettings() {
     await page.keyboard.press("Escape")
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).not.toBeVisible({ timeout: 3_000 }).catch(() => {})
   }
 

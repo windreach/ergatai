@@ -16,6 +16,13 @@ import { getOrCreateActiveAgent } from "./ergatai-agent-manager"
 import { getQueryClient } from "../../../contexts/TRPCProvider"
 import { trpcClient } from "../../../lib/trpc"
 import { useAgentConversationStore } from "../stores/conversation-store"
+import { updateExtensionMeta } from "./extension-meta-store"
+import {
+  appendSubagentMessage,
+  upsertSubagentRun,
+  updateSubagentRunState,
+  clearSubagentState,
+} from "./subagent-message-store"
 import { getRuntimeSessionStore } from "../../conversation"
 import type { AgentOutputEvent } from "../../../../main/lib/ergatai/sse-client"
 import { appStore } from "../../../lib/jotai-store"
@@ -263,6 +270,72 @@ function transformEvent(
       ]
     }
 
+    case "extension_update": {
+      const kind = event.kind
+      const payload = (event.payload ?? {}) as Record<string, unknown>
+      const id =
+        (typeof payload.id === "string" && payload.id) ||
+        (typeof payload.compactionId === "string" && payload.compactionId) ||
+        (typeof payload.compaction_id === "string" && payload.compaction_id) ||
+        (typeof payload.messageId === "string" && payload.messageId) ||
+        (typeof payload.message_id === "string" && payload.message_id) ||
+        "compact"
+      const status =
+        typeof payload.status === "string" ? payload.status.toLowerCase() : ""
+
+      if (kind === "compaction_update" || kind?.startsWith("compaction")) {
+        const chunks: UIMessageChunk[] = [
+          {
+            type: "tool-input-start",
+            toolCallId: id,
+            toolName: "Compact",
+          },
+          {
+            type: "tool-input-available",
+            toolCallId: id,
+            toolName: "Compact",
+            input: payload,
+          },
+        ]
+        const terminal =
+          status === "completed" ||
+          status === "complete" ||
+          status === "compacted" ||
+          status === "failed" ||
+          status === "error"
+        if (terminal) {
+          chunks.push({
+            type: "tool-output-available",
+            toolCallId: id,
+            output:
+              status === "failed" || status === "error"
+                ? { status: "failed", ...payload }
+                : { status: "compacted", ...payload },
+          })
+        }
+        return chunks
+      }
+
+      if (kind === "compaction_summary_chunk") {
+        const delta =
+          (typeof payload.delta === "string" && payload.delta) ||
+          (typeof payload.summary === "string" && payload.summary) ||
+          (typeof payload.text === "string" && payload.text) ||
+          (typeof payload.chunk === "string" && payload.chunk) ||
+          ""
+        if (!delta) return []
+        return [
+          {
+            type: "tool-input-delta",
+            toolCallId: id,
+            inputTextDelta: delta,
+          },
+        ]
+      }
+
+      return []
+    }
+
     case "retry":
       // Retry status is rendered by the conversation runtime surface, not as a
       // message part. The transport only needs to ignore it here.
@@ -351,6 +424,9 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
     let activeBlock: "text" | "reasoning" | null = null
     let subscription: Unsubscribable | null = null
     const toolCallInputs = new Map<string, string>()
+    // Map tool call IDs back to the subagent that owns them, so tool results
+    // can be attributed even when the completion event lacks subagent_session_id.
+    const subagentToolOwners = new Map<string, string>()
     // Track block ID counters for generating unique IDs on each switch
     let textBlockCounter = 0
     let reasoningBlockCounter = 0
@@ -376,6 +452,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               controller.enqueue({ type: "text-end", id: getTextBlockId() })
             }
             subscription?.unsubscribe()
+            subagentToolOwners.clear()
             for (const chunk of chunks) {
               controller.enqueue(chunk)
             }
@@ -424,6 +501,79 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                   return
                 }
 
+                // Capture subagent-attributed conversation chunks into the in-memory subagent buffer.
+                if (event.subagent_session_id) {
+                  if (event.type === "text") {
+                    appendSubagentMessage(agentId, event.subagent_session_id, {
+                      kind: "text",
+                      content: event.delta,
+                      createdAt: Date.now(),
+                    })
+                  } else if (event.type === "thinking") {
+                    appendSubagentMessage(agentId, event.subagent_session_id, {
+                      kind: "thinking",
+                      content: event.delta,
+                      createdAt: Date.now(),
+                    })
+                  } else if (event.type === "tool_call_start") {
+                    subagentToolOwners.set(event.id, event.subagent_session_id)
+                    appendSubagentMessage(agentId, event.subagent_session_id, {
+                      kind: "tool_call",
+                      content: `${event.name ?? "tool"} ${JSON.stringify(event.input ?? {})}`,
+                      createdAt: Date.now(),
+                      toolCallId: event.id,
+                      toolName: event.name ?? "tool",
+                      input: event.input,
+                      state: "pending",
+                    })
+                  }
+                }
+
+                // Attribute tool errors to the owning subagent even when the
+                // completion event has no subagent_session_id.
+                if (event.type === "tool_call_error") {
+                  const owner = subagentToolOwners.get(event.id)
+                  if (owner) {
+                    appendSubagentMessage(agentId, owner, {
+                      kind: "tool_result",
+                      content: event.error,
+                      createdAt: Date.now(),
+                      toolCallId: event.id,
+                      state: "failed",
+                      output: { error: event.error },
+                    })
+                    subagentToolOwners.delete(event.id)
+                  }
+                }
+
+                // Keep a consumable extension-meta snapshot for UI components.
+                if (event.type === "extension_update") {
+                  updateExtensionMeta(agentId, event.kind, event.payload)
+
+                  // Claude metadata is diagnostic-only: keep it in debug logs.
+                  if (event.kind === "claude_code") {
+                    console.debug("[ErgataiChatTransport] claude_code metadata:", event.payload)
+                  }
+
+                  // Surface quota details into the existing context usage metrics.
+                  if (event.kind === "quota_update" && event.payload && typeof event.payload === "object") {
+                    const payload = event.payload as Record<string, unknown>
+                    const sessionStore = getRuntimeSessionStore()
+                    const session = sessionStore.getSession?.(conversationId)
+                    const used = session?.contextUsed ?? 0
+                    const size = session?.contextWindow ?? 0
+                    sessionStore.updateContextUsage(conversationId, used, size, {
+                      inputTokens: typeof payload.input_tokens === "number" ? payload.input_tokens : null,
+                      outputTokens: typeof payload.output_tokens === "number" ? payload.output_tokens : null,
+                      totalTokens: typeof payload.total_tokens === "number" ? payload.total_tokens : null,
+                      cachedInputTokens: typeof payload.cached_input_tokens === "number" ? payload.cached_input_tokens : null,
+                      cacheWriteInputTokens: typeof payload.cache_write_input_tokens === "number" ? payload.cache_write_input_tokens : null,
+                      reasoningOutputTokens: typeof payload.reasoning_output_tokens === "number" ? payload.reasoning_output_tokens : null,
+                      modelUsage: payload.model_usage ?? null,
+                    })
+                  }
+                }
+
                 // The backend sends this only after the SSE response is bridged
                 // to a live NATS subscription. Waiting for it prevents the
                 // prompt from winning the race against TurnStarted.
@@ -468,6 +618,22 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                     modelUsage: event.model_usage,
                   })
                   return
+                }
+
+                // Keep subagent run metadata in the in-memory rail store.
+                if (event.type === "subagent_spawned") {
+                  upsertSubagentRun(agentId, {
+                    subagentSessionId: event.subagent_session_id,
+                    name: event.name,
+                    task: event.task,
+                    state: "running",
+                    startedAt: Date.now(),
+                    updatedAt: Date.now(),
+                  })
+                }
+
+                if (event.type === "subagent_state_update") {
+                  updateSubagentRunState(agentId, event.subagent_session_id, event.state)
                 }
 
                 // Surface subagent spawn/state events in the message stream.
@@ -527,6 +693,21 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                   return
                 }
 
+                const isCompactionExtension =
+                  event.type === "extension_update" &&
+                  (event.kind === "compaction_update" ||
+                    String(event.kind ?? "").startsWith("compaction"))
+
+                if (isCompactionExtension) {
+                  if (activeBlock === "reasoning") {
+                    controller.enqueue({ type: "reasoning-end", id: getReasoningBlockId() })
+                    activeBlock = null
+                  } else if (activeBlock === "text") {
+                    controller.enqueue({ type: "text-end", id: getTextBlockId() })
+                    activeBlock = null
+                  }
+                }
+
                 if (event.type === "tool_call_start") {
                   // Close any active reasoning/text block before starting a tool call.
                   // Without this, if thinking finishes and a tool_call_start arrives
@@ -561,6 +742,23 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                   streamEvent = { ...event, input: input ?? undefined }
                   // Clean up the Map entry to prevent memory leak
                   toolCallInputs.delete(event.id)
+
+                  // Attribute tool results back to the owning subagent, if any.
+                  const owner = subagentToolOwners.get(event.id)
+                  if (owner) {
+                    appendSubagentMessage(agentId, owner, {
+                      kind: "tool_result",
+                      content:
+                        typeof event.output === "string"
+                          ? event.output
+                          : JSON.stringify(event.output ?? ""),
+                      createdAt: Date.now(),
+                      toolCallId: event.id,
+                      state: "completed",
+                      output: event.output,
+                    })
+                    subagentToolOwners.delete(event.id)
+                  }
                 }
 
                 // Handle session title update separately

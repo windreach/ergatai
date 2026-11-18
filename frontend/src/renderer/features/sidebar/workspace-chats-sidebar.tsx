@@ -240,15 +240,16 @@ const ChatItem = memo(function ChatItem({
                   }}
                   isPinned={isPinned}
                   onTogglePin={onPinChat}
-                  onRename={() => {}} // Not supported in workspace chats sidebar
                   onArchive={onArchiveChat}
-                  onArchiveOthers={() => {}} // Not supported in workspace chats sidebar
                   isOnlyChat={totalCount === 1}
                   currentIndex={globalIndex}
                   totalCount={totalCount}
                   chatId={chat.id}
                   isActiveTab={isActive}
                   isSplitTab={false}
+                  entityLabel="chat"
+                  exportWholeChat={true}
+                  hideOpenInNewWindow={true}
                 />
               </div>
               {/* Second line: draft or file stats + timestamp */}

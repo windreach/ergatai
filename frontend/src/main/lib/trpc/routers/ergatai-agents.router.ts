@@ -870,4 +870,18 @@ export const agentsRouter = router({
       })
     }),
 
+  /** Get the latest parsed ACP extension metadata for an agent */
+  getAgentExtensionMeta: publicProcedure
+    .input(z.object({ agentId: agentIdSchema }))
+    .query(async ({ input }) => {
+      try {
+        return await ergataiFetch<{
+          agent_id: string
+          extension_meta: unknown | null
+        }>(`/api/v1/agents/${encodeURIComponent(input.agentId)}/extension-meta`)
+      } catch {
+        return { agent_id: input.agentId, extension_meta: null }
+      }
+    }),
+
 })

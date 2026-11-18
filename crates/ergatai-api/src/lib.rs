@@ -419,6 +419,18 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::agents::get_agent_config_options),
         )
         .route(
+            "/api/v1/agents/{id}/extension-meta",
+            get(api::agents::get_agent_extension_meta),
+        )
+        .route(
+            "/api/v1/agents/{id}/subagent-runs",
+            get(api::agents::get_agent_subagent_runs),
+        )
+        .route(
+            "/api/v1/agents/{id}/subagent-runtime",
+            get(api::agents::get_agent_subagent_runtime),
+        )
+        .route(
             "/api/v1/agents/{id}/commands",
             get(api::agents::get_agent_available_commands),
         )

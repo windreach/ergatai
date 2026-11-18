@@ -143,8 +143,8 @@ function parseSseEventFields(rawEvent: string): { eventName: string; data: strin
  * Prevents unsafe type assertions and validates backend data at the trust boundary.
  */
 const agentOutputEventSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("text"), delta: z.string(), conversation_id: z.string().nullish() }),
-  z.object({ type: z.literal("thinking"), delta: z.string(), conversation_id: z.string().nullish() }),
+  z.object({ type: z.literal("text"), delta: z.string(), subagent_session_id: z.string().nullish(), conversation_id: z.string().nullish() }),
+  z.object({ type: z.literal("thinking"), delta: z.string(), subagent_session_id: z.string().nullish(), conversation_id: z.string().nullish() }),
   z.object({
     type: z.literal("tool_call_start"),
     id: z.string(),
@@ -153,6 +153,8 @@ const agentOutputEventSchema = z.discriminatedUnion("type", [
     output: z.unknown().optional(),
     locations: z.array(z.object({ path: z.string(), line: z.number().optional() })).optional(),
     parent_tool_use_id: z.string().nullish(),
+    claude_tool_name: z.string().nullish(),
+    subagent_session_id: z.string().nullish(),
     conversation_id: z.string().nullish(),
   }),
   z.object({ type: z.literal("tool_call_input"), id: z.string(), delta: z.string(), conversation_id: z.string().nullish() }),
@@ -324,11 +326,13 @@ type ToolCallEventData = {
   output?: unknown
   locations?: ToolCallLocation[]
   parent_tool_use_id?: string | null
+  claude_tool_name?: string | null
 }
 
 /** Attribution injected by the API layer: the conversation whose prompt produced the event. */
 interface AgentOutputEventContext {
   conversation_id?: string | null
+  subagent_session_id?: string | null
 }
 
 export type AgentOutputEvent =
@@ -568,6 +572,7 @@ export function subscribeAgentStream(
           "session_title_update",
           "subagent_spawned",
           "subagent_state_update",
+          "extension_update",
           "conversation_message",
           "message_inserted",
           "turn_started",

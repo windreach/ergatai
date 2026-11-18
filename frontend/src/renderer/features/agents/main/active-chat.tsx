@@ -197,7 +197,7 @@ import { conversationAgentStorage } from "../lib/conversation-agent-storage";
 
 // Inner chat component - only rendered when chat object is ready
 // Memoized to prevent re-renders when parent state changes (e.g., selectedFilePath)
-// react-doctor-disable-next-line no-giant-component
+// react-doctor-disable-next-line no-giant-component, react-doctor/no-high-complexity-react-function
 const ChatViewInner = memo(function ChatViewInner(props: {
       chat: Chat<UIMessage>
       conversationId: string

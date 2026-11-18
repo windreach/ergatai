@@ -140,29 +140,18 @@ test.describe.serial("P0 smoke (Ergatai Electron UI)", () => {
   }
 
   async function openSettings() {
-    const sidebar = page.locator('[data-sidebar="sidebar"]').first()
-    await expect(sidebar).toBeVisible({ timeout: 10_000 })
-
-    const sidebarBox = await sidebar.boundingBox()
-    if (!sidebarBox) throw new Error("Sidebar not found")
-    await page.mouse.move(
-      sidebarBox.x + sidebarBox.width / 2,
-      sidebarBox.y + sidebarBox.height - 50,
-    )
-
-    const settingsTooltip = page.getByText("Settings").first()
-    await expect(settingsTooltip).toBeVisible({ timeout: 3_000 })
-    await settingsTooltip.click()
-
+    const settingsBtn = page.getByRole("button", { name: "Settings" }).first()
+    await expect(settingsBtn).toBeVisible({ timeout: 10_000 })
+    await settingsBtn.click()
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).toBeVisible({ timeout: 5_000 })
   }
 
   async function closeSettings() {
     await page.keyboard.press("Escape")
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).not.toBeVisible({ timeout: 3_000 })
   }
 
@@ -257,7 +246,7 @@ test.describe.serial("P0 smoke (Ergatai Electron UI)", () => {
   test("UI-SB-003 Settings button opens settings @smoke", async () => {
     await openSettings()
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).toBeVisible()
     await closeSettings()
   })
@@ -266,7 +255,7 @@ test.describe.serial("P0 smoke (Ergatai Electron UI)", () => {
     await openSettings()
     await page.keyboard.press("Escape")
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).not.toBeVisible({ timeout: 3_000 })
   })
 
@@ -283,7 +272,7 @@ test.describe.serial("P0 smoke (Ergatai Electron UI)", () => {
     ] as const
     for (const tabName of expectedTabs) {
       await expect(
-        page.getByRole("button", { name: tabName }).first(),
+        page.getByRole("tab", { name: tabName }).first(),
       ).toBeVisible()
     }
 
@@ -291,7 +280,7 @@ test.describe.serial("P0 smoke (Ergatai Electron UI)", () => {
   })
 
   test("UI-TB-001 Task Board opens from sidebar @smoke", async () => {
-    const taskBoardButton = page.getByRole("button", { name: "Task Board" }).first()
+    const taskBoardButton = page.getByRole("button", { name: "Open task board" }).first()
     await expect(taskBoardButton).toBeVisible({ timeout: 10_000 })
     await taskBoardButton.focus()
     await page.keyboard.press("Enter")

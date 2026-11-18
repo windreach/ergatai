@@ -450,7 +450,7 @@ pub fn scan_claude_plugin_skills(home: &Path, cwd: Option<&str>, out: &mut Vec<S
     };
 
     let installed_path = plugins_dir.join("installed_plugins.json");
-    if let Some(raw) = fs::read_to_string(&installed_path).ok() {
+    if let Ok(raw) = fs::read_to_string(&installed_path) {
         if let Ok(installed) = serde_json::from_str::<Value>(&raw) {
             if let Some(plugins) = installed.get("plugins").and_then(|x| x.as_object()) {
                 let mut keys: Vec<String> = plugins.keys().cloned().collect();
@@ -587,7 +587,7 @@ pub fn scan_claude_plugin_skills(home: &Path, cwd: Option<&str>, out: &mut Vec<S
     scan_marketplaces(home, out);
 }
 
-pub fn apply_claude_skill_overrides(home: &Path, cwd: Option<&str>, out: &mut Vec<SkillInfo>) {
+pub fn apply_claude_skill_overrides(home: &Path, cwd: Option<&str>, out: &mut [SkillInfo]) {
     let cwd_path = cwd.map(PathBuf::from);
     let config_dir = resolve_config_dir(home, cwd_path.as_deref());
     let (_enabled_plugins, overrides, _synced_hidden) =

@@ -25,26 +25,18 @@ test.describe.serial("Settings/TaskBoard extended P2 (Ergatai Electron UI) @exte
   })
 
   async function openSettings() {
-    const sidebar = page.locator('[data-sidebar="sidebar"]').first()
-    await expect(sidebar).toBeVisible({ timeout: 10_000 })
-    const sidebarBox = await sidebar.boundingBox()
-    if (!sidebarBox) throw new Error("Sidebar not found")
-    await page.mouse.move(
-      sidebarBox.x + sidebarBox.width / 2,
-      sidebarBox.y + sidebarBox.height - 50,
-    )
-    const settingsTooltip = page.getByText("Settings").first()
-    await expect(settingsTooltip).toBeVisible({ timeout: 3_000 })
-    await settingsTooltip.click()
+    const settingsBtn = page.getByRole("button", { name: "Settings" }).first()
+    await expect(settingsBtn).toBeVisible({ timeout: 10_000 })
+    await settingsBtn.click()
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).toBeVisible({ timeout: 5_000 })
   }
 
   async function closeSettings() {
     await page.keyboard.press("Escape")
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).not.toBeVisible({ timeout: 3_000 }).catch(() => {})
   }
 
@@ -109,7 +101,7 @@ test.describe.serial("Settings/TaskBoard extended P2 (Ergatai Electron UI) @exte
   })
 
   test("UI-TB-003 Task Board renders columns @extended", async () => {
-    const taskBoardButton = page.getByRole("button", { name: "Task Board" }).first()
+    const taskBoardButton = page.getByRole("button", { name: "Open task board" }).first()
     await expect(taskBoardButton).toBeVisible({ timeout: 10_000 })
     await taskBoardButton.focus()
     await page.keyboard.press("Enter")
@@ -123,7 +115,7 @@ test.describe.serial("Settings/TaskBoard extended P2 (Ergatai Electron UI) @exte
   })
 
   test("UI-TB-004 Task Board empty state @extended", async () => {
-    const taskBoardButton = page.getByRole("button", { name: "Task Board" }).first()
+    const taskBoardButton = page.getByRole("button", { name: "Open task board" }).first()
     if (await taskBoardButton.isVisible().catch(() => false)) {
       await taskBoardButton.focus()
       await page.keyboard.press("Enter")

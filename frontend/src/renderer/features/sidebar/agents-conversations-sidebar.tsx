@@ -46,6 +46,8 @@ import {
   defaultAgentModeAtom,
 } from "../../lib/atoms"
 import { trpc } from "../../lib/trpc"
+import { trpcClient } from "../../lib/trpc"
+import { clearSubagentState } from "../agents/lib/subagent-message-store"
 import { appStore } from "../../lib/jotai-store"
 import {
   useAgentConversationStore,
@@ -194,6 +196,18 @@ export function AgentsConversationsSidebar({
       utils.chats.list.invalidate()
       void utils.ergatai.workspaceStatus.invalidate()
       utils.chats.listArchived.invalidate()
+
+      // Clear ephemeral subagent buffers for agents bound to this chat.
+      void (async () => {
+        try {
+          const agents = await trpcClient.ergatai.getChatAgents.query({ chatId: variables.id })
+          for (const agent of agents ?? []) {
+            clearSubagentState(agent.agent_id)
+          }
+        } catch {
+          // Best effort cleanup only.
+        }
+      })()
 
       // Navigate to previous chat or new workspace
       if (selectedChatId === variables.id) {
@@ -1567,7 +1581,7 @@ export function AgentsConversationsSidebar({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Archive conversation</AlertDialogTitle>
+            <AlertDialogTitle>Archive chat</AlertDialogTitle>
           </AlertDialogHeader>
           <AlertDialogDescription className="px-5 pb-5">
             Do you want to archive chat{" "}

@@ -99,6 +99,27 @@ pub async fn get_agent_usage(agent_id: &str) -> anyhow::Result<Option<(usize, us
     Ok(backend().usage(agent_id).await?)
 }
 
+/// Get the latest parsed ACP extension metadata for an agent, if any.
+pub async fn get_agent_extension_meta(
+    agent_id: &str,
+) -> anyhow::Result<Option<ergatai_runtime::acp_extension::ExtensionMeta>> {
+    Ok(backend().extension_meta(agent_id).await?)
+}
+
+/// Get ephemeral in-memory subagent runs for an agent.
+pub async fn get_agent_subagent_runs(
+    agent_id: &str,
+) -> anyhow::Result<Vec<ergatai_runtime::SubagentRun>> {
+    Ok(backend().subagent_runs(agent_id).await?)
+}
+
+/// Get the composed ephemeral subagent runtime for an agent.
+pub async fn get_agent_subagent_runtime(
+    agent_id: &str,
+) -> anyhow::Result<ergatai_runtime::SubagentRuntime> {
+    Ok(backend().subagent_runtime(agent_id).await?)
+}
+
 /// Get captured output for an agent (non-destructive read).
 pub async fn get_agent_output(agent_id: &str) -> anyhow::Result<Option<String>> {
     Ok(backend().output(agent_id).await?)

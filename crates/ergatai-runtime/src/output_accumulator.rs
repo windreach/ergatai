@@ -864,7 +864,58 @@ fn accumulate_chunk_event(
             acc.accumulate_text(&format!("[subagent {} -> {}]", subagent_session_id, state));
         }
         AgentOutputEvent::ExtensionUpdate { kind, payload, .. } => {
-            acc.accumulate_text(&format!("[{}: {}]", kind, payload));
+            if kind == "compaction_update" {
+                let status = payload
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("started");
+                let id = payload
+                    .get("id")
+                    .or_else(|| payload.get("compactionId"))
+                    .or_else(|| payload.get("compaction_id"))
+                    .or_else(|| payload.get("messageId"))
+                    .or_else(|| payload.get("message_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("compact")
+                    .to_string();
+                let terminal = matches!(
+                    status,
+                    "completed" | "complete" | "compacted" | "failed" | "error"
+                );
+                if terminal {
+                    let mapped = if matches!(status, "failed" | "error") {
+                        "failed".to_string()
+                    } else {
+                        "completed".to_string()
+                    };
+                    let error = if matches!(status, "failed" | "error") {
+                        payload
+                            .get("error")
+                            .or_else(|| payload.get("message"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    } else {
+                        None
+                    };
+                    acc.record_tool_call_update(
+                        &id,
+                        Some(payload.clone()),
+                        Some(payload.clone()),
+                        mapped,
+                        error,
+                    );
+                } else {
+                    acc.record_tool_call_start(
+                        id,
+                        "Compact".to_string(),
+                        None,
+                        payload.clone(),
+                        Vec::new(),
+                    );
+                }
+            } else {
+                acc.accumulate_text(&format!("[{}: {}]", kind, payload));
+            }
         }
         _ => {}
     }

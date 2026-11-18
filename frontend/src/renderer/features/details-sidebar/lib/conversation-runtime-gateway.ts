@@ -20,7 +20,7 @@ export type RuntimeAgentEvent = {
   output?: unknown
   locations?: Array<{ path: string; line?: number }>
   title?: string
-  subagent_session_id?: string
+  subagent_session_id?: string | null
   task?: string
   state?: string
   stop_reason?: string

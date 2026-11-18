@@ -26,6 +26,8 @@ interface PlanWidgetProps {
   onApprovePlan?: () => void
   /** Callback when "View plan" is clicked - opens plan sidebar */
   onExpandPlan?: () => void
+  /** Async tasks payload surfaced via extension meta (rendered as a section) */
+  asyncTasks?: unknown
 }
 
 /**
@@ -43,9 +45,26 @@ export const PlanWidget = memo(function PlanWidget({
   mode = "agent",
   onApprovePlan,
   onExpandPlan,
+  asyncTasks,
 }: PlanWidgetProps) {
   // Use activeConversationId for fetching if available
   const effectiveChatId = activeConversationId || chatId
+
+  const asyncTaskList = (() => {
+    if (!asyncTasks || typeof asyncTasks !== "object") return []
+    const obj = asyncTasks as Record<string, unknown>
+    const candidates = [obj.tasks, obj.asyncTasks, obj.async_tasks, obj.items, obj.list]
+    for (const c of candidates) {
+      if (Array.isArray(c)) {
+        return c.map((item) => {
+          if (typeof item === "string") return { name: item }
+          if (item && typeof item === "object") return item as Record<string, unknown>
+          return {}
+        })
+      }
+    }
+    return []
+  })()
 
   // Expanded/collapsed state
   const [isExpanded, setIsExpanded] = useState(false)
@@ -238,6 +257,27 @@ export const PlanWidget = memo(function PlanWidget({
           )}
         </div>
       </div>
+      {asyncTaskList.length > 0 ? (
+        <div className="mt-3 border-t border-border/40 pt-2">
+          <div className="mb-1 text-xs font-medium text-muted-foreground">Async Tasks</div>
+          <div className="space-y-1">
+            {asyncTaskList.map((t, i) => {
+              const name = String(t.name ?? t.title ?? t.id ?? `Task ${i + 1}`)
+              const status = String(t.status ?? t.state ?? "")
+              return (
+                <div key={String(t.id ?? t.name ?? t.title ?? JSON.stringify(t))} className="flex items-center gap-2 text-xs">
+                  {status ? (
+                    <span className="rounded bg-background/60 px-1.5 py-0.5 text-[10px] uppercase">
+                      {status}
+                    </span>
+                  ) : null}
+                  <span className="truncate">{name}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 })

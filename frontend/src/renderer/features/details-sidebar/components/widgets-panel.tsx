@@ -2,9 +2,11 @@ import { useMemo } from "react"
 import { useAtomValue } from "jotai"
 import { widgetVisibilityAtomFamily, widgetOrderAtomFamily } from "../atoms"
 import { WidgetCard } from "./widget-card"
+import { useExtensionMeta } from "../../agents/lib/extension-meta-store"
 import { AgentsWidget } from "../sections/agents-widget"
 import { TodoWidget } from "../sections/todo-widget"
 import { PlanWidget } from "../sections/plan-widget"
+import { GoalWidget } from "../sections/goal-widget"
 import { TerminalWidget } from "../sections/terminal-widget"
 import { ChangesWidget } from "../sections/changes-widget"
 // Temporarily disabled: MCP widget is session-scoped and too limited for multi-agent use.
@@ -99,8 +101,13 @@ export function WidgetsPanel({
     id: chatId,
   })
 
+  const extensionMeta = useExtensionMeta(chatId)
+  const asyncTasks = extensionMeta?.["async_tasks_update"]
+  const goal = extensionMeta?.["goal"] ?? extensionMeta?.goal
+
   return (
     <>
+      <GoalWidget goal={goal} />
       {widgetOrder.map((widgetId) => {
         // Skip if widget is not visible
         // react-doctor-disable-next-line js-set-map-lookups

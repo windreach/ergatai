@@ -118,14 +118,14 @@ export function ConversationContextMenu({
   return (
     <ContextMenuContent className="w-48">
       <ContextMenuItem onClick={() => onTogglePin(conversation.id)}>
-        {isPinned ? "Unpin conversation" : "Pin conversation"}
+        {isPinned ? "Unpin chat" : "Pin chat"}
       </ContextMenuItem>
       <ContextMenuItem onClick={() => onRename(conversation)}>
-        Rename conversation
+        Rename chat
       </ContextMenuItem>
       {chatId && (
         <ContextMenuSub>
-          <ContextMenuSubTrigger>Export conversation</ContextMenuSubTrigger>
+          <ContextMenuSubTrigger>Export chat</ContextMenuSubTrigger>
           <ContextMenuSubContent sideOffset={6} alignOffset={-4}>
             <ContextMenuItem onClick={() => handleExport("markdown")}>
               Download as Markdown
@@ -163,7 +163,7 @@ export function ConversationContextMenu({
           )}
           {onCloseSplit && (
             <ContextMenuItem onClick={onCloseSplit}>
-              Separate conversations
+              Separate chats
             </ContextMenuItem>
           )}
         </>
@@ -214,7 +214,7 @@ export function ConversationContextMenu({
             className="justify-between"
             disabled={isOnlyChat}
           >
-            Archive conversation
+            Archive chat
             {!isOnlyChat && <Kbd>{closeTabShortcut}</Kbd>}
           </ContextMenuItem>
           <ContextMenuItem
@@ -224,13 +224,13 @@ export function ConversationContextMenu({
               currentIndex >= (totalCount || 0) - 1
             }
           >
-            Archive conversations below
+            Archive chats below
           </ContextMenuItem>
           <ContextMenuItem
             onClick={() => onArchiveOthers(conversation.id)}
             disabled={isOnlyChat}
           >
-            Archive other conversations
+            Archive other chats
           </ContextMenuItem>
         </>
       )}

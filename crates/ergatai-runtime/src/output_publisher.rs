@@ -126,6 +126,7 @@ mod tests {
         let event = AgentOutputEvent::Text {
             role: "assistant".to_string(),
             delta: "hi".to_string(),
+            subagent_session_id: None,
         };
         let res = p.publish("conv-1", event).await;
         assert!(res.is_ok());

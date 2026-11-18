@@ -477,8 +477,9 @@ export function ChatViewSidebars(props: any) {
         )}
 
         {/* Right panel rail (mutually exclusive panels) */}
-        {!isMobileFullscreen && !!worktreePath && (
+        {!isMobileFullscreen && (
           <div className="flex flex-col items-center gap-1 w-10 border-l border-border/50 bg-tl-background py-2 flex-shrink-0">
+            {worktreePath && (
             <button
               type="button"
               title="Detail"
@@ -501,6 +502,8 @@ export function ChatViewSidebars(props: any) {
             >
               <PanelRight className="h-4 w-4" />
             </button>
+            )}
+            {worktreePath && (
             <button
               type="button"
               title="Files"
@@ -522,6 +525,8 @@ export function ChatViewSidebars(props: any) {
             >
               <Folder className="h-4 w-4" />
             </button>
+            )}
+            {worktreePath && (
             <button
               type="button"
               title="Git"
@@ -543,6 +548,7 @@ export function ChatViewSidebars(props: any) {
             >
               <GitBranch className="h-4 w-4" />
             </button>
+            )}
             <button
               type="button"
               title="Task Board"

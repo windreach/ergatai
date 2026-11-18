@@ -28,6 +28,8 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
   const { questions, toolUseId } = pendingQuestions
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0)
   const [answers, setAnswers] = useState<Record<string, string[]>>({})
+  const [customAnswer, setCustomAnswer] = useState("")
+  const [isCustomSelected, setIsCustomSelected] = useState(false)
   const [focusedOptionIndex, setFocusedOptionIndex] = useState(0)
   const [isVisible, setIsVisible] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -73,6 +75,10 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
       // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setAnswers({})
       // react-doctor-disable-next-line no-adjust-state-on-prop-change
+      setCustomAnswer("")
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
+      setIsCustomSelected(false)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setFocusedOptionIndex(0)
       prevToolUseIdRef.current = toolUseId
     }
@@ -103,6 +109,7 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
     (questionText: string, optionLabel: string, questionIndex: number) => {
       const question = questions[questionIndex]
       const allowMultiple = question?.multiSelect || false
+      setIsCustomSelected(false)
       const isLastQuestion = questionIndex === questions.length - 1
 
       setAnswers((prev) => {
@@ -198,6 +205,21 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
 
   const currentQuestionHasAnswer =
     (answers[currentQuestion?.question] || []).length > 0
+
+  const handleCustomAnswerChange = useCallback(
+    (value: string) => {
+      setCustomAnswer(value)
+      const questionText = currentQuestion?.question
+      if (!questionText) return
+      if (value.trim()) {
+        setIsCustomSelected(true)
+        setAnswers((prev) => ({ ...prev, [questionText]: [value.trim()] }))
+      } else {
+        setIsCustomSelected(false)
+      }
+    },
+    [currentQuestion?.question],
+  )
   const allQuestionsAnswered = questions.every(
     (q) => (answers[q.question] || []).length > 0,
   )
@@ -393,6 +415,29 @@ export const AgentUserQuestion = memo(forwardRef<AgentUserQuestionHandle, AgentU
               </button>
             )
           })}
+        </div>
+      </div>
+
+      {/* Custom answer (free text) */}
+      <div className="px-2 pb-2">
+        <div
+          className={cn(
+            "flex items-center gap-2 rounded-md border px-2 py-1.5",
+            isCustomSelected ? "border-foreground/40 bg-muted/70" : "border-border hover:bg-muted/50",
+          )}
+        >
+          <span className="text-[12px] text-muted-foreground">Other:</span>
+          <input
+            type="text"
+            value={customAnswer}
+            onChange={(e) => handleCustomAnswerChange(e.target.value)}
+            onFocus={() => {
+              if (customAnswer.trim()) setIsCustomSelected(true)
+            }}
+            placeholder="Type your own answer"
+            disabled={isSubmitting}
+            className="flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground/60"
+          />
         </div>
       </div>
 

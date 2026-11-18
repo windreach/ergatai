@@ -832,6 +832,8 @@ pub enum AgentOutputPayload {
         input: Option<serde_json::Value>,
         locations: Vec<ToolCallLocation>,
         parent_tool_use_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claude_tool_name: Option<String>,
     },
     /// Generic ACP extension update.
     ExtensionUpdate {

@@ -4,7 +4,10 @@ import { memo } from "react"
 import type { RefObject } from "react"
 import type { UIMessage } from "@ai-sdk/react"
 import { cn } from "../../../lib/utils"
+import { useAtom } from "jotai"
 import { ChatMessagesRenderer } from "./chat-messages-renderer"
+import { selectedSubagentSessionIdAtomFamily } from "../lib/subagent-message-store"
+import { SubagentConversationView } from "../ui/subagent-conversation-view"
 import { useConversationHistoryImport } from "../hooks/use-conversation-history-import"
 // import { ImplicitCollaborationTaskCards } from "../collaboration/implicit-collaboration-task-cards"
 // import { CollaborationSessionEventCards } from "../collaboration/collaboration-session-event-cards"
@@ -69,6 +72,24 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
     agentId,
     containerRef: chatContainerRef,
   })
+
+  const [selectedSubagentSessionId, setSelectedSubagentSessionId] = useAtom(
+    selectedSubagentSessionIdAtomFamily(conversationId),
+  )
+
+  if (selectedSubagentSessionId) {
+    return (
+      <div className="flex-1 overflow-y-auto w-full relative allow-text-selection outline-none">
+        <div className="px-2 mx-auto max-w-2xl pb-8">
+          <SubagentConversationView
+            agentId={agentId ?? null}
+            subagentSessionId={selectedSubagentSessionId}
+            onBack={() => setSelectedSubagentSessionId(null)}
+          />
+        </div>
+      </div>
+    )
+  }
 
   return (
     <ChatMessagesRenderer

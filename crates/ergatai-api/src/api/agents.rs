@@ -4618,6 +4618,137 @@ pub(crate) fn extract_models_from_config_options(
     }
 }
 
+/// Response for `GET /api/v1/agents/:id/extension-meta`.
+#[derive(Serialize, ToSchema)]
+pub struct AgentExtensionMetaResponse {
+    pub agent_id: String,
+    #[schema(value_type = Object, nullable = true)]
+    pub extension_meta: Option<serde_json::Value>,
+}
+
+/// Get the latest parsed ACP extension metadata for an agent.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/extension-meta",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Agent extension metadata", body = AgentExtensionMetaResponse),
+        (status = 400, description = "Invalid agent ID", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_agent_extension_meta(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
+    match crate::services::agent_service::get_agent_extension_meta(&id).await {
+        Ok(meta) => {
+            let extension_meta =
+                meta.map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
+            (
+                StatusCode::OK,
+                Json(AgentExtensionMetaResponse {
+                    agent_id: id,
+                    extension_meta,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => monitoring_handler_error(&e),
+    }
+}
+
+/// Response for `GET /api/v1/agents/:id/subagent-runs`.
+#[derive(Serialize, ToSchema)]
+pub struct AgentSubagentRunsResponse {
+    pub agent_id: String,
+    pub subagent_runs: Vec<serde_json::Value>,
+}
+
+/// Get ephemeral in-memory subagent runs for an agent.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/subagent-runs",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Agent subagent runs", body = AgentSubagentRunsResponse),
+        (status = 400, description = "Invalid agent ID", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_agent_subagent_runs(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
+    match crate::services::agent_service::get_agent_subagent_runs(&id).await {
+        Ok(runs) => {
+            let subagent_runs = runs
+                .into_iter()
+                .map(|r| serde_json::to_value(r).unwrap_or(serde_json::Value::Null))
+                .collect();
+            (
+                StatusCode::OK,
+                Json(AgentSubagentRunsResponse {
+                    agent_id: id,
+                    subagent_runs,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => monitoring_handler_error(&e),
+    }
+}
+
+/// Response for `GET /api/v1/agents/:id/subagent-runtime`.
+#[derive(Serialize, ToSchema)]
+pub struct AgentSubagentRuntimeResponse {
+    pub agent_id: String,
+    pub runtime: serde_json::Value,
+}
+
+/// Get the composed ephemeral subagent runtime for an agent.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/subagent-runtime",
+    tag = "Agents",
+    params(("id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "Agent subagent runtime", body = AgentSubagentRuntimeResponse),
+        (status = 400, description = "Invalid agent ID", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_agent_subagent_runtime(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = validate_agent_id(&id) {
+        return resp;
+    }
+    match crate::services::agent_service::get_agent_subagent_runtime(&id).await {
+        Ok(runtime) => {
+            let runtime = serde_json::to_value(runtime).unwrap_or(serde_json::Value::Null);
+            (
+                StatusCode::OK,
+                Json(AgentSubagentRuntimeResponse {
+                    agent_id: id,
+                    runtime,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => monitoring_handler_error(&e),
+    }
+}
+
 // ── Tests ──
 
 #[cfg(test)]

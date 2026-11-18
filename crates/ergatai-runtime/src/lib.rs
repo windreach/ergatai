@@ -34,6 +34,7 @@
 //! ```
 
 // Core types
+pub mod acp_custom_fields;
 pub mod acp_extension;
 pub mod activity_monitor;
 pub mod adapter_manager;
@@ -84,8 +85,8 @@ pub use agent_record::{
 pub use agent_registry::{AgentRegistry, AgentRegistryReadGuard, AgentRegistryWriteGuard};
 pub use backend::AcpBackendInterface;
 pub use backends::acp::{
-    AcpBackend, AgentOutputEvent, ElicitationResponse, TrackedElicitation, TrackedPlan,
-    TrackedPlanEntry, TrackedToolCall,
+    AcpBackend, AgentOutputEvent, ElicitationResponse, SubagentRun, SubagentRuntime,
+    TrackedElicitation, TrackedPlan, TrackedPlanEntry, TrackedToolCall,
 };
 pub use backends::acp_http::AcpHttpBackend;
 

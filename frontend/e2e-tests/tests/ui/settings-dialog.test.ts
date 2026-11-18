@@ -29,33 +29,11 @@ test.describe.serial("Settings dialog", () => {
   ] as const
 
   async function openSettings() {
-    // The Settings button is icon-only (no aria-label), wrapped in a Tooltip.
-    // Strategy: find the sidebar footer area, hover to trigger the tooltip,
-    // then click the button beneath it.
-    //
-    // The sidebar footer contains the Settings button near the bottom. We
-    // locate it by finding the footer container and hovering the Settings
-    // icon area.
-    const sidebar = page.locator('[data-sidebar="sidebar"]').first()
-    await expect(sidebar).toBeVisible({ timeout: 10_000 })
-
-    // Hover near the bottom of the sidebar to trigger the Settings tooltip.
-    const sidebarBox = await sidebar.boundingBox()
-    if (!sidebarBox) throw new Error("Sidebar not found")
-    await page.mouse.move(sidebarBox.x + sidebarBox.width / 2, sidebarBox.y + sidebarBox.height - 50)
-
-    // Wait for the tooltip to appear — it contains the text "Settings".
-    const settingsTooltip = page.getByText("Settings").first()
-    await expect(settingsTooltip).toBeVisible({ timeout: 3_000 })
-
-    // Click the tooltip to activate the button beneath it (the tooltip is
-    // positioned over the button, so clicking it triggers the button).
-    await settingsTooltip.click()
-
-    // The dialog should appear — wait for any of the known tab labels to
-    // confirm the settings UI actually rendered.
+    const settingsBtn = page.getByRole("button", { name: "Settings" }).first()
+    await expect(settingsBtn).toBeVisible({ timeout: 10_000 })
+    await settingsBtn.click()
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).toBeVisible({ timeout: 5_000 })
   }
 
@@ -64,7 +42,7 @@ test.describe.serial("Settings dialog", () => {
     // uses a dedicated close button or relies on overlay click.
     await page.keyboard.press("Escape")
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).not.toBeVisible({ timeout: 3_000 })
   }
 
@@ -93,7 +71,7 @@ test.describe.serial("Settings dialog", () => {
 
     for (const tabName of EXPECTED_TABS) {
       await expect(
-        page.getByRole("button", { name: tabName }).first(),
+        page.getByRole("tab", { name: tabName }).first(),
       ).toBeVisible()
     }
 
@@ -103,8 +81,8 @@ test.describe.serial("Settings dialog", () => {
   test("switches the active tab when a tab button is pressed", async () => {
     await openSettings()
 
-    const appearanceTab = page.getByRole("button", { name: "Appearance" }).first()
-    const keyboardTab = page.getByRole("button", { name: "Keyboard" }).first()
+    const appearanceTab = page.getByRole("tab", { name: "Appearance" }).first()
+    const keyboardTab = page.getByRole("tab", { name: "Keyboard" }).first()
 
     // Click Appearance and verify it becomes the active tab.
     await appearanceTab.click()
@@ -127,7 +105,7 @@ test.describe.serial("Settings dialog", () => {
     // handler explicitly sets the active tab to "preferences").
     await openSettings()
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).toHaveAttribute("aria-selected", "true")
     await closeSettings()
   })

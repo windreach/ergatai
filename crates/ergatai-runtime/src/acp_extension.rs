@@ -122,12 +122,67 @@ pub struct UnifiedAuth {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UnifiedContext {
     pub compaction: Option<Value>,
+    pub compaction_trigger: Option<String>,
+    pub compaction_pre_tokens: Option<u64>,
+    pub compaction_post_tokens: Option<u64>,
+    pub compaction_duration_ms: Option<u64>,
+    pub compaction_error: Option<String>,
     pub prompt_suggestions: Option<Value>,
     pub goal: Option<Value>,
     pub model: Option<Value>,
     pub origin: Option<Value>,
     pub sdk_message: Option<Value>,
     pub claude_code: Option<Value>,
+    pub claude_vertex: Option<Value>,
+    pub claude_options: Option<Value>,
+    pub claude_non_execution_kind: Option<String>,
+    pub claude_prompt_queueing: Option<bool>,
+    pub air_archived: Option<bool>,
+    pub air_client: Option<Value>,
+    pub air_file_change_report: Option<Value>,
+    pub air_kind: Option<String>,
+    pub air_list: Option<Value>,
+    pub air_load_replay_end: Option<bool>,
+    pub air_mcp: Option<Value>,
+    pub air_permission: Option<Value>,
+    pub air_plan_file: Option<Value>,
+    pub air_raw_input_rendering: Option<Value>,
+    pub air_recommended_value: Option<Value>,
+    pub air_command_title: Option<String>,
+    pub air_skill: Option<Value>,
+    pub air_skill_path: Option<String>,
+    pub air_subagent: Option<bool>,
+    pub air_agent_file_change_report: Option<Value>,
+    pub air_agent_worktree: Option<bool>,
+    pub air_async_tasks: Option<Value>,
+    pub air_backgrounded: Option<bool>,
+    pub air_codex_hooks: Option<Value>,
+    pub air_command_action: Option<Value>,
+    pub air_content_delta: Option<String>,
+    pub air_custom_instructions: Option<String>,
+    pub air_custom_answer: Option<Value>,
+    pub air_diff_patch: Option<Value>,
+    pub air_forked_from: Option<String>,
+    pub air_last_prompt_at: Option<String>,
+    pub air_last_turn_ended_at: Option<String>,
+    pub air_message_phase: Option<String>,
+    pub air_native_subagent_sessions: Option<Value>,
+    pub air_plan_content_delta: Option<String>,
+    pub air_session_index: Option<Value>,
+    pub air_session_failure: Option<Value>,
+    pub air_session_list_subscribe: Option<Value>,
+    pub air_worktrees: Option<Value>,
+    pub air_batch_get: Option<Value>,
+    pub air_state: Option<String>,
+    pub additional_roots: Option<Value>,
+    pub system_prompt: Option<Value>,
+    pub disable_built_in_tools: Option<Value>,
+    pub gateway: Option<Value>,
+    pub terminal: Option<Value>,
+    pub air: Option<Value>,
+    pub codex: Option<Value>,
+    pub opencode: Option<Value>,
+    pub claude: Option<Value>,
 }
 
 /// Aggregated extension metadata extracted from a single `_meta` map (or
@@ -139,6 +194,11 @@ pub struct ExtensionMeta {
     pub idle_behavior: Option<String>,
     pub child_session_updates: Option<bool>,
     pub compaction: Option<Value>,
+    pub compaction_trigger: Option<String>,
+    pub compaction_pre_tokens: Option<u64>,
+    pub compaction_post_tokens: Option<u64>,
+    pub compaction_duration_ms: Option<u64>,
+    pub compaction_error: Option<String>,
     pub thread_status: Option<ThreadStatus>,
     pub quota: Option<QuotaDetail>,
     pub rate_limit: Option<Value>,
@@ -147,9 +207,58 @@ pub struct ExtensionMeta {
     pub origin: Option<Value>,
     pub sdk_message: Option<Value>,
     pub claude_code: Option<Value>,
+    pub claude_vertex: Option<Value>,
+    pub claude_options: Option<Value>,
+    pub claude_non_execution_kind: Option<String>,
+    pub claude_prompt_queueing: Option<bool>,
+    pub air_archived: Option<bool>,
+    pub air_client: Option<Value>,
+    pub air_file_change_report: Option<Value>,
+    pub air_kind: Option<String>,
+    pub air_list: Option<Value>,
+    pub air_load_replay_end: Option<bool>,
+    pub air_mcp: Option<Value>,
+    pub air_permission: Option<Value>,
+    pub air_plan_file: Option<Value>,
+    pub air_raw_input_rendering: Option<Value>,
+    pub air_recommended_value: Option<Value>,
+    pub air_command_title: Option<String>,
+    pub air_skill: Option<Value>,
+    pub air_skill_path: Option<String>,
+    pub air_subagent: Option<bool>,
+    pub air_agent_file_change_report: Option<Value>,
+    pub air_agent_worktree: Option<bool>,
+    pub air_async_tasks: Option<Value>,
+    pub air_backgrounded: Option<bool>,
+    pub air_codex_hooks: Option<Value>,
+    pub air_command_action: Option<Value>,
+    pub air_content_delta: Option<String>,
+    pub air_custom_instructions: Option<String>,
+    pub air_custom_answer: Option<Value>,
+    pub air_diff_patch: Option<Value>,
+    pub air_forked_from: Option<String>,
+    pub air_last_prompt_at: Option<String>,
+    pub air_last_turn_ended_at: Option<String>,
+    pub air_message_phase: Option<String>,
+    pub air_native_subagent_sessions: Option<Value>,
+    pub air_plan_content_delta: Option<String>,
+    pub air_session_index: Option<Value>,
+    pub air_session_failure: Option<Value>,
+    pub air_session_list_subscribe: Option<Value>,
+    pub air_worktrees: Option<Value>,
+    pub air_batch_get: Option<Value>,
+    pub air_state: Option<String>,
+    pub additional_roots: Option<Value>,
+    pub system_prompt: Option<Value>,
+    pub disable_built_in_tools: Option<Value>,
+    pub gateway: Option<Value>,
+    pub terminal: Option<Value>,
     pub model_usage: Option<Value>,
     pub prompt_suggestions: Option<Value>,
     pub jetbrains: Option<Value>,
+    pub codex: Option<Value>,
+    pub opencode: Option<Value>,
+    pub claude: Option<Value>,
     pub goal: Option<Value>,
     pub error: Option<ErrorDetail>,
     /// Provider-normalized canonical view derived from the fields above.
@@ -222,6 +331,7 @@ pub fn parse_meta(meta: Option<&serde_json::Map<String, Value>>) -> ExtensionMet
     };
 
     // steering: { "supported": bool } or { "idleBehavior": ... } (Codex)
+    // TODO(steering-ui): capabilities are metadata-only for now; expose when steering UI is implemented.
     // (top-level or under "steering")
     if let Some(v) = get_any(
         meta,
@@ -243,7 +353,7 @@ pub fn parse_meta(meta: Option<&serde_json::Map<String, Value>>) -> ExtensionMet
                     out.steering_supported = Some(true);
                 }
                 let ib = obj.get("idleBehavior").or_else(|| obj.get("idle_behavior"));
-                if let Some(s) = ib.and_then(|x| x.as_str()) {
+                if let Some(s) = ib.and_then(|x| x.as_str().map(str::to_string)) {
                     out.idle_behavior = Some(s.to_string());
                 } else if let Some(s) = ib.map(|x| x.to_string()) {
                     // keep a stringified fallback for non-string values
@@ -258,6 +368,7 @@ pub fn parse_meta(meta: Option<&serde_json::Map<String, Value>>) -> ExtensionMet
     }
 
     // child-session-updates: bool (flat key "opencode/child-session-updates")
+    // TODO(subagent-live): use this capability to enable/disable child session update consumption.
     if let Some(v) = get_any(
         meta,
         &[
@@ -275,10 +386,18 @@ pub fn parse_meta(meta: Option<&serde_json::Map<String, Value>>) -> ExtensionMet
         }
     }
 
-    // compaction: OpenCode reports compaction progress via _meta.opencode/compaction
-    if let Some(v) = get_any(meta, &["opencode/compaction", "compaction"]) {
-        out.compaction = Some(v.clone());
+    // compaction: OpenCode reports compaction progress via _meta.opencode/compaction;
+    // Claude AIR reports it via _meta.jetbrains.air.contextCompaction.
+    if let Some(v) = crate::acp_custom_fields::extract_compaction(Some(meta)) {
+        out.compaction = Some(v);
     }
+    out.compaction_trigger = crate::acp_custom_fields::extract_compaction_trigger(Some(meta));
+    out.compaction_pre_tokens = crate::acp_custom_fields::extract_compaction_pre_tokens(Some(meta));
+    out.compaction_post_tokens =
+        crate::acp_custom_fields::extract_compaction_post_tokens(Some(meta));
+    out.compaction_duration_ms =
+        crate::acp_custom_fields::extract_compaction_duration_ms(Some(meta));
+    out.compaction_error = crate::acp_custom_fields::extract_compaction_error(Some(meta));
 
     // thread status: _meta.codex.threadStatus { type, activeFlags }
     if let Some(v) = get_any(
@@ -321,14 +440,29 @@ pub fn parse_meta(meta: Option<&serde_json::Map<String, Value>>) -> ExtensionMet
         out.rate_limit = Some(v.clone());
     }
 
-    // model (claude)
+    // model (claude, or AIR metadata under jetbrains.air.model)
     if let Some(v) = get_any(meta, &["_claude/model", "claude/model", "model"]) {
         out.model = Some(v.clone());
+    }
+    if out.model.is_none() {
+        if let Some(jetbrains) = meta.get("jetbrains").and_then(|v| v.as_object()) {
+            if let Some(air) = jetbrains.get("air").and_then(|v| v.as_object()) {
+                if let Some(v) = air.get("model").or_else(|| air.get("model")) {
+                    out.model = Some(v.clone());
+                }
+            }
+            if out.model.is_none() {
+                if let Some(v) = jetbrains.get("model") {
+                    out.model = Some(v.clone());
+                }
+            }
+        }
     }
 
     // origin (claude)
     if let Some(v) = get_any(meta, &["_claude/origin", "claude/origin", "origin"]) {
         out.origin = Some(v.clone());
+        tracing::debug!(target: "origin", origin = ?v, "Origin metadata received");
     }
 
     // sdkMessage (claude)
@@ -342,6 +476,7 @@ pub fn parse_meta(meta: Option<&serde_json::Map<String, Value>>) -> ExtensionMet
         ],
     ) {
         out.sdk_message = Some(v.clone());
+        tracing::debug!(target: "sdk_message", sdk_message = ?v, "SDK message metadata received");
     }
 
     // auth status
@@ -349,31 +484,213 @@ pub fn parse_meta(meta: Option<&serde_json::Map<String, Value>>) -> ExtensionMet
         out.auth_status = Some(v.clone());
     }
 
-    // claudeCode (nested object)
-    if let Some(v) = meta
-        .get("claudeCode")
-        .cloned()
-        .or_else(|| meta.get("claude_code").cloned())
+    // claudeCode (nested object) or top-level Claude fields (P3-2)
+    if let Some(v) = crate::acp_custom_fields::extract_claude_code(Some(meta)) {
+        out.claude_code = Some(v.clone());
+    }
+    out.claude_vertex = crate::acp_custom_fields::extract_claude_vertex(Some(meta));
+    out.claude_options = crate::acp_custom_fields::extract_claude_options(Some(meta));
+    out.claude_non_execution_kind =
+        crate::acp_custom_fields::extract_claude_non_execution_kind(Some(meta));
+    out.claude_prompt_queueing =
+        crate::acp_custom_fields::extract_claude_prompt_queueing(Some(meta));
+
+    // Claude AIR subkeys (via helper; supports jetbrains.air.* or top-level air.*)
+    out.air_archived = crate::acp_custom_fields::extract_air_field(Some(meta), "archived")
+        .and_then(|v| v.as_bool());
+    out.air_client = crate::acp_custom_fields::extract_air_field(Some(meta), "client");
+    out.air_file_change_report =
+        crate::acp_custom_fields::extract_air_field(Some(meta), "fileChangeReport");
+    if let Some(v) = crate::acp_custom_fields::extract_air_field(Some(meta), "kind")
+        .and_then(|x| x.as_str().map(str::to_string))
     {
-        out.claude_code = Some(v);
+        out.air_kind = Some(v.to_string());
+    }
+    out.air_list = crate::acp_custom_fields::extract_air_field(Some(meta), "list");
+    out.air_load_replay_end =
+        crate::acp_custom_fields::extract_air_field(Some(meta), "loadReplayEnd")
+            .and_then(|v| v.as_bool());
+    out.air_mcp = crate::acp_custom_fields::extract_air_field(Some(meta), "mcp");
+    out.air_permission = crate::acp_custom_fields::extract_air_field(Some(meta), "permission");
+    out.air_plan_file = crate::acp_custom_fields::extract_air_field(Some(meta), "planFile");
+    out.air_raw_input_rendering =
+        crate::acp_custom_fields::extract_air_field(Some(meta), "rawInputRendering");
+    out.air_recommended_value =
+        crate::acp_custom_fields::extract_air_field(Some(meta), "recommendedValue");
+    if let Some(v) = crate::acp_custom_fields::extract_air_field(Some(meta), "commandTitle")
+        .and_then(|x| x.as_str().map(str::to_string))
+    {
+        out.air_command_title = Some(v.to_string());
+    }
+    out.air_skill = crate::acp_custom_fields::extract_air_field(Some(meta), "skill");
+    if let Some(v) = crate::acp_custom_fields::extract_air_field(Some(meta), "skillPath")
+        .and_then(|x| x.as_str().map(str::to_string))
+    {
+        out.air_skill_path = Some(v.to_string());
+    }
+    out.air_subagent = crate::acp_custom_fields::extract_air_field(Some(meta), "subagent")
+        .and_then(|v| v.as_bool());
+
+    // Codex AIR subkeys (via helper; supports jetbrains.air.* or top-level air.*)
+    out.air_agent_file_change_report =
+        crate::acp_custom_fields::extract_air_field(Some(meta), "agentFileChangeReport");
+    out.air_agent_worktree =
+        crate::acp_custom_fields::extract_air_field(Some(meta), "agentWorktree")
+            .and_then(|v| v.as_bool());
+    out.air_async_tasks = crate::acp_custom_fields::extract_air_field(Some(meta), "asyncTasks");
+    out.air_backgrounded = crate::acp_custom_fields::extract_air_field(Some(meta), "backgrounded")
+        .and_then(|v| v.as_bool());
+    out.air_codex_hooks = crate::acp_custom_fields::extract_air_field(Some(meta), "codexHooks");
+    out.air_command_action =
+        crate::acp_custom_fields::extract_air_field(Some(meta), "commandAction");
+    if let Some(v) = crate::acp_custom_fields::extract_air_field(Some(meta), "contentDelta")
+        .and_then(|x| x.as_str().map(str::to_string))
+    {
+        out.air_content_delta = Some(v.to_string());
+    }
+    if let Some(v) = crate::acp_custom_fields::extract_air_field(Some(meta), "customInstructions")
+        .and_then(|x| x.as_str().map(str::to_string))
+    {
+        out.air_custom_instructions = Some(v.to_string());
+    }
+    out.air_diff_patch = crate::acp_custom_fields::extract_air_field(Some(meta), "diffPatch");
+    if let Some(v) = crate::acp_custom_fields::extract_air_field(Some(meta), "forkedFrom")
+        .and_then(|x| x.as_str().map(str::to_string))
+    {
+        out.air_forked_from = Some(v.to_string());
+    }
+    if let Some(v) = crate::acp_custom_fields::extract_air_field(Some(meta), "lastPromptAt")
+        .and_then(|x| x.as_str().map(str::to_string))
+    {
+        out.air_last_prompt_at = Some(v.to_string());
+    }
+    if let Some(v) = crate::acp_custom_fields::extract_air_field(Some(meta), "lastTurnEndedAt")
+        .and_then(|x| x.as_str().map(str::to_string))
+    {
+        out.air_last_turn_ended_at = Some(v.to_string());
+    }
+    if let Some(v) = crate::acp_custom_fields::extract_air_field(Some(meta), "phase")
+        .and_then(|x| x.as_str().map(str::to_string))
+    {
+        out.air_message_phase = Some(v.to_string());
+    }
+    out.air_native_subagent_sessions =
+        crate::acp_custom_fields::extract_air_field(Some(meta), "nativeSubagentSessions");
+    if let Some(v) = crate::acp_custom_fields::extract_air_field(Some(meta), "planContentDelta")
+        .and_then(|x| x.as_str().map(str::to_string))
+    {
+        out.air_plan_content_delta = Some(v.to_string());
+    }
+    out.air_session_index = crate::acp_custom_fields::extract_air_field(Some(meta), "sessionIndex");
+    out.air_session_failure =
+        crate::acp_custom_fields::extract_air_field(Some(meta), "sessionFailure");
+    out.air_session_list_subscribe =
+        crate::acp_custom_fields::extract_air_field(Some(meta), "sessionListSubscribe");
+    out.air_worktrees = crate::acp_custom_fields::extract_air_field(Some(meta), "worktrees");
+    out.air_batch_get = crate::acp_custom_fields::extract_air_field(Some(meta), "sessionBatchGet");
+    if let Some(v) = crate::acp_custom_fields::extract_air_field(Some(meta), "state")
+        .and_then(|x| x.as_str().map(str::to_string))
+    {
+        out.air_state = Some(v.to_string());
+    }
+
+    // custom answer (top-level or AIR nested)
+    out.air_custom_answer = crate::acp_custom_fields::extract_custom_answer(Some(meta));
+
+    // additional roots (session-defining metadata)
+    if let Some(v) = meta
+        .get("additionalRoots")
+        .cloned()
+        .or_else(|| meta.get("additional_roots").cloned())
+    {
+        out.additional_roots = Some(v);
+    }
+
+    // system prompt (session-defining metadata)
+    if let Some(v) = meta
+        .get("systemPrompt")
+        .cloned()
+        .or_else(|| meta.get("system_prompt").cloned())
+    {
+        out.system_prompt = Some(v.clone());
+        tracing::debug!(target: "system_prompt", system_prompt = ?v, "System prompt metadata received");
+    }
+
+    // disable built-in tools flag
+    if let Some(v) = meta
+        .get("disableBuiltInTools")
+        .cloned()
+        .or_else(|| meta.get("disable_built_in_tools").cloned())
+    {
+        out.disable_built_in_tools = Some(v.clone());
+        tracing::debug!(target: "disable_built_in_tools", disable_built_in_tools = ?v, "Disable built-in tools metadata received");
+    }
+
+    // gateway auth metadata
+    if let Some(v) = meta.get("gateway").cloned() {
+        out.gateway = Some(v.clone());
+        tracing::debug!(target: "gateway", gateway = ?v, "Gateway metadata received");
+    }
+
+    // terminal metadata (info/output/delta/exit/auth)
+    if let Some(v) = crate::acp_custom_fields::extract_terminal_meta(Some(meta)) {
+        out.terminal = Some(v);
     }
 
     // jetbrains (AIR extensions nest under _meta.jetbrains, e.g. jetbrains.air)
     if let Some(v) = meta.get("jetbrains").cloned() {
-        out.jetbrains = Some(v);
+        out.jetbrains = Some(v.clone());
+        tracing::debug!(target: "vendor_payload", vendor = "jetbrains", payload = ?v, "Vendor payload retained");
     }
 
-    // goal (session_info_update._meta.goal)
+    // codex (adapter-specific payload, e.g. threadStatus/quota may also be nested)
+    if let Some(v) = meta.get("codex").cloned() {
+        out.codex = Some(v.clone());
+        tracing::debug!(target: "vendor_payload", vendor = "codex", payload = ?v, "Vendor payload retained");
+    }
+
+    // opencode (adapter-specific payload)
+    if let Some(v) = meta.get("opencode").cloned() {
+        out.opencode = Some(v.clone());
+        tracing::debug!(target: "vendor_payload", vendor = "opencode", payload = ?v, "Vendor payload retained");
+    }
+
+    // claude (adapter-specific payload; _claude is the slash/flat variant)
+    if let Some(v) = meta
+        .get("claude")
+        .cloned()
+        .or_else(|| meta.get("_claude").cloned())
+    {
+        out.claude = Some(v.clone());
+        tracing::debug!(target: "vendor_payload", vendor = "claude", payload = ?v, "Vendor payload retained");
+    }
+
+    // goal (session_info_update._meta.goal, or AIR metadata under jetbrains.air.goal)
     if let Some(v) = meta.get("goal").cloned() {
         out.goal = Some(v);
+    }
+    if out.goal.is_none() {
+        if let Some(jetbrains) = meta.get("jetbrains").and_then(|v| v.as_object()) {
+            if let Some(air) = jetbrains.get("air").and_then(|v| v.as_object()) {
+                if let Some(v) = air.get("goal").or_else(|| air.get("goal")) {
+                    out.goal = Some(v.clone());
+                }
+            }
+            if out.goal.is_none() {
+                if let Some(v) = jetbrains.get("goal") {
+                    out.goal = Some(v.clone());
+                }
+            }
+        }
     }
 
     // model_usage (session/prompt response _meta, e.g. Claude token accounting)
     if let Some(v) = get_any(meta, &["model_usage", "modelUsage", "modelUsageDetail"]) {
         out.model_usage = Some(v.clone());
+        tracing::debug!(target: "model_usage", model_usage = ?v, "Model usage metadata received");
     }
 
-    // prompt suggestions (session_info_update._meta)
+    // prompt suggestions (session_info_update._meta, or AIR metadata under jetbrains.air.promptSuggestions)
     if let Some(v) = get_any(
         meta,
         &[
@@ -383,6 +700,27 @@ pub fn parse_meta(meta: Option<&serde_json::Map<String, Value>>) -> ExtensionMet
         ],
     ) {
         out.prompt_suggestions = Some(v.clone());
+    }
+    if out.prompt_suggestions.is_none() {
+        if let Some(jetbrains) = meta.get("jetbrains").and_then(|v| v.as_object()) {
+            if let Some(air) = jetbrains.get("air").and_then(|v| v.as_object()) {
+                if let Some(v) = air
+                    .get("promptSuggestions")
+                    .or_else(|| air.get("prompt_suggestions"))
+                    .or_else(|| air.get("promptSuggestions"))
+                {
+                    out.prompt_suggestions = Some(v.clone());
+                }
+            }
+            if out.prompt_suggestions.is_none() {
+                if let Some(v) = jetbrains
+                    .get("promptSuggestions")
+                    .or_else(|| jetbrains.get("prompt_suggestions"))
+                {
+                    out.prompt_suggestions = Some(v.clone());
+                }
+            }
+        }
     }
 
     out.unified = build_unified(&out, Some(meta));
@@ -433,6 +771,10 @@ fn detect_sources(
         || ext.origin.is_some()
         || ext.sdk_message.is_some()
         || ext.claude_code.is_some()
+        || ext.claude_vertex.is_some()
+        || ext.claude_options.is_some()
+        || ext.claude_non_execution_kind.is_some()
+        || ext.claude_prompt_queueing.is_some()
     {
         push_source(&mut sources, "claude");
     }
@@ -456,6 +798,11 @@ fn build_unified(
         || ext.idle_behavior.is_some()
         || ext.child_session_updates.is_some()
         || ext.compaction.is_some()
+        || ext.compaction_trigger.is_some()
+        || ext.compaction_pre_tokens.is_some()
+        || ext.compaction_post_tokens.is_some()
+        || ext.compaction_duration_ms.is_some()
+        || ext.compaction_error.is_some()
         || ext.thread_status.is_some()
         || ext.quota.is_some()
         || ext.rate_limit.is_some()
@@ -464,9 +811,58 @@ fn build_unified(
         || ext.origin.is_some()
         || ext.sdk_message.is_some()
         || ext.claude_code.is_some()
+        || ext.claude_vertex.is_some()
+        || ext.claude_options.is_some()
+        || ext.claude_non_execution_kind.is_some()
+        || ext.claude_prompt_queueing.is_some()
+        || ext.air_archived.is_some()
+        || ext.air_client.is_some()
+        || ext.air_file_change_report.is_some()
+        || ext.air_kind.is_some()
+        || ext.air_list.is_some()
+        || ext.air_load_replay_end.is_some()
+        || ext.air_mcp.is_some()
+        || ext.air_permission.is_some()
+        || ext.air_plan_file.is_some()
+        || ext.air_raw_input_rendering.is_some()
+        || ext.air_recommended_value.is_some()
+        || ext.air_command_title.is_some()
+        || ext.air_skill.is_some()
+        || ext.air_skill_path.is_some()
+        || ext.air_subagent.is_some()
+        || ext.air_agent_file_change_report.is_some()
+        || ext.air_agent_worktree.is_some()
+        || ext.air_async_tasks.is_some()
+        || ext.air_backgrounded.is_some()
+        || ext.air_codex_hooks.is_some()
+        || ext.air_command_action.is_some()
+        || ext.air_content_delta.is_some()
+        || ext.air_custom_instructions.is_some()
+        || ext.air_custom_answer.is_some()
+        || ext.air_diff_patch.is_some()
+        || ext.air_forked_from.is_some()
+        || ext.air_last_prompt_at.is_some()
+        || ext.air_last_turn_ended_at.is_some()
+        || ext.air_message_phase.is_some()
+        || ext.air_native_subagent_sessions.is_some()
+        || ext.air_plan_content_delta.is_some()
+        || ext.air_session_index.is_some()
+        || ext.air_session_failure.is_some()
+        || ext.air_session_list_subscribe.is_some()
+        || ext.air_worktrees.is_some()
+        || ext.air_batch_get.is_some()
+        || ext.air_state.is_some()
+        || ext.additional_roots.is_some()
+        || ext.system_prompt.is_some()
+        || ext.disable_built_in_tools.is_some()
+        || ext.gateway.is_some()
+        || ext.terminal.is_some()
         || ext.model_usage.is_some()
         || ext.prompt_suggestions.is_some()
         || ext.jetbrains.is_some()
+        || ext.codex.is_some()
+        || ext.opencode.is_some()
+        || ext.claude.is_some()
         || ext.goal.is_some()
         || ext.error.is_some();
     if !has_signal {
@@ -510,12 +906,71 @@ fn build_unified(
         },
         context: UnifiedContext {
             compaction: ext.compaction.clone(),
+            compaction_trigger: ext.compaction_trigger.clone(),
+            compaction_pre_tokens: ext.compaction_pre_tokens,
+            compaction_post_tokens: ext.compaction_post_tokens,
+            compaction_duration_ms: ext.compaction_duration_ms,
+            compaction_error: ext.compaction_error.clone(),
             prompt_suggestions: ext.prompt_suggestions.clone(),
             goal: ext.goal.clone(),
             model: ext.model.clone(),
             origin: ext.origin.clone(),
             sdk_message: ext.sdk_message.clone(),
             claude_code: ext.claude_code.clone(),
+            claude_vertex: ext.claude_vertex.clone(),
+            claude_options: ext.claude_options.clone(),
+            claude_non_execution_kind: ext.claude_non_execution_kind.clone(),
+            claude_prompt_queueing: ext.claude_prompt_queueing,
+            air_archived: ext.air_archived,
+            air_client: ext.air_client.clone(),
+            air_file_change_report: ext.air_file_change_report.clone(),
+            air_kind: ext.air_kind.clone(),
+            air_list: ext.air_list.clone(),
+            air_load_replay_end: ext.air_load_replay_end,
+            air_mcp: ext.air_mcp.clone(),
+            air_permission: ext.air_permission.clone(),
+            air_plan_file: ext.air_plan_file.clone(),
+            air_raw_input_rendering: ext.air_raw_input_rendering.clone(),
+            air_recommended_value: ext.air_recommended_value.clone(),
+            air_command_title: ext.air_command_title.clone(),
+            air_skill: ext.air_skill.clone(),
+            air_skill_path: ext.air_skill_path.clone(),
+            air_subagent: ext.air_subagent,
+            air_agent_file_change_report: ext.air_agent_file_change_report.clone(),
+            air_agent_worktree: ext.air_agent_worktree,
+            air_async_tasks: ext.air_async_tasks.clone(),
+            air_backgrounded: ext.air_backgrounded,
+            air_codex_hooks: ext.air_codex_hooks.clone(),
+            air_command_action: ext.air_command_action.clone(),
+            air_content_delta: ext.air_content_delta.clone(),
+            air_custom_instructions: ext.air_custom_instructions.clone(),
+            air_custom_answer: ext.air_custom_answer.clone(),
+            air_diff_patch: ext.air_diff_patch.clone(),
+            air_forked_from: ext.air_forked_from.clone(),
+            air_last_prompt_at: ext.air_last_prompt_at.clone(),
+            air_last_turn_ended_at: ext.air_last_turn_ended_at.clone(),
+            air_message_phase: ext.air_message_phase.clone(),
+            air_native_subagent_sessions: ext.air_native_subagent_sessions.clone(),
+            air_plan_content_delta: ext.air_plan_content_delta.clone(),
+            air_session_index: ext.air_session_index.clone(),
+            air_session_failure: ext.air_session_failure.clone(),
+            air_session_list_subscribe: ext.air_session_list_subscribe.clone(),
+            air_worktrees: ext.air_worktrees.clone(),
+            air_batch_get: ext.air_batch_get.clone(),
+            air_state: ext.air_state.clone(),
+            additional_roots: ext.additional_roots.clone(),
+            system_prompt: ext.system_prompt.clone(),
+            disable_built_in_tools: ext.disable_built_in_tools.clone(),
+            gateway: ext.gateway.clone(),
+            terminal: ext.terminal.clone(),
+            air: ext
+                .jetbrains
+                .as_ref()
+                .and_then(|v| v.get("air").cloned())
+                .or_else(|| ext.jetbrains.clone()),
+            codex: ext.codex.clone(),
+            opencode: ext.opencode.clone(),
+            claude: ext.claude.clone(),
         },
         error: ext.error.clone(),
     })
@@ -534,7 +989,7 @@ pub fn parse_thread_status(v: &Value) -> Option<ThreadStatus> {
         .get("type")
         .or_else(|| obj.get("kind"))
         .or_else(|| obj.get("status"))
-        .and_then(|x| x.as_str())
+        .and_then(|x| x.as_str().map(str::to_string))
         .map(|s| s.to_string())?;
     let active_flags = obj
         .get("activeFlags")
@@ -632,13 +1087,49 @@ const KNOWN_META_TOP_KEYS: &[&str] = &[
     "goal",
     "model_usage",
     "modelUsage",
+    "modelUsageDetail",
     "promptSuggestions",
     "prompt_suggestions",
     "_askUserQuestionCustomAnswer",
     "terminal_info",
     "terminal_output",
+    "terminal_output_delta",
     "terminal_exit",
+    "terminal-auth",
     "quota",
+    "additionalRoots",
+    "additional_roots",
+    "systemPrompt",
+    "system_prompt",
+    "disableBuiltInTools",
+    "disable_built_in_tools",
+    "gateway",
+    "persist",
+    "kind",
+    "is_mcp_tool_approval",
+    "exit_code",
+    "terminal_id",
+    "text",
+    "mode",
+    "preview",
+    "actions",
+    "controlMethod",
+    "control_method",
+    "detail",
+    "version",
+    "signal",
+    "protocol",
+    "idleBehavior",
+    "idle_behavior",
+    "model",
+    "origin",
+    "sdkMessage",
+    "sdk_message",
+    "rateLimit",
+    "rate_limit",
+    "compaction",
+    "contextCompaction",
+    "context_compaction",
 ];
 
 /// Flat (slash) `_meta` keys that the consumer explicitly understands.
@@ -707,7 +1198,7 @@ pub fn parse_error_data(v: &Value) -> ErrorDetail {
     if let Some(obj) = v.as_object() {
         out.service = obj
             .get("service")
-            .and_then(|x| x.as_str())
+            .and_then(|x| x.as_str().map(str::to_string))
             .map(|s| s.to_string());
         out.error_name = obj
             .get("errorName")
@@ -731,7 +1222,7 @@ pub fn parse_error_data(v: &Value) -> ErrorDetail {
             .or_else(|| obj.get("additional_details"))
             .or_else(|| obj.get("title"))
             .or_else(|| obj.get("reason"))
-            .and_then(|x| x.as_str())
+            .and_then(|x| x.as_str().map(str::to_string))
             .map(|s| s.to_string());
     } else if let Some(s) = v.as_str() {
         out.message = Some(s.to_string());

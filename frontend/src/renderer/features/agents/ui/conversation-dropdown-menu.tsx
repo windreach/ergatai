@@ -49,9 +49,9 @@ interface ConversationDropdownMenuProps {
   conversation: ConversationMeta
   isPinned: boolean
   onTogglePin: (conversationId: string) => void
-  onRename: (conversation: ConversationMeta) => void
+  onRename?: (conversation: ConversationMeta) => void
   onArchive: (conversationId: string) => void
-  onArchiveOthers: (conversationId: string) => void
+  onArchiveOthers?: (conversationId: string) => void
   onArchiveAllBelow?: (conversationId: string) => void
   isOnlyChat: boolean
   currentIndex?: number
@@ -70,6 +70,12 @@ interface ConversationDropdownMenuProps {
   onRemoveFromSplit?: (conversationId: string) => void
   /** Number of panes currently in split */
   splitPaneCount?: number
+  /** Label used in menu items: "conversation" (default) or "chat" */
+  entityLabel?: string
+  /** Export/copy the whole chat instead of a single conversation */
+  exportWholeChat?: boolean
+  /** Hide "Open in new window" (e.g. when no conversation is available) */
+  hideOpenInNewWindow?: boolean
 }
 
 // react-doctor-disable-next-line no-high-complexity-react-function
@@ -91,18 +97,31 @@ export function ConversationDropdownMenu({
   isSplitTab = false,
   onRemoveFromSplit,
   splitPaneCount = 0,
+  entityLabel,
+  exportWholeChat = false,
+  hideOpenInNewWindow = false,
 }: ConversationDropdownMenuProps) {
   const closeTabShortcut = useCloseTabShortcut()
+  const label = entityLabel ?? "chat"
+  const pluralLabel = `${label}s`
 
   const handleExport = useCallback(async (format: ExportFormat) => {
     if (!chatId) return
-    await exportChat({ chatId, conversationId: conversation.id, format })
-  }, [chatId, conversation.id])
+    await exportChat({
+      chatId,
+      conversationId: exportWholeChat ? undefined : conversation.id,
+      format,
+    })
+  }, [chatId, conversation.id, exportWholeChat])
 
   const handleCopy = useCallback(async (format: ExportFormat) => {
     if (!chatId) return
-    await copyChat({ chatId, conversationId: conversation.id, format })
-  }, [chatId, conversation.id])
+    await copyChat({
+      chatId,
+      conversationId: exportWholeChat ? undefined : conversation.id,
+      format,
+    })
+  }, [chatId, conversation.id, exportWholeChat])
 
   return (
     <DropdownMenu>
@@ -110,7 +129,7 @@ export function ConversationDropdownMenu({
         <button
           type="button"
           tabIndex={-1}
-          aria-label={`Manage conversation ${conversation.name || conversation.id}`}
+          aria-label={`Manage ${label} ${conversation.name || conversation.id}`}
           onClick={(event) => event.stopPropagation()}
           className="flex-shrink-0 rounded-md p-0.5 text-muted-foreground hover:text-foreground active:text-foreground transition-[opacity,transform,color] duration-150 ease-out opacity-0 scale-95 pointer-events-none group-hover:opacity-100 group-hover:scale-100 group-hover:pointer-events-auto active:scale-[0.97]"
         >
@@ -119,14 +138,16 @@ export function ConversationDropdownMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48">
         <DropdownMenuItem onSelect={() => onTogglePin(conversation.id)}>
-          {isPinned ? "Unpin conversation" : "Pin conversation"}
+          {isPinned ? `Unpin ${label}` : `Pin ${label}`}
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => onRename(conversation)}>
-          Rename conversation
-        </DropdownMenuItem>
+        {onRename && (
+          <DropdownMenuItem onSelect={() => onRename(conversation)}>
+            Rename {label}
+          </DropdownMenuItem>
+        )}
         {chatId && (
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger>Export conversation</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>Export {label}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent sideOffset={6} alignOffset={-4}>
               <DropdownMenuItem onSelect={() => handleExport("markdown")}>
                 Download as Markdown
@@ -150,7 +171,7 @@ export function ConversationDropdownMenu({
             </DropdownMenuSubContent>
           </DropdownMenuSub>
         )}
-        {isDesktopApp() && chatId && (
+        {isDesktopApp() && chatId && !hideOpenInNewWindow && (
           <DropdownMenuItem onSelect={() => openInNewWindow(chatId, conversation.id)}>
             Open in new window
           </DropdownMenuItem>
@@ -164,7 +185,7 @@ export function ConversationDropdownMenu({
             )}
             {onCloseSplit && (
               <DropdownMenuItem onSelect={onCloseSplit}>
-                Separate conversations
+                Separate {pluralLabel}
               </DropdownMenuItem>
             )}
           </>
@@ -186,7 +207,7 @@ export function ConversationDropdownMenu({
           className="justify-between"
           disabled={isOnlyChat}
         >
-          Archive conversation
+          Archive {label}
           {!isOnlyChat && <Kbd>{closeTabShortcut}</Kbd>}
         </DropdownMenuItem>
         {onArchiveAllBelow && (
@@ -197,15 +218,17 @@ export function ConversationDropdownMenu({
               currentIndex >= (totalCount || 0) - 1
             }
           >
-            Archive conversations below
+            Archive {pluralLabel} below
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem
-          onSelect={() => onArchiveOthers(conversation.id)}
-          disabled={isOnlyChat}
-        >
-          Archive other conversations
-        </DropdownMenuItem>
+        {onArchiveOthers && (
+          <DropdownMenuItem
+            onSelect={() => onArchiveOthers(conversation.id)}
+            disabled={isOnlyChat}
+          >
+            Archive other {pluralLabel}
+          </DropdownMenuItem>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )

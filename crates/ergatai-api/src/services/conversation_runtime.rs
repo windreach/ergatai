@@ -1008,6 +1008,7 @@ mod tests {
         AgentOutputEvent::Text {
             role: "assistant".to_string(),
             delta: delta.to_string(),
+            subagent_session_id: None,
         }
     }
 

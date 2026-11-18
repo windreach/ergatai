@@ -116,26 +116,18 @@ test.describe.serial("Remaining P3 (Ergatai Electron UI) @extended", () => {
   }
 
   async function openSettings() {
-    const sidebar = page.locator('[data-sidebar="sidebar"]').first()
-    await expect(sidebar).toBeVisible({ timeout: 10_000 })
-    const sidebarBox = await sidebar.boundingBox()
-    if (!sidebarBox) throw new Error("Sidebar not found")
-    await page.mouse.move(
-      sidebarBox.x + sidebarBox.width / 2,
-      sidebarBox.y + sidebarBox.height - 50,
-    )
-    const settingsTooltip = page.getByText("Settings").first()
-    await expect(settingsTooltip).toBeVisible({ timeout: 3_000 })
-    await settingsTooltip.click()
+    const settingsBtn = page.getByRole("button", { name: "Settings" }).first()
+    await expect(settingsBtn).toBeVisible({ timeout: 10_000 })
+    await settingsBtn.click()
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).toBeVisible({ timeout: 5_000 })
   }
 
   async function closeSettings() {
     await page.keyboard.press("Escape")
     await expect(
-      page.getByRole("button", { name: "Preferences" }).first(),
+      page.getByRole("tab", { name: "Preferences" }).first(),
     ).not.toBeVisible({ timeout: 3_000 }).catch(() => {})
   }
 
@@ -588,7 +580,7 @@ test.describe.serial("Remaining P3 (Ergatai Electron UI) @extended", () => {
   test("UI-SET-004 Preferences tab content @extended", async () => {
     try {
       await openSettings()
-      await page.getByRole("button", { name: "Preferences" }).first().click()
+      await page.getByRole("tab", { name: "Preferences" }).first().click()
       await expect(page.getByText("Share Usage Analytics").first()).toBeVisible({ timeout: 5_000 })
       const sw = page.getByRole("switch").first()
       if (await sw.isVisible().catch(() => false)) {
@@ -605,7 +597,7 @@ test.describe.serial("Remaining P3 (Ergatai Electron UI) @extended", () => {
   test("UI-SET-005 Appearance tab theme switch @extended", async () => {
     try {
       await openSettings()
-      await page.getByRole("button", { name: "Appearance" }).first().click()
+      await page.getByRole("tab", { name: "Appearance" }).first().click()
       await page.waitForTimeout(500)
       await expect(page.locator("main, #root").first()).toBeVisible()
       // Best-effort theme toggle: click a theme-ish button if present
@@ -624,7 +616,7 @@ test.describe.serial("Remaining P3 (Ergatai Electron UI) @extended", () => {
   test("UI-SET-006 Keyboard tab shows hotkeys @extended", async () => {
     try {
       await openSettings()
-      await page.getByRole("button", { name: "Keyboard" }).first().click()
+      await page.getByRole("tab", { name: "Keyboard" }).first().click()
       await page.waitForTimeout(500)
       await expect(
         page.getByText(/stop generation|quick-switch|hotkey/i).first(),
@@ -639,7 +631,7 @@ test.describe.serial("Remaining P3 (Ergatai Electron UI) @extended", () => {
   test("UI-SET-007 Projects tab CRUD @extended", async () => {
     try {
       await openSettings()
-      await page.getByRole("button", { name: "Projects" }).first().click()
+      await page.getByRole("tab", { name: "Projects" }).first().click()
       await page.waitForTimeout(500)
       await expect(page.locator("main, #root").first()).toBeVisible()
       const addBtn = page.getByRole("button", { name: /add project/i }).or(page.getByTitle("Add project folder")).first()
@@ -657,7 +649,7 @@ test.describe.serial("Remaining P3 (Ergatai Electron UI) @extended", () => {
   test("UI-SET-008 Worktrees tab lists worktrees @extended", async () => {
     try {
       await openSettings()
-      await page.getByRole("button", { name: "Worktrees" }).first().click()
+      await page.getByRole("tab", { name: "Worktrees" }).first().click()
       await page.waitForTimeout(500)
       await expect(page.locator("main, #root").first()).toBeVisible()
       await closeSettings()
@@ -683,7 +675,7 @@ test.describe.serial("Remaining P3 (Ergatai Electron UI) @extended", () => {
   // ---------- UI-TB-003 ----------
   test("UI-TB-003 Task Board renders columns/cards @extended", async () => {
     try {
-      const taskBoardButton = page.getByRole("button", { name: "Task Board" }).first()
+      const taskBoardButton = page.getByRole("button", { name: "Open task board" }).first()
       await expect(taskBoardButton).toBeVisible({ timeout: 10_000 })
       await taskBoardButton.focus()
       await page.keyboard.press("Enter")
@@ -702,7 +694,7 @@ test.describe.serial("Remaining P3 (Ergatai Electron UI) @extended", () => {
   // ---------- UI-TB-004 ----------
   test("UI-TB-004 Task Board empty state @extended", async () => {
     try {
-      const taskBoardButton = page.getByRole("button", { name: "Task Board" }).first()
+      const taskBoardButton = page.getByRole("button", { name: "Open task board" }).first()
       if (await taskBoardButton.isVisible().catch(() => false)) {
         await taskBoardButton.focus()
         await page.keyboard.press("Enter")

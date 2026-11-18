@@ -52,6 +52,7 @@ import { api } from "../../../lib/api-adapter"
 import {
   compactingConversationsAtom,
   loadingConversationsAtom,
+  clearLoading,
   pendingMentionAtom,
   pendingInitialPromptAtomFamily,
   pendingPlanApprovalsAtom
@@ -488,27 +489,6 @@ const handleCompact = useCallback(() => {
     })
   }, [])
 
-const handleStop = useCallback(async () => {
-    // Mark as manually aborted to prevent completion sound
-    agentChatStore.setManuallyAborted(conversationId, true)
-
-    // Always cancel the backend agent when an id is available: a locally
-    // streaming turn still runs an agent on the backend, and relying on
-    // session.status being "streaming" (which may lag) would skip the cancel.
-    if (backendAgentId) {
-      await trpcClient.ergatai.cancelPrompt
-        .mutate({ agentId: backendAgentId })
-        .catch((error) => {
-          console.warn("[ActiveChat] Failed to cancel backend prompt:", error)
-        })
-    }
-
-    // Unified stop: aborts the local AI SDK transport (if streaming) AND
-    // notifies the backend to cancel the prompt. Replaces the previous
-    // AI-SDK-only stop, which left the backend agent running.
-    await chatInvocation.stop()
-  // react-doctor-disable-next-line exhaustive-deps
-  }, [backendAgentId, conversationId, isBackendStreaming, chatInvocation])
 
 const addTextContext = useCallback((text: string, source: TextSelectionSource) => {
     if (source.type === "assistant-message") {
@@ -551,6 +531,38 @@ const {
   })
 
 const setLoadingConversations = useSetAtom(loadingConversationsAtom)
+const setStreamingStatus = useStreamingStatusStore((store) => store.setStatus)
+
+const handleStop = useCallback(async () => {
+    // Mark as manually aborted to prevent completion sound
+    agentChatStore.setManuallyAborted(conversationId, true)
+
+    // Force the UI out of the streaming state immediately so the Stop
+    // button has a visible effect even if backend/transport is slow.
+    clearLoading(setLoadingConversations, conversationId)
+    setStreamingStatus(conversationId, "ready")
+
+    // Always cancel the backend agent when an id is available: a locally
+    // streaming turn still runs an agent on the backend, and relying on
+    // session.status being "streaming" (which may lag) would skip the cancel.
+    if (backendAgentId) {
+      await trpcClient.ergatai.cancelPrompt
+        .mutate({ agentId: backendAgentId })
+        .catch((error) => {
+          console.warn("[ActiveChat] Failed to cancel backend prompt:", error)
+        })
+    }
+
+    // Unified stop: aborts the local AI SDK transport (if streaming) AND
+    // notifies the backend to cancel the prompt. Replaces the previous
+    // AI-SDK-only stop, which left the backend agent running.
+    try {
+      await chatInvocation.stop()
+    } catch (error) {
+      console.warn("[ActiveChat] Failed to stop local stream:", error)
+    }
+  // react-doctor-disable-next-line exhaustive-deps
+  }, [backendAgentId, conversationId, isBackendStreaming, chatInvocation, setLoadingConversations, setStreamingStatus])
 
 useActiveChatEffects({
     conversationId,

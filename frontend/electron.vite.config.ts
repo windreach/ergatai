@@ -68,9 +68,9 @@ export default defineConfig({
       chunkSizeWarningLimit: 1000,
       target: "es2020",
       cssCodeSplit: false,
-      experimental: {
-        rolldown: true,  // Use Rolldown (Rust-based, highly memory efficient)
-      },
+      // experimental: {
+      //   rolldown: true,  // disabled to fix mermaid interop
+      // },
       rollupOptions: {
         treeshake: {
           moduleSideEffects: false,
@@ -82,6 +82,9 @@ export default defineConfig({
         output: {
           chunkFileNames: "chunks/[name]-[hash].js",
           manualChunks(id) {
+            if (id.includes("node_modules/mermaid") || id.includes("node_modules/@mermaid")) {
+              return "mermaid"
+            }
             if (id.includes("node_modules")) {
               return "vendor"
             }
