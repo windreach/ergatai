@@ -34,7 +34,8 @@ import {
 } from "./git-factory";
 import {
   mergeChatBranchIntoBase,
-  resolveProjectPathFromWorktree
+  resolveProjectPathFromWorktree,
+  syncWorktreeChangesToBase
 } from "./worktree";
 
 export { isUpstreamMissingError };
@@ -618,6 +619,32 @@ export const createGitOperationsRouter = () => {
 						input.chatBranch,
 						input.baseBranch,
 						{ push: input.push },
+					);
+					invalidateGitStateCaches(input.worktreePath);
+					return result;
+				});
+			}),
+
+		/** Copy uncommitted worktree changes into the base branch checkout. */
+		syncWorktreeToBase: publicProcedure
+			.input(
+				z.object({
+					worktreePath: z.string(),
+					chatBranch: z.string(),
+					baseBranch: z.string(),
+				}),
+			)
+			.mutation(async ({ input }) => {
+				await assertRegisteredWorktree(input.worktreePath);
+				const projectPath = await resolveProjectPathFromWorktree(
+					input.worktreePath,
+				);
+				return withGitLock(projectPath, async () => {
+					const result = await syncWorktreeChangesToBase(
+						projectPath,
+						input.worktreePath,
+						input.chatBranch,
+						input.baseBranch,
 					);
 					invalidateGitStateCaches(input.worktreePath);
 					return result;

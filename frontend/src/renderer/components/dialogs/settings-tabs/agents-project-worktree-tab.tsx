@@ -489,12 +489,12 @@ function ProjectDetail({ projectId }: { projectId: string }) {
             </Button>
           </div>
           <div className="bg-background rounded-lg border border-border overflow-hidden">
-            {/* Auto-merge */}
+            {/* Auto-sync */}
              <div className="p-4 flex items-center justify-between border-b border-border">
                <div>
-                 <span className="text-sm font-medium text-foreground">{i18n.t('Auto-merge to base branch')}</span>
+                 <span className="text-sm font-medium text-foreground">{i18n.t('Auto-sync worktree to base')}</span>
                  <p className="text-sm text-muted-foreground">
-                   {i18n.t('Automatically merge completed chat branches into their base branch when all agents are idle.')}
+                   {i18n.t('When all agents are idle, apply changes from the chat worktree to the base branch working tree. Main history is unchanged; the temporary chat snapshot is never pushed.')}
                  </p>
                </div>
                <Switch checked={autoMerge} onCheckedChange={setAutoMerge} />

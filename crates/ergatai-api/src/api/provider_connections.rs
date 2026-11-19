@@ -64,7 +64,13 @@ pub async fn list_provider_connections(
     State(_state): State<AppState>,
 ) -> impl axum::response::IntoResponse {
     match tokio::task::spawn_blocking(provider_connection_service::list).await {
-        Ok(Ok(connections)) => Json(connections).into_response(),
+        Ok(Ok(connections)) => Json(
+            connections
+                .into_iter()
+                .map(provider_connection_service::with_secret_hint)
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
         Ok(Err(error)) => internal(error, "list_provider_connections").into_response(),
         Err(error) => internal(error, "list_provider_connections_join").into_response(),
     }
@@ -140,7 +146,9 @@ pub async fn import_native_config(
     {
         Ok(Ok(connection)) => (
             StatusCode::OK,
-            Json(ProviderConnectionMutationResponse { connection }),
+            Json(ProviderConnectionMutationResponse {
+                connection: provider_connection_service::with_secret_hint(connection),
+            }),
         )
             .into_response(),
         Ok(Err(error)) => internal(error, "import_native_config").into_response(),
@@ -202,7 +210,9 @@ pub async fn create_or_update_provider_connection(
     match result {
         Ok(Ok(connection)) => (
             StatusCode::OK,
-            Json(ProviderConnectionMutationResponse { connection }),
+            Json(ProviderConnectionMutationResponse {
+                connection: provider_connection_service::with_secret_hint(connection),
+            }),
         )
             .into_response(),
         Ok(Err(error)) => internal(error, "save_provider_connection").into_response(),
@@ -228,7 +238,9 @@ pub async fn set_default_provider_connection(
     match tokio::task::spawn_blocking(move || provider_connection_service::set_default(&id)).await {
         Ok(Ok(connection)) => (
             StatusCode::OK,
-            Json(ProviderConnectionMutationResponse { connection }),
+            Json(ProviderConnectionMutationResponse {
+                connection: provider_connection_service::with_secret_hint(connection),
+            }),
         )
             .into_response(),
         Ok(Err(error)) => internal(error, "set_default_provider_connection").into_response(),

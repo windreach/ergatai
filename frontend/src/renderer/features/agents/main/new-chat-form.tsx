@@ -1864,7 +1864,7 @@ export const NewChatForm = memo(function NewChatForm({
     (command: SlashCommandOption) => {
       editorRef.current?.clearSlashCommand()
       setShowSlashDropdown(false)
-      editorRef.current?.setValue(`${slashTriggerCharRef.current}${command.name} `)
+      editorRef.current?.setValue(`${command.command} `)
     },
     [editorRef],
   )

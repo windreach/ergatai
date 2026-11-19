@@ -1,6 +1,47 @@
 use crate::services::profile_service::{ProfileModelDetail, ProfileModelSource};
 use serde_json::Value;
 
+/// Coarse grouping for Claude ACP available commands.
+pub fn group_available_command(
+    cmd: &agent_client_protocol::schema::v1::AvailableCommand,
+) -> &'static str {
+    if cmd.name.starts_with("mcp:") {
+        return "mcp";
+    }
+
+    if let Some(meta) = &cmd.meta {
+        if meta
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .map(|s| s == "skill")
+            .unwrap_or(false)
+        {
+            return "skill";
+        }
+
+        if let Some(air) = meta.get("jetbrains").and_then(|v| v.get("air")) {
+            if air.get("kind").and_then(|v| v.as_str()) == Some("skill") {
+                return "skill";
+            }
+        }
+
+        if let Some(air) = meta.get("air") {
+            if air.get("kind").and_then(|v| v.as_str()) == Some("skill") {
+                return "skill";
+            }
+        }
+    }
+
+    if cmd.name.contains(':') {
+        return "skill";
+    }
+
+    match cmd.name.as_str() {
+        "mcp" | "remote-control" => "adapter",
+        _ => "builtin",
+    }
+}
+
 use super::source::SourceReading;
 
 /// Claude Code CLI `/model` query. Ranked below live ACP but above the SDK:
@@ -340,6 +381,10 @@ pub fn list_skills(cwd: Option<&str>) -> Vec<crate::services::skills_service::Sk
     }
     crate::services::skills_service::scan_claude_plugin_skills(&home, cwd, &mut out);
     crate::services::skills_service::apply_claude_skill_overrides(&home, cwd, &mut out);
+
+    // De-duplicate by name, keeping the first occurrence (user -> project -> plugin).
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    out.retain(|s| s.name.is_empty() || seen.insert(s.name.clone()));
     out
 }
 

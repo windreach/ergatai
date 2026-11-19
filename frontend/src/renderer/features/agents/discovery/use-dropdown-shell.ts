@@ -8,6 +8,7 @@ import {
   useState,
 } from "react"
 import { getDropdownDimensions } from "../ui/dropdown-sizes"
+import { isImeComposing } from "../mentions/mentions-utils"
 
 interface DropdownShellOptions {
   isOpen: boolean
@@ -190,6 +191,8 @@ export function useDropdownShell({
     if (!isOpen || optionCount === 0) return
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (isImeComposing(e)) return
+
       const findNextSelectable = (
         start: number,
         direction: 1 | -1,

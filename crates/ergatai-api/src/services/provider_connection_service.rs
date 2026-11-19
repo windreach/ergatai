@@ -59,6 +59,23 @@ pub fn get_secret(connection: &ProviderConnection) -> Result<Option<String>> {
     }
 }
 
+/// Mask an API key for display: keep a short prefix and hide the rest, e.g.
+/// `sk-abc••••••••`. The full secret never leaves the backend.
+fn mask_api_key(secret: &str) -> String {
+    let prefix: String = secret.chars().take(6).collect();
+    format!("{}••••••••", prefix)
+}
+
+/// Attach a display-only masked key hint to a connection. Used by API
+/// responses so the UI can show that a key is configured.
+pub fn with_secret_hint(mut connection: ProviderConnection) -> ProviderConnection {
+    connection.api_key_hint = get_secret(&connection)
+        .ok()
+        .flatten()
+        .map(|secret| mask_api_key(&secret));
+    connection
+}
+
 pub fn delete_secret(connection: &ProviderConnection) -> Result<()> {
     match entry(connection)?.delete_credential() {
         Ok(()) => Ok(()),
@@ -252,7 +269,15 @@ mod tests {
             is_default: false,
             created_at: 0,
             updated_at: 0,
+            api_key_hint: None,
         }
+    }
+
+    #[test]
+    fn masks_api_key_keeping_only_a_prefix() {
+        let masked = mask_api_key("sk-abcdef1234567890");
+        assert_eq!(masked, "sk-abc••••••••");
+        assert!(!masked.contains("1234567890"));
     }
 
     #[test]

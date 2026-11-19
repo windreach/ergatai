@@ -692,6 +692,7 @@ fn migrate_conversation_context_columns(conn: &Connection) -> Result<()> {
         ("context_window", "INTEGER DEFAULT 0"),
         ("context_updated_at", "INTEGER DEFAULT 0"),
         ("context_quota_json", "TEXT"),
+        ("current_agent_id", "TEXT"),
     ] {
         if !existing_columns.contains(column) {
             conn.execute(
@@ -2588,6 +2589,38 @@ pub mod conversations {
         )
         .optional()
     }
+
+    /// Read the runtime agent id currently bound to a conversation, if any.
+    pub fn get_current_agent_id(conversation_id: ConversationId) -> Result<Option<String>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.query_row(
+            "SELECT current_agent_id FROM conversations WHERE conversation_id = ?1",
+            params![conversation_id],
+            |row| row.get(0),
+        )
+        .optional()
+    }
+
+    /// Persist the runtime agent id bound to a conversation.
+    ///
+    /// Passing `None` clears the binding (e.g. when the agent is suspended or
+    /// removed). This is the durable side of the conversation-as-anchor model:
+    /// the in-memory registry can be rebuilt from this column after a restart.
+    pub fn set_current_agent_id(
+        conversation_id: ConversationId,
+        agent_id: Option<&str>,
+    ) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        conn.execute(
+            "UPDATE conversations SET current_agent_id = ?1 WHERE conversation_id = ?2",
+            params![agent_id, conversation_id],
+        )?;
+        Ok(())
+    }
 }
 
 pub mod agent_sessions {
@@ -4285,6 +4318,10 @@ pub mod provider_connections {
         pub is_default: bool,
         pub created_at: i64,
         pub updated_at: i64,
+        /// Display-only masked API key (e.g. "sk-abc••••••••"). Never contains
+        /// the secret; populated by the API layer, not persisted.
+        #[serde(default, skip_deserializing)]
+        pub api_key_hint: Option<String>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -4319,6 +4356,7 @@ pub mod provider_connections {
             is_default: row.get::<_, i64>(7)? != 0,
             created_at: row.get(8)?,
             updated_at: row.get(9)?,
+            api_key_hint: None,
         })
     }
 

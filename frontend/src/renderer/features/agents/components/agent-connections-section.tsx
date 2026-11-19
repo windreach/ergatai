@@ -1,38 +1,21 @@
 import i18n from "@/lib/i18n"
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { trpc } from "../../../lib/trpc"
 import { Button } from "../../../components/ui/button"
 import { Input } from "../../../components/ui/input"
 import { Label } from "../../../components/ui/label"
-import { Badge } from "../../../components/ui/badge"
 // Protocol is now derived automatically from the owning agent.
 import { IconSpinner } from "../../../icons"
 import { toast } from "sonner"
-import { Plus, RotateCcw, Trash2 } from "lucide-react"
-
-type ProviderProtocol = "anthropic" | "openai_compatible" | "opencode"
-
-type ProviderConnection = {
-  id: string
-  name: string
-  /** Owning agent profile name. A connection belongs to exactly one agent. */
-  agentId: string
-  protocol: ProviderProtocol
-  baseUrl?: string | null
-  authRef?: string | null
-  defaultModel?: string | null
-  isDefault: boolean
-  createdAt: number
-  updatedAt: number
-}
-
-const PROTOCOL_OPTIONS: Array<{ value: ProviderProtocol; label: string }> = [
-  { value: "anthropic", label: "Anthropic" },
-  { value: "openai_compatible", label: "OpenAI-compatible" },
-  { value: "opencode", label: "OpenCode" },
-]
+import { Plus } from "lucide-react"
+import {
+  AgentConnectionRow,
+  type ProviderConnection,
+  type ProviderProtocol,
+} from "./agent-connection-row"
+import { ModelAutocompleteInput } from "./model-autocomplete-input"
 
 const EMPTY_FORM = {
   id: "",
@@ -72,6 +55,23 @@ export function AgentConnectionsSection({
     () => (connectionsQuery.data ?? []).filter((c) => c.agentId === agentId),
     [connectionsQuery.data, agentId],
   )
+  // Models detected for this agent profile, used as suggestions in the
+  // default-model field. Raw ids are kept so they match what the agent
+  // expects (e.g. "opencode/longcat-2.5-free").
+  const modelsQuery = trpc.ergatai.getAgentProfileModels.useQuery(
+    { profileName: agentId },
+    { staleTime: 5 * 60 * 1000, refetchOnWindowFocus: false, retry: false },
+  )
+  const modelOptions = useMemo(() => {
+    const details = modelsQuery.data?.model_details ?? []
+    const ids =
+      details.length > 0
+        ? details.map((detail) => detail.id)
+        : (modelsQuery.data?.models ?? [])
+    return Array.from(
+      new Set(ids.filter((id) => id.trim() && id !== "default")),
+    )
+  }, [modelsQuery.data])
   // The agent's own default configuration (settings.json / config.toml),
   // offered as the initial connection when the agent has none yet.
   const nativeQuery = trpc.ergatai.detectNativeConnection.useQuery(
@@ -88,6 +88,7 @@ export function AgentConnectionsSection({
   const [form, setForm] = useState({ ...EMPTY_FORM })
   const [editingId, setEditingId] = useState<string | null>(null)
   const [showForm, setShowForm] = useState(false)
+  const [keyTouched, setKeyTouched] = useState(false)
 
   const saveMutation = trpc.ergatai.saveProviderConnection.useMutation({
     onSuccess: () => {
@@ -132,10 +133,31 @@ export function AgentConnectionsSection({
     },
   })
 
+  const isLoading = connectionsQuery.isLoading
+  const editingConnection = editingId
+    ? connections.find((connection) => connection.id === editingId)
+    : undefined
+
+  // Import the agent's default configuration automatically the first time it
+  // is detected. One attempt per source path keeps failures from looping; the
+  // retry button below covers that case.
+  const autoImportedSource = useRef<string | null>(null)
+  const nativeSourcePath = nativeQuery.data?.sourcePath
+  const importNative = importMutation.mutate
+  useEffect(() => {
+    if (!nativeSourcePath) return
+    if (isLoading || connections.length > 0 || showForm) return
+    const sourceKey = `${agentId}:${nativeSourcePath}`
+    if (autoImportedSource.current === sourceKey) return
+    autoImportedSource.current = sourceKey
+    importNative({ agentId })
+  }, [agentId, nativeSourcePath, isLoading, connections.length, showForm, importNative])
+
   function resetForm() {
     setForm({ ...EMPTY_FORM })
     setEditingId(null)
     setShowForm(false)
+    setKeyTouched(false)
   }
 
   function protocolForAgent(id: string): ProviderProtocol {
@@ -149,6 +171,7 @@ export function AgentConnectionsSection({
     setForm({ ...EMPTY_FORM, protocol: protocolForAgent(agentId) })
     setEditingId(null)
     setShowForm(true)
+    setKeyTouched(false)
   }
 
   function startEdit(connection: ProviderConnection) {
@@ -163,6 +186,7 @@ export function AgentConnectionsSection({
     })
     setEditingId(connection.id)
     setShowForm(true)
+    setKeyTouched(false)
   }
 
   function save() {
@@ -183,7 +207,6 @@ export function AgentConnectionsSection({
     })
   }
 
-  const isLoading = connectionsQuery.isLoading
   const isSaving = saveMutation.isPending
 
   return (
@@ -225,16 +248,35 @@ export function AgentConnectionsSection({
               <Label htmlFor="agent-connection-key">{i18n.t('API key')}</Label>
               <Input
                 id="agent-connection-key"
-                type="password"
-                value={form.api_key}
-                onChange={(event) =>
+                // Show the masked key as the actual value while browsing;
+                // focus clears it so a new secret can be typed. Untouched
+                // fields always submit an empty value (keep current key).
+                type={editingId && !keyTouched ? "text" : "password"}
+                value={
+                  form.api_key ||
+                  (editingId && !keyTouched
+                    ? (editingConnection?.apiKeyHint ?? "")
+                    : "")
+                }
+                onFocus={() => {
+                  if (editingId && !keyTouched) setKeyTouched(true)
+                }}
+                onBlur={() => {
+                  if (editingId && !form.api_key) setKeyTouched(false)
+                }}
+                onChange={(event) => {
+                  setKeyTouched(true)
                   setForm((current) => ({
                     ...current,
                     api_key: event.target.value,
                   }))
-                }
+                }}
                 placeholder={
-                  editingId ? "Leave empty to keep current key" : "sk-..."
+                  editingId
+                    ? editingConnection?.apiKeyHint === null
+                      ? "No API key saved — enter a key"
+                      : "Enter a new key · leave blank to keep the current one"
+                    : "sk-..."
                 }
                 autoComplete="off"
               />
@@ -256,17 +298,21 @@ export function AgentConnectionsSection({
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="agent-connection-model">{i18n.t('Default model')}</Label>
-              <Input
+              <ModelAutocompleteInput
                 id="agent-connection-model"
                 value={form.default_model}
-                onChange={(event) =>
+                onChange={(value) =>
                   setForm((current) => ({
                     ...current,
-                    default_model: event.target.value,
+                    default_model: value,
                   }))
                 }
-                placeholder={i18n.t('Provider default')}
-                autoComplete="off"
+                options={modelOptions}
+                placeholder={
+                  modelOptions.length > 0
+                    ? "Type to search models"
+                    : i18n.t('Provider default')
+                }
               />
             </div>
           </div>
@@ -305,7 +351,11 @@ export function AgentConnectionsSection({
           <IconSpinner className="h-4 w-4" />
         </div>
       ) : connections.length === 0 ? (
-        nativeQuery.isError ? (
+        nativeQuery.isLoading ? (
+          <div className="flex items-center justify-center py-3">
+            <IconSpinner className="h-4 w-4" />
+          </div>
+        ) : nativeQuery.isError ? (
           <div className="space-y-1.5 rounded-lg border border-dashed border-destructive/40 bg-destructive/5 px-3 py-2.5">
             <p className="text-xs font-medium text-foreground">
               Could not detect native configuration
@@ -335,22 +385,34 @@ export function AgentConnectionsSection({
           <div className="space-y-1.5 rounded-lg border border-border bg-muted/30 px-3 py-2.5">
             <div className="flex items-center justify-between gap-2">
               <p className="text-xs font-medium text-foreground">
-                Default configuration detected
+                {importMutation.isPending
+                  ? "Importing default configuration…"
+                  : importMutation.isError
+                    ? "Import failed"
+                    : "Default configuration detected"}
               </p>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-7 px-2 text-xs"
-                disabled={importMutation.isPending}
-                onClick={() => importMutation.mutate({ agentId })}
-              >
-                {importMutation.isPending ? (
-                  <IconSpinner className="mr-1 h-3 w-3" />
-                ) : null}
-                Import
-              </Button>
+              {!importMutation.isPending && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => importMutation.mutate({ agentId })}
+                >
+                  Import
+                </Button>
+              )}
+              {importMutation.isPending && (
+                <IconSpinner className="h-3.5 w-3.5" />
+              )}
             </div>
+            {importMutation.isError && (
+              <p className="text-[11px] leading-4 text-destructive">
+                {importMutation.error instanceof Error
+                  ? importMutation.error.message
+                  : "Could not import the detected configuration."}
+              </p>
+            )}
             <p
               className="truncate font-mono text-[11px] text-muted-foreground"
               title={nativeQuery.data.sourcePath}
@@ -386,78 +448,15 @@ export function AgentConnectionsSection({
       ) : (
         <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
           {connections.map((connection) => (
-            <div
+            <AgentConnectionRow
               key={connection.id}
-              className="flex items-center justify-between gap-2 px-3 py-2"
-            >
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium">
-                    {connection.name}
-                  </span>
-                  {connection.isDefault && (
-                    <Badge variant="secondary" className="text-[10px]">
-                      Default
-                    </Badge>
-                  )}
-                </div>
-                <p
-                  className="mt-0.5 truncate text-[11px] text-muted-foreground"
-                  title={[
-                    PROTOCOL_OPTIONS.find((option) => option.value === connection.protocol)
-                      ?.label ?? connection.protocol,
-                    connection.baseUrl,
-                    connection.defaultModel,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                >
-                  {PROTOCOL_OPTIONS.find(
-                    (option) => option.value === connection.protocol,
-                  )?.label ?? connection.protocol}
-                  {connection.baseUrl ? ` · ${connection.baseUrl}` : ""}
-                  {connection.defaultModel ? ` · ${connection.defaultModel}` : ""}
-                </p>
-              </div>
-              <div className="flex flex-shrink-0 items-center gap-1">
-                {!connection.isDefault && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    disabled={setDefaultMutation.isPending}
-                    onClick={() => setDefaultMutation.mutate({ id: connection.id })}
-                  >
-                    <RotateCcw className="mr-1 h-3 w-3" />
-                    Default
-                  </Button>
-                )}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => startEdit(connection)}
-                >
-                  Edit
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  disabled={deleteMutation.isPending}
-                  onClick={() => {
-                    if (window.confirm(i18n.t("Delete {{name}}?", { name: connection.name }))) {
-                      deleteMutation.mutate({ id: connection.id })
-                    }
-                  }}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            </div>
+              connection={connection}
+              isSettingDefault={setDefaultMutation.isPending}
+              isDeleting={deleteMutation.isPending}
+              onSetDefault={(id) => setDefaultMutation.mutate({ id })}
+              onEdit={startEdit}
+              onDelete={(target) => deleteMutation.mutate({ id: target.id })}
+            />
           ))}
         </div>
       )}

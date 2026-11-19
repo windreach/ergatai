@@ -194,6 +194,19 @@ pub fn detect_native_config(
     ))
 }
 
+/// Coarse grouping for Codex ACP available commands.
+pub fn group_available_command(
+    cmd: &agent_client_protocol::schema::v1::AvailableCommand,
+) -> Option<&'static str> {
+    if cmd.name.starts_with('$') {
+        return Some("skill");
+    }
+    if cmd.name == "mcp" {
+        return Some("mcp");
+    }
+    None
+}
+
 /// Agent-specific skill mention conversion rules.
 /// Codex: normalize skill mentions to native `$name` form.
 pub fn convert_skill_mentions(message: &str) -> String {
@@ -235,6 +248,9 @@ pub fn list_skills(cwd: Option<&str>) -> Vec<crate::services::skills_service::Sk
             &mut out,
         );
     }
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    out.retain(|s| s.name.is_empty() || seen.insert(s.name.clone()));
     out
 }
 

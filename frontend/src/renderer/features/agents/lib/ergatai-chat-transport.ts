@@ -1,4 +1,5 @@
 import i18n from "@/lib/i18n"
+import { conversationRuntimeAgentStorage } from "./conversation-runtime-agent-storage"
 /**
  * ErgataiChatTransport — streams chat through the Rust ergatai backend.
  *
@@ -928,6 +929,12 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               }
             }
 
+            // Remember which runtime agent is serving this conversation so that
+            // Stop/cancel can target it without guessing from chat bindings.
+            if (effectiveConversationId && effectiveAgentId) {
+              conversationRuntimeAgentStorage.set(effectiveConversationId, effectiveAgentId)
+            }
+
             // Open the conversation-wide stream before publishing the prompt.
             // The backend emits stream_ready only after NATS subscribers exist,
             // so TurnStarted can no longer be emitted before this transport
@@ -998,6 +1005,11 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                 // The backend replaced a suspended runtime ID with a new live ID.
                 // Refresh durable bindings and status stores so UI controls target
                 // the current process on subsequent sends/stops.
+                this.config.agentId = promptResult.new_agent_id
+                effectiveAgentId = promptResult.new_agent_id
+                if (effectiveConversationId) {
+                  conversationRuntimeAgentStorage.set(effectiveConversationId, promptResult.new_agent_id)
+                }
                 const queryClient = getQueryClient()
                 queryClient?.invalidateQueries({
                   queryKey: [["ergatai", "getAgentBindings"]],

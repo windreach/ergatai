@@ -11,6 +11,7 @@ import type { SlashCommandOption } from "./types"
 import type { AgentMode } from "../atoms"
 import { useDiscoveryGroups } from "../discovery/use-discovery-groups"
 import { useDropdownShell } from "../discovery/use-dropdown-shell"
+import { isImeComposing } from "../mentions/mentions-utils"
 import {
   DropdownEmptyState,
   DropdownOption,
@@ -78,7 +79,7 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
         .map((it) => ({
           id: `${it.source ?? "agent"}:${it.name}`,
           name: it.name,
-          command: `/${it.name}`,
+          command: it.name.startsWith("$") ? it.name : `/${it.name}`,
           description: it.description || "",
           category: "agent" as const,
           group: g.id,
@@ -135,6 +136,7 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
     if (!isOpen) return
 
     const handleSelect_key = (e: KeyboardEvent) => {
+      if (isImeComposing(e)) return
       switch (e.key) {
         case "Enter":
           if (e.shiftKey) return

@@ -83,6 +83,7 @@ import {
 import {
   clearConversationDraft
 } from "../lib/drafts"
+import { conversationRuntimeAgentStorage } from "../lib/conversation-runtime-agent-storage"
 
 import {
   type AgentsMentionsEditorHandle,
@@ -197,6 +198,13 @@ const {
   })
 
 const backendAgentId = useMemo(() => {
+    // Prefer the runtime agent id that actually served this conversation.
+    // This is recorded by the chat transport when it resolves/creates the agent,
+    // so Stop targets the correct agent even when a chat has multiple agents
+    // or the binding list is stale/empty.
+    const storedRuntimeAgentId = conversationRuntimeAgentStorage.get(conversationId)
+    if (storedRuntimeAgentId) return storedRuntimeAgentId
+
     // Try to find by conversationId first, then fall back to chatId
     const byConversation = agentBindingsQuery.data?.find(
       (binding) => binding.conversationId === conversationId,
@@ -483,11 +491,13 @@ const isFullscreen = useAtomValue(isFullscreenAtom)
 
 const handleCompact = useCallback(() => {
     if (isStreamingRef.current) return // Can't compact while streaming
-    sendMessageRef.current({
-      role: "user",
-      parts: [{ type: "text", text: "/compact" }],
-    })
-  }, [])
+    // Route through the conversation invocation service so the optimistic user
+    // message carries the backend-issued externalMessageId. Calling the raw
+    // AI SDK sendMessage here bypasses correlation, which leaves the prompt
+    // without a clientRequestId and the local copy without a dedupe key — the
+    // durable copy then renders as a second "/compact" bubble with no reply.
+    void chatSurface.handleCompact()
+  }, [chatSurface.handleCompact])
 
 
 const addTextContext = useCallback((text: string, source: TextSelectionSource) => {
@@ -555,6 +565,18 @@ const handleStop = useCallback(async () => {
         await chatInvocation.stop()
       } catch (error) {
         console.warn("[ActiveChat] Failed to stop local stream:", error)
+      }
+
+      // Fallback: ensure the backend agent that actually served this
+      // conversation is cancelled even if the binding-based id resolution
+      // missed it (e.g. multiple agents per chat, stale/empty bindings).
+      const fallbackAgentId = conversationRuntimeAgentStorage.get(conversationId)
+      if (fallbackAgentId) {
+        try {
+          await trpcClient.ergatai.cancelPrompt.mutate({ agentId: fallbackAgentId })
+        } catch (error) {
+          console.warn("[ActiveChat] Failed to cancel backend agent via fallback:", error)
+        }
       }
     } finally {
       stopInProgressRef.current = false

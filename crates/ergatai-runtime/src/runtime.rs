@@ -366,6 +366,7 @@ impl AgentRuntime {
             None,
             profile_name,
             transport,
+            None,
         )
         .await
     }
@@ -386,6 +387,7 @@ impl AgentRuntime {
         conversation_id: Option<&str>,
         profile_name: Option<&str>,
         transport: Option<&str>,
+        reuse_agent_id: Option<&str>,
     ) -> ErgataiResult<String> {
         // Make the allocated worktree explicit to the agent process as well. ACP
         // already receives `work_dir` as the session cwd, but some agents/tools
@@ -438,8 +440,13 @@ impl AgentRuntime {
             .await;
 
         // Pre-compute agent_id (Snowflake) for workspace metadata.
-        // Note: next_agent_id() increments the counter, so start_agent() must use this pre-computed ID.
-        let agent_id = self.backend.next_agent_id(&workspace.id);
+        // When `reuse_agent_id` is provided (e.g. resuming a suspended agent),
+        // reuse that id so the agent keeps a stable identity across suspend/resume.
+        // Otherwise generate a fresh Snowflake id.
+        let agent_id = match reuse_agent_id {
+            Some(id) => id.to_string(),
+            None => self.backend.next_agent_id(&workspace.id),
+        };
 
         // Register workspace boundary BEFORE starting the agent to prevent TOCTOU race.
         // Without this, an agent could modify files before its workspace is registered,
@@ -792,6 +799,45 @@ impl AgentRuntime {
         result
     }
 
+    /// Inject a message and optional image/resource attachments into a running agent.
+    pub async fn inject_message_with_resources(
+        &self,
+        agent_id: &str,
+        message: &str,
+        images: Vec<crate::types::AgentImage>,
+        resources: Vec<crate::types::AgentResource>,
+    ) -> ErgataiResult<()> {
+        let runtime_id = self
+            .resolve_agent_id(agent_id)
+            .await
+            .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?;
+
+        let info = self
+            .registry
+            .get(&runtime_id)
+            .await
+            .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", runtime_id)))?;
+
+        // Transition: Idle → Running (agent is now processing a message)
+        // Create guard BEFORE transition to ensure cleanup on panic/cancellation
+        let state_guard = StateGuard::new(self.registry.clone(), runtime_id.clone());
+        transition_to_running(&self.registry, &runtime_id).await;
+
+        // Deliver via backend injection (synchronous wait for prompt completion)
+        let result = self
+            .backend
+            .inject_message_with_resources(&info.handle, message, &images, &resources)
+            .await;
+
+        // Transition: Running → Idle (agent finished processing, back to idle)
+        transition_to_idle(&self.registry, &runtime_id).await;
+
+        // Mark guard as completed to prevent cleanup task from running
+        state_guard.complete();
+
+        result
+    }
+
     /// Stop an agent.
     pub async fn stop_agent(&self, agent_id: &str) -> ErgataiResult<()> {
         // Close the MCP transport before removing runtime state.  This makes
@@ -944,7 +990,8 @@ impl AgentRuntime {
     /// * `suspended_id` - The ID of the suspended agent to resume
     ///
     /// # Returns
-    /// The new agent ID (different from the suspended ID, as it's a new process)
+    /// The agent ID. When id reuse is enabled this equals the suspended ID;
+    /// otherwise a fresh ID is generated for the new process.
     ///
     /// # Errors
     /// Returns an error if:
@@ -1070,6 +1117,7 @@ impl AgentRuntime {
                 Some(&suspended.conversation_id),
                 Some(&suspended.profile_name),
                 None, // transport (default stdio)
+                Some(&suspended.id), // reuse agent id for stable identity
             )
             .await?;
 

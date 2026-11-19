@@ -12,7 +12,7 @@ import {
   memo,
 } from "react"
 import { createFileIconElement } from "./file-icon-utils"
-import { buildGenericMentionToken, MENTION_PREFIXES } from "./mentions-utils"
+import { buildGenericMentionToken, isImeComposing, MENTION_PREFIXES } from "./mentions-utils"
 // Native agent trigger hints removed; prompt text (with discovery tokens) is
 // passed straight to the agent.
 
@@ -249,6 +249,55 @@ function serializeContent(root: HTMLElement): string {
     node = walker.nextNode()
   }
   return result
+}
+
+/**
+ * Place the caret at the end of the editor, anchored inside a text node.
+ * A selection whose container is the editor root breaks IME composition in
+ * Chromium (the first composition can be routed to the wrong text node and
+ * leave a stray pinyin letter behind).
+ */
+function placeCaretAtEnd(editor: HTMLElement): void {
+  const sel = window.getSelection()
+  if (!sel) return
+
+  const range = document.createRange()
+  let target: Node | null = editor
+  while (target && target.lastChild) {
+    const last = target.lastChild
+    if (last.nodeType === Node.TEXT_NODE) {
+      range.setStart(last, (last.textContent || "").length)
+      range.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(range)
+      return
+    }
+    if (last.nodeType === Node.ELEMENT_NODE) {
+      const el = last as HTMLElement
+      if (el.tagName === "BR") break
+      if (el.hasAttribute("data-mention-id")) {
+        // Never put the caret inside a non-editable mention chip.
+        const anchor = document.createTextNode("")
+        el.after(anchor)
+        range.setStart(anchor, 0)
+        range.collapse(true)
+        sel.removeAllRanges()
+        sel.addRange(range)
+        return
+      }
+      target = el
+      continue
+    }
+    break
+  }
+
+  // No text content to anchor in - create an empty text node.
+  const anchor = document.createTextNode("")
+  editor.appendChild(anchor)
+  range.setStart(anchor, 0)
+  range.collapse(true)
+  sel.removeAllRanges()
+  sel.addRange(range)
 }
 
 // Build DOM from serialized text
@@ -672,9 +721,23 @@ export const AgentsMentionsEditor = memo(
               const id = el.getAttribute("data-mention-id") || ""
               const mentionLen = buildGenericMentionToken(id, (el as HTMLElement).getAttribute("data-trigger-char") || "@").length
               if (currentOffset + mentionLen >= offset) {
-                // Place cursor after mention
+                // Place cursor after mention, inside the following text node
+                // when possible. A root-level caret breaks IME composition.
                 const range = document.createRange()
-                range.setStartAfter(el)
+                const remaining = Math.max(0, offset - currentOffset - mentionLen)
+                const next = el.nextSibling
+                if (next && next.nodeType === Node.TEXT_NODE) {
+                  range.setStart(
+                    next,
+                    Math.min(remaining, (next.textContent || "").length),
+                  )
+                } else {
+                  // No adjacent text node to anchor the caret in - create an
+                  // empty one instead of leaving the selection in the root.
+                  const caretText = document.createTextNode("")
+                  el.after(caretText)
+                  range.setStart(caretText, 0)
+                }
                 range.collapse(true)
                 sel.removeAllRanges()
                 sel.addRange(range)
@@ -698,8 +761,7 @@ export const AgentsMentionsEditor = memo(
         }
 
         // Fallback: move to end
-        sel.selectAllChildren(editorRef.current)
-        sel.collapseToEnd()
+        placeCaretAtEnd(editorRef.current)
       }, [])
 
       // Cleanup debounce timer on unmount
@@ -1037,8 +1099,10 @@ export const AgentsMentionsEditor = memo(
             }
           }
 
-          // Prevent submission during IME composition (e.g., Chinese/Japanese/Korean input)
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+          // Prevent submission during IME composition (e.g., Chinese/Japanese/Korean input).
+          // Some platforms (Electron/Chromium on Wayland) report the Enter that
+          // commits a composition as isComposing=false, so also check keyCode 229.
+          if (e.key === "Enter" && !e.shiftKey && !isImeComposing(e.nativeEvent)) {
             if (activeDiscoveryTrigger.current !== null) {
               // Let dropdown handle Enter
               return
@@ -1051,7 +1115,9 @@ export const AgentsMentionsEditor = memo(
               onSubmit?.()
             }
           }
-          if (e.key === "Escape") {
+          // Escape during an IME composition belongs to the IME (it cancels the
+          // candidate window) - don't blur the editor or close dropdowns.
+          if (e.key === "Escape" && !isImeComposing(e.nativeEvent)) {
             // Close mention dropdown
             if (activeDiscoveryTrigger.current?.kind === "mention") {
               e.preventDefault()
@@ -1091,8 +1157,7 @@ export const AgentsMentionsEditor = memo(
             // Always ensure cursor is visible at end
             const sel = window.getSelection()
             if (sel && sel.rangeCount === 0) {
-              sel.selectAllChildren(editor)
-              sel.collapseToEnd()
+              placeCaretAtEnd(editor)
             }
           },
 
@@ -1116,13 +1181,10 @@ export const AgentsMentionsEditor = memo(
             setHasContent(newHasContent)
             onContentChange?.(newHasContent)
 
-            // Position cursor at the end of content
+            // Position cursor at the end of content (inside a text node so
+            // IME composition anchors correctly).
             if (newHasContent) {
-              const sel = window.getSelection()
-              if (sel) {
-                sel.selectAllChildren(editorRef.current)
-                sel.collapseToEnd()
-              }
+              placeCaretAtEnd(editorRef.current)
             }
           },
 
@@ -1311,7 +1373,11 @@ export const AgentsMentionsEditor = memo(
               } else {
                 const space = document.createTextNode(" ")
                 insertedNode.after(space)
-                newRange.setStartAfter(space)
+                // Keep the caret inside a text node. A root-level selection
+                // (setStartAfter) makes Chromium route the first IME
+                // composition to a different text node, which can leave a
+                // stray pinyin letter (e.g. "z") after the mention.
+                newRange.setStart(space, space.length)
                 newRange.collapse(true)
               }
               sel!.removeAllRanges()
@@ -1356,10 +1422,12 @@ export const AgentsMentionsEditor = memo(
                 if (space) target.appendChild(space)
               }
 
-              // Move cursor after the inserted node (and trailing space if any)
+              // Move cursor after the inserted node (and trailing space if any).
+              // Prefer a text node over a root-level selection for reliable IME
+              // composition (see insertMention Case 1).
               const newRange = document.createRange()
               if (space) {
-                newRange.setStartAfter(space)
+                newRange.setStart(space, space.length)
               } else if (isFolder && mentionNode.nodeType === Node.TEXT_NODE) {
                 // Keep cursor inside folder text so trigger detection can continue browsing.
                 newRange.setStart(mentionNode, (mentionNode.textContent || "").length)

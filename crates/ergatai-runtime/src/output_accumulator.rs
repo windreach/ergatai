@@ -759,6 +759,23 @@ pub fn get_global_persist_callback() -> Option<&'static Arc<PersistCallback>> {
     GLOBAL_PERSIST_CALLBACK.get()
 }
 
+/// Callback invoked when an agent's available commands change, so external
+/// caches (e.g. discovery) can be invalidated instead of waiting for TTL.
+pub type DiscoveryInvalidateCallback = Box<dyn Fn(String) + Send + Sync>;
+
+static GLOBAL_DISCOVERY_INVALIDATE_CALLBACK: std::sync::OnceLock<
+    Arc<DiscoveryInvalidateCallback>,
+> = std::sync::OnceLock::new();
+
+pub fn set_global_discovery_invalidate_callback(callback: DiscoveryInvalidateCallback) {
+    let _ = GLOBAL_DISCOVERY_INVALIDATE_CALLBACK.set(Arc::new(callback));
+}
+
+pub fn get_global_discovery_invalidate_callback(
+) -> Option<&'static Arc<DiscoveryInvalidateCallback>> {
+    GLOBAL_DISCOVERY_INVALIDATE_CALLBACK.get()
+}
+
 // ── Chunk buffer for out-of-turn (streaming-originated) events ────────────────
 //
 // Persists durable events that occur outside an active turn (early output,

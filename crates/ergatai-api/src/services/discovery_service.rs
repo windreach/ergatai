@@ -117,9 +117,17 @@ fn check_cache(key: &str) -> CacheStatus {
     match cache.results.get(key) {
         Some(entry) => {
             let age = entry.created_at.elapsed();
+            // ACP available commands must never be served stale: an agent can
+            // publish a new command list at any time, and stale entries would
+            // keep leaked/misclassified commands visible until 2x TTL.
+            let revalidate_factor = if key.starts_with("acp_commands::") {
+                1
+            } else {
+                REVALIDATE_WINDOW_FACTOR
+            };
             if age < ttl {
                 CacheStatus::Fresh(entry.value.clone())
-            } else if age < ttl * REVALIDATE_WINDOW_FACTOR {
+            } else if age < ttl * revalidate_factor {
                 CacheStatus::Stale(entry.value.clone())
             } else {
                 CacheStatus::Miss
@@ -162,7 +170,8 @@ fn cache_set(key: &str, value: Value) {
 /// Handles both key formats:
 /// - Static: `{source}::{cwd}` — invalidated only if cwd matches (no agent_id to check).
 /// - Runtime: `{source}::{agent_id}::{cwd}` — invalidated by agent_id + cwd.
-fn invalidate_agent(agent_id: &str, cwd: Option<&str>) {
+pub fn invalidate_agent(agent_id: &str, cwd: Option<&str>) {
+    let invalidate_all_cwd = cwd.is_none();
     let cwd_str = cwd.unwrap_or("");
     with_cache(|cache| {
         cache.results.retain(|k, _| {
@@ -182,7 +191,11 @@ fn invalidate_agent(agent_id: &str, cwd: Option<&str>) {
                 }
             } else {
                 // Runtime key: `{source}::{agent_id}::{cwd}` — second is agent_id, third is cwd
-                !(second == agent_id && third == cwd_str)
+                if invalidate_all_cwd {
+                    second != agent_id
+                } else {
+                    !(second == agent_id && third == cwd_str)
+                }
             }
         });
         // Drop any in-flight handles for the same agent so refresh starts clean.
@@ -199,7 +212,11 @@ fn invalidate_agent(agent_id: &str, cwd: Option<&str>) {
                     third != cwd_str
                 }
             } else {
-                !(second == agent_id && third == cwd_str)
+                if invalidate_all_cwd {
+                    second != agent_id
+                } else {
+                    !(second == agent_id && third == cwd_str)
+                }
             }
         });
     });
@@ -630,7 +647,6 @@ async fn fetch_acp_commands(agent_id: &str) -> Value {
                         "argumentHint": "",
                         "aliases": [],
                         "source": "acp",
-                        "group": "Commands",
                     })
                 })
                 .collect(),
@@ -674,7 +690,7 @@ async fn fetch_convention_mcp_items(cwd: Option<&str>) -> Vec<Value> {
                 "path": m.path,
                 "group": "MCP",
                 "type": "mcp",
-                "targetTriggers": ["@"],
+                "targetTriggers": ["/"],
             }));
         }
         for m in crate::services::mcp_convention::scan_codex_mcp(cwd_owned.as_deref()) {
@@ -687,7 +703,7 @@ async fn fetch_convention_mcp_items(cwd: Option<&str>) -> Vec<Value> {
                 "path": m.path,
                 "group": "MCP",
                 "type": "mcp",
-                "targetTriggers": ["@"],
+                "targetTriggers": ["/"],
             }));
         }
         for m in crate::services::mcp_convention::scan_opencode_mcp(cwd_owned.as_deref()) {
@@ -700,9 +716,11 @@ async fn fetch_convention_mcp_items(cwd: Option<&str>) -> Vec<Value> {
                 "path": m.path,
                 "group": "MCP",
                 "type": "mcp",
-                "targetTriggers": ["@"],
+                "targetTriggers": ["/"],
             }));
         }
+        // De-duplicate convention MCP entries by name across agent kinds.
+        dedup_by_name(&mut items, "name");
         items
     })
     .await
@@ -802,8 +820,154 @@ fn dedup_by_name(items: &mut Vec<Value>, key: &str) {
     });
 }
 
+/// Result of classifying a single ACP available command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcpCommandKind {
+    /// The command is actually a skill invocation. Carries the normalized skill name.
+    Skill(String),
+    /// The command is a genuine slash command.
+    Command,
+}
+
+/// Abstract classifier for ACP available commands.
+///
+/// Different agents expose skills through ACP using different conventions, so
+/// classification is delegated to an agent-specific implementation. This trait
+/// is the "abstract service" that serves every agent kind; callers obtain an
+/// instance via [`acp_classifier_for_kind`].
+pub trait AcpCommandClassifier: Send + Sync {
+    /// Classify one ACP command. `known_skills` contains skill names already
+    /// discovered through the SDK/convention layers and can be used for
+    /// membership-based classification.
+    fn classify(&self, cmd: &Value, known_skills: &HashSet<String>) -> AcpCommandKind;
+}
+
+/// Codex exposes skills as `$name` commands.
+pub struct CodexAcpClassifier;
+impl AcpCommandClassifier for CodexAcpClassifier {
+    fn classify(&self, cmd: &Value, known_skills: &HashSet<String>) -> AcpCommandKind {
+        let name = cmd.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if name.starts_with('$') {
+            let skill_name = name.trim_start_matches('$').to_string();
+            if !skill_name.is_empty() {
+                return AcpCommandKind::Skill(skill_name);
+            }
+        }
+        if known_skills.contains(name) {
+            return AcpCommandKind::Skill(name.to_string());
+        }
+        AcpCommandKind::Command
+    }
+}
+
+/// Claude exposes skills as slash commands. They are recognizable either by a
+/// name that matches a discovered skill, or by a description that carries a
+/// user/plugin marker (`(user)`, or a leading `(plugin-name)` group).
+pub struct ClaudeAcpClassifier;
+impl AcpCommandClassifier for ClaudeAcpClassifier {
+    fn classify(&self, cmd: &Value, known_skills: &HashSet<String>) -> AcpCommandKind {
+        let name = cmd.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let description = cmd.get("description").and_then(|v| v.as_str()).unwrap_or("");
+
+        if known_skills.contains(name) {
+            return AcpCommandKind::Skill(name.to_string());
+        }
+        // User-invocable skills are annotated with a trailing "(user)" marker.
+        if description.trim_end().ends_with("(user)") {
+            return AcpCommandKind::Skill(name.to_string());
+        }
+        // Plugin skills are rendered as "(plugin-name) ..." descriptions.
+        if description.trim_start().starts_with('(')
+            && description.contains(") ")
+            && !name.starts_with("mcp:")
+            && name != "agents"
+        {
+            return AcpCommandKind::Skill(name.to_string());
+        }
+        AcpCommandKind::Command
+    }
+}
+
+/// OpenCode exposes very few ACP commands; classify by known-skill membership.
+pub struct OpenCodeAcpClassifier;
+impl AcpCommandClassifier for OpenCodeAcpClassifier {
+    fn classify(&self, cmd: &Value, known_skills: &HashSet<String>) -> AcpCommandKind {
+        let name = cmd.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if known_skills.contains(name) {
+            return AcpCommandKind::Skill(name.to_string());
+        }
+        AcpCommandKind::Command
+    }
+}
+
+/// Fallback classifier used for unknown agent kinds.
+pub struct DefaultAcpClassifier;
+impl AcpCommandClassifier for DefaultAcpClassifier {
+    fn classify(&self, cmd: &Value, known_skills: &HashSet<String>) -> AcpCommandKind {
+        let name = cmd.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if name.starts_with('$') {
+            let skill_name = name.trim_start_matches('$').to_string();
+            if !skill_name.is_empty() {
+                return AcpCommandKind::Skill(skill_name);
+            }
+        }
+        if known_skills.contains(name) {
+            return AcpCommandKind::Skill(name.to_string());
+        }
+        AcpCommandKind::Command
+    }
+}
+
+pub fn acp_classifier_for_kind(kind: &str) -> Box<dyn AcpCommandClassifier> {
+    match kind {
+        "codex" => Box::new(CodexAcpClassifier),
+        "claude" => Box::new(ClaudeAcpClassifier),
+        "opencode" => Box::new(OpenCodeAcpClassifier),
+        _ => Box::new(DefaultAcpClassifier),
+    }
+}
+
+/// Classify ACP available commands into skills and slash commands.
+///
+/// Uses an agent-specific [`AcpCommandClassifier`] so each agent's symbol
+/// conventions are honored. `known_skills` contains skill names already
+/// discovered through SDK/convention layers and is used for membership-based
+/// classification.
+pub fn classify_acp_commands(
+    classifier: &dyn AcpCommandClassifier,
+    known_skills: &HashSet<String>,
+    commands: &Value,
+) -> (Vec<Value>, Vec<Value>) {
+    let mut skills: Vec<Value> = Vec::new();
+    let mut slash_commands: Vec<Value> = Vec::new();
+
+    for item in commands.as_array().cloned().unwrap_or_default() {
+        match classifier.classify(&item, known_skills) {
+            AcpCommandKind::Skill(skill_name) => {
+                if skill_name.is_empty() {
+                    continue;
+                }
+                let mut skill = item.clone();
+                skill["name"] = json!(skill_name);
+                skills.push(skill);
+            }
+            AcpCommandKind::Command => {
+                slash_commands.push(item);
+            }
+        }
+    }
+
+    (skills, slash_commands)
+}
+
+/// Backwards-compatible entry point using the default classifier.
+pub fn classify_acp_commands_default(commands: &Value) -> (Vec<Value>, Vec<Value>) {
+    classify_acp_commands(&DefaultAcpClassifier, &HashSet::new(), commands)
+}
+
 fn merge_sources(
     _agent_id: &str,
+    agent_kind: &str,
     convention_skills: &Value,
     sdk_bundle: &Value,
     acp_commands: &Value,
@@ -833,8 +997,8 @@ fn merge_sources(
         match t {
             "skill" => json!(["$"]),
             "command" => json!(["/"]),
-            "mcp" => json!(["@"]),
-            "plugin" => json!(["@", "$", "/"]),
+            "mcp" => json!(["/"]),
+            "plugin" => json!(["/"]),
             "agent" => json!(["@"]),
             _ => json!([]),
         }
@@ -879,11 +1043,37 @@ fn merge_sources(
         }
     }
 
-    // Skills: convention + SDK (classify by explicit type, bucket is fallback only)
-    let mut skills: Vec<Value> = convention_skills.as_array().cloned().unwrap_or_default();
-    for s in &mut skills {
-        normalize_discovery_item(s, "skill", None);
+    // Skills: SDK (agent's own, higher priority) first, then convention
+    // (filesystem, stable fallback). Dedup keeps the SDK entry on name clash,
+    // mirroring the model source-chain where the live/SDK source outranks the
+    // static config file.
+    // ACP available commands carry no type field. Different agents expose skills
+    // through different conventions (Codex uses `$name`, Claude marks them in
+    // the description or via names that match discovered skills, ...), so
+    // classify them with an agent-specific classifier before merging.
+    let mut known_skill_names: HashSet<String> = HashSet::new();
+    if let Some(arr) = sdk_bundle.get("skills").and_then(|v| v.as_array()) {
+        for s in arr {
+            if let Some(name) = s.get("name").and_then(|v| v.as_str()) {
+                if !name.is_empty() {
+                    known_skill_names.insert(name.to_string());
+                }
+            }
+        }
     }
+    for s in convention_skills.as_array().cloned().unwrap_or_default() {
+        if let Some(name) = s.get("name").and_then(|v| v.as_str()) {
+            if !name.is_empty() {
+                known_skill_names.insert(name.to_string());
+            }
+        }
+    }
+
+    let classifier = acp_classifier_for_kind(agent_kind);
+    let (acp_skills_raw, acp_commands_raw) =
+        classify_acp_commands(&*classifier, &known_skill_names, acp_commands);
+
+    let mut skills: Vec<Value> = Vec::new();
     if let Some(arr) = sdk_bundle.get("skills").and_then(|v| v.as_array()) {
         for s in arr {
             let mut s = s.clone();
@@ -891,10 +1081,21 @@ fn merge_sources(
             skills.push(s);
         }
     }
+    for s in convention_skills.as_array().cloned().unwrap_or_default() {
+        let mut s = s.clone();
+        normalize_discovery_item(&mut s, "skill", None);
+        skills.push(s);
+    }
+    // ACP-derived skills are the lowest priority source: only fill gaps left by
+    // the SDK and convention scans.
+    for mut s in acp_skills_raw {
+        normalize_discovery_item(&mut s, "skill", Some("acp"));
+        skills.push(s);
+    }
     dedup_by_name(&mut skills, "name");
 
-    // Commands: ACP + SDK
-    let mut commands: Vec<Value> = acp_commands.as_array().cloned().unwrap_or_default();
+    // Commands: ACP (non-skill entries) + SDK.
+    let mut commands: Vec<Value> = acp_commands_raw;
     for c in &mut commands {
         normalize_discovery_item(c, "command", None);
     }
@@ -1187,8 +1388,14 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
                 fresh_values.insert(source, v);
             }
             CacheStatus::Stale(v) => {
-                fresh_values.insert(source, v);
-                stale_sources.push(source);
+                if source == SRC_ACP_COMMANDS {
+                    // Never serve stale ACP commands; refetch so newly published
+                    // command lists replace the cached one immediately.
+                    miss_sources.push(source);
+                } else {
+                    fresh_values.insert(source, v);
+                    stale_sources.push(source);
+                }
             }
             CacheStatus::Miss => {
                 // Skills-first: when the SDK bundle is a miss but we have a
@@ -1226,6 +1433,7 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
     // Assemble the merged result from whatever we have.
     let mut result = merge_sources(
         agent_id,
+        kind,
         fresh_values
             .get(SRC_CONVENTION_SKILLS)
             .unwrap_or(&json!([])),
@@ -1297,7 +1505,7 @@ pub async fn discover(agent_id: &str, cwd: Option<&str>, refresh: bool) -> Value
             "source": "registry",
             "group": "MCP",
             "type": "mcp",
-            "targetTriggers": ["@"],
+            "targetTriggers": ["/"],
         }));
     }
 
@@ -1553,7 +1761,7 @@ pub async fn discover_static(cwd: Option<&str>, agent_kind: Option<&str>, refres
                     "source": "registry",
                     "group": "MCP",
                     "type": "mcp",
-                    "targetTriggers": ["@"],
+                    "targetTriggers": ["/"],
                 })
             })
             .collect()
@@ -1801,6 +2009,8 @@ fn scan_plugins() -> Vec<Value> {
             }));
         }
     }
+
+    dedup_by_name(&mut out, "name");
     out
 }
 
@@ -1894,6 +2104,7 @@ mod tests {
 
         let result = merge_sources(
             "test-agent",
+            "claude",
             &json!([]),
             &sdk_with_error,
             &json!([]),
@@ -1917,6 +2128,7 @@ mod tests {
 
         let result = merge_sources(
             "test-agent",
+            "claude",
             &json!([]),
             &sdk_success,
             &json!([]),
@@ -1941,7 +2153,7 @@ mod tests {
             ]
         });
 
-        let result = merge_sources("test-agent", &convention, &sdk, &json!([]), &json!([]));
+        let result = merge_sources("test-agent", "claude", &convention, &sdk, &json!([]), &json!([]));
         let skills = result["skills"].as_array().unwrap();
 
         // Should have 3 unique skills (shared-skill deduped)
@@ -2085,5 +2297,29 @@ mod tests {
         assert!(names.contains(&"reviewer"));
         assert!(names.contains(&"team/helper"));
         assert!(names.contains(&"planner-x"));
+    }
+
+    #[test]
+    fn test_classify_acp_commands_splits_skills_and_commands() {
+        let input = serde_json::json!([
+            { "name": "$arkcli-agent", "description": "skill desc" },
+            { "name": "arkcli-agent", "description": "command desc" },
+            { "name": "$byted-web-search", "description": "search skill" },
+            { "name": "skills", "description": "list skills" }
+        ]);
+
+        let (skills, commands) = classify_acp_commands_default(&input);
+
+        let skill_names: Vec<&str> = skills
+            .iter()
+            .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+            .collect();
+        let command_names: Vec<&str> = commands
+            .iter()
+            .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+            .collect();
+
+        assert_eq!(skill_names, vec!["arkcli-agent", "byted-web-search"]);
+        assert_eq!(command_names, vec!["arkcli-agent", "skills"]);
     }
 }

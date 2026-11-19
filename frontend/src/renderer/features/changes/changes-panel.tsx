@@ -90,6 +90,37 @@ export function ChangesPanel({
 		},
 	});
 
+	const syncMutation = trpc.changes.syncWorktreeToBase.useMutation({
+		onSuccess: (result) => {
+			if (result.status === "synced") {
+				toast.success(
+					`Synced ${result.filesChanged ?? 0} file(s) to base working tree`,
+					{ position: "top-center" },
+				);
+			} else if (result.status === "nothing_to_sync") {
+				toast.info("Base working tree is already up to date", {
+					position: "top-center",
+				});
+			} else if (result.status === "needs_manual_merge") {
+				toast.error(
+					`Sync needs manual resolution: ${result.reason ?? "conflict"}${
+						result.conflictedFiles?.length
+							? ` (${result.conflictedFiles.join(", ")})`
+							: ""
+					}`,
+					{ position: "top-center", duration: 8000 },
+				);
+			} else if (result.status === "error") {
+				toast.error(result.error || "Sync failed", {
+					position: "top-center",
+				});
+			}
+		},
+		onError: (error) => {
+			toast.error(error.message || "Sync failed", { position: "top-center" });
+		},
+	});
+
 	const chatBranch = chatQuery.data?.branch ?? null;
 	const baseBranch = chatQuery.data?.baseBranch ?? null;
 
@@ -104,11 +135,25 @@ export function ChangesPanel({
 	return (
 		<div className="flex flex-col h-full overflow-hidden">
 			{chatBranch && baseBranch && (
-				<div className="flex items-center justify-end px-2 py-1 border-b border-border/50">
+				<div className="flex items-center justify-end gap-3 px-2 py-1 border-b border-border/50">
 					<button
 						type="button"
 						className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline disabled:opacity-50"
-						disabled={mergeMutation.isPending}
+						disabled={syncMutation.isPending || mergeMutation.isPending}
+						onClick={() => {
+							syncMutation.mutate({
+								worktreePath,
+								chatBranch,
+								baseBranch,
+							});
+						}}
+					>
+						{syncMutation.isPending ? "Syncing..." : "Sync changes"}
+					</button>
+					<button
+						type="button"
+						className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline disabled:opacity-50"
+						disabled={mergeMutation.isPending || syncMutation.isPending}
 						onClick={() => {
 							mergeMutation.mutate({
 								worktreePath,
@@ -117,7 +162,9 @@ export function ChangesPanel({
 							});
 						}}
 					>
-						{mergeMutation.isPending ? "Merging..." : "Merge to base"}
+						{mergeMutation.isPending
+							? "Merging..."
+							: "Merge commits (advanced)"}
 					</button>
 				</div>
 			)}

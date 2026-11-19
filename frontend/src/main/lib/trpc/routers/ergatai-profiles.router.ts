@@ -20,6 +20,8 @@ export const profilesRouter = router({
         baseUrl?: string | null
         authRef?: string | null
         defaultModel?: string | null
+        /** Masked API key (e.g. "sk-abc••••••••"), null when not configured. */
+        apiKeyHint?: string | null
         isDefault: boolean
         createdAt: number
         updatedAt: number

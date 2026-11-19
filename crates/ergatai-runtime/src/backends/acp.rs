@@ -89,8 +89,18 @@ impl StartupPhaseExecutor for AcpInitializePhase<'_> {
         // Advertise form elicitation support so agents (e.g. OpenCode's
         // `question` tool) can render interactive forms instead of failing with
         // "The question couldn't be shown to the user in this client".
+        let mut meta = serde_json::Map::new();
+        meta.insert("terminal-auth".to_string(), serde_json::json!(true));
+
         let client_capabilities = ClientCapabilities::new()
-            .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()));
+            .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()))
+            .session(
+                agent_client_protocol::schema::v1::ClientSessionCapabilities::new().compaction(
+                    agent_client_protocol::schema::v1::CompactionCapabilities::new(),
+                ),
+            )
+            .auth(agent_client_protocol::schema::v1::AuthCapabilities::new().terminal(true))
+            .meta(meta);
         let response = self
             .connection
             .send_request(
@@ -1054,6 +1064,142 @@ fn detect_acp_adapter_kind(command: &str) -> &'static str {
     }
 }
 
+/// Mirror of `ergatai_api::services::initial_prompt_turns::convert_prompt_tokens`
+/// for the runtime paths that bypass the API layer (slash commands, auto-continue,
+/// MCP delivery, etc.). Converts ergatai mention tokens into agent-native prompt
+/// text so skills/commands/files resolve instead of being forwarded raw.
+fn convert_prompt_tokens(message: &str, adapter_kind: &str) -> String {
+    use base64::Engine;
+    use regex::Regex;
+
+    let triggers = ["@", "$", "#"];
+    let mut result = message.to_string();
+
+    for trig in triggers {
+        let t = regex::escape(trig);
+
+        // file/folder with path
+        if let Ok(re) = Regex::new(&format!(
+            r"{}\[(file|folder):(local|external):([^\]]+)\]",
+            t
+        )) {
+            result = re.replace_all(&result, "@$3").to_string();
+        }
+        // file/folder without path -> drop
+        if let Ok(re) = Regex::new(&format!(r"{}\[(file|folder):[^\]]*\]", t)) {
+            result = re.replace_all(&result, "").to_string();
+        }
+        // agent -> @name
+        if let Ok(re) = Regex::new(&format!(r"{}\[(agent):([^\]]+)\]", t)) {
+            result = re.replace_all(&result, "@$2").to_string();
+        }
+        // quote -> decoded full text
+        if let Ok(re) = Regex::new(&format!(r"{}\[(quote):([^\]]+)\]", t)) {
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let payload = caps.get(2).unwrap().as_str();
+                    if let Some(idx) = payload.find(':') {
+                        let encoded = &payload[idx + 1..];
+                        match base64::engine::general_purpose::STANDARD.decode(encoded) {
+                            Ok(bytes) => {
+                                String::from_utf8(bytes).unwrap_or_else(|_| payload[..idx].to_string())
+                            }
+                            Err(_) => payload[..idx].to_string(),
+                        }
+                    } else {
+                        payload.to_string()
+                    }
+                })
+                .to_string();
+        }
+        // diff -> decoded full diff text
+        if let Ok(re) = Regex::new(&format!(r"{}\[(diff):([^\]]+)\]", t)) {
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let payload = caps.get(2).unwrap().as_str();
+                    let parts: Vec<&str> = payload.splitn(4, ':').collect();
+                    if parts.len() >= 4 {
+                        let encoded = parts[3];
+                        match base64::engine::general_purpose::STANDARD.decode(encoded) {
+                            Ok(bytes) => {
+                                String::from_utf8(bytes).unwrap_or_else(|_| parts[2].to_string())
+                            }
+                            Err(_) => parts[2].to_string(),
+                        }
+                    } else if parts.len() == 3 {
+                        parts[2].to_string()
+                    } else {
+                        payload.to_string()
+                    }
+                })
+                .to_string();
+        }
+        // pasted -> saved file path
+        if let Ok(re) = Regex::new(&format!(r"{}\[(pasted):([^\]]+)\]", t)) {
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let payload = caps.get(2).unwrap().as_str();
+                    if let Some(pipe_idx) = payload.rfind('|') {
+                        let path = payload[pipe_idx + 1..].trim();
+                        if path.is_empty() {
+                            payload.to_string()
+                        } else {
+                            path.to_string()
+                        }
+                    } else {
+                        payload.to_string()
+                    }
+                })
+                .to_string();
+        }
+        // chatHistory -> saved file path
+        if let Ok(re) = Regex::new(&format!(r"{}\[(chatHistory):([^\]]+)\]", t)) {
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let payload = caps.get(2).unwrap().as_str();
+                    if let Some(pipe_idx) = payload.rfind('|') {
+                        let path = payload[pipe_idx + 1..].trim();
+                        if path.is_empty() {
+                            payload.to_string()
+                        } else {
+                            path.to_string()
+                        }
+                    } else {
+                        payload.to_string()
+                    }
+                })
+                .to_string();
+        }
+        // command -> /name (generic)
+        if let Ok(re) = Regex::new(&format!(r"{}\[(command):([^\]]+)\]", t)) {
+            result = re.replace_all(&result, "/$2").to_string();
+        }
+        // tool / plugin / mcp intentionally left unhandled (raw token preserved)
+    }
+
+    // Agent-specific skill mention conversion.
+    if matches!(adapter_kind, "claude" | "codex" | "opencode") {
+        for trig in triggers {
+            let t = regex::escape(trig);
+            if let Ok(re) = Regex::new(&format!(r"{}\[(skill):([^\]]+)\]", t)) {
+                result = re
+                    .replace_all(&result, |caps: &regex::Captures| {
+                        let name = caps.get(2).unwrap().as_str();
+                        match adapter_kind {
+                            "claude" => format!("/{}", name),
+                            "codex" => format!("${}", name),
+                            "opencode" => format!("@{}", name),
+                            _ => caps.get(0).unwrap().as_str().to_string(),
+                        }
+                    })
+                    .to_string();
+            }
+        }
+    }
+
+    result.trim().to_string()
+}
+
 fn append_adapter_field_log(_adapter_kind: &str, _event: &str, _data: serde_json::Value) {
     // Production: no-op. Adapter field logging is debug-only and disabled to
     // avoid file I/O and disk growth in the request hot path.
@@ -1902,6 +2048,9 @@ async fn handle_standard_session_notification(
                 "ACP available commands updated"
             );
             *available_cmds.write() = update.available_commands.clone();
+            if let Some(callback) = crate::get_global_discovery_invalidate_callback() {
+                callback(agent_id.to_string());
+            }
         }
         _ => {
             debug!(update = ?notification.update, "ACP session notification (unhandled)");
@@ -3276,6 +3425,7 @@ enum AcpCommand {
     QueuePrompt {
         message: String,
         images: Vec<crate::types::AgentImage>,
+        resources: Vec<crate::types::AgentResource>,
         response_tx: oneshot::Sender<ErgataiResult<()>>,
     },
     /// Execute a slash command through the agent process as a prompt turn.
@@ -6386,6 +6536,7 @@ impl AcpBackendInterface for AcpBackend {
                                                     .send(AcpCommand::QueuePrompt {
                                                         message: "Please continue your unfinished work.".to_string(),
                                                         images: Vec::new(),
+                                                        resources: Vec::new(),
                                                         response_tx: cont_tx,
                                                     })
                                                     .await;
@@ -6522,6 +6673,8 @@ impl AcpBackendInterface for AcpBackend {
                                 *task_paused_task.write() = None;
                             }
                             Some(AcpCommand::SlashCommand { message, response_tx }) => {
+                                // Apply the same skill-mention normalization as queued prompts.
+                                let message = convert_prompt_tokens(&message, task_adapter_kind);
                                 // Drain any prior output so callers only capture this command's response.
                                 let _ = task_output.capture();
                                 task_text_output_seen.store(false, Ordering::Relaxed);
@@ -6710,7 +6863,11 @@ impl AcpBackendInterface for AcpBackend {
                                     }
                                 }
                             }
-                            Some(AcpCommand::QueuePrompt { message, images, response_tx }) => {
+                            Some(AcpCommand::QueuePrompt { message, images, resources, response_tx }) => {
+                                // Convert ergatai skill mention tokens into the native syntax
+                                // the selected ACP agent expects, so skills resolve instead
+                                // of being forwarded as opaque mention tokens.
+                                let message = convert_prompt_tokens(&message, task_adapter_kind);
                                 task_text_output_seen.store(false, Ordering::Relaxed);
                                 // New prompt turn — reset the thinking
                                 // accumulator so it only covers this turn.
@@ -6741,6 +6898,47 @@ impl AcpBackendInterface for AcpBackend {
                                         image.base64_data,
                                         image.media_type,
                                     ))
+                                }));
+                                content.extend(resources.into_iter().filter_map(|resource| {
+                                    if let Some(text) = resource.text {
+                                        Some(ContentBlock::Resource(
+                                            agent_client_protocol::schema::v1::EmbeddedResource::new(
+                                                agent_client_protocol::schema::v1::EmbeddedResourceResource::TextResourceContents(
+                                                    agent_client_protocol::schema::v1::TextResourceContents::new(
+                                                        text,
+                                                        resource.uri.clone(),
+                                                    )
+                                                    .mime_type(resource.mime_type.clone()),
+                                                ),
+                                            ),
+                                        ))
+                                    } else if let Some(blob) = resource.blob {
+                                        if resource.mime_type.is_some() {
+                                            Some(ContentBlock::Resource(
+                                                agent_client_protocol::schema::v1::EmbeddedResource::new(
+                                                    agent_client_protocol::schema::v1::EmbeddedResourceResource::BlobResourceContents(
+                                                        agent_client_protocol::schema::v1::BlobResourceContents::new(
+                                                            blob,
+                                                            resource.uri.clone(),
+                                                        )
+                                                        .mime_type(resource.mime_type.clone()),
+                                                    ),
+                                                ),
+                                            ))
+                                        } else {
+                                            None
+                                        }
+                                    } else if !resource.uri.is_empty() {
+                                        Some(ContentBlock::ResourceLink(
+                                            agent_client_protocol::schema::v1::ResourceLink::new(
+                                                resource.name.clone().unwrap_or_else(|| resource.uri.clone()),
+                                                resource.uri.clone(),
+                                            )
+                                            .mime_type(resource.mime_type.clone()),
+                                        ))
+                                    } else {
+                                        None
+                                    }
                                 }));
                                 if content.is_empty() {
                                     content.push(ContentBlock::Text(TextContent::new(String::new())));
@@ -7529,6 +7727,7 @@ impl AcpBackendInterface for AcpBackend {
             .send(AcpCommand::QueuePrompt {
                 message: message.to_string(),
                 images: images.to_vec(),
+                resources: Vec::new(),
                 response_tx,
             })
             .await
@@ -7537,6 +7736,44 @@ impl AcpBackendInterface for AcpBackend {
         // Wait for the prompt to complete so we can observe failures.
         // NATS consumer acks immediately, so if the prompt fails and we don't
         // observe it, the message is silently lost.
+        match response_rx.await {
+            Ok(result) => result,
+            Err(_) => Err(ErgataiError::internal("ACP response channel closed")),
+        }
+    }
+
+    async fn inject_message_with_resources(
+        &self,
+        handle: &AgentHandle,
+        message: &str,
+        images: &[crate::types::AgentImage],
+        resources: &[crate::types::AgentResource],
+    ) -> ErgataiResult<()> {
+        self.reap_dead();
+        let command_tx = {
+            let agents = self.agents.read();
+            match agents.get(&handle.agent_id) {
+                Some(entry) => entry.command_tx.clone(),
+                None => {
+                    return Err(ErgataiError::NotFound(format!(
+                        "Agent not found: {}",
+                        handle.agent_id
+                    )));
+                }
+            }
+        };
+
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(AcpCommand::QueuePrompt {
+                message: message.to_string(),
+                images: images.to_vec(),
+                resources: resources.to_vec(),
+                response_tx,
+            })
+            .await
+            .map_err(|_| ErgataiError::internal("ACP command channel closed"))?;
+
         match response_rx.await {
             Ok(result) => result,
             Err(_) => Err(ErgataiError::internal("ACP response channel closed")),

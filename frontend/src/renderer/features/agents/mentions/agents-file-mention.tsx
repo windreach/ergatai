@@ -13,7 +13,7 @@ import {
   memo,
 } from "react"
 import type { FileMentionOption } from "./agents-mentions-editor"
-import { MENTION_PREFIXES } from "./mentions-utils"
+import { isImeComposing, MENTION_PREFIXES } from "./mentions-utils"
 import type { CoreAgentOption } from "../lib/agent-contract-api"
 import { useDiscoveryGroups } from "../discovery/use-discovery-groups"
 import { useDropdownShell } from "../discovery/use-dropdown-shell"
@@ -652,6 +652,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
     if (!isOpen) return
 
     const handleSelectKey = (e: KeyboardEvent) => {
+      if (isImeComposing(e)) return
       switch (e.key) {
         case "Enter":
           if (e.shiftKey) return

@@ -7,9 +7,24 @@ import {
   extractFileMentions,
   hasFileMentions,
   extractTextMentions,
+  isImeComposing,
 } from "@/features/agents/mentions/mentions-utils"
 
 describe("mentions-utils", () => {
+  describe("isImeComposing", () => {
+    it("detects an active IME composition", () => {
+      expect(isImeComposing({ isComposing: true })).toBe(true)
+    })
+
+    it("detects the keyCode 229 fallback used on some platforms", () => {
+      expect(isImeComposing({ isComposing: false, keyCode: 229 })).toBe(true)
+    })
+
+    it("does not treat a regular Enter as composing", () => {
+      expect(isImeComposing({ isComposing: false, keyCode: 13 })).toBe(false)
+    })
+  })
+
   it("builds generic token with default trigger", () => {
     expect(buildGenericMentionToken("file:foo/bar.ts")).toBe("@[file:foo/bar.ts]")
   })

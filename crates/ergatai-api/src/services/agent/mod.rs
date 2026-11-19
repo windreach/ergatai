@@ -172,6 +172,17 @@ pub fn convert_skill_mentions(kind: AgentKind, message: &str) -> String {
     }
 }
 
+pub fn group_available_command(
+    kind: AgentKind,
+    cmd: &agent_client_protocol::schema::v1::AvailableCommand,
+) -> Option<&'static str> {
+    match kind {
+        AgentKind::Claude => Some(claude::group_available_command(cmd)),
+        AgentKind::Codex => codex::group_available_command(cmd),
+        _ => None,
+    }
+}
+
 pub fn detect_native_config(
     kind: AgentKind,
 ) -> anyhow::Result<Option<crate::services::native_agent_config::NativeAgentConfig>> {

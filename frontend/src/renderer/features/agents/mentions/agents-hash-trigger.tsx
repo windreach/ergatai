@@ -3,7 +3,7 @@ import i18n from "@/lib/i18n"
 
 import { useEffect, useMemo, memo } from "react"
 import type { FileMentionOption } from "./agents-mentions-editor"
-import { MENTION_PREFIXES } from "./mentions-utils"
+import { isImeComposing, MENTION_PREFIXES } from "./mentions-utils"
 import { useDropdownShell } from "../discovery/use-dropdown-shell"
 import { MentionTriggerDropdown } from "./mention-trigger-dropdown"
 
@@ -81,6 +81,7 @@ export const AgentsHashTrigger = memo(function AgentsHashTrigger({
   useEffect(() => {
     if (!isOpen) return
     const onKey = (e: KeyboardEvent) => {
+      if (isImeComposing(e)) return
       if (e.key !== "Enter" && e.key !== "Tab") return
       if (e.key === "Enter" && e.shiftKey) return
       e.preventDefault()

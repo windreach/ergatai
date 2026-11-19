@@ -20,47 +20,72 @@ mkdir -p "$LOG_DIR"
 BACKEND_LOG="$LOG_DIR/backend.log"
 FRONTEND_LOG="$LOG_DIR/frontend.log"
 
-# Clean up old logs
-rm -f "$BACKEND_LOG" "$FRONTEND_LOG"
+# Preserve previous run's logs instead of deleting them outright
+if [[ -f "$BACKEND_LOG" ]]; then
+  mv -f "$BACKEND_LOG" "$BACKEND_LOG.prev" 2>/dev/null || true
+fi
+if [[ -f "$FRONTEND_LOG" ]]; then
+  mv -f "$FRONTEND_LOG" "$FRONTEND_LOG.prev" 2>/dev/null || true
+fi
+
+kill_tree() {
+  local pid=$1
+  [[ -z "$pid" ]] && return 0
+  local children
+  children=$(pgrep -P "$pid" 2>/dev/null || true)
+  for c in $children; do
+    kill_tree "$c"
+  done
+  kill -TERM "$pid" 2>/dev/null || true
+}
+
+kill_port() {
+  local port=$1
+  local pids
+  pids=$(lsof -ti:"$port" 2>/dev/null || true)
+  if [[ -n "$pids" ]]; then
+    for pid in $pids; do
+      kill_tree "$pid"
+    done
+  fi
+}
+
+force_kill_port() {
+  local port=$1
+  local pids
+  pids=$(lsof -ti:"$port" 2>/dev/null || true)
+  if [[ -n "$pids" ]]; then
+    for pid in $pids; do
+      kill -KILL "$pid" 2>/dev/null || true
+    done
+  fi
+}
 
 cleanup() {
+  if [[ "${_CLEANUP_DONE:-0}" == "1" ]]; then
+    return 0
+  fi
+  _CLEANUP_DONE=1
   echo ""
   echo "── Shutting down... ──"
 
-  # Kill child processes and their descendants
-  # Use pkill with process tree to ensure all descendants are killed
-  if [[ -n "${BACKEND_PID:-}" ]]; then
-    pkill -P "$BACKEND_PID" 2>/dev/null || true
-    kill "$BACKEND_PID" 2>/dev/null || true
+  if [[ -n "${FRONTEND_PID:-}" ]]; then
+    kill_tree "$FRONTEND_PID"
+    kill -- -"$FRONTEND_PID" 2>/dev/null || true
   fi
 
-  if [[ -n "${FRONTEND_PID:-}" ]]; then
-    pkill -P "$FRONTEND_PID" 2>/dev/null || true
-    kill "$FRONTEND_PID" 2>/dev/null || true
+  if [[ -n "${BACKEND_PID:-}" ]]; then
+    kill_tree "$BACKEND_PID"
+    kill -- -"$BACKEND_PID" 2>/dev/null || true
   fi
 
   # Give processes time to gracefully shutdown
   sleep 1
 
-  # Force kill any remaining processes
-  if [[ -n "${BACKEND_PID:-}" ]]; then
-    kill -KILL "$BACKEND_PID" 2>/dev/null || true
-  fi
-
-  if [[ -n "${FRONTEND_PID:-}" ]]; then
-    kill -KILL "$FRONTEND_PID" 2>/dev/null || true
-  fi
-
-  # Also kill any process using port 3000 (backend might have spawned children)
-  if command -v lsof >/dev/null 2>&1; then
-    local port_pid
-    port_pid=$(lsof -ti:"$API_PORT" 2>/dev/null || true)
-    if [[ -n "$port_pid" ]]; then
-      kill "$port_pid" 2>/dev/null || true
-      sleep 0.5
-      kill -KILL "$port_pid" 2>/dev/null || true
-    fi
-  fi
+  # Force kill by port (backend may have spawned children that survived)
+  for p in "$API_PORT" 4222 4223; do
+    force_kill_port "$p"
+  done
 
   wait 2>/dev/null || true
 
@@ -69,26 +94,54 @@ cleanup() {
   echo "Backend:  $BACKEND_LOG"
   echo "Frontend: $FRONTEND_LOG"
 }
+
 trap cleanup EXIT INT TERM
+
+# ── Preflight: kill any stale instances from previous runs ──────────────
+echo "── Cleaning up previous instances ──"
+pkill -f "ergatai-server --host" 2>/dev/null || true
+for pid in $(pgrep -f "nats-server" 2>/dev/null || true); do
+  if tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "ergatai/nats-store"; then
+    kill_tree "$pid"
+  fi
+done
+pkill -f "code/ergatai/frontend" 2>/dev/null || true
+
+for p in "$API_PORT" 4222 4223; do
+  kill_port "$p"
+done
+
+# Wait until the API port is actually free before proceeding
+for _ in $(seq 1 20); do
+  if ! lsof -ti:"$API_PORT" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.5
+done
+if lsof -ti:"$API_PORT" >/dev/null 2>&1; then
+  echo "ERROR: port $API_PORT is still in use after cleanup:"
+  lsof -nP -iTCP:"$API_PORT" 2>/dev/null || true
+  exit 1
+fi
 
 echo "── Starting backend (ergatai-api) ──"
 cd "$ROOT_DIR"
-# Start backend without hot reload (use separate terminal for development)
-RUST_LOG=debug cargo run -p ergatai-api --bin ergatai-server -- --host "$API_HOST" --port "$API_PORT" >> "$BACKEND_LOG" 2>&1 &
+# Start backend in its own process group so the whole tree can be killed reliably
+RUST_LOG=debug setsid cargo run -p ergatai-api --bin ergatai-server -- --host "$API_HOST" --port "$API_PORT" >> "$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 
 echo "Waiting for backend at $API_URL/health..."
 backend_ready=false
 for _ in $(seq 1 600); do
-  if curl -fsS --max-time 1 "$API_URL/health" >/dev/null 2>&1; then
-    backend_ready=true
-    break
-  fi
-
   if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
     echo "Backend exited before becoming healthy."
     wait "$BACKEND_PID" || true
     exit 1
+  fi
+
+  if curl -fsS --max-time 1 "$API_URL/health" >/dev/null 2>&1; then
+    backend_ready=true
+    break
   fi
 
   sleep 1
@@ -114,7 +167,7 @@ export ELECTRON_DISABLE_GPU=1
 
 echo "── Starting frontend (Electron dev) ──"
 cd "$FRONTEND_DIR"
-bun run dev:frontend >> "$FRONTEND_LOG" 2>&1 &
+setsid bun run dev:frontend >> "$FRONTEND_LOG" 2>&1 &
 FRONTEND_PID=$!
 
 echo ""

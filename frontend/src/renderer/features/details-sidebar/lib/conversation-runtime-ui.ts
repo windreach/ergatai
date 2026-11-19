@@ -65,6 +65,7 @@ type RuntimePart = {
   toolCallId?: string
   state?: string
   input?: unknown
+  inputTextDelta?: string
   output?: unknown
   errorText?: string
   text?: string
@@ -401,6 +402,43 @@ export function buildRuntimeMessages(
           input: event.input ?? {},
           claudeToolName: event.claude_tool_name,
         })
+        break
+      }
+      case "tool_call_input": {
+        const message = ensureStreamMessage()
+        const parts = message.parts as RuntimePart[]
+        const part = parts.find(
+          (candidate) =>
+            candidate.toolCallId === event.id &&
+            candidate.type.startsWith("tool-"),
+        )
+        if (part) {
+          let parsed: unknown = null
+          try {
+            parsed = JSON.parse(event.delta)
+          } catch {
+            parsed = null
+          }
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            part.input = {
+              ...(part.input && typeof part.input === "object" && !Array.isArray(part.input)
+                ? (part.input as Record<string, unknown>)
+                : {}),
+              ...(parsed as Record<string, unknown>),
+            }
+            part.state = "input-available"
+          } else {
+            part.inputTextDelta = String(part.inputTextDelta ?? "") + (event.delta ?? "")
+          }
+        } else {
+          message.parts.push({
+            type: "tool-unknown",
+            toolCallId: event.id,
+            state: "input-streaming",
+            input: {},
+            inputTextDelta: event.delta ?? "",
+          })
+        }
         break
       }
       case "tool_call_complete": {

@@ -499,10 +499,8 @@ async fn ensure_agent(turn: &InitialPromptTurn) -> Result<String> {
         }
     }
 
-    if let Some(resumed) = crate::services::agent_service::try_auto_resume_suspended_agent(
-        &runtime,
-        &turn.agent_command,
-        Some(&turn.conversation_id),
+    if let Some(resumed) = crate::services::agent_service::resolve_agent_for_conversation(
+        &turn.conversation_id,
     )
     .await
     {
@@ -597,6 +595,7 @@ async fn ensure_agent(turn: &InitialPromptTurn) -> Result<String> {
             Some(&turn.conversation_id),
             Some(&profile.name),
             profile.transport.as_deref(),
+            None,
         )
         .await
         .map_err(|error| anyhow::anyhow!("Failed to launch agent: {}", error))?;

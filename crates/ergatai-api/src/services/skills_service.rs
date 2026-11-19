@@ -191,6 +191,18 @@ pub fn list_skills(cwd: Option<&str>, agent_kind: Option<&str>) -> Vec<SkillInfo
         }
     }
 
+    // De-duplicate by name. The scan order above defines an implicit priority
+    // (earlier directories win), mirroring the model source-chain behaviour.
+    // Without this, overlapping directories (e.g. OpenCode re-scanning Claude
+    // skills) would surface the same skill multiple times.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    out.retain(|s| {
+        if s.name.is_empty() {
+            return true;
+        }
+        seen.insert(s.name.clone())
+    });
+
     out
 }
 
@@ -585,6 +597,12 @@ pub fn scan_claude_plugin_skills(home: &Path, cwd: Option<&str>, out: &mut Vec<S
     }
 
     scan_marketplaces(home, out);
+
+    // De-duplicate plugin skills by name, keeping the first occurrence (installed
+    // plugins before marketplace scans). Mirrors the priority behaviour used for
+    // model sources.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    out.retain(|s| s.name.is_empty() || seen.insert(s.name.clone()));
 }
 
 pub fn apply_claude_skill_overrides(home: &Path, cwd: Option<&str>, out: &mut [SkillInfo]) {

@@ -118,13 +118,15 @@ export const detailsSidebarTabAtom = atomWithWindowStorage<DetailsSidebarTab>(
   { getOnInit: true },
 )
 
-// Side chat sidebar open state (per-window, persisted) - independent
-// sidebar coexisting with the details sidebar
-export const sideChatSidebarOpenAtom = atomWithWindowStorage<boolean>(
-  "overview:sideChatOpen",
-  false,
-  { getOnInit: true },
-)
+// Side chat sidebar open state (per-window, session-only) - independent
+// sidebar coexisting with the details sidebar.
+//
+// This must NOT be persisted: the selected side chat (agent + conversation)
+// lives in component state and is intentionally not restored on reload. If we
+// restored the open flag alone, a restart/hot reload would show an empty
+// "Chat" pane with no active agent ("Click an agent in the rail...") instead
+// of the previously open conversation.
+export const sideChatSidebarOpenAtom = atom<boolean>(false)
 
 // Unified sidebar width (persisted)
 export const detailsSidebarWidthAtom = atomWithStorage<number>(

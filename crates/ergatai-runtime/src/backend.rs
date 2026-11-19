@@ -85,6 +85,18 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
         }
     }
 
+    /// Inject a message and optional image/resource attachments into a running agent.
+    async fn inject_message_with_resources(
+        &self,
+        handle: &AgentHandle,
+        message: &str,
+        images: &[crate::types::AgentImage],
+        resources: &[crate::types::AgentResource],
+    ) -> ErgataiResult<()> {
+        let _ = resources;
+        self.inject_message_with_images(handle, message, images).await
+    }
+
     /// Capture agent output for result collection.
     async fn capture_output(&self, handle: &AgentHandle) -> ErgataiResult<Option<String>>;
 

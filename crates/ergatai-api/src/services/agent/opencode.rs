@@ -499,6 +499,9 @@ pub fn list_skills(cwd: Option<&str>) -> Vec<crate::services::skills_service::Sk
             &mut out,
         );
     }
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    out.retain(|s| s.name.is_empty() || seen.insert(s.name.clone()));
     out
 }
 

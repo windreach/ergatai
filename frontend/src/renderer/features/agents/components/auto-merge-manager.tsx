@@ -5,7 +5,7 @@ import { trpc } from "../../../lib/trpc"
 import { useStreamingStatusStore } from "../stores/streaming-status-store"
 import { useMessageQueueStore } from "../stores/message-queue-store"
 
-type MergeCandidate = {
+type SyncCandidate = {
   id: string
   archivedAt?: Date | null
   branch?: string | null
@@ -126,7 +126,7 @@ export function AutoMergeManager() {
       return load
     }
 
-    const processChat = async (chat: MergeCandidate): Promise<void> => {
+    const syncChat = async (chat: SyncCandidate): Promise<void> => {
       if (cancelled || !chat.branch || !chat.baseBranch || !chat.worktreePath) {
         return
       }
@@ -140,7 +140,16 @@ export function AutoMergeManager() {
       const agentsResp = await utils.ergatai.getChatAgents.fetch({
         chatId: chat.id,
       })
-      if (!agentsResp.all_idle || cancelled) return
+      // `all_idle` is vacuously true for a chat with no agents (and the API
+      // fails open to an empty list). Requiring at least one binding avoids
+      // syncing a chat before any agent has ever run.
+      if (
+        cancelled ||
+        agentsResp.agents.length === 0 ||
+        !agentsResp.all_idle
+      ) {
+        return
+      }
 
       const fullChat = await utils.chats.get.fetch({ id: chat.id })
       if (cancelled) return
@@ -155,17 +164,32 @@ export function AutoMergeManager() {
         }
       }
 
-      await utils.client.changes.mergeChatBranch.mutate({
+      // Sync the worktree's current files into the base checkout without
+      // creating commits. Branches cannot represent uncommitted edits, so a
+      // regular `git merge` would be a no-op for typical agent work.
+      const result = await utils.client.changes.syncWorktreeToBase.mutate({
         worktreePath: chat.worktreePath,
         chatBranch: chat.branch,
         baseBranch: chat.baseBranch,
       })
+
+      if (result.status === "synced") {
+        console.info(
+          `[AutoMerge] Synced ${result.filesChanged ?? 0} file(s) from ${chat.branch} into ${chat.baseBranch} working tree`,
+        )
+      } else if (result.status === "needs_manual_merge") {
+        console.warn(
+          `[AutoMerge] Could not sync ${chat.branch} into ${chat.baseBranch}:`,
+          result.reason,
+          result.conflictedFiles,
+        )
+      }
     }
 
     const run = async () => {
       if (runningRef.current) return
 
-      const chats = (chatsRef.current ?? []) as MergeCandidate[]
+      const chats = (chatsRef.current ?? []) as SyncCandidate[]
       if (chats.length === 0) return
 
       runningRef.current = true
@@ -179,14 +203,14 @@ export function AutoMergeManager() {
         )
 
         // Bound concurrency: worktree config resolution shells out to git, and
-        // merges are already serialized per-project by the backend git lock.
+        // syncs are already serialized per-project by the backend git lock.
         await forEachWithConcurrency(
           candidates,
           MAX_CONCURRENT_CHATS,
           async (chat) => {
             if (cancelled) return
             try {
-              await processChat(chat)
+              await syncChat(chat)
             } catch {
               // Best-effort: a single bad worktree must not abort the scan.
             }

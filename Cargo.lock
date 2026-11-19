@@ -1251,6 +1251,7 @@ dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-http",
  "async-trait",
+ "base64",
  "chrono",
  "dirs",
  "ergatai-error",

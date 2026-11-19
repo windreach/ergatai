@@ -11,6 +11,7 @@ import type {
   RefObject,
 } from "react"
 import { cn } from "../../../lib/utils"
+import { isImeComposing } from "../mentions/mentions-utils"
 import { getDropdownContainerStyle } from "./use-dropdown-shell"
 
 interface DropdownPanelProps {
@@ -118,6 +119,7 @@ export function DropdownOption({
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     onKeyDown?.(event)
     if (event.defaultPrevented) return
+    if (isImeComposing(event.nativeEvent)) return
     if (event.key === "Enter" && event.shiftKey) return
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault()

@@ -109,6 +109,25 @@ impl AgentFile {
     }
 }
 
+/// A resource (embedded or linked) delivered with an agent prompt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentResource {
+    /// URI of the resource (e.g. "file://..." or other URI).
+    pub uri: String,
+
+    /// Optional display name for the resource.
+    pub name: Option<String>,
+
+    /// MIME type of the resource, when known.
+    pub mime_type: Option<String>,
+
+    /// Embedded text content, if inlined.
+    pub text: Option<String>,
+
+    /// Base64-encoded blob content, if inlined.
+    pub blob: Option<String>,
+}
 /// Specification for creating a new agent workspace.
 ///
 /// A workspace is the execution environment for an agent — it is a process-based

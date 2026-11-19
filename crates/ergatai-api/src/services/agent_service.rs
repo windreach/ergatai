@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
-use ergatai_error::{id::parse_to_i64, ChatId, ErgataiError};
+use ergatai_error::{id::parse_to_i64, ChatId, ConversationId, ErgataiError};
 use ergatai_runtime::{ElicitationResponse, TrackedElicitation, TrackedPlan, TrackedToolCall};
 use tokio::sync::Notify;
 
@@ -341,21 +341,55 @@ pub async fn try_auto_resume_suspended_agent(
         }
     }
 
-    // Step 3: Check if any running agent has this conversation_id in metadata
+    // Step 3: Locate a running agent bound to this conversation.
+    //
+    // Prefer the runtime registry's conversation index (O(1), authoritative)
+    // over scanning agent metadata. Fall back to a metadata scan only for
+    // legacy agents that predate the conversation_index binding, so older
+    // in-flight processes are still recoverable.
     if let Some(conversation_id) = conversation_id {
+        if let Some(info) = runtime.registry().resolve_conversation_id(conversation_id).await {
+            if info.lifecycle.is_alive() {
+                tracing::debug!(
+                    conversation_id = %conversation_id,
+                    agent_id = %info.agent_id,
+                    "Found running agent via conversation index"
+                );
+                return Some(info.agent_id);
+            }
+        }
+
         let agents = runtime.list_agents().await;
         for agent in agents {
-            if agent
-                .handle
-                .workspace
-                .metadata
-                .get("ergatai_conversation_id")
-                == Some(&conversation_id.to_string())
-            {
+            let matches = agent.conversation_id.as_deref() == Some(conversation_id)
+                || agent
+                    .handle
+                    .workspace
+                    .metadata
+                    .get("conversation_id")
+                    == Some(&conversation_id.to_string())
+                || agent
+                    .handle
+                    .workspace
+                    .metadata
+                    .get("ergatai_conversation_id")
+                    == Some(&conversation_id.to_string())
+                || agent
+                    .handle
+                    .metadata
+                    .get("conversation_id")
+                    == Some(&conversation_id.to_string())
+                || agent
+                    .handle
+                    .metadata
+                    .get("ergatai_conversation_id")
+                    == Some(&conversation_id.to_string());
+
+            if matches && agent.lifecycle.is_alive() {
                 tracing::debug!(
                     conversation_id = %conversation_id,
                     agent_id = %agent.agent_id,
-                    "Found running agent with matching conversation_id"
+                    "Found running agent via metadata fallback"
                 );
                 return Some(agent.agent_id);
             }
@@ -363,6 +397,96 @@ pub async fn try_auto_resume_suspended_agent(
     }
 
     None
+}
+
+/// Resolve a running runtime agent ID for a conversation, auto-resuming a
+/// suspended one when necessary.
+///
+/// Conversation is the single anchor here: a running agent bound to the
+/// conversation is preferred over any stale agent ID the caller may still
+/// hold. This is the shared entry point that prompt/stream/messaging paths
+/// should use instead of re-implementing the suspended-agent lookup.
+static CONVERSATION_RESOLVE_LOCKS: OnceLock<Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>> =
+    OnceLock::new();
+
+fn conversation_resolve_lock(conv: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    CONVERSATION_RESOLVE_LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(conv.to_string())
+        .or_default()
+        .clone()
+}
+
+pub async fn resolve_agent_for_conversation(conversation_id: &str) -> Option<String> {
+    let lock = conversation_resolve_lock(conversation_id);
+    let _guard = lock.lock().await;
+
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+
+    // 1. Already running and bound to this conversation.
+    if let Some(info) = runtime.registry().resolve_conversation_id(conversation_id).await {
+        if info.lifecycle.is_alive() {
+            return Some(info.agent_id);
+        }
+    }
+
+    // 2. Durable binding from a previous run (survives backend restart).
+    if let Ok(conv_id) = ConversationId::decode(conversation_id) {
+        if let Ok(Some(agent_id)) =
+            crate::user_data_db::conversations::get_current_agent_id(conv_id)
+        {
+            if let Some(info) = runtime.get_agent(&agent_id).await {
+                if info.lifecycle.is_alive() {
+                    // Re-register in-memory binding for O(1) lookups.
+                    let _ = runtime
+                        .registry()
+                        .update(&agent_id, |i| {
+                            i.conversation_id = Some(conversation_id.to_string());
+                        })
+                        .await;
+                    return Some(agent_id);
+                }
+            }
+        }
+    }
+
+    // 3. Resume a suspended agent for this conversation.
+    let resumed = try_auto_resume_suspended_agent(&runtime, conversation_id, Some(conversation_id)).await;
+
+    // Persist the new binding so future restarts can recover without resume.
+    if let Some(resumed_id) = resumed.as_ref() {
+        if let Ok(conv_id) = ConversationId::decode(conversation_id) {
+            let _ = crate::user_data_db::conversations::set_current_agent_id(conv_id, Some(resumed_id));
+        }
+    }
+
+    resumed
+}
+
+/// Resolve a runtime agent ID for an incoming request.
+///
+/// Conversation takes precedence over any (possibly stale) agent ID, so a
+/// resumed agent with a new runtime ID is transparently reused. Falls back
+/// to direct agent-ID resolution and suspended-agent lookup by ID when no
+/// conversation binding is available.
+pub async fn resolve_agent_for_request(
+    target_agent_id: &str,
+    conversation_id: Option<&str>,
+) -> Option<String> {
+    if let Some(conv) = conversation_id {
+        if let Some(rid) = resolve_agent_for_conversation(conv).await {
+            return Some(rid);
+        }
+    }
+
+    if let Some(rid) = resolve_to_runtime_id(target_agent_id).await {
+        return Some(rid);
+    }
+
+    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    try_auto_resume_suspended_agent(&runtime, target_agent_id, conversation_id).await
 }
 
 /// Get agent information by runtime ID.
@@ -569,22 +693,45 @@ pub async fn prompt_agent_with_images(
     // delivery. Raw tokens are kept in storage; transformation happens here.
     let message =
         crate::services::initial_prompt_turns::convert_prompt_tokens(message, agent_kind_str);
-    let message = if files.is_empty() {
-        message
+    let (message, resources) = if files.is_empty() {
+        (message.to_string(), Vec::new())
     } else {
         let saved_paths = save_file_attachments(&files, conversation_id.as_deref())?;
-        let mut msg = message.to_string();
-        for (_filename, path) in &saved_paths {
-            msg.push_str(&format!("\n{}", path));
+        if agent_kind_str == Some("opencode") {
+            // OpenCode supports resource_link for file:// URIs; send them as
+            // ACP resource links instead of plain text paths.
+            let resources = saved_paths
+                .into_iter()
+                .map(|(filename, path)| ergatai_runtime::AgentResource {
+                    uri: format!("file://{}", path),
+                    name: Some(filename),
+                    mime_type: None,
+                    text: None,
+                    blob: None,
+                })
+                .collect();
+            (message.to_string(), resources)
+        } else {
+            let mut msg = message.to_string();
+            for (_filename, path) in &saved_paths {
+                msg.push_str(&format!("\n{}", path));
+            }
+            (msg, Vec::new())
         }
-        msg
     };
 
     set_current_prompt_conversation(agent_id, conversation_id.clone());
-    crate::context::get_app_context()
-        .agent_runtime
-        .inject_message_with_images(agent_id, &message, images)
-        .await?;
+    if resources.is_empty() {
+        crate::context::get_app_context()
+            .agent_runtime
+            .inject_message_with_images(agent_id, &message, images)
+            .await?;
+    } else {
+        crate::context::get_app_context()
+            .agent_runtime
+            .inject_message_with_resources(agent_id, &message, images, resources)
+            .await?;
+    }
     Ok(())
 }
 

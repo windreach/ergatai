@@ -79,7 +79,7 @@ Agent B 的 ACP session 中显示消息
 
 ### Agent ID 体系
 
-**⚠️ 重要**: 项目统一使用 **Snowflake `agent_id`** 作为 Agent 唯一身份。`agent_id` 跨挂起/恢复/重启保持稳定（launch 时 reuse）。详见 [`docs/AGENT_ID_GUIDE.md`](docs/AGENT_ID_GUIDE.md)
+**⚠️ 重要**: 项目使用 **Snowflake `agent_id`** 作为 Agent 身份。挂起恢复现在 **复用 suspended id**（`launch_agent_scoped(..., reuse_agent_id=Some(suspended_id))`），因此 agent_id 跨挂起/恢复保持稳定；跨后端重启恢复也复用该 id。`conversation_id` 仍然是更稳定的会话锚点，用于解析/恢复。
 
 | ID 类型 | 格式示例 | 存储位置 | 用途 |
 |---------|---------|---------|------|
@@ -90,7 +90,8 @@ Agent B 的 ACP session 中显示消息
 - ❌ **已废弃**: `ergatai_agent_id` / `mcp_agent_id` 作为 agent 身份（MCP `list_agents` 返回的 `ergatai_agent_id` 现在直接等于 `agent_id`）
 
 **稳定性保证**:
-- `launch_agent_scoped` 支持 `reuse_agent_id`，挂起恢复与自动 spawn 复用已有 id
+- `launch_agent_scoped` 支持 `reuse_agent_id`；挂起恢复与自动 spawn 可复用已有 id，agent_id 跨 suspend/resume 保持稳定
+- `conversation_id` 作为会话锚点，用于解析当前 agent 与恢复
 - Discovery 按 workspace + agent_id 判断进程是否变化，避免重复注册
 
 ---

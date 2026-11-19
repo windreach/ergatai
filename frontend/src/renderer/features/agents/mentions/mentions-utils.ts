@@ -39,6 +39,22 @@ export function buildGenericMentionToken(id: string, triggerChar: string = "@"):
 }
 
 /**
+ * True when a keyboard event belongs to an active IME composition.
+ *
+ * `isComposing` alone is unreliable on several platforms (notably Electron /
+ * Chromium on Wayland): the Enter that commits the composition is sometimes
+ * reported with `isComposing === false` while `keyCode` is 229. Treating such
+ * an event as a normal Enter can submit/select before the IME has committed,
+ * leaving raw pinyin (e.g. a trailing "z") in the editor.
+ */
+export function isImeComposing(event: {
+  isComposing?: boolean
+  keyCode?: number
+}): boolean {
+  return event.isComposing === true || event.keyCode === 229
+}
+
+/**
  * Build a quote mention token.
  */
 export function buildQuoteMentionToken(preview: string, encodedText: string): string {

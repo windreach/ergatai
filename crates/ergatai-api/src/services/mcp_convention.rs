@@ -97,6 +97,11 @@ pub fn scan_claude_mcp(cwd: Option<&str>) -> Vec<ConventionMcp> {
         }
     }
 
+    // De-duplicate by name, keeping the first occurrence. Scan order encodes
+    // priority (user -> managed -> project) so higher-priority entries win.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    out.retain(|m| m.name.is_empty() || seen.insert(m.name.clone()));
+
     out
 }
 
@@ -145,6 +150,9 @@ pub fn scan_codex_mcp(cwd: Option<&str>) -> Vec<ConventionMcp> {
             }
         }
     }
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    out.retain(|m| m.name.is_empty() || seen.insert(m.name.clone()));
 
     out
 }
@@ -219,6 +227,9 @@ pub fn scan_opencode_mcp(cwd: Option<&str>) -> Vec<ConventionMcp> {
             }
         }
     }
+
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    out.retain(|m| m.name.is_empty() || seen_names.insert(m.name.clone()));
 
     out
 }

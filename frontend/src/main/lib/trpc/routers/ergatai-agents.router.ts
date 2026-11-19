@@ -641,9 +641,10 @@ export const agentsRouter = router({
         }>(`/api/v1/agent-profiles/${encodeURIComponent(input.profileName)}/models`)
       } catch {
         return {
-          status: "not_detected",
-          source: "none",
+          status: "not_detected" as const,
+          source: "none" as const,
           models: [],
+          model_details: [],
           last_known_models: [],
           option_id: null,
           verified_at: null,

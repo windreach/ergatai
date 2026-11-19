@@ -132,6 +132,8 @@ pub fn scan_opencode_agents(cwd: Option<&str>) -> Vec<ConventionAgent> {
         );
     }
     let _ = dummy_cmds;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    out.retain(|a| a.name.is_empty() || seen.insert(a.name.clone()));
     out
 }
 
@@ -159,6 +161,8 @@ pub fn scan_opencode_commands(cwd: Option<&str>) -> Vec<ConventionCommand> {
         );
     }
     let _ = dummy_agents;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    out.retain(|c| c.name.is_empty() || seen.insert(c.name.clone()));
     out
 }
 
@@ -186,6 +190,8 @@ pub fn scan_claude_agents(cwd: Option<&str>) -> Vec<ConventionAgent> {
         );
     }
     let _ = dummy_cmds;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    out.retain(|a| a.name.is_empty() || seen.insert(a.name.clone()));
     out
 }
 
@@ -213,6 +219,8 @@ pub fn scan_claude_commands(cwd: Option<&str>) -> Vec<ConventionCommand> {
         );
     }
     let _ = dummy_agents;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    out.retain(|c| c.name.is_empty() || seen.insert(c.name.clone()));
     out
 }
 
