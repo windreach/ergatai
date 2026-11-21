@@ -547,10 +547,52 @@ pub async fn uninstall_agent(Path(id): Path<String>) -> axum::response::Response
     )
 )]
 pub async fn get_profile_models(Path(name): Path<String>) -> axum::response::Response {
-    match profile_service::get_profile_models_by_name(&name).await {
-        Ok(models) => (StatusCode::OK, Json(models)).into_response(),
-        Err(e) => crate::http_error::internal(e, "get_profile_models").into_response(),
+    let mut models = match profile_service::get_profile_models_by_name(&name).await {
+        Ok(models) => models,
+        Err(e) => return crate::http_error::internal(e, "get_profile_models").into_response(),
+    };
+
+    // The provider connection marked as this agent's default owns the model new
+    // chats should start with. Surface it here so the model picker and the spawn
+    // fallback resolve to the same model instead of the agent's native default.
+    let connection_profile = name.clone();
+    let connection_default_model = tokio::task::spawn_blocking(move || {
+        crate::services::provider_connection_service::resolve(None, Some(&connection_profile))
+            .ok()
+            .flatten()
+            .and_then(|connection| connection.default_model)
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty())
+    })
+    .await
+    .ok()
+    .flatten();
+    if let Some(default_model) = connection_default_model {
+        // Make sure the configured model is selectable even when the agent's
+        // detected catalogue does not list it yet (e.g. a newly added model).
+        let already_known = models
+            .models
+            .iter()
+            .any(|model| model.as_str() == default_model.as_str())
+            || models
+                .model_details
+                .iter()
+                .any(|detail| detail.id.as_str() == default_model.as_str());
+        if !already_known {
+            models.models.push(default_model.clone());
+            models
+                .model_details
+                .push(profile_service::ProfileModelDetail {
+                    id: default_model.clone(),
+                    name: default_model.clone(),
+                    description: "Default provider connection model".to_string(),
+                    provider: String::new(),
+                });
+        }
+        models.default_model = Some(default_model);
     }
+
+    (StatusCode::OK, Json(models)).into_response()
 }
 
 /// Trigger model detection for an agent profile via ACP config_options.

@@ -287,9 +287,9 @@ pub enum PermissionMode {
     FullAccess,
 }
 
-static PERMISSION_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static PERMISSION_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1); // 1 = Auto (default)
 
-/// Current permission mode. Defaults to [`PermissionMode::Ask`].
+/// Current permission mode. Defaults to [`PermissionMode::Auto`].
 pub fn get_permission_mode() -> PermissionMode {
     match PERMISSION_MODE.load(std::sync::atomic::Ordering::Relaxed) {
         1 => PermissionMode::Auto,

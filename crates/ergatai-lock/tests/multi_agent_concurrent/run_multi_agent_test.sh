@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run multi-agent concurrent edge case tests in an isolated Docker container.
 #
 # Requirements:

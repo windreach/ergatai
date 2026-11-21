@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run snapshot read tests in Docker with LD_PRELOAD support.
 #
 # Requirements:

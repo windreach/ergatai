@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Electron xvfb 包装器
 # 用于在 Playwright 测试中启动 Electron（带虚拟显示）
 #

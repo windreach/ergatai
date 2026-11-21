@@ -107,6 +107,11 @@
   },
   "Agent": "Agent",
   "Agent Request": "Agent Request",
+  "Agent terminals": "Agent terminals",
+  "Completed": "Completed",
+  "No output yet": "No output yet",
+  "Running": "Running",
+  "Stopped": "Stopped",
   "Agents": "Agents",
   "Agents interface": "Agents interface",
   "All Platforms": "All Platforms",
@@ -177,6 +182,7 @@
     }
   },
   "Create session": "Create session",
+  "Create the chat before adding an agent": "Create the chat before adding an agent",
   "Creating diagram": {
     "": {
       "": {
@@ -262,6 +268,7 @@
   "Kotlin icon": "Kotlin icon",
   "Load session": "Load session",
   "Loading agent binding…": "Loading agent binding…",
+  "Loading agents…": "Loading agents…",
   "Loading conversation…": "Loading conversation…",
   "Loading file": {
     "": {
@@ -1216,6 +1223,7 @@
     "": "There is no upstream branch yet."
   },
   "This agent has no bound conversation yet": "This agent has no bound conversation yet",
+  "This agent is already active in this chat": "This agent is already active in this chat",
   "This is a bug — please report it": {
     "": "This is a bug — please report it."
   },

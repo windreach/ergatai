@@ -1,4 +1,4 @@
-import type { Terminal as XTerm } from "xterm"
+import type { Terminal as XTerm } from "@xterm/xterm"
 
 /**
  * Suppress terminal query responses that can echo garbage characters.

@@ -1,0 +1,12 @@
+[package]
+name = "ergatai-launcher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ergatai-launcher"
+path = "src/main.rs"
+
+[dependencies]
+reqwest = { workspace = true, features = ["blocking"] }

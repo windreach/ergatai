@@ -157,14 +157,10 @@ pub fn convert_prompt_tokens(text: &str, agent_kind: Option<&str>) -> String {
     // OpenCode ships no native /init (and native /review returns empty here);
     // intercept them and expand to prompts.
     if agent_kind == Some("opencode") {
-        if let Some(replacement) =
-            crate::services::agent::opencode::intercept_init(&result)
-        {
+        if let Some(replacement) = crate::services::agent::opencode::intercept_init(&result) {
             return replacement;
         }
-        if let Some(replacement) =
-            crate::services::agent::opencode::intercept_review(&result)
-        {
+        if let Some(replacement) = crate::services::agent::opencode::intercept_review(&result) {
             return replacement;
         }
     }
@@ -516,10 +512,8 @@ async fn ensure_agent(turn: &InitialPromptTurn) -> Result<String> {
         }
     }
 
-    if let Some(resumed) = crate::services::agent_service::resolve_agent_for_conversation(
-        &turn.conversation_id,
-    )
-    .await
+    if let Some(resumed) =
+        crate::services::agent_service::resolve_agent_for_conversation(&turn.conversation_id).await
     {
         return Ok(resumed);
     }
@@ -647,22 +641,24 @@ async fn upsert_agent_binding(
     turn: &InitialPromptTurn,
 ) -> Result<()> {
     let agent_id_i64 = ergatai_core::id::parse_to_i64(agent_id).unwrap_or(0);
-    let binding = crate::user_data_db::GroupAgentBinding {
-        workspace_id: WorkspaceId::decode(&turn.workspace_id)
-            .map_err(|error| anyhow::anyhow!("Invalid workspace ID: {}", error))?,
-        chat_id: ChatId::decode(&turn.chat_id)
-            .map_err(|error| anyhow::anyhow!("Invalid chat ID: {}", error))?,
-        agent_id: agent_id_i64,
-        agent_name: profile.name.clone(),
-        agent_command: Some(profile.name.clone()),
-        conversation_id: ConversationId::decode(&turn.conversation_id)
-            .map_err(|error| anyhow::anyhow!("Invalid conversation ID: {}", error))?,
-        created_at: now_secs(),
-        updated_at: now_secs(),
-    };
+    let workspace_id = WorkspaceId::decode(&turn.workspace_id)
+        .map_err(|error| anyhow::anyhow!("Invalid workspace ID: {}", error))?;
+    let chat_id = ChatId::decode(&turn.chat_id)
+        .map_err(|error| anyhow::anyhow!("Invalid chat ID: {}", error))?;
+    let conversation_id = ConversationId::decode(&turn.conversation_id)
+        .map_err(|error| anyhow::anyhow!("Invalid conversation ID: {}", error))?;
+    let profile_name = profile.name.clone();
 
     let result = tokio::task::spawn_blocking(move || {
-        crate::user_data_db::group_agent_bindings::upsert(binding)
+        crate::user_data_db::group_agent_bindings::bind_participant(
+            workspace_id,
+            chat_id,
+            &profile_name,
+            Some(profile_name.as_str()),
+            conversation_id,
+            agent_id_i64,
+            crate::user_data_db::group_agent_bindings::ParticipantBindingPolicy::PreferConversation,
+        )
     })
     .await
     .map_err(|error| anyhow::anyhow!("Agent binding task failed: {}", error))?;

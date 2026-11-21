@@ -23,6 +23,7 @@ import {
 import { cn } from "@/lib/utils"
 import {
   agentContractApi,
+  coreAgentAvatarUrls,
   type CoreAgentId,
   type CoreAgentOption,
 } from "../lib/agent-contract-api"
@@ -52,18 +53,22 @@ export function getCoreAgentIcon(agentId: CoreAgentId) {
   const cached = coreAgentLogoComponentCache.get(agentId)
   if (cached) return cached
 
-  const logoUrl =
-    agentId in CORE_AGENT_LOGO_URLS
-      ? CORE_AGENT_LOGO_URLS[agentId as keyof typeof CORE_AGENT_LOGO_URLS]
-      : undefined
   const FallbackIcon =
-    FALLBACK_CORE_AGENT_ICONS[agentId] ?? ClaudeCodeIcon
+    FALLBACK_CORE_AGENT_ICONS[agentId] ?? TerminalSquare
 
   const Component = function CoreAgentLogo({
     className,
   }: {
     className?: string
   }) {
+    // Resolve at render time so avatars loaded after the first render
+    // (listCoreAgents is async) are still picked up.
+    const savedAvatarUrl = coreAgentAvatarUrls.get(agentId) ?? undefined
+    const logoUrl =
+      savedAvatarUrl ||
+      (agentId in CORE_AGENT_LOGO_URLS
+        ? CORE_AGENT_LOGO_URLS[agentId as keyof typeof CORE_AGENT_LOGO_URLS]
+        : undefined)
     if (logoUrl) {
       return (
         <img
@@ -161,6 +166,8 @@ export function CoreAgentSelector({
       <PopoverTrigger asChild>
         <button
           type="button"
+          title={selectedAgent.name}
+          aria-label={selectedAgent.name}
           className={cn(
             "flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-sm text-muted-foreground transition-[background-color,color] duration-150 ease-out hover:bg-muted/50 hover:text-foreground",
             className,
@@ -171,7 +178,10 @@ export function CoreAgentSelector({
 
             return <SelectedIcon className="h-3.5 w-3.5 shrink-0" />
           })()}
-          <span className="truncate">{selectedAgent.name}</span>
+          {/* Icon-only once the input toolbar is narrow; title/aria-label keep it discoverable. */}
+          <span className="hidden truncate whitespace-nowrap @[560px]:inline">
+            {selectedAgent.name}
+          </span>
           <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
         </button>
       </PopoverTrigger>

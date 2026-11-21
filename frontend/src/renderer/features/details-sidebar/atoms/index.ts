@@ -4,7 +4,7 @@ import { atomFamily } from "jotai/utils"
 import { atomWithWindowStorage } from "../../../lib/window-storage"
 import type { LucideIcon } from "lucide-react"
 import { FileText, Terminal, FileDiff, ListTodo, Users } from "lucide-react"
-import { OriginalMCPIcon } from "../../../components/ui/icons"
+// import { OriginalMCPIcon } from "../../../components/ui/icons" // 暂时隐藏 MCP widget
 
 // ============================================================================
 // Widget System Types & Registry
@@ -26,7 +26,9 @@ export const WIDGET_REGISTRY: WidgetConfig[] = [
   { id: "terminal", label: "Terminal", icon: Terminal, canExpand: true, defaultVisible: true },
   { id: "plan", label: "Plan", icon: FileText, canExpand: true, defaultVisible: false },
   { id: "diff", label: "Changes", icon: FileDiff, canExpand: true, defaultVisible: false },
-  { id: "mcp", label: "MCP Servers", icon: OriginalMCPIcon as unknown as LucideIcon, canExpand: false, defaultVisible: false },
+  // 暂时隐藏 MCP widget：当前 discovery 只扫描静态配置文件 + registry，
+  // 不包含运行时注入的 MCP（如 Ergatai MCP Tools），展示不完整。
+  // { id: "mcp", label: "MCP Servers", icon: OriginalMCPIcon as unknown as LucideIcon, canExpand: false, defaultVisible: false },
 ]
 
 // Helper to get default visible widgets

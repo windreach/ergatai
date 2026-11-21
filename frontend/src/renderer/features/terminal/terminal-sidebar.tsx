@@ -6,6 +6,7 @@ import { fullThemeDataAtom } from "@/lib/atoms"
 // react-doctor-disable-next-line use-lazy-motion
 import { motion } from "motion/react"
 import { ResizableSidebar } from "@/components/ui/resizable-sidebar"
+import { SidebarCloseButton } from "@/components/ui/sidebar-close-button"
 import { Button } from "@/components/ui/button"
 import { ModeSwitcher } from "@/components/ui/mode-switcher"
 import {
@@ -16,7 +17,6 @@ import {
 
 
 import {
-  IconDoubleChevronRight,
   IconSidePeek,
   IconBottomPanel,
   PlusIcon,
@@ -576,23 +576,13 @@ export function TerminalSidebar({
         >
           {/* Close button - on the left */}
           <div className="flex items-center flex-shrink-0 gap-0.5">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={closeSidebar}
-                  className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
-                  aria-label={i18n.t('Close terminal')}
-                >
-                  <IconDoubleChevronRight className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                Close terminal
-                {toggleTerminalHotkey && <Kbd>{toggleTerminalHotkey}</Kbd>}
-              </TooltipContent>
-            </Tooltip>
+            <SidebarCloseButton
+              onClick={closeSidebar}
+              tooltipLabel="Close terminal"
+              ariaLabel={i18n.t('Close terminal')}
+              hotkey={toggleTerminalHotkey}
+              className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
+            />
             <TerminalModeSwitcher mode={displayMode} onModeChange={setDisplayMode} />
           </div>
 

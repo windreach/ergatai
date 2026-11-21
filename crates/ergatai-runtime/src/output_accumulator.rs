@@ -60,6 +60,13 @@ pub struct TurnAccumulator {
     metadata: OutputMetadata,
     started_at: std::time::Instant,
     sealed: bool, // Once sealed, no more data can be added
+    /// Whether this turn was started autonomously by the agent (not a user prompt).
+    pub autonomous: bool,
+    /// Last activity time for idle finalization of autonomous turns.
+    pub last_activity: std::time::Instant,
+    /// Optional agent id that produced this turn (used when flushing outside the
+    /// connection task, e.g. idle finalization).
+    pub agent_id: Option<String>,
 }
 
 /// A thinking block with timestamp
@@ -223,6 +230,9 @@ impl TurnAccumulator {
             metadata: OutputMetadata::default(),
             started_at: std::time::Instant::now(),
             sealed: false,
+            autonomous: false,
+            last_activity: std::time::Instant::now(),
+            agent_id: None,
         }
     }
 
@@ -235,6 +245,32 @@ impl TurnAccumulator {
     /// This should be called before flush to prevent race conditions
     pub fn seal(&mut self) {
         self.sealed = true;
+    }
+
+    /// Mark activity for idle finalization tracking.
+    pub fn touch(&mut self) {
+        self.last_activity = std::time::Instant::now();
+    }
+
+    /// Whether any tool call is still pending (not completed/failed).
+    pub fn has_pending_tool_calls(&self) -> bool {
+        self.tool_calls.values().any(|tc| tc.status == "pending")
+    }
+
+    /// Whether the accumulator holds anything worth persisting as a message.
+    ///
+    /// UI-only extension events (prompt suggestions, status updates, ...) are
+    /// intentionally dropped while accumulating, so a chunk that only carried
+    /// those must not produce an empty message row.
+    pub fn has_message_content(&self) -> bool {
+        !self.final_text.is_empty()
+            || !self.thinking.is_empty()
+            || !self.thinking_buffer.is_empty()
+            || !self.tool_calls.is_empty()
+            || !self.timeline.is_empty()
+            || self.metadata.session_title.is_some()
+            || self.metadata.stop_reason.is_some()
+            || self.metadata.error.is_some()
     }
 
     /// Accumulate text delta
@@ -763,9 +799,8 @@ pub fn get_global_persist_callback() -> Option<&'static Arc<PersistCallback>> {
 /// caches (e.g. discovery) can be invalidated instead of waiting for TTL.
 pub type DiscoveryInvalidateCallback = Box<dyn Fn(String) + Send + Sync>;
 
-static GLOBAL_DISCOVERY_INVALIDATE_CALLBACK: std::sync::OnceLock<
-    Arc<DiscoveryInvalidateCallback>,
-> = std::sync::OnceLock::new();
+static GLOBAL_DISCOVERY_INVALIDATE_CALLBACK: std::sync::OnceLock<Arc<DiscoveryInvalidateCallback>> =
+    std::sync::OnceLock::new();
 
 pub fn set_global_discovery_invalidate_callback(callback: DiscoveryInvalidateCallback) {
     let _ = GLOBAL_DISCOVERY_INVALIDATE_CALLBACK.set(Arc::new(callback));
@@ -826,6 +861,7 @@ fn accumulate_chunk_event(
     event: &crate::backends::acp::AgentOutputEvent,
 ) {
     use crate::backends::acp::AgentOutputEvent;
+    acc.touch();
     match event {
         AgentOutputEvent::Text { delta, .. } => acc.accumulate_text(delta),
         AgentOutputEvent::Thinking { delta, .. } => acc.accumulate_thinking(delta),
@@ -883,6 +919,17 @@ fn accumulate_chunk_event(
             acc.accumulate_text(&format!("[subagent {} -> {}]", subagent_session_id, state));
         }
         AgentOutputEvent::ExtensionUpdate { kind, payload, .. } => {
+            // UI-only metadata must never enter message bodies. These events
+            // reach the frontend through live `extension_update` events (e.g.
+            // prompt suggestions render as the composer placeholder), so
+            // persisting them would leak raw JSON into assistant messages.
+            if kind.starts_with("async_task_")
+                || kind == "prompt_suggestions"
+                || kind == "terminal_update"
+                || kind == "terminal_task_update"
+            {
+                return;
+            }
             if kind == "compaction_update" {
                 let status = payload
                     .get("status")
@@ -995,7 +1042,7 @@ impl ChunkBuffer {
         let mut buffers = self.buffers.write().await;
         let state = buffers.remove(conversation_id)?;
         let mut acc = state.accumulator;
-        if state.event_count == 0 {
+        if state.event_count == 0 || !acc.has_message_content() {
             return None;
         }
         acc.seal();
@@ -1010,7 +1057,7 @@ impl ChunkBuffer {
         let mut out = Vec::new();
         for key in keys {
             if let Some(state) = buffers.remove(&key) {
-                if state.event_count == 0 {
+                if state.event_count == 0 || !state.accumulator.has_message_content() {
                     continue;
                 }
                 let mut acc = state.accumulator;
@@ -1034,7 +1081,7 @@ impl ChunkBuffer {
         let mut out = Vec::new();
         for key in stale_keys {
             if let Some(state) = buffers.remove(&key) {
-                if state.event_count == 0 {
+                if state.event_count == 0 || !state.accumulator.has_message_content() {
                     continue;
                 }
                 let mut acc = state.accumulator;
@@ -1148,6 +1195,25 @@ mod tests {
         acc.accumulate_text(" World");
 
         assert_eq!(acc.final_text, "Hello World");
+    }
+
+    #[test]
+    fn test_prompt_suggestions_do_not_enter_message_text() {
+        use crate::backends::acp::AgentOutputEvent;
+
+        let mut acc = create_test_accumulator();
+        accumulate_chunk_event(
+            &mut acc,
+            &AgentOutputEvent::ExtensionUpdate {
+                role: "assistant".to_string(),
+                kind: "prompt_suggestions".to_string(),
+                payload: serde_json::json!({
+                    "suggestions": [{ "text": "查一下 opencode 的运行状态" }]
+                }),
+            },
+        );
+
+        assert!(acc.final_text.is_empty());
     }
 
     #[test]
@@ -1418,6 +1484,27 @@ mod tests {
 
         assert!(acc.thinking_buffer.is_empty());
         assert_eq!(acc.thinking.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_prompt_suggestions_do_not_create_a_chunk_message() {
+        use crate::backends::acp::AgentOutputEvent;
+
+        let buffer = ChunkBuffer::new();
+        buffer
+            .push(
+                "conv_1",
+                &AgentOutputEvent::ExtensionUpdate {
+                    role: "assistant".to_string(),
+                    kind: "prompt_suggestions".to_string(),
+                    payload: serde_json::json!({
+                        "suggestions": [{ "text": "查一下 opencode 的运行状态" }]
+                    }),
+                },
+            )
+            .await;
+
+        assert!(buffer.flush("conv_1").await.is_none());
     }
 
     #[tokio::test]

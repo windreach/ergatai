@@ -1195,6 +1195,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ergatai-launcher"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+]
+
+[[package]]
 name = "ergatai-lock"
 version = "0.1.0"
 dependencies = [
@@ -2989,6 +2996,7 @@ checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
  "base64",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "http",

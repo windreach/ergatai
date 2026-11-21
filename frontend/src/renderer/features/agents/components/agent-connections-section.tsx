@@ -94,6 +94,9 @@ export function AgentConnectionsSection({
     onSuccess: () => {
       toast.success("Provider saved")
       void utils.ergatai.listProviderConnections.invalidate()
+      // The default model shown by the new-chat model picker is derived from
+      // the default connection, so refresh the profile catalogue too.
+      void utils.ergatai.getAgentProfileModels.invalidate()
       resetForm()
     },
     onError: (error) => {
@@ -106,6 +109,9 @@ export function AgentConnectionsSection({
       onSuccess: () => {
         toast.success("Default provider updated")
         void utils.ergatai.listProviderConnections.invalidate()
+        // The default model shown by the new-chat model picker is derived from
+        // the default connection, so refresh the profile catalogue too.
+        void utils.ergatai.getAgentProfileModels.invalidate()
       },
       onError: (error) => {
         toast.error(i18n.t("Failed to set default: {{message}}", { message: error.message }))
@@ -116,6 +122,9 @@ export function AgentConnectionsSection({
     onSuccess: (data) => {
       if (data.deleted) toast.success("Provider deleted")
       void utils.ergatai.listProviderConnections.invalidate()
+      // The default model shown by the new-chat model picker is derived from
+      // the default connection, so refresh the profile catalogue too.
+      void utils.ergatai.getAgentProfileModels.invalidate()
       if (editingId) resetForm()
     },
     onError: (error) => {
@@ -127,6 +136,9 @@ export function AgentConnectionsSection({
     onSuccess: (data) => {
       toast.success(i18n.t("Provider \"{{name}}\" imported from {{agent}} config", { name: data.connection.name, agent: agentDisplayName }))
       void utils.ergatai.listProviderConnections.invalidate()
+      // The default model shown by the new-chat model picker is derived from
+      // the default connection, so refresh the profile catalogue too.
+      void utils.ergatai.getAgentProfileModels.invalidate()
     },
     onError: (error) => {
       toast.error(i18n.t("Failed to import configuration: {{message}}", { message: error.message }))

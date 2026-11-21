@@ -142,12 +142,15 @@ export const AgentPlanFileTool = memo(function AgentPlanFileTool({
   useEffect(() => {
     if (filePath && hasVisibleContent && part.state === "output-available" && !planUpdateDispatchedRef.current) {
       planUpdateDispatchedRef.current = true
+      // Publish the plan path so the details-sidebar Plan widget can render it
+      // without requiring an extra "View plan" click.
+      setCurrentPlanPath(filePath)
       // Dispatch custom event to notify parent to refetch plan
       window.dispatchEvent(new CustomEvent("plan-updated", {
         detail: { conversationId, filePath }
       }))
     }
-  }, [filePath, hasVisibleContent, part.state, conversationId])
+  }, [filePath, hasVisibleContent, part.state, conversationId, setCurrentPlanPath])
 
   // Handle expand/collapse
   const handleToggleExpand = useCallback(() => {

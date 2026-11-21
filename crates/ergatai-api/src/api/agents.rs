@@ -1412,6 +1412,10 @@ pub async fn send_message(
         // Check if we should force a new session
         let force_new = req.force_new_session.unwrap_or(false);
 
+        // A stale/dead binding is still the participant's conversation identity;
+        // the spawn path below reuses it instead of deleting history.
+        let mut reusable_binding: Option<crate::user_data_db::GroupAgentBinding> = None;
+
         if !force_new {
             // Try to find an existing agent with the target command bound to this chat
             let chat_id_i64_for_list =
@@ -1497,65 +1501,32 @@ pub async fn send_message(
                                     }
                                 }
                             } else {
-                                // Agent is dead - clean up stale binding
-                                let chat_id_i64_for_delete = match ChatId::decode(&chat_id) {
-                                    Ok(id) => id,
-                                    Err(_) => {
-                                        tracing::warn!(
-                                            chat_id = %chat_id,
-                                            "Invalid chat ID format, skipping binding cleanup"
-                                        );
-                                        continue;
-                                    }
-                                };
-                                let agent_id_for_delete = binding.agent_id;
-                                if let Err(e) = tokio::task::spawn_blocking(move || {
-                                    crate::user_data_db::group_agent_bindings::delete(
-                                        chat_id_i64_for_delete,
-                                        agent_id_for_delete,
-                                    )
-                                })
-                                .await
-                                {
-                                    tracing::warn!(
-                                        agent_id = %binding.agent_id,
-                                        error = %e,
-                                        "Failed to clean up stale binding for dead agent"
-                                    );
-                                }
+                                // Keep the binding: the conversation is the
+                                // participant's stable identity. The spawn path
+                                // below reuses this conversation instead of
+                                // deleting history and creating a duplicate.
+                                reusable_binding = Some(binding);
+                                break;
                             }
                         } else {
-                            // Agent not found - clean up stale binding
-                            let chat_id_i64_for_delete = match ChatId::decode(&chat_id) {
-                                Ok(id) => id,
-                                Err(_) => {
-                                    tracing::warn!(
-                                        chat_id = %chat_id,
-                                        "Invalid chat ID format, skipping binding cleanup"
-                                    );
-                                    continue;
-                                }
-                            };
-                            let agent_id_for_delete = binding.agent_id;
-                            if let Err(e) = tokio::task::spawn_blocking(move || {
-                                crate::user_data_db::group_agent_bindings::delete(
-                                    chat_id_i64_for_delete,
-                                    agent_id_for_delete,
-                                )
-                            })
-                            .await
-                            {
-                                tracing::warn!(
-                                    agent_id = %binding.agent_id,
-                                    error = %e,
-                                    "Failed to clean up stale binding for missing agent"
-                                );
-                            }
+                            // Runtime process is gone but the participant
+                            // conversation remains valid.
+                            reusable_binding = Some(binding);
+                            break;
                         }
                     }
                 }
             }
         }
+
+        // If a dead participant binding exists, spawn into its conversation so
+        // the runtime AgentInfo and the durable binding agree on the same
+        // conversation identity.
+        let reusable_conversation_id = reusable_binding
+            .as_ref()
+            .map(|binding| binding.conversation_id);
+        let reusable_conversation_id_str =
+            reusable_conversation_id.map(|conversation_id| conversation_id.encode());
 
         // No existing agent found or force_new_session is true - spawn a new one
         // Resolve profile name to actual command. Keep the original profile name for AgentInfo.profile.
@@ -1647,7 +1618,7 @@ pub async fn send_message(
                 &resolved_command,
                 instruction.as_deref(),
                 Some(&chat_id),
-                None, // conversation_id - will be generated by runtime
+                reusable_conversation_id_str.as_deref(),
                 profile_name.as_deref(),
                 transport_type.as_deref(),
                 None,
@@ -1668,23 +1639,29 @@ pub async fn send_message(
                     crate::api::agents::spawn_model_detection(new_agent_id.clone(), pn.clone());
                 }
 
-                // Get the conversation_id from the new agent's metadata
-                // This ensures the database conversation ID matches the NATS routing ID
-                let agent_conversation_id = match runtime.get_agent(&new_agent_id).await {
-                    Some(agent_info) => agent_info
-                        .handle
-                        .metadata
-                        .get("conversation_id")
-                        .cloned()
-                        .unwrap_or_else(|| format_id(generate(), IdType::Conversation)),
-                    None => {
-                        tracing::warn!(
-                            new_agent = %new_agent_id,
-                            "Failed to get agent info, generating new conversation_id"
-                        );
-                        format_id(generate(), IdType::Conversation)
-                    }
-                };
+                // Get the conversation_id from the new agent's metadata.
+                // When a participant binding already existed, the spawn was
+                // explicitly scoped to that conversation and it wins.
+                let agent_conversation_id =
+                    if let Some(conversation_id) = reusable_conversation_id_str.clone() {
+                        conversation_id
+                    } else {
+                        match runtime.get_agent(&new_agent_id).await {
+                            Some(agent_info) => agent_info
+                                .handle
+                                .metadata
+                                .get("conversation_id")
+                                .cloned()
+                                .unwrap_or_else(|| format_id(generate(), IdType::Conversation)),
+                            None => {
+                                tracing::warn!(
+                                    new_agent = %new_agent_id,
+                                    "Failed to get agent info, generating new conversation_id"
+                                );
+                                format_id(generate(), IdType::Conversation)
+                            }
+                        }
+                    };
 
                 // Bind the new agent to its own conversation below the chat.
                 let now = chrono::Utc::now().timestamp();
@@ -1703,8 +1680,12 @@ pub async fn send_message(
                     Err((status, json)) => return (status, json).into_response(),
                 };
                 let chat_id_i64_for_lookup = chat_id_i64;
+                let should_create_conversation = reusable_conversation_id.is_none();
                 let create_conversation =
                     tokio::task::spawn_blocking(move || -> Result<ConversationId, rusqlite::Error> {
+                        if !should_create_conversation {
+                            return Ok(conversation_id_i64_for_create);
+                        }
                         // Get the chat to find its collaboration session
                         let chat = match crate::user_data_db::chats::get(chat_id_i64_for_lookup)? {
                             Some(c) => c,
@@ -1812,19 +1793,18 @@ pub async fn send_message(
                     Err((status, json)) => return (status, json).into_response(),
                 };
 
-                let binding = crate::user_data_db::GroupAgentBinding {
-                    workspace_id: workspace_id_i64,
-                    chat_id: chat_id_i64,
-                    agent_id: new_agent_id_i64,
-                    agent_name: target_command.clone(),
-                    agent_command: Some(target_command.clone()),
-                    conversation_id: agent_conversation_id_i64,
-                    created_at: now,
-                    updated_at: now,
-                };
-
+                let agent_name_for_binding = target_command.clone();
+                let agent_command_for_binding = target_command.clone();
                 if let Err(e) = tokio::task::spawn_blocking(move || {
-                    crate::user_data_db::group_agent_bindings::upsert(binding)
+                    crate::user_data_db::group_agent_bindings::bind_participant(
+                        workspace_id_i64,
+                        chat_id_i64,
+                        &agent_name_for_binding,
+                        Some(agent_command_for_binding.as_str()),
+                        agent_conversation_id_i64,
+                        new_agent_id_i64,
+                        crate::user_data_db::group_agent_bindings::ParticipantBindingPolicy::PreferConversation,
+                    )
                 })
                 .await
                 {
@@ -2434,7 +2414,6 @@ pub struct ExecuteCommandRequest {
 fn default_command_timeout() -> u64 {
     10
 }
-
 
 /// Response from executing a slash command.
 #[derive(Debug, Serialize, ToSchema)]
@@ -3421,10 +3400,16 @@ pub async fn prompt_agent(
             );
         }
 
+        // Persist the *profile* name in the chat binding, not the runtime agent
+        // id. Other agents address this participant by profile name
+        // (`send_message({ target_agent_id: "opencode" })`); writing the runtime
+        // id here breaks chat-scoped name resolution and causes the next
+        // message to auto-spawn a duplicate agent/conversation.
         let agent_name = agent_info
             .as_ref()
-            .map(|info| info.agent_id.clone())
+            .and_then(|info| info.profile.clone())
             .or_else(|| conversation.name.clone())
+            .or_else(|| agent_info.as_ref().map(|info| info.agent_id.clone()))
             .unwrap_or_else(|| runtime_id.clone());
 
         // Handle interrupt messages differently: directly inject into the agent
@@ -3683,10 +3668,6 @@ pub async fn prompt_agent(
             }
         }
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
         let runtime_id_i64 = match parse_to_i64(&runtime_id) {
             Some(id) => id,
             None => {
@@ -3697,18 +3678,20 @@ pub async fn prompt_agent(
                 0
             }
         };
-        let binding = crate::user_data_db::GroupAgentBinding {
-            workspace_id: workspace_id_typed,
-            chat_id: conversation.chat_id,
-            agent_id: runtime_id_i64,
-            agent_name: agent_name.clone(),
-            agent_command: agent_profile,
-            conversation_id: conversation.conversation_id,
-            created_at: now,
-            updated_at: now,
-        };
+        let chat_id_for_binding = conversation.chat_id;
+        let conversation_id_for_binding = conversation.conversation_id;
+        let agent_name_for_binding = agent_name.clone();
+        let agent_command_for_binding = agent_profile.clone();
         let bind_result = tokio::task::spawn_blocking(move || {
-            crate::user_data_db::group_agent_bindings::upsert(binding)
+            crate::user_data_db::group_agent_bindings::bind_participant(
+                workspace_id_typed,
+                chat_id_for_binding,
+                &agent_name_for_binding,
+                agent_command_for_binding.as_deref(),
+                conversation_id_for_binding,
+                runtime_id_i64,
+                crate::user_data_db::group_agent_bindings::ParticipantBindingPolicy::PreferConversation,
+            )
         })
         .await;
         match bind_result {
@@ -3749,9 +3732,12 @@ pub async fn prompt_agent(
             .unwrap_or_default()
             .as_secs() as i64;
 
+        // Same as the conversation-bound binding above: keep the profile name
+        // so this participant remains addressable by name.
         let agent_name = agent_info
             .as_ref()
-            .map(|info| info.agent_id.clone())
+            .and_then(|info| info.profile.clone())
+            .or_else(|| agent_info.as_ref().map(|info| info.agent_id.clone()))
             .unwrap_or_else(|| runtime_id.clone());
 
         let conv = crate::user_data_db::Conversation {

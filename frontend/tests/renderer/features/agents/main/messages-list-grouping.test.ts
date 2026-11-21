@@ -7,8 +7,9 @@ function assistantMessage(
   id: string,
   parts: MessagePart[],
   metadata?: Record<string, unknown>,
+  conversationId?: string,
 ): Message {
-  return { id, role: "assistant", parts, metadata }
+  return { id, role: "assistant", parts, metadata, conversationId }
 }
 
 describe("buildMergedMsgGroups", () => {
@@ -128,5 +129,26 @@ describe("buildMergedMsgGroups", () => {
     expect(groups).toHaveLength(1)
     expect(groups[0]?.merged).toBe(false)
     expect(groups[0]?.ids).toEqual(["s1"])
+  })
+
+  it("preserves the host conversation id on merged groups", () => {
+    const step = assistantMessage(
+      "s1",
+      [{ type: "tool-execute", state: "result", input: { code: "run()" } }],
+      undefined,
+      "conv_host",
+    )
+    const final = assistantMessage(
+      "s2",
+      [{ type: "text", text: "done" }],
+      undefined,
+      "conv_host",
+    )
+
+    const groups = buildMergedMsgGroups([step.id, final.id], [step, final])
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0]?.merged).toBe(true)
+    expect(groups[0]?.conversationId).toBe("conv_host")
   })
 })

@@ -244,6 +244,7 @@ export async function createWorktree(
 	worktreePath: string,
 	startPoint = "origin/main",
 	createBranch = true,
+	force = false,
 ): Promise<void> {
 	const usesLfs = await repoUsesLfs(mainRepoPath);
 
@@ -289,6 +290,7 @@ export async function createWorktree(
 					mainRepoPath,
 					"worktree",
 					"add",
+					...(force ? ["-f"] : []),
 					worktreePath,
 					"-b",
 					branch,
@@ -299,6 +301,7 @@ export async function createWorktree(
 					mainRepoPath,
 					"worktree",
 					"add",
+					...(force ? ["-f"] : []),
 					worktreePath,
 					checkoutRef,
 				];
@@ -1065,27 +1068,15 @@ export async function createWorktreeForChat(
 
 		// ------------------------------------------------------------------
 		// "existing" mode: check out an already-existing branch instead of
-		// deriving a new one. Reuse a worktree that already has the branch
-		// checked out when possible (this is required for branches such as
-		// `main`, which is already checked out in the main worktree).
+		// deriving a new one. Each chat gets its own worktree directory, even
+		// when the branch is already checked out elsewhere (shared branch,
+		// independent worktree; uses `git worktree add -f`).
 		// ------------------------------------------------------------------
 		if (branchMode === "existing") {
 			const branch = baseBranch;
 
-			// Is this branch already checked out in some worktree?
-			const checkedOutPath = await findCheckedOutWorktreePath(
-				projectPath,
-				branch,
-			);
-			if (checkedOutPath) {
-				return {
-					success: true,
-					worktreePath: checkedOutPath,
-					branch,
-					// baseBranch left undefined: diff against the default branch
-				};
-			}
-
+			// Create an independent worktree directory even when this branch is
+			// already checked out elsewhere (shared branch, independent worktree).
 			const worktreesDir = join(homedir(), ".ergatai", "worktrees");
 			const projectWorktreeDir = join(worktreesDir, projectSlug);
 			const folderName = generateWorktreeFolderName(projectWorktreeDir);
@@ -1098,7 +1089,7 @@ export async function createWorktreeForChat(
 				.map((b) => b.replace("origin/", ""));
 
 			if (localBranches.includes(branch)) {
-				await createWorktree(projectPath, branch, worktreePath, branch, false);
+				await createWorktree(projectPath, branch, worktreePath, branch, false, true);
 			} else if (remoteBranches.includes(branch)) {
 				// Create a local tracking branch for the remote branch.
 				await execFileAsync(
@@ -1108,6 +1099,7 @@ export async function createWorktreeForChat(
 						projectPath,
 						"worktree",
 						"add",
+						"-f",
 						"-b",
 						branch,
 						worktreePath,

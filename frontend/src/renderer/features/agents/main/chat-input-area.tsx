@@ -37,7 +37,8 @@ import { trpc } from "../../../lib/trpc"
 import { useTranslation } from "react-i18next"
 import i18n from "@/lib/i18n"
 import { cn } from "../../../lib/utils"
-import { useExtensionMeta } from "../lib/extension-meta-store"
+import { extractPromptSuggestion, useExtensionMeta } from "../lib/extension-meta-store"
+import { useAgentExtensionMeta } from "../hooks/use-agent-extension-meta"
 import {
   areVisibleChatAgentLogosEqual,
   chatAgentLogosAtom,
@@ -413,28 +414,21 @@ export const ChatInputArea = memo(function ChatInputArea({
   // Local state - changes here don't re-render parent
   const [hasContent, setHasContent] = useState(false)
   const extensionMeta = useExtensionMeta(agentId ?? null)
+  // Hydrate from the runtime on mount so a suggestion survives reloads while
+  // the agent is still alive (the store only sees live extension events).
+  const { extensionMeta: fetchedExtensionMeta } = useAgentExtensionMeta({
+    agentId: agentId ?? null,
+    enabled: !!agentId,
+  })
   const promptSuggestion = useMemo(() => {
-    const payload = extensionMeta?.["prompt_suggestions"]
-    if (!payload) return ""
-    if (typeof payload === "string") return payload
-    if (Array.isArray(payload)) {
-      const first = payload.find((x) => typeof x === "string")
-      return typeof first === "string" ? first : ""
-    }
-    if (typeof payload === "object") {
-      const obj = payload as Record<string, unknown>
-      const candidates = [obj.suggestions, obj.prompts, obj.items, obj.list]
-      for (const c of candidates) {
-        if (Array.isArray(c)) {
-          const first = c.find((x) => typeof x === "string")
-          if (typeof first === "string") return first
-        }
-      }
-      if (typeof obj.text === "string") return obj.text
-      if (typeof obj.suggestion === "string") return obj.suggestion
-    }
-    return ""
-  }, [extensionMeta])
+    // A live payload is authoritative even when it is an empty list (the agent
+    // explicitly cleared the suggestion); only fall back to the hydrated
+    // runtime snapshot before the first live event arrives.
+    const livePayload = extensionMeta?.["prompt_suggestions"]
+    if (livePayload !== undefined) return extractPromptSuggestion(livePayload)
+    const fetched = fetchedExtensionMeta as Record<string, unknown> | null
+    return extractPromptSuggestion(fetched?.["prompt_suggestions"])
+  }, [extensionMeta, fetchedExtensionMeta])
   const [isFocused, setIsFocused] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
 
@@ -588,6 +582,9 @@ export const ChatInputArea = memo(function ChatInputArea({
 
   // Model dropdown state
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
+  // Optimistic selection while the runtime confirms the switch. Without this,
+  // preferring the live model below would briefly snap back to the old model.
+  const [pendingModelId, setPendingModelId] = useState<string | null>(null)
   const conversationModelIdAtom = useMemo(
     () => conversationModelIdAtomFamily(conversationId),
     [conversationId],
@@ -596,10 +593,9 @@ export const ChatInputArea = memo(function ChatInputArea({
     conversationModelIdAtom,
   )
 
-  // Keep the per-conversation selection (which falls back to the last selected
-  // model, i.e. the model chosen in the new-chat form). Do not wipe it to "",
-  // otherwise the selector loses the new-chat choice and falls back to the
-  // backend's detected current model.
+  // Keep the per-conversation explicit selection. The atom no longer falls back
+  // to the global last-selected value, so the live agent model can win when the
+  // user has not picked a model for this conversation.
   const conversationCodexModelIdAtom = useMemo(
     () => conversationCodexModelIdAtomFamily(conversationId),
     [conversationId],
@@ -615,6 +611,7 @@ export const ChatInputArea = memo(function ChatInputArea({
     conversationCodexThinkingAtom,
   )
   const [selectedOllamaModel, setSelectedOllamaModel] = useConversationOllamaModel(conversationId)
+  const lastSelectedModelId = useAtomValue(lastSelectedModelIdAtom)
   const setLastSelectedModelId = useSetAtom(lastSelectedModelIdAtom)
   const setLastSelectedCodexModelId = useSetAtom(lastSelectedCodexModelIdAtom)
   const setLastSelectedCodexThinking = useSetAtom(lastSelectedCodexThinkingAtom)
@@ -644,10 +641,22 @@ const availableModels = useAvailableModels(agentId, profileHint)
       }
     },
     onError: (error) => {
+      setPendingModelId(null)
       if (error.message.includes("agent not found")) return
       toast.error(i18n.t("Failed to switch model: {{message}}", { message: error.message }))
     },
   })
+  // Once the agent reports the model we optimistically selected, drop the
+  // pending override and let the runtime value drive the display.
+  useEffect(() => {
+    if (pendingModelId && availableModels.currentModelId === pendingModelId) {
+      setPendingModelId(null)
+    }
+  }, [pendingModelId, availableModels.currentModelId])
+  // A pending selection belongs to one conversation/agent only.
+  useEffect(() => {
+    setPendingModelId(null)
+  }, [conversationId, agentId])
   // OpenCode (and Claude Code) expose selectable model lists; only truly
   // runtime-managed agents that cannot be switched from Ergatai fall through to
   // the read-only detected-model display below.
@@ -709,10 +718,22 @@ const availableModels = useAvailableModels(agentId, profileHint)
 
   const selectedModel = useMemo(
     () =>
-      availableModels.models.find((model) => model.id === selectedConversationModelId) ||
+      // A just-made selection wins while the switch is in flight.
+      (pendingModelId
+        ? availableModels.models.find((model) => model.id === pendingModelId)
+        : undefined) ||
+      // The live agent model is the source of truth for what is actually running.
       availableModels.models.find((model) => model.id === availableModels.currentModelId) ||
+      availableModels.models.find((model) => model.id === selectedConversationModelId) ||
+      availableModels.models.find((model) => model.id === lastSelectedModelId) ||
       availableModels.models[0],
-    [availableModels.models, availableModels.currentModelId, selectedConversationModelId],
+    [
+      availableModels.models,
+      availableModels.currentModelId,
+      pendingModelId,
+      selectedConversationModelId,
+      lastSelectedModelId,
+    ],
   )
   const runtimeModelLabel = useMemo(() => {
     if (runtimeModel) return runtimeModel
@@ -1759,7 +1780,9 @@ const availableModels = useAvailableModels(agentId, profileHint)
 	                          ) : (
 	                            <RuntimeModelIcon className="h-4 w-4 shrink-0" />
 	                          )}
-	                          <span className="max-w-40 truncate">{runtimeModelLabel}</span>
+	                          <span className="max-w-[120px] truncate whitespace-nowrap @[560px]:max-w-40">
+                            {runtimeModelLabel}
+                          </span>
 	                        </button>
 	                      ) : (
 	                      <AgentModelSelector
@@ -1787,6 +1810,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
 	                              availableModels.models.find((item) => item.id === modelId) ||
 	                              availableModels.models[0]
 	                            if (!model) return
+	                            setPendingModelId(model.id)
 	                            setSelectedConversationModelId(model.id)
 	                            setLastSelectedModelId(model.id)
 	                            if (agentId && !isAgentKnownNotAliveForModelSwitch) {

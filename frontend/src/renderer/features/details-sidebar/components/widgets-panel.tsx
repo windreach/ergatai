@@ -1,23 +1,24 @@
-import i18n from "@/lib/i18n"
+// import i18n from "@/lib/i18n" // 暂时隐藏 MCP widget
 import { useMemo } from "react"
 import { useAtomValue } from "jotai"
 import { widgetVisibilityAtomFamily, widgetOrderAtomFamily } from "../atoms"
-import { WidgetCard } from "./widget-card"
-import { useExtensionMeta } from "../../agents/lib/extension-meta-store"
+// import { WidgetCard } from "./widget-card" // 暂时隐藏 MCP widget
+import { useExtensionMeta } from "../../agents"
 import { AgentsWidget } from "../sections/agents-widget"
 import { TodoWidget } from "../sections/todo-widget"
 import { PlanWidget } from "../sections/plan-widget"
 import { GoalWidget } from "../sections/goal-widget"
 import { TerminalWidget } from "../sections/terminal-widget"
 import { ChangesWidget } from "../sections/changes-widget"
-// Temporarily disabled: MCP widget is session-scoped and too limited for multi-agent use.
-// import { McpWidget } from "../sections/mcp-widget"
+// import { McpWidget } from "../sections/mcp-widget" // 暂时隐藏 MCP widget
 import type { ParsedDiffFile } from "../types"
 import type { AgentMode } from "../../agents"
 import { getTerminalScopeKey } from "../../terminal"
 
 interface WidgetsPanelProps {
   chatId: string
+  /** Runtime agent id for this chat (used for extension metadata). */
+  agentId?: string | null
   worktreePath: string | null
   /** Chat branch - used to compute the terminal scope key (must match TerminalSidebar) */
   branch?: string | null
@@ -57,6 +58,7 @@ interface WidgetsPanelProps {
 
 export function WidgetsPanel({
   chatId,
+  agentId,
   worktreePath,
   branch,
   terminalScopeKey,
@@ -109,20 +111,10 @@ export function WidgetsPanel({
       id: chatId,
     })
 
-  const extensionMeta = useExtensionMeta(chatId)
+  // Extension metadata is stored by runtime agent id, not chat id.
+  const extensionMeta = useExtensionMeta(agentId ?? chatId)
   const asyncTasks = extensionMeta?.["async_tasks_update"]
   const goal = extensionMeta?.["goal"] ?? extensionMeta?.goal
-  const terminalPayload = extensionMeta?.["terminal_update"]
-  const terminalEntries = (() => {
-    if (!terminalPayload || typeof terminalPayload !== "object") return []
-    if (Array.isArray(terminalPayload)) {
-      return terminalPayload.map((item, i) => ({ key: String(i), value: item }))
-    }
-    return Object.entries(terminalPayload as Record<string, unknown>).map(([k, v]) => ({
-      key: k,
-      value: v,
-    }))
-  })()
 
   return (
     <>
@@ -171,7 +163,7 @@ export function WidgetsPanel({
                 key="terminal"
                 scopeKey={resolvedTerminalScopeKey}
                 onExpand={onExpandTerminal}
-                terminalEntries={terminalEntries}
+                conversationId={activeConversationId}
               />
             )
 
@@ -203,7 +195,8 @@ export function WidgetsPanel({
               />
             )
 
-          // Temporarily disabled: MCP widget is session-scoped and too limited for multi-agent use.
+          // 暂时隐藏 MCP widget：当前 discovery 只扫描静态配置文件 + registry，
+          // 不包含运行时注入的 MCP（如 Ergatai MCP Tools），展示不完整。
           // case "mcp":
           //   return (
           //     <WidgetCard
@@ -212,11 +205,9 @@ export function WidgetsPanel({
           //       title={i18n.t('MCP Servers')}
           //       hideExpand
           //     >
-          //       <McpWidget />
+          //       <McpWidget chatId={chatId} worktreePath={worktreePath} />
           //     </WidgetCard>
           //   )
-          case "mcp":
-            return null
 
           default:
             return null

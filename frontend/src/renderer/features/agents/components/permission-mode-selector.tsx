@@ -74,7 +74,7 @@ export function PermissionModeSelector({
     optimisticMode ??
     (modeOptions.some((option) => option.id === serverMode)
       ? serverMode
-      : "ask")
+      : "auto")
   const selected = modeOptions.find((option) => option.id === mode) ?? modeOptions[0]
   const isFullAccess = selected.id === "full_access"
 
@@ -95,6 +95,8 @@ export function PermissionModeSelector({
       <PopoverTrigger asChild>
         <button
           type="button"
+          title={selected.label}
+          aria-label={selected.label}
           className={cn(
             "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70 transition-[background-color,color] duration-150 ease-out hover:bg-muted/50",
             isFullAccess
@@ -104,9 +106,12 @@ export function PermissionModeSelector({
           )}
           disabled={disabled}
         >
-          <Shield className="w-4 h-4" />
-          <span>{selected.label}</span>
-          <IconChevronDown className="w-3.5 h-3.5" />
+          <Shield className="w-4 h-4 shrink-0" />
+          {/* Icon-only once the input toolbar is narrow. */}
+          <span className="hidden whitespace-nowrap @[560px]:inline">
+            {selected.label}
+          </span>
+          <IconChevronDown className="w-3.5 h-3.5 shrink-0" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-64 p-1.5">

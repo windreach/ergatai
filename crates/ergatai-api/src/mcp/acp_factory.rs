@@ -130,7 +130,7 @@ impl ErgataiAcpMcpService {
         vec![
             Tool::new(
                 "list_agents",
-                "List online agents in Ergatai. Use BEFORE `send_message` to discover valid target_agent_id values. RESPONSE: JSON with {agents: [{agent_id, state, workspace_id, is_alive, ...}], total, filter_applied}. FILTER: pass `filter` as a JSON OBJECT, e.g. {\"filter\": {\"status\": \"idle\"}}.",
+                "List online agents in Ergatai. Use BEFORE `send_message` to discover valid targets. RESPONSE: JSON with {agents: [{agent_name, conversation_id, runtime_agent_id, state, is_alive, ...}], total, filter_applied}. Prefer conversation_id for target_conversation_id. FILTER: pass `filter` as a JSON OBJECT, e.g. {\"filter\": {\"status\": \"idle\"}}.",
                 schema_to_arc_json_object(schemars::schema_for!(ListAgentsParams)),
             ),
             Tool::new(
@@ -138,7 +138,8 @@ impl ErgataiAcpMcpService {
                 r#"Send a message to another online agent. Persists via NATS JetStream.
 
 PARAMETERS:
-- target_agent_id (REQUIRED): recipient's ergatai_agent_id from list_agents
+- target_conversation_id (PREFERRED when known): valid "conv_..." ID; routes directly and never auto-spawns a duplicate
+- target_agent_id: recipient's agent_name / profile name from list_agents (or a runtime agent id)
 - message (REQUIRED): message content
 - message_type (OPTIONAL, default "request"): "request" | "response" | "broadcast"
 - correlation_id (OPTIONAL): system auto-tracks
@@ -201,8 +202,17 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
         let agents_json: Vec<serde_json::Value> = items
             .into_iter()
             .map(|info| {
+                let runtime_agent_id = info.agent_id;
+                let agent_name = info
+                    .profile
+                    .clone()
+                    .unwrap_or_else(|| runtime_agent_id.clone());
+                let has_mcp_identity = info.mcp_agent_id.is_some();
                 serde_json::json!({
-                    "agent_id": info.agent_id,
+                    "agent_id": runtime_agent_id.clone(),
+                    "agent_name": agent_name.clone(),
+                    "conversation_id": info.conversation_id,
+                    "runtime_agent_id": runtime_agent_id,
                     "mcp_agent_id": info.mcp_agent_id,
                     "workspace_id": info.workspace_id,
                     "state": info.state,
@@ -225,12 +235,12 @@ RESPONSE: {status: 'no_dag'|'running'|'completed', progress, is_complete, graph_
                     },
                     "can_receive_messages": info.is_alive && !info.is_processing,
                     "source": info.source,
-                    "status": if info.mcp_agent_id.is_some() {
+                    "status": if has_mcp_identity {
                         "active"
                     } else {
                         "discovered"
                     },
-                    "ergatai_agent_id": info.mcp_agent_id.or(Some(info.agent_id.clone())),
+                    "ergatai_agent_id": agent_name,
                     "last_heartbeat": info.last_heartbeat,
                 })
             })

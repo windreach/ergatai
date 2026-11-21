@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Test script for PTY terminal functionality
 
-set -e
+set -euo pipefail
 
 echo "=== PTY Terminal Test ==="
 echo ""

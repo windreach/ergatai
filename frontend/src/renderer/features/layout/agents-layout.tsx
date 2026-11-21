@@ -18,7 +18,7 @@ import {
   customHotkeysAtom,
   betaKanbanEnabledAtom,
 } from "../../lib/atoms"
-import { selectedAgentChatIdAtom, selectedWorkspaceAtom, selectedDraftIdAtom, showNewChatFormAtom, desktopViewAtom, fileSearchDialogOpenAtom } from "../agents"
+import { selectedAgentChatIdAtom, selectedWorkspaceAtom, selectedWorkspaceIdAtom, selectedDraftIdAtom, showNewChatFormAtom, desktopViewAtom, fileSearchDialogOpenAtom } from "../agents"
 import { detailsSidebarOpenAtom, detailsSidebarTabAtom, sideChatSidebarOpenAtom } from "../details-sidebar"
 import { terminalSidebarOpenAtomFamily } from "../terminal"
 import { diffSidebarOpenAtomFamily } from "../agents"
@@ -104,6 +104,7 @@ export function AgentsLayout() {
   const desktopView = useAtomValue(desktopViewAtom)
   const setFileSearchDialogOpen = useSetAtom(fileSearchDialogOpenAtom)
   const [selectedChatId, setSelectedChatId] = useAtom(selectedAgentChatIdAtom)
+  const selectedWorkspaceId = useAtomValue(selectedWorkspaceIdAtom)
 
   // Right panel state (for history navigation)
   const [isDetailsSidebarOpen, setIsDetailsSidebarOpen] = useAtom(detailsSidebarOpenAtom)
@@ -284,7 +285,11 @@ export function AgentsLayout() {
   // Track if this is the initial load - skip auto-open on first load to respect saved state
   const isInitialLoadRef = useRef(true)
 
-  // Auto-open sidebar when project is selected, close when no project
+  // Auto-open the workspace sidebar when a managed workspace is selected, and
+  // close it when no workspace is active. This intentionally does NOT react to
+  // the selected *project* (repo) context: project context is synced
+  // programmatically when opening "New Chat", and keying the sidebar off it
+  // would pop the workspace management panel open unexpectedly.
   // Skip on initial load to preserve user's saved sidebar preference
   useEffect(() => {
     if (!projects) return // Don't change sidebar state while loading
@@ -295,13 +300,13 @@ export function AgentsLayout() {
       return
     }
 
-    // After initial load, react to project changes
-    if (validatedProject) {
+    // After initial load, react to workspace changes
+    if (selectedWorkspaceId) {
       setSidebarOpen(true)
     } else {
       setSidebarOpen(false)
     }
-  }, [validatedProject, projects, setSidebarOpen])
+  }, [selectedWorkspaceId, projects, setSidebarOpen])
 
   // Worktree setup failures from main process
   useEffect(() => {

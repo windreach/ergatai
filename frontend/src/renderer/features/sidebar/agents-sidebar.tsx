@@ -41,7 +41,8 @@ const AuthDialog = (_props: { open: boolean; onOpenChange: (open: boolean) => vo
 // import { DiscordIcon } from "@/components/icons"
 import { DiscordIcon } from "../../icons"
 // Desktop: mock Clerk hook (matches pattern in agents-content.tsx — Clerk is not installed)
-const useClerk = () => ({ signOut: () => {} })
+// Account sign-out temporarily hidden
+// const useClerk = () => ({ signOut: () => {} })
 import { AgentsRenameConversationDialog } from "../agents"
 import { ConfirmArchiveDialog } from "../../components/confirm-archive-dialog"
 import { WorkspaceList } from "./workspace-list"
@@ -69,7 +70,8 @@ import { Kbd } from "../../components/ui/kbd"
 import {
   IconDoubleChevronLeft,
   SettingsIcon,
-  ProfileIcon,
+  // Account login temporarily hidden
+  // ProfileIcon,
   GitHubLogo,
   ArchiveIcon,
   TrashIcon,
@@ -430,17 +432,17 @@ const SidebarHeader = memo(function SidebarHeader({
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
   const showOfflineFeatures = useAtomValue(showOfflineModeFeaturesAtom)
   const toggleSidebarHotkey = useResolvedHotkeyDisplay("toggle-sidebar")
-  const clerk = useClerk()
 
-  const handleSignOut = useCallback(async () => {
-    try {
-      await clerk.signOut()
-      onSignOut?.()
-    } catch (error) {
-      console.error("[SignOut] Failed:", error)
-      toast.error("Failed to sign out")
-    }
-  }, [clerk, onSignOut])
+  // Account sign-out temporarily hidden
+  // const handleSignOut = useCallback(async () => {
+  //   try {
+  //     await clerk.signOut()
+  //     onSignOut?.()
+  //   } catch (error) {
+  //     console.error("[SignOut] Failed:", error)
+  //     toast.error("Failed to sign out")
+  //   }
+  // }, [clerk, onSignOut])
 
   // Shared Help submenu — used in both authenticated and unauthenticated branches
   const helpSubmenu = (
@@ -591,7 +593,7 @@ const SidebarHeader = memo(function SidebarHeader({
               >
                 {userId ? (
                   <>
-                    {/* Project section at the top */}
+                    {/* Account header temporarily hidden
                     <div className="relative rounded-t-xl border-b overflow-hidden">
                       <div className="absolute inset-0 bg-popover brightness-110" />
                       <div className="relative pl-2 pt-1.5 pb-2">
@@ -610,6 +612,7 @@ const SidebarHeader = memo(function SidebarHeader({
                         </div>
                       </div>
                     </div>
+                    */}
 
                     {/* Settings */}
                     <DropdownMenuItem
@@ -627,9 +630,9 @@ const SidebarHeader = memo(function SidebarHeader({
                     {/* Help Submenu */}
                     {helpSubmenu}
 
+                    {/* Account log out temporarily hidden
                     <DropdownMenuSeparator />
 
-                    {/* Log out */}
                     <div className="">
                       <DropdownMenuItem
                         className="gap-2"
@@ -669,10 +672,11 @@ const SidebarHeader = memo(function SidebarHeader({
                         Log out
                       </DropdownMenuItem>
                     </div>
+                    */}
                   </>
                 ) : (
                   <>
-                    {/* Login for unauthenticated users */}
+                    {/* Account login temporarily hidden
                     <div className="">
                       <DropdownMenuItem
                         className="gap-2"
@@ -687,6 +691,7 @@ const SidebarHeader = memo(function SidebarHeader({
                     </div>
 
                     <DropdownMenuSeparator />
+                    */}
 
                     {/* Help Submenu */}
                     {helpSubmenu}

@@ -33,12 +33,14 @@ export function useActiveChatPlan({
   })
 
   useEffect(() => {
+    // Only adopt a path returned by the backend. The backend's getAgentPlan
+    // endpoint historically does not carry a file path, so never clobber a
+    // path that was already published by AgentPlanFileTool (which is the
+    // source of truth for plan files).
     if (apiPlanPath) {
       setCurrentPlanPath(apiPlanPath)
-    } else if (!planLoading) {
-      setCurrentPlanPath(null)
     }
-  }, [apiPlanPath, planLoading, setCurrentPlanPath])
+  }, [apiPlanPath, setCurrentPlanPath])
 
   useEffect(() => {
     if (status === "ready" && !isStreaming && conversationId) {

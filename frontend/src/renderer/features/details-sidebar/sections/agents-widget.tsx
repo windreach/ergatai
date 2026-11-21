@@ -4,7 +4,7 @@ import i18n from "@/lib/i18n"
 import { memo, useEffect, useState } from "react"
 import { useSetAtom } from "jotai"
 import { toast } from "sonner"
-import { trpc, trpcClient } from "../../../lib/trpc"
+import { trpc } from "../../../lib/trpc"
 import { WidgetCard } from "../components/widget-card"
 import { Button } from "../../../components/ui/button"
 import {
@@ -27,7 +27,8 @@ import {
   getCoreAgentDisplayName,
 } from "../../agents/public"
 import { cn } from "../../../lib/utils"
-import { Plus, X } from "lucide-react"
+import { Loader2, Plus, X } from "lucide-react"
+import { useChatAgentManager } from "../hooks/use-chat-agent-manager"
 
 // Backend auto-spawns runtime agents named like "ws_5019..._agent-12".
 // Detect those so we can show the registered profile name instead.
@@ -115,30 +116,16 @@ export const AgentsWidget = memo(function AgentsWidget({ chatId, activeConversat
     workspaceId: null,
     runtimeWorkspaceId: null,
     supervisorAgentId: null,
+    activeConversationId: activeConversationId ?? null,
   })
   const { data: profilesData } = trpc.ergatai.listProfiles.useQuery()
   const profiles = profilesData?.profiles ?? []
-  const bindingsQuery = trpc.ergatai.getAgentBindings.useQuery(
-    { chatId },
-    { enabled: chatId.startsWith("chat_") },
-  )
-  const utils = trpc.useUtils()
-  const spawnMutation = trpc.ergatai.spawnAgent.useMutation()
   const deleteAgentMutation = trpc.ergatai.deleteChatAgent.useMutation()
-  const existingAgentIds = new Set([
-    ...participants.flatMap((p) => [
-      p.coreAgentId,
-      p.profile,
-      p.agentId,
-    ].filter(Boolean)),
-    ...(bindingsQuery.data ?? []).flatMap((b) => [
-      b.agentCommand,
-      b.agentName,
-    ].filter(Boolean)),
-  ])
   const [coreAgents, setCoreAgents] = useState<CoreAgentOption[]>([])
   const [chatAgentsLoaded, setChatAgentsLoaded] = useState(false)
   const [hiddenAgentIds, setHiddenAgentIds] = useState<Set<string>>(new Set())
+  const canCreateAgent = chatId.startsWith("chat_")
+
   useEffect(() => {
     if (chatAgentsLoaded) return
     let cancelled = false
@@ -158,14 +145,15 @@ export const AgentsWidget = memo(function AgentsWidget({ chatId, activeConversat
       cancelled = true
     }
   }, [chatAgentsLoaded])
-  const availableAgents = coreAgents.filter((agent) => {
-    const keys = [agent.id, agent.profileName, agent.name].filter(Boolean)
-    return !keys.some((key) => existingAgentIds.has(key as string))
-  })
+
   const visibleParticipants = participants.filter(
     (participant) =>
       !hiddenAgentIds.has(participant.key) &&
-      !hiddenAgentIds.has(participant.agentId),
+      !hiddenAgentIds.has(participant.agentId) &&
+      // The main agent drives the current conversation, so it is not a
+      // side-chat participant and must not appear in the active agent list.
+      participant.conversationId !== activeConversationId &&
+      participant.conversationId !== chatId,
   )
   const setIsSideChatSidebarOpen = useSetAtom(sideChatSidebarOpenAtom)
   const setIsDetailsSidebarOpen = useSetAtom(detailsSidebarOpenAtom)
@@ -188,41 +176,30 @@ export const AgentsWidget = memo(function AgentsWidget({ chatId, activeConversat
     })
   }
 
-  const handleSelectAgent = async (agent: CoreAgentOption) => {
-    try {
-      const conversation = await trpcClient.ergatai.createConversation.mutate({
-        chatId,
-        title: agent.name,
-        mode: "agent",
-      })
-      const newConversationId = conversation.id
-      const spawnResult = await spawnMutation.mutateAsync({
-        conversationId: newConversationId,
-        command: agent.profileName || agent.id,
-      })
-      const spawnedAgentId = spawnResult?.agent_id
-      await utils.ergatai.getAgentBindings.invalidate({ chatId })
-      const result = await bindingsQuery.refetch()
-      const binding = result.data?.find(
-        (item) => item.agentId === spawnedAgentId || item.agentId === agent.id,
-      )
-      setIsDetailsSidebarOpen(false)
-      setIsSideChatSidebarOpen(true)
-      setAgentChatRequest({
-        agentId: agent.id,
-        conversationId: binding?.conversationId ?? newConversationId,
-        requestId: Date.now(),
-      })
-    } catch (error) {
-      console.error("Failed to start agent", error)
-      toast.error("Failed to start agent", {
-        description: error instanceof Error ? error.message : String(error),
-      })
-    }
-  }
+  const {
+    availableAgents,
+    bindingsLoading,
+    isAgentCreating,
+    handleSelectAgent,
+    forgetAgentProfile,
+    refreshBindings,
+  } = useChatAgentManager({
+    chatId,
+    activeConversationId,
+    participants,
+    coreAgents,
+    canCreateAgent,
+    openAgentChat,
+  })
 
   const handleCloseAgent = async (
-    participant: { source: string; agentId: string; key: string },
+    participant: {
+      source: string
+      agentId: string
+      key: string
+      profile?: string | null
+      coreAgentId?: string
+    },
   ) => {
     // Group members are UI-side group participants, not durable runtime
     // bindings. The permanent deletion API is for chat-scoped runtime agents.
@@ -245,8 +222,10 @@ export const AgentsWidget = memo(function AgentsWidget({ chatId, activeConversat
         return next
       })
 
-      await utils.ergatai.getAgentBindings.invalidate({ chatId })
-      await bindingsQuery.refetch()
+      // Allow the same profile to be created again after an explicit delete.
+      forgetAgentProfile(participant)
+
+      await refreshBindings()
     } catch (error) {
       console.error("Failed to permanently delete agent", error)
       toast.error("Failed to delete agent", {
@@ -264,27 +243,51 @@ export const AgentsWidget = memo(function AgentsWidget({ chatId, activeConversat
               variant="outline"
               size="sm"
               aria-label={i18n.t('New agent')}
+              disabled={bindingsLoading}
+              title={
+                !canCreateAgent
+                  ? i18n.t('Create the chat before adding an agent')
+                  : bindingsLoading
+                    ? i18n.t('Loading agents…')
+                    : undefined
+              }
               className="h-7 w-full justify-center gap-1.5 rounded-lg text-sm font-medium"
             >
-              <Plus className="h-3.5 w-3.5" />
+              {bindingsLoading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Plus className="h-3.5 w-3.5" />
+              )}
               <span>{i18n.t('New agent')}</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
-            {availableAgents.length === 0 ? (
+            {!canCreateAgent ? (
+              <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                {i18n.t('Create the chat before adding an agent')}
+              </div>
+            ) : availableAgents.length === 0 ? (
               <div className="px-2 py-1.5 text-xs text-muted-foreground">
                 No agents available
               </div>
             ) : (
               availableAgents.map((agent) => {
                 const Icon = getCoreAgentIcon(agent.id as any)
+                const isCreating = isAgentCreating(agent)
                 return (
                   <DropdownMenuItem
                     key={agent.id}
-                    onSelect={() => handleSelectAgent(agent)}
+                    disabled={isCreating}
+                    onSelect={() => {
+                      void handleSelectAgent(agent)
+                    }}
                     className="flex items-center gap-2 text-xs"
                   >
-                    <Icon className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+                    {isCreating ? (
+                      <Loader2 className="h-3.5 w-3.5 flex-shrink-0 animate-spin text-muted-foreground" />
+                    ) : (
+                      <Icon className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+                    )}
                     <span className="min-w-0 truncate">{agent.name}</span>
                   </DropdownMenuItem>
                 )

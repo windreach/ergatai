@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run fanotify OS lock tests in an isolated Docker container.
 #
 # Requirements:

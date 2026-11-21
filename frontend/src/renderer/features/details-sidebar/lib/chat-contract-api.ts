@@ -26,6 +26,10 @@ export interface ChatMessage {
   agentContent?: string | null
   metadata?: Record<string, unknown>
   parts?: unknown[]
+  /** Backend conversation sequence, used to order messages across sources. */
+  sequence?: number
+  /** Backend creation timestamp, used as a fallback ordering key. */
+  createdAt?: Date
   /** Backend-assigned turn identifier for deduplication across sources. */
   turnId?: string | null
   /** Backend turn stop reason ("end_turn" | "error" | ...). */

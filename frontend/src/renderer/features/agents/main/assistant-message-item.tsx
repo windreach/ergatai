@@ -1160,7 +1160,11 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
 
       {showInterAgentReplies && (
         <div className="px-2">
-          <InterAgentRepliesDisclosure message={message} chatId={chatId} />
+          <InterAgentRepliesDisclosure
+            message={message}
+            chatId={chatId}
+            hostConversationId={conversationId}
+          />
         </div>
       )}
 

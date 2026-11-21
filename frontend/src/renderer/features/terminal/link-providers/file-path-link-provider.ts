@@ -1,4 +1,4 @@
-import type { IBufferLine, ILink, ILinkProvider, Terminal as XTerm } from "xterm"
+import type { IBufferLine, ILink, ILinkProvider, Terminal as XTerm } from "@xterm/xterm"
 import { isModifierPressed, showLinkPopup, removeLinkPopup } from "./link-popup"
 
 /**

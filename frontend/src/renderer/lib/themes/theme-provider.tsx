@@ -20,7 +20,7 @@ import {
 } from "react"
 import { useAtom, useAtomValue } from "jotai"
 import { useTheme } from "next-themes"
-import type { ITheme } from "xterm"
+import type { ITheme } from "@xterm/xterm"
 
 import {
   selectedFullThemeIdAtom,

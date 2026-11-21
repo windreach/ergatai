@@ -110,37 +110,6 @@ async function writeClaudeSettings(settings: Record<string, unknown>): Promise<v
 
 export const claudeSettingsRouter = router({
   /**
-   * Get the includeCoAuthoredBy setting
-   * Returns true if setting is not explicitly set to false
-   */
-  getIncludeCoAuthoredBy: publicProcedure.query(async () => {
-    const settings = await readClaudeSettings()
-    // Default is true (include co-authored-by)
-    // Only return false if explicitly set to false
-    return settings.includeCoAuthoredBy !== false
-  }),
-
-  /**
-   * Set the includeCoAuthoredBy setting
-   */
-  setIncludeCoAuthoredBy: publicProcedure
-    .input(z.object({ enabled: z.boolean() }))
-    .mutation(async ({ input }) => {
-      const settings = await readClaudeSettings()
-
-      if (input.enabled) {
-        // Remove the setting to use default (true)
-        delete settings.includeCoAuthoredBy
-      } else {
-        // Explicitly set to false to disable
-        settings.includeCoAuthoredBy = false
-      }
-
-      await writeClaudeSettings(settings)
-      return { success: true }
-    }),
-
-  /**
    * Get list of enabled plugins
    * Plugins are disabled by default — only explicitly enabled ones are active.
    */

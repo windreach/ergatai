@@ -56,7 +56,7 @@ export function setGroupAgentRuntimeStatuses(
         type: "agent-status-changed",
         agentId: agentId as CoreAgentId,
         chatId,
-        status,
+        status: status as GroupAgentRuntimeStatus,
       }),
     )
   }

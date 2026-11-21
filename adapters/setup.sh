@@ -1,7 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ACP Adapters 快速配置脚本
 
-set -e
+set -euo pipefail
 
 echo "🔧 Ergatai ACP Adapters 配置"
 echo "================================"

@@ -1,8 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Ergatai 自动化 API 测试脚本
 # 基于 OpenAPI 规范和 shell 测试
 
-set -e
+set -euo pipefail
 
 API_URL="http://localhost:3000"
 REPORT_FILE="/tmp/ergatai-test-report-$(date +%Y%m%d-%H%M%S).json"

@@ -12,6 +12,7 @@ members = [
     "crates/ergatai-core",
     "crates/ergatai-api",
     "crates/ergatai-preload",
+    "crates/ergatai-launcher",
 ]
 exclude = [
     "frontend",
@@ -26,6 +27,12 @@ license = "Apache-2.0"
 repository = "https://github.com/windreach/Ergatai"
 homepage = "https://github.com/windreach/Ergatai"
 documentation = "https://docs.rs/ergatai-core"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
 
 [workspace.dependencies]
 # Async runtime

@@ -382,14 +382,17 @@ export const lastSelectedAgentIdAtom = atomWithStorage<string>(
 
 export const lastSelectedModelIdAtom = atomWithStorage<string>(
   "agents:lastSelectedModelId",
-  "opus",
+  // Empty means "the user has not picked a model yet", so new chats can fall
+  // back to the provider connection's default model instead of a baked-in one.
+  "",
   undefined,
   { getOnInit: true },
 )
 
 export const lastSelectedCodexModelIdAtom = atomWithStorage<string>(
   "agents:lastSelectedCodexModelId",
-  "gpt-5.3-codex",
+  // Same as lastSelectedModelIdAtom: empty until the user actually picks one.
+  "",
   undefined,
   { getOnInit: true },
 )
@@ -441,20 +444,20 @@ export const agentModelIdAtomFamily = atomFamily((agentId: string) =>
 export const conversationModelIdAtomFamily = atomFamily((conversationId: string) =>
   atom(
     (get) => {
-      if (!conversationId) return get(lastSelectedModelIdAtom)
-      return get(conversationModelIdsStorageAtom)[conversationId] ?? get(lastSelectedModelIdAtom)
+      // Return only an explicit per-conversation choice. Falling back to the
+      // global last selection here made every conversation look like it had a
+      // saved model, which then overrode the agent's real runtime model.
+      if (!conversationId) return undefined
+      return get(conversationModelIdsStorageAtom)[conversationId]
     },
     (get, set, newModelId: string) => {
-      if (!conversationId) {
-        set(lastSelectedModelIdAtom, newModelId)
-        return
-      }
+      if (!conversationId) return
       const current = get(conversationModelIdsStorageAtom)
       if (current[conversationId] === newModelId) return
       set(conversationModelIdsStorageAtom, { ...current, [conversationId]: newModelId })
     },
   ),
-)
+);
 
 // Storage for per-conversation? Codex model selection.
 // Falls back to lastSelectedCodexModelIdAtom when conversation has no explicit selection yet.

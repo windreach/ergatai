@@ -45,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Architecture
 
-- Pure Rust workspace with 9 modular crates
+- Pure Rust workspace with 11 modular crates
 - Middleware design: agents manage own lifecycle, connect via MCP
 - No HTTP server needed on agent side
 - NATS JetStream for reliable internal messaging

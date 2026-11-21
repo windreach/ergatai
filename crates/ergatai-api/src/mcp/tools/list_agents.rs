@@ -89,9 +89,18 @@ pub(crate) async fn handle(
                 "not_running"
             };
             let can_receive_messages = info.is_alive && !info.is_processing;
+            let agent_name = info
+                .profile
+                .clone()
+                .unwrap_or_else(|| info.agent_id.clone());
 
             serde_json::json!({
-                "name": info.profile.clone().unwrap_or_else(|| info.agent_id.clone()),
+                "name": agent_name,
+                "agent_name": agent_name,
+                // Conversation is the preferred routing handle. Use it as
+                // `target_conversation_id` when present.
+                "conversation_id": info.conversation_id,
+                "runtime_agent_id": info.agent_id,
                 "status": "running",
                 "state": info.state,
                 "lifecycle_state": info.state,
@@ -103,7 +112,7 @@ pub(crate) async fn handle(
                 "is_idle": info.is_idle,
                 "is_processing": info.is_processing,
                 "source": info.source,
-                "ergatai_agent_id": info.mcp_agent_id.or(Some(info.agent_id.clone())),
+                "ergatai_agent_id": info.mcp_agent_id.or(Some(agent_name.clone())),
                 "last_heartbeat": info.last_heartbeat,
                 "installed": true,
             })
@@ -119,6 +128,9 @@ pub(crate) async fn handle(
 
         agents_json.push(serde_json::json!({
             "name": profile.name,
+            "agent_name": profile.name,
+            "conversation_id": null,
+            "runtime_agent_id": null,
             "status": "configured",
             "state": "configured",
             "lifecycle_state": "configured",
@@ -147,7 +159,7 @@ pub(crate) async fn handle(
         "running_count": agents_json.iter().filter(|a| a["status"] == "running").count(),
         "configured_count": agents_json.iter().filter(|a| a["status"] == "configured").count(),
         "filter_applied": filter_applied,
-        "note": "Agents with status='running' can receive messages immediately. Agents with status='configured' will be auto-spawned when you send them a message."
+        "note": "Prefer target_conversation_id when conversation_id is present; otherwise use target_agent_id (agent_name). Configured profiles are auto-spawned on first message. Runtime agent ids are volatile process pointers."
     });
 
     Ok(CallToolResult::success(vec![ContentBlock::text(

@@ -96,6 +96,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
     migrate_backfill_thinking_parts(conn)?;
     migrate_provider_connection_agent_id(conn)?;
     migrate_provider_connection_name_scope(conn)?;
+    migrate_group_agent_bindings_identity(conn)?;
     let _ = conn.execute(
         "ALTER TABLE initial_prompt_turns ADD COLUMN provider_connection_id TEXT",
         [],
@@ -388,6 +389,9 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
             UNIQUE (agent_id, name)
         );
 
+        -- Participant identity: (chat_id, agent_name) is unique and owns one
+        -- conversation. agent_id is the volatile current process pointer and is
+        -- replaced on respawn; never use it as the participant key.
         CREATE TABLE IF NOT EXISTS group_agent_bindings (
             workspace_id INTEGER NOT NULL,
             chat_id INTEGER NOT NULL,
@@ -650,6 +654,13 @@ pub fn create_message_table(conversation_id: ConversationId) -> Result<()> {
         ),
         [],
     )?;
+    conn.execute(
+        &format!(
+            "CREATE INDEX IF NOT EXISTS idx_{}_external_message_id ON {}(json_extract(metadata, '$.externalMessageId'))",
+            table_name, table_name
+        ),
+        [],
+    )?;
 
     Ok(())
 }
@@ -877,6 +888,121 @@ fn migrate_backfill_thinking_parts(conn: &Connection) -> Result<()> {
                 params![new_parts, message_id],
             );
         }
+    }
+
+    Ok(())
+}
+
+/// Normalize chat participant bindings so the schema enforces the product
+/// invariant:
+///
+/// - one participant name per chat
+/// - one conversation per participant
+/// - `agent_name` is the public/profile name, never a volatile runtime id
+///
+/// Older builds wrote the runtime agent id into `agent_name` when a user
+/// prompted a participant directly. That broke name-based routing and allowed
+/// duplicate bindings (and duplicate agent logos) for the same profile.
+fn migrate_group_agent_bindings_identity(conn: &Connection) -> Result<()> {
+    // 1. Repair names from a simple profile command (e.g. `opencode`).
+    let repaired_from_command = conn.execute(
+        "UPDATE OR IGNORE group_agent_bindings
+         SET agent_name = trim(agent_command)
+         WHERE substr(agent_name, 1, 6) = 'agent_'
+           AND agent_command IS NOT NULL
+           AND trim(agent_command) <> ''
+           AND agent_command NOT LIKE '%/%'
+           AND agent_command NOT LIKE '% %'
+           AND substr(trim(agent_command), 1, 6) <> 'agent_'",
+        [],
+    )?;
+
+    // 2. Fall back to the child conversation's name (e.g. `opencode`) when the
+    //    command is a full path or unavailable. Root/chat conversations are
+    //    excluded because their name is the chat title, not the profile.
+    let repaired_from_conversation = conn.execute(
+        "UPDATE OR IGNORE group_agent_bindings
+         SET agent_name = (
+           SELECT trim(c.name)
+           FROM conversations c
+           WHERE c.conversation_id = group_agent_bindings.conversation_id
+         )
+         WHERE substr(agent_name, 1, 6) = 'agent_'
+           AND EXISTS (
+             SELECT 1
+             FROM conversations c
+             WHERE c.conversation_id = group_agent_bindings.conversation_id
+               AND c.parent_id IS NOT NULL
+               AND c.name IS NOT NULL
+               AND trim(c.name) <> ''
+               AND substr(trim(c.name), 1, 6) <> 'agent_'
+               AND substr(trim(c.name), 1, 5) <> 'conv_'
+           )",
+        [],
+    )?;
+
+    // 3. Collapse duplicate names. Keep the conversation with the most recent
+    //    activity, falling back to the newest binding.
+    let deleted_by_name = conn.execute(
+        "DELETE FROM group_agent_bindings
+         WHERE rowid NOT IN (
+           SELECT rowid FROM (
+             SELECT b.rowid AS rowid,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY b.chat_id, lower(b.agent_name)
+                      ORDER BY COALESCE(c.updated_at, 0) DESC,
+                               b.updated_at DESC,
+                               b.created_at DESC
+                    ) AS rn
+             FROM group_agent_bindings b
+             LEFT JOIN conversations c ON c.conversation_id = b.conversation_id
+           )
+           WHERE rn = 1
+         )",
+        [],
+    )?;
+
+    // 4. A conversation may only be owned by one binding.
+    let deleted_by_conversation = conn.execute(
+        "DELETE FROM group_agent_bindings
+         WHERE rowid NOT IN (
+           SELECT rowid FROM (
+             SELECT rowid,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY chat_id, conversation_id
+                      ORDER BY (substr(agent_name, 1, 6) = 'agent_') ASC,
+                               updated_at DESC,
+                               created_at DESC
+                    ) AS rn
+             FROM group_agent_bindings
+           )
+           WHERE rn = 1
+         )",
+        [],
+    )?;
+
+    // 5. Enforce the identity going forward. `INSERT OR REPLACE` in
+    //    `group_agent_bindings::bind_participant` uses both indexes to converge
+    //    a rebind instead of creating a second participant row.
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uniq_group_agent_bindings_chat_name
+           ON group_agent_bindings(chat_id, lower(agent_name));
+         CREATE UNIQUE INDEX IF NOT EXISTS uniq_group_agent_bindings_chat_conversation
+           ON group_agent_bindings(chat_id, conversation_id);",
+    )?;
+
+    if repaired_from_command > 0
+        || repaired_from_conversation > 0
+        || deleted_by_name > 0
+        || deleted_by_conversation > 0
+    {
+        tracing::info!(
+            repaired_from_command,
+            repaired_from_conversation,
+            deleted_by_name,
+            deleted_by_conversation,
+            "Normalized chat participant binding identities"
+        );
     }
 
     Ok(())
@@ -3318,6 +3444,13 @@ pub mod messages {
         Ok(0)
     }
 
+    /// Outcome of an idempotent append operation.
+    #[derive(Debug, Clone)]
+    pub struct AppendOutcome {
+        pub message: Message,
+        pub inserted: bool,
+    }
+
     pub fn append(
         conversation_id: ConversationId,
         role: &str,
@@ -3333,6 +3466,142 @@ pub mod messages {
             agent_fields,
             None,
         )
+    }
+
+    /// Idempotent append: if a row with the same `external_message_id`
+    /// (matched via `metadata.externalMessageId` or legacy `message_id`)
+    /// already exists in this conversation, return it with `inserted = false`
+    /// without allocating a new sequence or touching `conversations.updated_at`.
+    /// Otherwise insert and return `inserted = true`.
+    ///
+    /// Single-process atomicity is guaranteed by the global DB mutex + transaction.
+    pub fn append_idempotent(
+        conversation_id: ConversationId,
+        role: &str,
+        parts: serde_json::Value,
+        metadata: serde_json::Value,
+        agent_fields: Option<AgentMessageFields>,
+        external_message_id: Option<&str>,
+    ) -> Result<AppendOutcome> {
+        let db = get_user_data_db();
+        let mut conn = db.lock().unwrap();
+        let table_name = message_table_name(conversation_id);
+        let transaction = conn.transaction()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        // Fast path: check for an existing row matching the external id.
+        if let Some(ext) = external_message_id {
+            let legacy_message_id = MessageId::decode(ext).ok();
+            let legacy_message_id_i64 = legacy_message_id.map_or(-1, |id| id.as_i64());
+            let sql = format!(
+                "SELECT message_id, sequence, role, parts, metadata,
+                        from_agent_id, from_agent_name, message_type, content,
+                        turn_id,
+                        thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                        created_at, updated_at
+                 FROM {}
+                 WHERE (json_extract(metadata, '$.externalMessageId') = ?1
+                        OR message_id = ?2)
+                 LIMIT 1",
+                table_name
+            );
+            match transaction.query_row(&sql, params![ext, legacy_message_id_i64], |row| {
+                map_row_to_message(conversation_id, row)
+            }) {
+                Ok(existing) => {
+                    transaction.commit()?;
+                    return Ok(AppendOutcome {
+                        message: existing,
+                        inserted: false,
+                    });
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => {}
+                Err(e) => return Err(e),
+            }
+        }
+
+        // Insert path.
+        let sequence: i64 = transaction.query_row(
+            &format!("SELECT COALESCE(MAX(sequence), -1) + 1 FROM {}", table_name),
+            [],
+            |row| row.get(0),
+        )?;
+
+        let agent_fields = agent_fields.unwrap_or_default();
+        let output_fields = AgentOutputFields::default();
+
+        let parts_str = parts.to_string();
+
+        let message = Message {
+            message_id: MessageId::generate(),
+            conversation_id,
+            sequence,
+            role: role.to_string(),
+            parts: Some(parts_str),
+            metadata: if metadata.is_null() {
+                None
+            } else {
+                Some(metadata.to_string())
+            },
+            from_agent_id: agent_fields.from_agent_id,
+            from_agent_name: agent_fields.from_agent_name,
+            message_type: agent_fields.message_type,
+            content: agent_fields.content,
+            turn_id: agent_fields.turn_id,
+            projection_kind: None,
+            origin_message_id: None,
+            thinking: output_fields.thinking,
+            tool_calls: output_fields.tool_calls,
+            text_chunks: output_fields.text_chunks,
+            stop_reason: output_fields.stop_reason,
+            duration_ms: output_fields.duration_ms,
+            created_at: now,
+            updated_at: now,
+        };
+
+        transaction.execute(
+            &format!(
+                "INSERT INTO {} (message_id, sequence, role, parts, metadata,
+                 from_agent_id, from_agent_name, message_type, content,
+                 turn_id,
+                 thinking, tool_calls, text_chunks, stop_reason, duration_ms,
+                 created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                         ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                table_name
+            ),
+            params![
+                message.message_id,
+                message.sequence,
+                message.role,
+                message.parts,
+                message.metadata,
+                message.from_agent_id,
+                message.from_agent_name,
+                message.message_type,
+                message.content,
+                message.turn_id,
+                message.thinking,
+                message.tool_calls,
+                message.text_chunks,
+                message.stop_reason,
+                message.duration_ms,
+                message.created_at,
+                message.updated_at,
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE conversation_id = ?2",
+            params![now, conversation_id],
+        )?;
+        transaction.commit()?;
+        Ok(AppendOutcome {
+            message,
+            inserted: true,
+        })
     }
 
     /// Append a message with optional agent output fields
@@ -3932,39 +4201,132 @@ pub mod group_agent_bindings {
         })
     }
 
-    pub fn upsert(binding: GroupAgentBinding) -> Result<GroupAgentBinding> {
-        let db = get_user_data_db();
-        let conn = db.lock().unwrap();
+    /// Policy for the conversation half of a participant binding.
+    ///
+    /// The conversation is the participant's stable identity. A runtime
+    /// agent id is only the current process pointer.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ParticipantBindingPolicy {
+        /// Keep the conversation already bound to this participant (respawn,
+        /// resume, or a normal agent-to-agent send).
+        KeepConversation,
+        /// Make the supplied conversation authoritative (the user explicitly
+        /// prompted this conversation, or a new conversation was just created
+        /// for the participant).
+        PreferConversation,
+    }
 
-        conn.execute(
-            "INSERT INTO group_agent_bindings (workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(chat_id, agent_id) DO UPDATE SET
-               workspace_id = excluded.workspace_id,
-               agent_name = excluded.agent_name,
-               agent_command = excluded.agent_command,
-               conversation_id = excluded.conversation_id,
-               updated_at = excluded.updated_at",
+    /// Bind a participant name to a conversation and current runtime agent.
+    ///
+    /// This is the single write path for chat participant bindings. The name
+    /// `(chat_id, lower(agent_name))` and the conversation
+    /// `(chat_id, conversation_id)` are unique; `agent_id` is a volatile
+    /// pointer and is replaced on respawn.
+    ///
+    /// `INSERT OR REPLACE` is deliberate: it deletes stale rows that conflict
+    /// on any of those keys (old runtime id, duplicate name, or conversation
+    /// already owned by another name) and inserts the converged row in one
+    /// transaction. Callers never have to "delete old row then insert".
+    pub fn bind_participant(
+        workspace_id: WorkspaceId,
+        chat_id: ChatId,
+        agent_name: &str,
+        agent_command: Option<&str>,
+        conversation_id: ConversationId,
+        agent_id: i64,
+        policy: ParticipantBindingPolicy,
+    ) -> Result<GroupAgentBinding> {
+        let agent_name = agent_name.trim();
+        if agent_name.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "agent_name must not be empty".to_string(),
+            ));
+        }
+
+        let db = get_user_data_db();
+        let mut conn = db.lock().unwrap();
+        let transaction = conn.transaction()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
+
+        // Resolve any existing identity for this participant. The name is the
+        // primary identity, but legacy rows may still be keyed by the current
+        // runtime id or by conversation.
+        let existing = {
+            let mut stmt = transaction.prepare(
+                "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at
+                 FROM group_agent_bindings
+                 WHERE chat_id = ?1
+                   AND (lower(agent_name) = lower(?2)
+                        OR conversation_id = ?3
+                        OR agent_id = ?4)
+                 ORDER BY updated_at DESC, created_at DESC
+                 LIMIT 1",
+            )?;
+            let mut rows = stmt.query_map(
+                params![chat_id, agent_name, conversation_id, agent_id],
+                row_to_binding,
+            )?;
+            rows.next().transpose()?
+        };
+
+        let effective_conversation_id = match policy {
+            ParticipantBindingPolicy::KeepConversation => existing
+                .as_ref()
+                .map(|binding| binding.conversation_id)
+                .unwrap_or(conversation_id),
+            ParticipantBindingPolicy::PreferConversation => conversation_id,
+        };
+        let created_at = existing
+            .as_ref()
+            .map(|binding| binding.created_at)
+            .unwrap_or(now);
+        let effective_command = agent_command.map(str::to_string).or_else(|| {
+            existing
+                .as_ref()
+                .and_then(|binding| binding.agent_command.clone())
+        });
+
+        transaction.execute(
+            "INSERT OR REPLACE INTO group_agent_bindings
+               (workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
-                binding.workspace_id,
-                binding.chat_id,
-                binding.agent_id,
-                binding.agent_name,
-                binding.agent_command,
-                binding.conversation_id,
-                binding.created_at,
-                binding.updated_at,
+                workspace_id,
+                chat_id,
+                agent_id,
+                agent_name,
+                effective_command,
+                effective_conversation_id,
+                created_at,
+                now,
             ],
         )?;
 
-        let mut stmt = conn.prepare(
+        let binding = transaction.query_row(
             "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at
              FROM group_agent_bindings WHERE chat_id = ?1 AND agent_id = ?2",
+            params![chat_id, agent_id],
+            row_to_binding,
         )?;
-        let mut rows =
-            stmt.query_map(params![binding.chat_id, binding.agent_id], row_to_binding)?;
-        rows.next()
-            .unwrap_or_else(|| Err(rusqlite::Error::QueryReturnedNoRows))
+        transaction.commit()?;
+        Ok(binding)
+    }
+
+    /// Low-level upsert retained for callers that already hold a full binding.
+    /// New code should prefer `bind_participant` with an explicit policy.
+    pub fn upsert(binding: GroupAgentBinding) -> Result<GroupAgentBinding> {
+        bind_participant(
+            binding.workspace_id,
+            binding.chat_id,
+            &binding.agent_name,
+            binding.agent_command.as_deref(),
+            binding.conversation_id,
+            binding.agent_id,
+            ParticipantBindingPolicy::PreferConversation,
+        )
     }
 
     pub fn list(chat_id: ChatId) -> Result<Vec<GroupAgentBinding>> {
@@ -3986,6 +4348,40 @@ pub mod group_agent_bindings {
         let mut stmt = conn
             .prepare("SELECT conversation_id FROM group_agent_bindings WHERE agent_id = ?1 ORDER BY updated_at DESC, created_at DESC LIMIT 1")?;
         let mut rows = stmt.query_map(params![agent_id], |row| row.get::<_, ConversationId>(0))?;
+        rows.next().transpose()
+    }
+
+    /// Find the chat-scoped binding for an agent name (e.g. a profile name such
+    /// as `"opencode"`).
+    ///
+    /// Agent names are not globally unique: each chat binds a name to one child
+    /// conversation. Callers must pass the chat they are operating in so a name
+    /// can never resolve to another chat's participant.
+    ///
+    /// Older builds could overwrite `agent_name` with the runtime agent id when
+    /// a user prompted the participant directly. Match the command column as a
+    /// fallback so those bindings keep resolving by profile name instead of
+    /// triggering a duplicate auto-spawn.
+    pub fn find_by_agent_name(
+        chat_id: ChatId,
+        agent_name: &str,
+    ) -> Result<Option<GroupAgentBinding>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at
+             FROM group_agent_bindings
+             WHERE chat_id = ?1
+               AND (
+                 lower(agent_name) = lower(?2)
+                 OR lower(COALESCE(agent_command, '')) = lower(?2)
+                 OR lower(COALESCE(agent_command, '')) LIKE lower(?2) || ' %'
+               )
+             ORDER BY created_at ASC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![chat_id, agent_name], row_to_binding)?;
         rows.next().transpose()
     }
 
@@ -4091,8 +4487,8 @@ pub mod group_agent_bindings {
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
             .as_secs() as i64;
         transaction.execute(
-            "INSERT INTO deletion_queue (entity_type, entity_id, action, payload, status, created_at, updated_at) \
-             VALUES ('chat_agent', ?1, 'cleanup_agent', ?2, 'pending', ?3, ?3)",
+            "INSERT INTO job_queue (job_type, entity_type, entity_id, action, payload, status, created_at, updated_at) \
+             VALUES ('deletion', 'chat_agent', ?1, 'cleanup_agent', ?2, 'pending', ?3, ?3)",
             params![agent_id.to_string(), payload, now],
         )?;
         let queue_job_id = transaction.last_insert_rowid();
@@ -4868,8 +5264,8 @@ pub fn create_default_chat_with_binding(
     transaction.execute(
         "INSERT INTO group_agent_bindings (workspace_id, chat_id, agent_id, agent_name, agent_command, conversation_id, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-         ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
-           chat_id = excluded.chat_id,
+         ON CONFLICT(chat_id, agent_id) DO UPDATE SET
+           workspace_id = excluded.workspace_id,
            agent_name = excluded.agent_name,
            agent_command = excluded.agent_command,
            conversation_id = excluded.conversation_id,
@@ -5418,5 +5814,306 @@ mod tests {
 
         let not_found = mcp_servers::get(global_server.id).unwrap();
         assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_find_binding_by_agent_name_is_chat_scoped() {
+        let _database_guard = lock_user_data_db_for_tests();
+        let prefix = std::process::id() as i64;
+        let workspace_id = WorkspaceId::new(prefix * 10000 + 901);
+
+        workspaces::create(Workspace {
+            workspace_id,
+            name: "Name binding workspace".to_string(),
+            work_dir: "/tmp/test".to_string(),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            config: "{}".to_string(),
+            collaboration_mode: "supervisor".to_string(),
+            status: "active".to_string(),
+            default_project_id: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+
+        let mut bindings = Vec::new();
+        for offset in 0..2 {
+            let chat_id = ChatId::new(prefix * 10000 + 902 + offset * 10);
+            let session_id = CollaborationSessionId::new(prefix * 10000 + 903 + offset * 10);
+            let conversation_id = ConversationId::new(prefix * 10000 + 904 + offset * 10);
+
+            chats::create(Chat {
+                chat_id,
+                workspace_id,
+                name: Some(format!("Chat {offset}")),
+                collaboration_mode: Some("supervisor".to_string()),
+                worktree_path: None,
+                branch: None,
+                base_branch: None,
+                pr_url: None,
+                pr_number: None,
+                created_at: 1000,
+                updated_at: 1000,
+                archived_at: None,
+            })
+            .unwrap();
+
+            collaboration_sessions::create(CollaborationSession {
+                collaboration_session_id: session_id,
+                chat_id,
+                workspace_id,
+                mode: "supervisor".to_string(),
+                state: "idle".to_string(),
+                goal: None,
+                active_plan_revision: None,
+                created_at: 1000,
+                updated_at: 1000,
+            })
+            .unwrap();
+
+            conversations::create(Conversation {
+                conversation_id,
+                collaboration_session_id: session_id,
+                chat_id,
+                parent_id: None,
+                name: Some("opencode".to_string()),
+                mode: "agent".to_string(),
+                participant_role: "peer".to_string(),
+                status: "ready".to_string(),
+                created_at: 1000,
+                updated_at: 1000,
+                context_used: 0,
+                context_window: 0,
+                context_updated_at: 0,
+            })
+            .unwrap();
+
+            let binding = group_agent_bindings::upsert(GroupAgentBinding {
+                workspace_id,
+                chat_id,
+                agent_id: prefix * 10000 + 905 + offset * 10,
+                agent_name: "opencode".to_string(),
+                agent_command: Some("opencode".to_string()),
+                conversation_id,
+                created_at: 1000,
+                updated_at: 1000,
+            })
+            .unwrap();
+            bindings.push(binding);
+        }
+
+        // The same name resolves to each chat's own conversation, never the
+        // other chat's participant.
+        let first = group_agent_bindings::find_by_agent_name(bindings[0].chat_id, "opencode")
+            .unwrap()
+            .expect("binding in first chat");
+        assert_eq!(first.conversation_id, bindings[0].conversation_id);
+
+        let second = group_agent_bindings::find_by_agent_name(bindings[1].chat_id, "opencode")
+            .unwrap()
+            .expect("binding in second chat");
+        assert_eq!(second.conversation_id, bindings[1].conversation_id);
+
+        // Match is case-insensitive for profile names.
+        let mixed_case = group_agent_bindings::find_by_agent_name(bindings[0].chat_id, "OpenCode")
+            .unwrap()
+            .expect("case-insensitive binding lookup");
+        assert_eq!(mixed_case.conversation_id, bindings[0].conversation_id);
+
+        // Legacy rows may have the runtime agent id in `agent_name` (written by
+        // the old direct-prompt path). The profile command must still resolve
+        // the participant instead of triggering a duplicate auto-spawn.
+        let legacy = group_agent_bindings::upsert(GroupAgentBinding {
+            workspace_id: bindings[0].workspace_id,
+            chat_id: bindings[0].chat_id,
+            agent_id: bindings[0].agent_id,
+            agent_name: "agent_123_000_0000".to_string(),
+            agent_command: Some("opencode acp".to_string()),
+            conversation_id: bindings[0].conversation_id,
+            created_at: bindings[0].created_at,
+            updated_at: 1001,
+        })
+        .unwrap();
+        let by_command = group_agent_bindings::find_by_agent_name(legacy.chat_id, "opencode")
+            .unwrap()
+            .expect("legacy binding lookup via agent_command");
+        assert_eq!(by_command.conversation_id, legacy.conversation_id);
+    }
+
+    #[test]
+    fn test_bind_participant_converges_name_and_conversation() {
+        let _database_guard = lock_user_data_db_for_tests();
+        let prefix = std::process::id() as i64;
+        let workspace_id = WorkspaceId::new(prefix * 10000 + 801);
+        let chat_id = ChatId::new(prefix * 10000 + 802);
+        let session_id = CollaborationSessionId::new(prefix * 10000 + 803);
+        let conversation_a = ConversationId::new(prefix * 10000 + 804);
+        let conversation_b = ConversationId::new(prefix * 10000 + 805);
+        let conversation_c = ConversationId::new(prefix * 10000 + 806);
+
+        workspaces::create(Workspace {
+            workspace_id,
+            name: "Participant binding workspace".to_string(),
+            work_dir: "/tmp/test".to_string(),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            config: "{}".to_string(),
+            collaboration_mode: "supervisor".to_string(),
+            status: "active".to_string(),
+            default_project_id: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        chats::create(Chat {
+            chat_id,
+            workspace_id,
+            name: Some("Participant binding chat".to_string()),
+            collaboration_mode: Some("supervisor".to_string()),
+            worktree_path: None,
+            branch: None,
+            base_branch: None,
+            pr_url: None,
+            pr_number: None,
+            created_at: 1000,
+            updated_at: 1000,
+            archived_at: None,
+        })
+        .unwrap();
+        collaboration_sessions::create(CollaborationSession {
+            collaboration_session_id: session_id,
+            chat_id,
+            workspace_id,
+            mode: "supervisor".to_string(),
+            state: "idle".to_string(),
+            goal: None,
+            active_plan_revision: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+        for conversation_id in [conversation_a, conversation_b, conversation_c] {
+            conversations::create(Conversation {
+                conversation_id,
+                collaboration_session_id: session_id,
+                chat_id,
+                parent_id: None,
+                name: Some("opencode".to_string()),
+                mode: "agent".to_string(),
+                participant_role: "peer".to_string(),
+                status: "ready".to_string(),
+                created_at: 1000,
+                updated_at: 1000,
+                context_used: 0,
+                context_window: 0,
+                context_updated_at: 0,
+            })
+            .unwrap();
+        }
+
+        let first = group_agent_bindings::bind_participant(
+            workspace_id,
+            chat_id,
+            "opencode",
+            Some("opencode"),
+            conversation_a,
+            9001,
+            group_agent_bindings::ParticipantBindingPolicy::PreferConversation,
+        )
+        .unwrap();
+        assert_eq!(first.conversation_id, conversation_a);
+
+        // A respawn/new process must converge on the same name, not create a
+        // second participant row.
+        let second = group_agent_bindings::bind_participant(
+            workspace_id,
+            chat_id,
+            "opencode",
+            Some("opencode"),
+            conversation_b,
+            9002,
+            group_agent_bindings::ParticipantBindingPolicy::PreferConversation,
+        )
+        .unwrap();
+        assert_eq!(second.conversation_id, conversation_b);
+        assert_eq!(second.agent_id, 9002);
+        let rows = group_agent_bindings::list(chat_id).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].conversation_id, conversation_b);
+
+        // KeepConversation is the normal respawn/send path: the participant's
+        // conversation is stable even if a candidate conversation is supplied.
+        let third = group_agent_bindings::bind_participant(
+            workspace_id,
+            chat_id,
+            "opencode",
+            Some("opencode"),
+            conversation_c,
+            9003,
+            group_agent_bindings::ParticipantBindingPolicy::KeepConversation,
+        )
+        .unwrap();
+        assert_eq!(third.conversation_id, conversation_b);
+        assert_eq!(third.agent_id, 9003);
+        assert_eq!(group_agent_bindings::list(chat_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_group_agent_binding_identity_migration_repairs_and_dedupes() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE conversations (
+               conversation_id INTEGER PRIMARY KEY,
+               parent_id INTEGER,
+               name TEXT,
+               updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE group_agent_bindings (
+               workspace_id INTEGER NOT NULL,
+               chat_id INTEGER NOT NULL,
+               agent_id INTEGER NOT NULL,
+               agent_name TEXT NOT NULL,
+               agent_command TEXT,
+               conversation_id INTEGER NOT NULL,
+               created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL,
+               PRIMARY KEY (chat_id, agent_id)
+             );
+             INSERT INTO conversations VALUES (10, NULL, 'Chat title', 100);
+             INSERT INTO conversations VALUES (11, 10, 'opencode', 200);
+             INSERT INTO conversations VALUES (12, 10, 'opencode', 300);
+             INSERT INTO group_agent_bindings VALUES (1, 7, 100, 'agent_100_000_0000', 'opencode', 11, 100, 100);
+             INSERT INTO group_agent_bindings VALUES (1, 7, 101, 'opencode', 'opencode', 12, 100, 100);",
+        )
+        .unwrap();
+
+        migrate_group_agent_bindings_identity(&conn).unwrap();
+
+        let rows: Vec<(i64, String, i64)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT agent_id, agent_name, conversation_id
+                     FROM group_agent_bindings WHERE chat_id = 7",
+                )
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, "opencode");
+        assert_eq!(
+            rows[0].2, 12,
+            "keep the conversation with the newest activity"
+        );
+
+        // The unique index must reject a future duplicate name.
+        let duplicate = conn.execute(
+            "INSERT INTO group_agent_bindings VALUES (1, 7, 102, 'opencode', 'opencode', 13, 100, 100)",
+            [],
+        );
+        assert!(duplicate.is_err());
     }
 }

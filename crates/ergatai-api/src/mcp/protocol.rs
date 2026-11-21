@@ -271,22 +271,26 @@ Returns all available agents with their status:
 - `status: "running"` — Agent is running, can receive messages immediately
 - `status: "configured"` — Agent template, will be auto-spawned when messaged
 
-Use the `name` field as `target_agent_id` in `send_message`.
+Each entry includes `agent_name` and, when bound, `conversation_id`.
 
 ### 1.2 Send messages — `send_message`
 Send a message to another agent. If the target is a configured profile (not running),
 the system automatically spawns it and delivers your message.
 
-QUICK REFERENCE (use the `ergatai_agent_id` from `list_agents` as `target_agent_id`):
-```
-# Send request (default)
-send_message(target_agent_id="<target-agent>", message="Please review")
+ROUTING PRIORITY (most stable first):
+1. `target_conversation_id="conv_..."` — use this when known (e.g. from `list_agents` or a received `_reply`).
+2. `target_agent_id="<agent_name>"` — resolved inside your chat to that participant's conversation.
+3. `target_agent_id="<runtime-agent-id>"` — only when you already received it; runtime ids change across restarts.
 
-# Reply (use the `from` field of the received message)
-send_message(target_agent_id="<sender-agent>", message="Done", message_type="response")
+```
+# Preferred: reply with the conversation id from `_reply`
+send_message(target_conversation_id="conv_...", message="Done", message_type="response")
+
+# Name-addressed request (auto-spawns a configured profile)
+send_message(target_agent_id="opencode", message="Please review")
 
 # Broadcast
-send_message(target_agent_id="<target-agent>", message="FYI", message_type="broadcast")
+send_message(target_agent_id="<agent_name>", message="FYI", message_type="broadcast")
 ```
 
 ### 1.3 DAG orchestration

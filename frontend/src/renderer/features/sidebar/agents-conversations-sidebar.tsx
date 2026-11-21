@@ -48,7 +48,7 @@ import {
 } from "../../lib/atoms"
 import { trpc } from "../../lib/trpc"
 import { trpcClient } from "../../lib/trpc"
-import { clearSubagentState } from "../agents/lib/subagent-message-store"
+import { clearSubagentState } from "../agents"
 import { appStore } from "../../lib/jotai-store"
 import {
   useAgentConversationStore,

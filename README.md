@@ -67,7 +67,7 @@ cargo build --workspace
 cargo build -p ergatai-api
 
 # Desktop app (frontend + Electron shell)
-cd frontend && npm install && npm run electron:dev
+cd frontend && npm install && npm run dev:frontend
 ```
 
 ### Run the API server

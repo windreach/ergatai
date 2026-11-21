@@ -3,18 +3,17 @@ import { resolveLanguage } from "@/lib/language"
 import { useAtom } from "jotai"
 import { useTranslation } from "react-i18next"
 import { useEffect, useState } from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import {
   analyticsOptOutAtom,
   autoAdvanceTargetAtom,
   ctrlTabTargetAtom,
-  defaultAgentModeAtom,
   desktopNotificationsEnabledAtom,
   extendedThinkingEnabledAtom,
   notifyWhenFocusedAtom,
   soundNotificationsEnabledAtom,
   preferredEditorAtom,
   languagePreferenceAtom,
-  type AgentMode,
   type AutoAdvanceTarget,
   type CtrlTabTarget,
 } from "../../../lib/atoms"
@@ -72,6 +71,19 @@ interface EditorOption {
   label: string
 }
 
+// Default mode uses the existing permission system (ask / auto / full_access).
+type PermissionMode = "ask" | "auto" | "full_access"
+
+const PERMISSION_MODE_OPTIONS: Array<{
+  id: PermissionMode
+  label: string
+  danger?: boolean
+}> = [
+  { id: "ask", label: "Ask" },
+  { id: "auto", label: "Auto" },
+  { id: "full_access", label: "Full Access", danger: true },
+]
+
 // Order matches Superset: editors, terminals, VS Code, JetBrains
 const EDITORS: EditorOption[] = [
   { id: "cursor", label: "Cursor" },
@@ -125,6 +137,16 @@ import {
 } from "../../ui/dropdown-menu"
 import { ChevronDown } from "lucide-react"
 import { Switch } from "../../ui/switch"
+import { Button } from "../../ui/button"
+import {
+  AlertDialog,
+  AlertDialogBody,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../../ui/alert-dialog"
 import { trpc } from "../../../lib/trpc"
 
 // Hook to detect narrow screen
@@ -155,24 +177,47 @@ export function AgentsPreferencesTab() {
   const [analyticsOptOut, setAnalyticsOptOut] = useAtom(analyticsOptOutAtom)
   const [ctrlTabTarget, setCtrlTabTarget] = useAtom(ctrlTabTargetAtom)
   const [autoAdvanceTarget, setAutoAdvanceTarget] = useAtom(autoAdvanceTargetAtom)
-  const [defaultAgentMode, setDefaultAgentMode] = useAtom(defaultAgentModeAtom)
   const [preferredEditor, setPreferredEditor] = useAtom(preferredEditorAtom)
   const [languagePreference, setLanguagePreference] = useAtom(languagePreferenceAtom)
   const isNarrowScreen = useIsNarrowScreen()
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const [confirmingFullAccess, setConfirmingFullAccess] = useState(false)
 
-  // Co-authored-by setting from Claude settings.json
-  const { data: includeCoAuthoredBy, refetch: refetchCoAuthoredBy } =
-    trpc.claudeSettings.getIncludeCoAuthoredBy.useQuery()
-  const setCoAuthoredByMutation =
-    trpc.claudeSettings.setIncludeCoAuthoredBy.useMutation({
-      onSuccess: () => {
-        refetchCoAuthoredBy()
-      },
-    })
+  // Default permission mode, backed by the same global permission system used
+  // by the in-chat permission selector (ask / auto / full_access).
+  const permissionModeQuery = trpc.ergatai.getPermissionMode.useQuery(undefined, {
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  const setPermissionModeMutation = trpc.ergatai.setPermissionMode.useMutation({
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: [["ergatai", "getPermissionMode"]],
+      })
+    },
+  })
+  const permissionModeResponse = permissionModeQuery.data as
+    | { mode?: PermissionMode }
+    | undefined
+  const permissionMode: PermissionMode =
+    permissionModeResponse?.mode === "auto" ||
+    permissionModeResponse?.mode === "full_access"
+      ? permissionModeResponse.mode
+      : "auto"
+  const permissionModeLabel =
+    PERMISSION_MODE_OPTIONS.find((option) => option.id === permissionMode)?.label ??
+    "Ask"
 
-  const handleCoAuthoredByToggle = (enabled: boolean) => {
-    setCoAuthoredByMutation.mutate({ enabled })
+  const handlePermissionModeChange = (value: string) => {
+    if (value !== "ask" && value !== "auto" && value !== "full_access") return
+    // Enabling Full Access requires explicit confirmation, mirroring the
+    // in-chat permission selector.
+    if (value === "full_access" && permissionMode !== "full_access") {
+      setConfirmingFullAccess(true)
+      return
+    }
+    setPermissionModeMutation.mutate({ mode: value })
   }
 
   // Sync opt-out status to main process
@@ -222,39 +267,74 @@ export function AgentsPreferencesTab() {
               Default Mode
             </span>
             <span className="text-xs text-muted-foreground">
-              Mode for new agents (Plan = read-only, Agent = can edit)
+              Permission mode for agents (Ask = confirm risky operations, Auto =
+              auto-approve, Full Access = bypass all prompts)
             </span>
           </div>
           <Select
-            value={defaultAgentMode}
-            onValueChange={(value: AgentMode) => setDefaultAgentMode(value)}
+            value={permissionMode}
+            disabled={permissionModeQuery.isLoading}
+            onValueChange={handlePermissionModeChange}
           >
             <SelectTrigger className="w-auto px-2">
-              <span className="text-xs">
-                {defaultAgentMode === "agent" ? "Agent" : "Plan"}
+              <span
+                className={
+                  permissionMode === "full_access"
+                    ? "text-xs text-red-500"
+                    : "text-xs"
+                }
+              >
+                {permissionModeLabel}
               </span>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="agent">{t('Agent')}</SelectItem>
-              <SelectItem value="plan">{t('Plan')}</SelectItem>
+              {PERMISSION_MODE_OPTIONS.map((option) => (
+                <SelectItem
+                  key={option.id}
+                  value={option.id}
+                  className={option.danger ? "text-red-500" : undefined}
+                >
+                  {option.label}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center justify-between p-4 border-t border-border">
-          <div className="flex flex-col gap-1">
-            <span className="text-sm font-medium text-foreground">
-              Include Co-Authored-By
-            </span>
-            <span className="text-xs text-muted-foreground">
-              Add "Co-authored-by: Claude" to git commits made by Claude
-            </span>
-          </div>
-          <Switch
-            checked={includeCoAuthoredBy ?? true}
-            onCheckedChange={handleCoAuthoredByToggle}
-            disabled={setCoAuthoredByMutation.isPending}
-          />
-        </div>
+        <AlertDialog
+          open={confirmingFullAccess}
+          onOpenChange={setConfirmingFullAccess}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle className="text-red-500">
+                Enable Full Access?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {t("permissions.fullAccessWarning")}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogBody />
+            <AlertDialogFooter>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setConfirmingFullAccess(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                className="bg-red-500 hover:bg-red-600 text-white"
+                onClick={() => {
+                  setPermissionModeMutation.mutate({ mode: "full_access" })
+                  setConfirmingFullAccess(false)
+                }}
+              >
+                Enable Full Access
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
 
       {/* Notifications */}
@@ -492,7 +572,7 @@ export function AgentsPreferencesTab() {
         </div>
       </div>
 
-      {/* Privacy */}
+      {/* Privacy — temporarily hidden
       <div className="bg-background rounded-lg border border-border overflow-hidden">
         <div className="flex items-center justify-between gap-6 p-4">
           <div className="flex flex-col gap-1">
@@ -509,6 +589,7 @@ export function AgentsPreferencesTab() {
           />
         </div>
       </div>
+      */}
     </div>
   )
 }

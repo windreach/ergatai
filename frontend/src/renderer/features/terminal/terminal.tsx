@@ -1,6 +1,6 @@
 import i18n from "@/lib/i18n"
 import { useEffect, useRef, useState, useCallback, useMemo } from "react"
-import type { Terminal as XTerm } from "xterm"
+import type { Terminal as XTerm } from "@xterm/xterm"
 import type { FitAddon } from "@xterm/addon-fit"
 import type { SearchAddon } from "@xterm/addon-search"
 import type { SerializeAddon } from "@xterm/addon-serialize"
@@ -27,7 +27,7 @@ import { shellEscapePaths } from "./utils"
 import { TerminalSearch } from "./TerminalSearch"
 import type { TerminalProps, TerminalStreamEvent } from "./types"
 import { resolveTerminalProvider } from "./providers"
-import "xterm/css/xterm.css"
+import "@xterm/xterm/css/xterm.css"
 
 // react-doctor-disable-next-line no-giant-component
 export function Terminal({

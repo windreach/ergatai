@@ -22,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ergatai_core::agent_registry::{agent_registry, AgentRegistry};
 use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
-use ergatai_error::{AgentId, ConversationId};
+use ergatai_error::{AgentId, ChatId, ConversationId};
 use ergatai_runtime::AgentRuntime;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -49,6 +49,117 @@ const DEFAULT_WORK_DIR: &str = "/tmp";
 
 fn default_work_dir() -> String {
     std::env::var("ERGATAI_DEFAULT_WORK_DIR").unwrap_or_else(|_| DEFAULT_WORK_DIR.to_string())
+}
+
+/// Whether a chat binding belongs to the given agent/profile name.
+///
+/// The authoritative field is `agent_name`, but older builds overwrote it with
+/// the runtime agent id when a user prompted the participant directly. Fall
+/// back to the binding's command (e.g. `opencode acp`) so name-addressed
+/// messages still reuse the participant's existing conversation instead of
+/// auto-spawning a duplicate.
+fn binding_matches_agent_name(
+    binding: &user_data_db::GroupAgentBinding,
+    target_name: &str,
+) -> bool {
+    if binding.agent_name.eq_ignore_ascii_case(target_name) {
+        return true;
+    }
+
+    binding
+        .agent_command
+        .as_deref()
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+        .is_some_and(|command| {
+            command.eq_ignore_ascii_case(target_name)
+                || command
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|program| program.eq_ignore_ascii_case(target_name))
+        })
+}
+
+/// Resolve the provider connection owned by a profile into the values its fresh
+/// process needs: provider environment (for protocols Ergatai can configure via
+/// env) and the default model.
+///
+/// Auto-spawned agents must start with the same model the user selected for the
+/// agent (the default provider connection), just like a chat created from the
+/// new-chat form. Without this, agents such as OpenCode fall back to their own
+/// config (`"model"` in opencode.json) and can silently run a different model.
+///
+/// Resolution is best-effort: a missing or unreadable connection must not stop
+/// the agent from starting with its native configuration.
+async fn spawn_provider_settings(profile_name: &str) -> (HashMap<String, String>, Option<String>) {
+    let profile_name_owned = profile_name.to_string();
+    let result = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let Some(connection) =
+            crate::services::provider_connection_service::resolve(None, Some(&profile_name_owned))
+                .map_err(|error| error.to_string())?
+        else {
+            return Ok((HashMap::new(), None));
+        };
+        // OpenCode custom providers live in opencode.json; `OPENCODE_URL` is
+        // Ergatai's server URL for the OpenCode SDK, not a provider override, so
+        // injecting this connection's env would be wrong. The selected model is
+        // still applied at runtime below.
+        let env = if connection.protocol == "opencode" {
+            HashMap::new()
+        } else {
+            crate::services::provider_connection_service::env_for_connection(&connection)
+                .map_err(|error| error.to_string())?
+        };
+        Ok((env, connection.default_model))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(settings)) => settings,
+        Ok(Err(error)) => {
+            warn!(
+                profile = profile_name,
+                error = %error,
+                "Could not resolve provider connection for auto-spawn"
+            );
+            (HashMap::new(), None)
+        }
+        Err(error) => {
+            warn!(
+                profile = profile_name,
+                error = %error,
+                "Provider connection lookup failed for auto-spawn"
+            );
+            (HashMap::new(), None)
+        }
+    }
+}
+
+/// Apply the profile's default provider model to a freshly launched agent.
+///
+/// This is the same runtime switch the model selector uses. Failures are logged
+/// but never block message delivery — the agent can still answer with whatever
+/// model its own configuration selected.
+async fn apply_spawn_default_model(
+    agent_id: &str,
+    profile_name: &str,
+    default_model: Option<&str>,
+) {
+    let Some(model) = default_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    else {
+        return;
+    };
+    if let Err(error) = crate::services::agent_service::set_agent(agent_id, model).await {
+        warn!(
+            agent_id = %agent_id,
+            profile = profile_name,
+            model = %model,
+            error = %error,
+            "Failed to apply default provider model to auto-spawned agent"
+        );
+    }
 }
 
 fn configured_agent_request_timeout_ms() -> u64 {
@@ -228,6 +339,35 @@ async fn find_agent_by_conversation(
     }
 }
 
+/// Whether a string is a typed routing id (`conv_...`, `agent_...`) rather than
+/// a human/profile name.
+fn looks_like_typed_id(value: &str) -> bool {
+    let value = value.trim();
+    value.starts_with("conv_") || value.starts_with("agent_")
+}
+
+/// Targets that must be resolved through the runtime/MCP registries instead of
+/// the chat-scoped name binding.
+fn target_looks_like_explicit_id(target: &str) -> bool {
+    let target = target.trim();
+    looks_like_typed_id(target) || target.contains('@')
+}
+
+/// Derive the profile name a participant should be spawned/resumed as.
+///
+/// `agent_command` is usually the profile command (`opencode`, `codex`, ...).
+/// Full paths or commands with arguments are not profile names, so fall back to
+/// `agent_name` when it is not a runtime id.
+fn binding_profile_name(binding: &user_data_db::GroupAgentBinding) -> Option<String> {
+    binding
+        .agent_command
+        .as_deref()
+        .map(str::trim)
+        .filter(|command| !command.is_empty() && !command.contains('/') && !command.contains(' '))
+        .map(str::to_string)
+        .or_else(|| (!looks_like_typed_id(&binding.agent_name)).then(|| binding.agent_name.clone()))
+}
+
 impl MessageSender {
     /// Create a new MessageSender with the given conversation manager and peer registry.
     pub fn new(
@@ -327,63 +467,193 @@ impl MessageSender {
             }
         };
 
-        // 1b. Resolve target agent (auto-spawn if it's a profile name)
-        // Serialize concurrent sends to the same target so auto-resume / auto-spawn
-        // cannot both observe "no agent" and create duplicates.
+        // 1b. Resolve target agent (auto-spawn if it's a profile name).
+        //
+        // Routing order is conversation-first:
+        //   1. An explicit conversation id always wins and never triggers
+        //      name-based auto-spawn.
+        //   2. Profile names resolve through the sender's chat participant
+        //      binding before any global runtime/MCP lookup.
+        //   3. Typed runtime ids / MCP ids fall back to the registries.
+        //
+        // Serialize concurrent sends to the same target so auto-resume /
+        // auto-spawn cannot both observe "no agent" and create duplicates.
+        let explicit_target_conversation = req
+            .target_conversation_id
+            .as_deref()
+            .or(req.conversation_id.as_deref())
+            .and_then(|id| ConversationId::decode(id).ok());
+
         let resolved_target_id = {
-            let _target_spawn_mutex = spawn_lock(&req.to);
+            let lock_key = explicit_target_conversation
+                .map(|conversation_id| format!("conv:{}", conversation_id.encode()))
+                .unwrap_or_else(|| format!("target:{}", req.to));
+            let _target_spawn_mutex = spawn_lock(&lock_key);
             let _target_resolution_guard = _target_spawn_mutex.lock().await;
-            match self.resolve_target_agent(&runtime, &req.to).await {
-                Some(id) => id,
-                None => {
-                    // Target may also be identified directly by its bound Conversation.
-                    if let Some(agent_id) = find_agent_by_conversation(&runtime, &req.to).await {
-                        agent_id
-                    } else if let Some(auto_resumed_id) = self
-                        .try_auto_resume_suspended_agent(
-                            &runtime,
-                            &req.to,
-                            req.conversation_id
-                                .as_deref()
-                                .or(req.target_conversation_id.as_deref()),
-                        )
-                        .await
-                    {
+
+            if let Some(conversation_id) = explicit_target_conversation {
+                let conversation_id_str = conversation_id.encode();
+                match crate::services::agent_service::resolve_agent_for_conversation(
+                    &conversation_id_str,
+                )
+                .await
+                {
+                    Some(agent_id) => {
                         info!(
                             target = %req.to,
-                            conversation_id = ?req.conversation_id,
-                            resumed_agent_id = %auto_resumed_id,
-                            "Auto-resumed suspended target agent"
+                            conversation_id = %conversation_id_str,
+                            agent_id = %agent_id,
+                            "Resolved target from explicit conversation"
                         );
-                        auto_resumed_id
-                    } else {
-                        // Not a suspended agent — try to spawn from profile
+                        agent_id
+                    }
+                    None => {
+                        // The process is gone. Reuse the conversation's
+                        // participant binding so a respawn stays on the same
+                        // conversation instead of creating a second one.
+                        let binding = tokio::task::spawn_blocking(move || {
+                            user_data_db::group_agent_bindings::find_by_conversation_id(
+                                conversation_id,
+                            )
+                        })
+                        .await
+                        .ok()
+                        .and_then(|result| result.ok())
+                        .flatten();
+
+                        let Some(binding) = binding else {
+                            return SendMessageResult::Rejected {
+                                reason: format!(
+                                    "No participant is bound to conversation {}. \
+                                     Bind the participant before sending.",
+                                    conversation_id_str
+                                ),
+                            };
+                        };
+                        let Some(profile_name) = binding_profile_name(&binding) else {
+                            return SendMessageResult::Rejected {
+                                reason: format!(
+                                    "Conversation {} has no resolvable profile name.",
+                                    conversation_id_str
+                                ),
+                            };
+                        };
+
                         match self
-                            .try_auto_spawn_agent(&runtime, &req.to, &resolved_sender_id)
+                            .try_auto_spawn_agent(&runtime, &profile_name, &resolved_sender_id)
                             .await
                         {
                             Some(agent_id) => {
                                 info!(
-                                    target = %req.to,
+                                    target = %profile_name,
+                                    conversation_id = %conversation_id_str,
                                     agent_id = %agent_id,
-                                    "Spawned target agent from profile (message-driven)"
+                                    "Spawned target for explicit conversation"
                                 );
                                 agent_id
                             }
                             None => {
                                 return SendMessageResult::Rejected {
-                                reason: format!(
-                                    "Agent {} not found. Agent must connect via MCP or be running as an ACP agent. \
-                                     or be a valid profile name.",
-                                    req.to
-                                ),
-                            };
+                                    reason: format!(
+                                        "Conversation {} has no running agent and profile '{}' \
+                                         could not be spawned.",
+                                        conversation_id_str, profile_name
+                                    ),
+                                };
                             }
                         }
                     }
                 }
-            } // close match expression
-        }; // close target resolution block
+            } else if !target_looks_like_explicit_id(&req.to) {
+                // Profile-name routing: the chat-scoped binding is the
+                // authority. It is unique per (chat, name) after the identity
+                // migration, so this cannot select a duplicate participant.
+                if let Some(agent_id) = self
+                    .resolve_target_in_sender_chat(&resolved_sender_id, &req.to)
+                    .await
+                {
+                    info!(
+                        target = %req.to,
+                        agent_id = %agent_id,
+                        "Resolved target via chat-scoped agent-name binding"
+                    );
+                    agent_id
+                } else {
+                    // Not running/resumable (or not bound yet). Auto-spawn
+                    // reuses the chat-scoped binding's conversation when
+                    // present, otherwise it creates the first binding.
+                    match self
+                        .try_auto_spawn_agent(&runtime, &req.to, &resolved_sender_id)
+                        .await
+                    {
+                        Some(agent_id) => {
+                            info!(
+                                target = %req.to,
+                                agent_id = %agent_id,
+                                "Spawned target agent from profile (message-driven)"
+                            );
+                            agent_id
+                        }
+                        None => {
+                            // Fall back to MCP/runtime ids that don't match our
+                            // typed prefixes (custom adapters).
+                            match self.resolve_target_agent(&runtime, &req.to).await {
+                                Some(agent_id) => agent_id,
+                                None => {
+                                    return SendMessageResult::Rejected {
+                                        reason: format!(
+                                            "Agent {} not found. Agent must connect via MCP \
+                                             or be running as an ACP agent, or be a valid \
+                                             profile name.",
+                                            req.to
+                                        ),
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Explicit runtime/agent/conversation/MCP id.
+                if let Some(agent_id) = self.resolve_target_agent(&runtime, &req.to).await {
+                    agent_id
+                } else if let Some(agent_id) = find_agent_by_conversation(&runtime, &req.to).await {
+                    agent_id
+                } else if let Some(auto_resumed_id) = self
+                    .try_auto_resume_suspended_agent(
+                        &runtime,
+                        &req.to,
+                        req.conversation_id
+                            .as_deref()
+                            .or(req.target_conversation_id.as_deref()),
+                    )
+                    .await
+                {
+                    info!(
+                        target = %req.to,
+                        conversation_id = ?req.conversation_id,
+                        resumed_agent_id = %auto_resumed_id,
+                        "Auto-resumed suspended target agent"
+                    );
+                    auto_resumed_id
+                } else {
+                    return SendMessageResult::Rejected {
+                        reason: format!(
+                            "Agent {} not found. Agent must connect via MCP or be running as \
+                             an ACP agent.",
+                            req.to
+                        ),
+                    };
+                }
+            }
+        };
+
+        // A conversation-first send may have resumed or respawned the
+        // participant; keep the binding's process pointer current.
+        if let Some(conversation_id) = explicit_target_conversation {
+            self.sync_conversation_agent(conversation_id, &resolved_target_id)
+                .await;
+        }
 
         // 1c. Create resolved request with actual runtime agent IDs
         let resolved_req = SendRequest {
@@ -434,10 +704,9 @@ impl MessageSender {
             None
         };
 
-        let mut target_conversation_id = req
-            .conversation_id
-            .as_deref()
-            .and_then(|id| ConversationId::decode(id).ok());
+        // Explicit conversation ids win; only name/id-addressed sends need the
+        // participant binding to supply (or create) the conversation.
+        let mut target_conversation_id = explicit_target_conversation;
         if target_conversation_id.is_none() {
             let ensured_conversation_id = self
                 .ensure_target_conversation(&resolved_sender_id, &resolved_target_id, &req.to)
@@ -639,7 +908,9 @@ impl MessageSender {
                     let early_message_type = req.message_type.clone();
                     let early_content = actual_message.clone();
                     let early_target_id = resolved_target_id.clone();
+                    let queued_external_message_id_for_log = queued_external_message_id.clone();
                     let append_result = tokio::task::spawn_blocking(move || {
+                        let early_external_message_id = queued_external_message_id.clone();
                         let role =
                             agent_message_role(&early_message_type, &early_from, &early_target_id);
                         let agent_fields = user_data_db::messages::AgentMessageFields {
@@ -650,24 +921,32 @@ impl MessageSender {
                             ..Default::default()
                         };
 
-                        user_data_db::messages::append(
+                        user_data_db::messages::append_idempotent(
                             queued_conversation_id,
                             role,
                             early_parts,
                             early_metadata,
                             Some(agent_fields),
+                            Some(&early_external_message_id),
                         )
                     })
                     .await;
 
                     match append_result {
-                        Ok(Ok(persisted_msg)) => {
-                            publish_to_conversation_subject_with_message(
-                                persisted_msg,
-                                Some(resolved_sender_id.clone()),
-                                Some(sender_display.clone()),
-                            )
-                            .await;
+                        Ok(Ok(outcome)) => {
+                            if outcome.inserted {
+                                publish_to_conversation_subject_with_message(
+                                    outcome.message,
+                                    Some(resolved_sender_id.clone()),
+                                    Some(sender_display.clone()),
+                                )
+                                .await;
+                            } else {
+                                tracing::debug!(
+                                    external_message_id = %queued_external_message_id_for_log,
+                                    "Sender early persist skipped (already exists); not re-pushing SSE"
+                                );
+                            }
                         }
                         Ok(Err(error)) => {
                             warn!(
@@ -804,12 +1083,13 @@ impl MessageSender {
                             ..Default::default()
                         };
 
-                        user_data_db::messages::append(
+                        user_data_db::messages::append_idempotent(
                             conversation_id_for_persist,
                             role,
                             serde_json::json!([{ "type": "text", "text": message }]),
                             metadata,
                             Some(agent_fields),
+                            Some(&direct_external_message_id_for_meta),
                         )
                     })
                     .await;
@@ -817,13 +1097,15 @@ impl MessageSender {
                     // Publish to conversation subject for SSE streaming
                     // Use the Message returned by append() to avoid race condition
                     match append_result {
-                        Ok(Ok(persisted_msg)) => {
-                            publish_to_conversation_subject_with_message(
-                                persisted_msg,
-                                Some(req.from.clone()),
-                                Some(sender_display.clone()),
-                            )
-                            .await;
+                        Ok(Ok(outcome)) => {
+                            if outcome.inserted {
+                                publish_to_conversation_subject_with_message(
+                                    outcome.message,
+                                    Some(req.from.clone()),
+                                    Some(sender_display.clone()),
+                                )
+                                .await;
+                            }
                         }
                         Ok(Err(e)) => {
                             warn!("Failed to persist A-to-A message to messages table: {}", e);
@@ -858,6 +1140,48 @@ impl MessageSender {
                     ),
                 }
             }
+        }
+    }
+
+    /// Keep the chat participant binding's volatile `agent_id` in sync after a
+    /// conversation-first send resumed or respawned the participant.
+    async fn sync_conversation_agent(&self, conversation_id: ConversationId, agent_id: &str) {
+        let Some(agent_id_i64) = ergatai_core::id::parse_to_i64(agent_id) else {
+            return;
+        };
+        let binding = tokio::task::spawn_blocking(move || {
+            user_data_db::group_agent_bindings::find_by_conversation_id(conversation_id)
+        })
+        .await
+        .ok()
+        .and_then(|result| result.ok())
+        .flatten();
+        let Some(binding) = binding else {
+            return;
+        };
+        let participant_name =
+            binding_profile_name(&binding).unwrap_or_else(|| binding.agent_name.clone());
+        let participant_command = binding.agent_command.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            user_data_db::group_agent_bindings::bind_participant(
+                binding.workspace_id,
+                binding.chat_id,
+                &participant_name,
+                participant_command.as_deref(),
+                conversation_id,
+                agent_id_i64,
+                user_data_db::group_agent_bindings::ParticipantBindingPolicy::KeepConversation,
+            )
+        })
+        .await;
+
+        if let Ok(Err(error)) = result {
+            warn!(
+                error = %error,
+                conversation_id = %conversation_id,
+                "Failed to sync conversation agent binding"
+            );
         }
     }
 
@@ -964,36 +1288,79 @@ impl MessageSender {
         };
 
         let target_id = target_id.to_string();
+        let target_id_i64 = match ergatai_core::id::parse_to_i64(&target_id) {
+            Some(id) => id,
+            None => {
+                warn!(target = %target_id, "Failed to parse target agent ID");
+                return None;
+            }
+        };
+        let target_label = target_label.to_string();
+
+        let target_runtime_info = crate::context::get_app_context()
+            .agent_runtime
+            .get_agent(&target_id)
+            .await;
+        let target_profile = target_runtime_info
+            .as_ref()
+            .and_then(|info| info.profile.clone());
+
+        // Discover the chat that owns the sender and the participant binding
+        // for this target (by runtime id, name, or command).
+        let seed_conversation_for_lookup = seed_conversation_id;
+        let target_label_for_lookup = target_label.clone();
         let target_id_for_lookup = target_id.clone();
         let context = tokio::task::spawn_blocking(move || -> Result<_, String> {
-            let seed_conversation = user_data_db::conversations::get(seed_conversation_id)
+            let seed_conversation = user_data_db::conversations::get(seed_conversation_for_lookup)
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| "Sender conversation not found".to_string())?;
             let chat_id = seed_conversation.chat_id;
             let root_conversation = user_data_db::conversations::get(
-                seed_conversation.parent_id.unwrap_or(seed_conversation_id),
+                seed_conversation
+                    .parent_id
+                    .unwrap_or(seed_conversation_for_lookup),
             )
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Chat conversation not found".to_string())?;
-
-            // Parse target_id to i64 for comparison with binding.agent_id
+            let bindings = user_data_db::group_agent_bindings::list(chat_id)
+                .map_err(|error| error.to_string())?;
             let target_id_i64 = ergatai_core::id::parse_to_i64(&target_id_for_lookup);
-            let existing = user_data_db::group_agent_bindings::list(chat_id)
-                .map_err(|error| error.to_string())?
-                .into_iter()
+            let existing = bindings
+                .iter()
                 .find(|binding| Some(binding.agent_id) == target_id_i64)
-                .map(|binding| binding.conversation_id);
-
+                .or_else(|| {
+                    bindings.iter().find(|binding| {
+                        binding_matches_agent_name(binding, &target_label_for_lookup)
+                    })
+                })
+                .cloned();
+            let existing_conversation_name = existing.as_ref().and_then(|binding| {
+                user_data_db::conversations::get(binding.conversation_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|conversation| conversation.name)
+            });
             let workspace_id = user_data_db::chats::get(chat_id)
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| "Chat not found".to_string())?
                 .workspace_id;
-
-            Ok((chat_id, workspace_id, root_conversation, existing))
+            Ok((
+                chat_id,
+                workspace_id,
+                root_conversation,
+                existing,
+                existing_conversation_name,
+            ))
         })
         .await;
 
-        let (chat_id, workspace_id, root_conversation, existing_conversation_id) = match context {
+        let (
+            chat_id,
+            workspace_id,
+            root_conversation,
+            existing_binding,
+            existing_conversation_name,
+        ) = match context {
             Ok(Ok(context)) => context,
             Ok(Err(error)) => {
                 warn!(error = %error, "Failed to resolve agent target chat");
@@ -1005,202 +1372,151 @@ impl MessageSender {
             }
         };
 
-        if let Some(conversation_id) = existing_conversation_id {
-            self.update_agent_conversation_id(&target_id, conversation_id)
-                .await;
-            return Some(conversation_id);
-        }
+        // The participant's public name is the profile name. Never persist a
+        // runtime id as `agent_name`; fall back to an existing non-id name or
+        // the target label when it is a real profile name.
+        let participant_name = target_profile
+            .clone()
+            .or_else(|| {
+                existing_binding
+                    .as_ref()
+                    .map(|binding| binding.agent_name.clone())
+                    .filter(|name| !looks_like_typed_id(name))
+            })
+            .or_else(|| (!looks_like_typed_id(&target_label)).then(|| target_label.clone()))
+            .or_else(|| {
+                existing_conversation_name
+                    .clone()
+                    .filter(|name| !looks_like_typed_id(name))
+            })
+            .or_else(|| {
+                existing_binding
+                    .as_ref()
+                    .map(|binding| binding.agent_name.clone())
+            })
+            .unwrap_or_else(|| target_id.clone());
 
-        // Get conversation_id from target agent's metadata to ensure consistency
-        // between database conversation ID and NATS routing ID
-        let runtime = crate::context::get_app_context().agent_runtime.clone();
-        let chat_id_for_query = chat_id;
+        let participant_command = target_profile
+            .clone()
+            .or_else(|| {
+                existing_binding
+                    .as_ref()
+                    .and_then(|binding| binding.agent_command.clone())
+            })
+            .or_else(|| (!looks_like_typed_id(&target_label)).then(|| target_label.clone()));
 
-        // First, try to get from agent metadata
-        let conversation_id_from_metadata = match runtime.get_agent(&target_id).await {
-            Some(agent_info) => agent_info.handle.metadata.get("conversation_id").cloned(),
+        // Keep the participant's existing conversation. Only when this is a
+        // first-time participant do we create a conversation row.
+        let conversation_id = match existing_binding.as_ref() {
+            Some(binding) => binding.conversation_id,
             None => {
-                tracing::debug!(
-                    target_agent = %target_id,
-                    "Agent info not found in runtime, will query database"
-                );
-                None
-            }
-        };
+                let conversation_id = target_runtime_info
+                    .as_ref()
+                    .and_then(|info| info.conversation_id.clone())
+                    .and_then(|id| ConversationId::decode(&id).ok())
+                    .unwrap_or_else(ConversationId::generate);
+                let timestamp = chrono::Utc::now().timestamp();
+                let root_conversation_for_db = root_conversation.clone();
+                let conversation_name = participant_name.clone();
+                let conversation_id_for_create = conversation_id;
+                let session_id_i64 = generate();
 
-        // If not in metadata, query database for existing binding
-        let conversation_id = if let Some(id) = conversation_id_from_metadata {
-            match ConversationId::decode(&id) {
-                Ok(conversation_id) => conversation_id,
-                Err(e) => {
-                    // ConversationId decode failed - try to recover from database before generating new ID
-                    tracing::error!(
-                        target_agent = %target_id,
-                        conversation_id = %id,
-                        error = %e,
-                        "Failed to decode conversation_id from agent metadata; \
-                         attempting database recovery before generating new ID"
-                    );
+                let create_result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                    if user_data_db::conversations::get(conversation_id_for_create)
+                        .map_err(|error| error.to_string())?
+                        .is_none()
+                    {
+                        user_data_db::conversations::create(user_data_db::Conversation {
+                            conversation_id: conversation_id_for_create,
+                            collaboration_session_id: root_conversation_for_db
+                                .collaboration_session_id,
+                            chat_id: root_conversation_for_db.chat_id,
+                            parent_id: Some(
+                                root_conversation_for_db
+                                    .parent_id
+                                    .unwrap_or(root_conversation_for_db.conversation_id),
+                            ),
+                            name: Some(conversation_name),
+                            mode: "agent".to_string(),
+                            participant_role: "peer".to_string(),
+                            status: "ready".to_string(),
+                            created_at: timestamp,
+                            updated_at: timestamp,
+                            context_used: 0,
+                            context_window: 0,
+                            context_updated_at: 0,
+                        })
+                        .map_err(|error| error.to_string())?;
+                        user_data_db::agent_sessions::upsert(user_data_db::AgentSession {
+                            agent_session_id: session_id_i64,
+                            conversation_id: conversation_id_for_create.as_i64(),
+                            acp_session_id: None,
+                            agent_id: None,
+                            mode: "agent".to_string(),
+                            created_at: timestamp,
+                            updated_at: timestamp,
+                            imported_count: 0,
+                            import_cursor: None,
+                            has_more: false,
+                            total_captured: 0,
+                            last_error: None,
+                            resume_supported: true,
+                        })
+                        .map_err(|error| error.to_string())?;
+                    }
+                    Ok(())
+                })
+                .await;
 
-                    // Try to recover from database
-                    let target_id_for_lookup = target_id.clone();
-                    let chat_id_for_query = chat_id;
-                    let recovered = tokio::task::spawn_blocking(move || {
-                        user_data_db::group_agent_bindings::list(chat_id_for_query)
-                            .ok()
-                            .and_then(|bindings| {
-                                let target_id_i64 =
-                                    ergatai_core::id::parse_to_i64(&target_id_for_lookup);
-                                bindings
-                                    .into_iter()
-                                    .find(|b| Some(b.agent_id) == target_id_i64)
-                                    .map(|b| b.conversation_id)
-                            })
-                    })
-                    .await
-                    .ok()
-                    .flatten();
-
-                    if let Some(recovered_id) = recovered {
-                        tracing::info!(
-                            target_agent = %target_id,
-                            recovered_conversation_id = %recovered_id,
-                            "Recovered conversation_id from database after metadata decode failure"
-                        );
-                        recovered_id
-                    } else {
-                        // No recovery possible, generate new ID as last resort
-                        tracing::warn!(
-                            target_agent = %target_id,
-                            "Could not recover conversation_id from database, generating new ID"
-                        );
-                        ConversationId::generate()
+                match create_result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        warn!(error = %error, "Failed to create target agent conversation");
+                        return None;
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "Failed to create target agent conversation task");
+                        return None;
                     }
                 }
-            }
-        } else {
-            // Query database for existing conversation binding
-            let target_id_for_lookup = target_id.clone();
-            let existing = tokio::task::spawn_blocking(move || {
-                user_data_db::group_agent_bindings::list(chat_id_for_query)
-                    .ok()
-                    .and_then(|bindings| {
-                        // Parse target_id to i64 for comparison
-                        let target_id_i64 = ergatai_core::id::parse_to_i64(&target_id_for_lookup);
-                        bindings
-                            .into_iter()
-                            .find(|b| Some(b.agent_id) == target_id_i64)
-                            .map(|b| b.conversation_id)
-                    })
-            })
-            .await
-            .ok()
-            .flatten();
-
-            if let Some(id) = existing {
-                tracing::info!(
-                    target_agent = %target_id,
-                    conversation_id = %id,
-                    "Found existing conversation_id in database"
-                );
-                id
-            } else {
-                // No existing binding found, generate new ID
-                tracing::warn!(
-                    target_agent = %target_id,
-                    "No existing conversation binding found, generating new conversation_id"
-                );
-                ConversationId::generate()
+                conversation_id
             }
         };
-        let timestamp = chrono::Utc::now().timestamp();
 
-        // Parse string IDs to i64 for database storage
-        let target_id_i64 = ergatai_core::id::parse_to_i64(&target_id).unwrap_or_else(|| {
-            tracing::error!("Failed to parse target ID '{}', using 0", target_id);
-            0
-        });
-
-        let chat_id_for_binding = chat_id;
-        let root_conversation_for_db = root_conversation.clone();
-        let target_id_for_db = target_id_i64;
-        let target_label_for_conversation = target_label.to_string();
-        let target_label_for_agent_name = target_label.to_string();
-        let target_label_for_agent_command = target_label.to_string();
-        let conversation_id_for_create = conversation_id;
-        let conversation_id_for_binding = conversation_id;
-        let conversation_id_for_agent_session = conversation_id;
-        let session_id_i64 = generate();
-        let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-            user_data_db::conversations::create(user_data_db::Conversation {
-                conversation_id: conversation_id_for_create,
-                collaboration_session_id: root_conversation_for_db.collaboration_session_id,
-                chat_id: root_conversation_for_db.chat_id,
-                parent_id: Some(
-                    root_conversation_for_db
-                        .parent_id
-                        .unwrap_or(root_conversation_for_db.conversation_id),
-                ),
-                name: Some(target_label_for_conversation),
-                mode: "agent".to_string(),
-                participant_role: "peer".to_string(),
-                status: "ready".to_string(),
-                created_at: timestamp,
-                updated_at: timestamp,
-                context_used: 0,
-                context_window: 0,
-                context_updated_at: 0,
-            })
-            .map_err(|error| error.to_string())?;
-
-            user_data_db::group_agent_bindings::upsert(user_data_db::GroupAgentBinding {
+        // Single binding write path: keep the participant's conversation,
+        // replace only the volatile runtime pointer.
+        let participant_name_for_db = participant_name.clone();
+        let participant_command_for_db = participant_command.clone();
+        let binding = tokio::task::spawn_blocking(move || {
+            user_data_db::group_agent_bindings::bind_participant(
                 workspace_id,
-                chat_id: chat_id_for_binding,
-                agent_id: target_id_for_db,
-                agent_name: target_label_for_agent_name,
-                agent_command: Some(target_label_for_agent_command),
-                conversation_id: conversation_id_for_binding,
-                created_at: timestamp,
-                updated_at: timestamp,
-            })
-            .map_err(|error| error.to_string())?;
-
-            user_data_db::agent_sessions::upsert(user_data_db::AgentSession {
-                agent_session_id: session_id_i64,
-                conversation_id: conversation_id_for_agent_session.as_i64(),
-                acp_session_id: None,
-                agent_id: None,
-                mode: "agent".to_string(),
-                created_at: timestamp,
-                updated_at: timestamp,
-                imported_count: 0,
-                import_cursor: None,
-                has_more: false,
-                total_captured: 0,
-                last_error: None,
-                resume_supported: true,
-            })
-            .map_err(|error| error.to_string())?;
-
-            Ok(())
+                chat_id,
+                &participant_name_for_db,
+                participant_command_for_db.as_deref(),
+                conversation_id,
+                target_id_i64,
+                user_data_db::group_agent_bindings::ParticipantBindingPolicy::KeepConversation,
+            )
         })
         .await;
 
-        match result {
-            Ok(Ok(())) => {}
+        let binding = match binding {
+            Ok(Ok(binding)) => binding,
             Ok(Err(error)) => {
-                warn!(error = %error, "Failed to create target agent conversation");
+                warn!(error = %error, "Failed to bind target agent participant");
                 return None;
             }
             Err(error) => {
-                warn!(error = %error, "Failed to create target agent conversation task");
+                warn!(error = %error, "Failed to bind target agent participant task");
                 return None;
             }
-        }
+        };
+        let conversation_id = binding.conversation_id;
 
         self.update_agent_conversation_id(&target_id, conversation_id)
             .await;
 
+        // Keep the collaboration-session participant row in sync (idempotent).
         if let Ok(Ok(Some(session))) = tokio::task::spawn_blocking(move || {
             crate::services::collaboration_session::find_session_by_chat(&chat_id.to_string())
         })
@@ -1261,7 +1577,13 @@ impl MessageSender {
         };
         let workspace_id = ergatai_error::WorkspaceId::new(workspace_id_i64);
 
-        let sender_id_for_label = sender_id.to_string();
+        // Prefer the profile name so the default participant binding remains
+        // addressable by name. Runtime ids are volatile process pointers.
+        let sender_id_for_label = agent_info
+            .profile
+            .clone()
+            .filter(|profile| !profile.trim().is_empty())
+            .unwrap_or_else(|| sender_id.to_string());
         let timestamp = chrono::Utc::now().timestamp();
 
         // Generate IDs (all ID types implement Copy, so they can be used
@@ -1335,8 +1657,8 @@ impl MessageSender {
                     workspace_id,
                     chat_id,
                     agent_id: sender_id_i64,
-                    agent_name: sender_id_for_label,
-                    agent_command: None,
+                    agent_name: sender_id_for_label.clone(),
+                    agent_command: Some(sender_id_for_label),
                     conversation_id: sender_conversation_id,
                     created_at: timestamp,
                     updated_at: timestamp,
@@ -1521,6 +1843,107 @@ impl MessageSender {
         result
     }
 
+    /// Get the sender's current ConversationId from runtime metadata, falling
+    /// back to its durable chat binding.
+    async fn sender_conversation_id(&self, sender_runtime_id: &str) -> Option<ConversationId> {
+        let runtime = crate::context::get_app_context().agent_runtime.clone();
+        if let Some(info) = runtime.get_agent(sender_runtime_id).await {
+            if let Some(conversation_id) = info
+                .conversation_id
+                .as_deref()
+                .and_then(|id| ConversationId::decode(id).ok())
+            {
+                return Some(conversation_id);
+            }
+            if let Some(conversation_id) = info
+                .handle
+                .metadata
+                .get("conversation_id")
+                .and_then(|id| ConversationId::decode(id).ok())
+            {
+                return Some(conversation_id);
+            }
+        }
+
+        let sender_id_i64 = ergatai_core::id::parse_to_i64(sender_runtime_id)?;
+        tokio::task::spawn_blocking(move || {
+            user_data_db::group_agent_bindings::find_conversation_id(sender_id_i64)
+                .ok()
+                .flatten()
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// Get the chat that owns the sender's current conversation.
+    async fn sender_chat_id(&self, sender_runtime_id: &str) -> Option<ChatId> {
+        let conversation_id = self.sender_conversation_id(sender_runtime_id).await?;
+        tokio::task::spawn_blocking(move || {
+            user_data_db::conversations::get(conversation_id)
+                .ok()
+                .flatten()
+                .map(|conversation| conversation.chat_id)
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// Find the binding for an agent name (e.g. `"opencode"`) in the given chat.
+    ///
+    /// A profile name is only unique inside a chat; looking it up globally can
+    /// select another chat's participant. All name-based routing must therefore
+    /// start from the sender's chat.
+    async fn find_chat_scoped_binding(
+        &self,
+        chat_id: ChatId,
+        target_name: &str,
+    ) -> Option<user_data_db::GroupAgentBinding> {
+        let target_name = target_name.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            user_data_db::group_agent_bindings::find_by_agent_name(chat_id, &target_name)
+                .ok()
+                .flatten()
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// Resolve a target addressed by agent name (typically a profile name such
+    /// as `"opencode"`) to the agent bound to that name inside the sender's chat.
+    ///
+    /// The conversation is the anchor: the chat-scoped binding gives us the
+    /// participant conversation, and `resolve_agent_for_conversation` reuses a
+    /// live agent or resumes the suspended one for that exact conversation.
+    /// This is what prevents a second `opencode` pane/process from appearing
+    /// when the peer is already running.
+    async fn resolve_target_in_sender_chat(
+        &self,
+        sender_runtime_id: &str,
+        target_name: &str,
+    ) -> Option<String> {
+        let chat_id = self.sender_chat_id(sender_runtime_id).await?;
+        let binding = self.find_chat_scoped_binding(chat_id, target_name).await?;
+
+        let conversation_id = binding.conversation_id.encode();
+        let agent_id =
+            crate::services::agent_service::resolve_agent_for_conversation(&conversation_id)
+                .await?;
+
+        info!(
+            target = %target_name,
+            chat_id = %binding.chat_id,
+            conversation_id = %conversation_id,
+            agent_id = %agent_id,
+            "Resolved target by chat-scoped agent-name binding"
+        );
+
+        Some(agent_id)
+    }
+
     /// Try to auto-spawn an agent from a profile when target is not found.
     ///
     /// This enables "message-driven agent spawning": when an agent sends a message
@@ -1569,11 +1992,14 @@ impl MessageSender {
             .cloned()
             .unwrap_or_else(default_work_dir);
 
+        // Start with the same provider settings/model as a user-created chat.
+        let (provider_env, default_model) = spawn_provider_settings(&profile.name).await;
+
         // Build WorkspaceSpec
         let spec = ergatai_runtime::types::WorkspaceSpec {
             id: workspace_id.clone(),
             work_dir: std::path::PathBuf::from(&work_dir),
-            env: std::collections::HashMap::new(),
+            env: provider_env,
             resources: Default::default(),
             capture_thoughts: false,
         };
@@ -1588,13 +2014,34 @@ impl MessageSender {
             "Auto-spawning agent from profile (message-driven)"
         );
 
+        // Reuse the chat's participant conversation for this agent name. The ACP
+        // backend captures `conversation_id` at spawn time, so the process must
+        // start with the same conversation we route messages to.
+        let sender_chat_id = self.sender_chat_id(sender_runtime_id).await;
+        let binding = match sender_chat_id {
+            Some(chat_id) => self.find_chat_scoped_binding(chat_id, target).await,
+            None => None,
+        };
+        let spawn_chat_id = sender_chat_id.map(|chat_id| chat_id.encode());
+        let spawn_conversation_id = binding.as_ref().map(|b| b.conversation_id.encode());
+        if let Some(conversation_id) = spawn_conversation_id.as_deref() {
+            tracing::info!(
+                target = target,
+                conversation_id = conversation_id,
+                "Reusing chat-scoped conversation for auto-spawn"
+            );
+        }
+
         match runtime
-            .launch_agent(
+            .launch_agent_scoped(
                 spec,
                 &profile.command,
                 None, // No initial instruction — the message itself is the instruction
+                spawn_chat_id.as_deref(),
+                spawn_conversation_id.as_deref(),
                 Some(&profile.name),
                 profile.transport.as_deref(),
+                None,
             )
             .await
         {
@@ -1604,6 +2051,10 @@ impl MessageSender {
                     profile = %profile.name,
                     "Agent auto-spawned successfully"
                 );
+
+                // Apply the model before the queued message is delivered and
+                // before model detection snapshots the session's current model.
+                apply_spawn_default_model(&agent_id, &profile.name, default_model.as_deref()).await;
 
                 // Spawn background model detection (two-phase polling with exponential backoff)
                 crate::api::agents::spawn_model_detection(agent_id.clone(), profile.name.clone());
@@ -1692,6 +2143,10 @@ impl MessageSender {
             return Some(existing_agent);
         }
 
+        // Do not resume an arbitrary suspended agent by profile name here. A
+        // suspended record is a historical conversation; resuming it for an
+        // unrelated sender would move the message into that old conversation
+        // and start a duplicate process.
         // Check if agent_name is a profile name
         let profile = match crate::services::profile_service::get_profile_by_name(agent_name).await
         {
@@ -1708,11 +2163,14 @@ impl MessageSender {
         let workspace_id = format_id(generate(), IdType::Workspace);
         let work_dir = default_work_dir();
 
+        // Start with the same provider settings/model as a user-created chat.
+        let (provider_env, default_model) = spawn_provider_settings(&profile.name).await;
+
         // Build WorkspaceSpec
         let spec = ergatai_runtime::types::WorkspaceSpec {
             id: workspace_id.clone(),
             work_dir: std::path::PathBuf::from(&work_dir),
-            env: std::collections::HashMap::new(),
+            env: provider_env,
             resources: Default::default(),
             capture_thoughts: false,
         };
@@ -1741,6 +2199,10 @@ impl MessageSender {
                     profile = %profile.name,
                     "Sender agent auto-spawned successfully"
                 );
+
+                // Apply the model before the sender handles the message.
+                apply_spawn_default_model(&agent_id, &profile.name, default_model.as_deref()).await;
+
                 // Spawn background model detection (two-phase polling with exponential backoff)
                 crate::api::agents::spawn_model_detection(agent_id.clone(), profile.name.clone());
                 Some(agent_id)
@@ -1771,11 +2233,27 @@ impl MessageSender {
     async fn get_sender_conversation_id(&self, from: &str) -> String {
         let runtime = crate::context::get_app_context().agent_runtime.clone();
         if let Some(info) = runtime.get_agent(from).await {
-            info.conversation_id
-                .unwrap_or_else(|| info.agent_id.clone())
-        } else {
-            from.to_string()
+            if let Some(conversation_id) = info.conversation_id.clone() {
+                return conversation_id;
+            }
+            if let Some(conversation_id) = info.handle.metadata.get("conversation_id").cloned() {
+                return conversation_id;
+            }
         }
+
+        // Fall back to the durable participant binding so `_reply` stays
+        // conversation-addressed even before AgentInfo metadata is refreshed.
+        if let Some(agent_id_i64) = ergatai_core::id::parse_to_i64(from) {
+            if let Ok(Ok(Some(conversation_id))) = tokio::task::spawn_blocking(move || {
+                user_data_db::group_agent_bindings::find_conversation_id(agent_id_i64)
+            })
+            .await
+            {
+                return conversation_id.encode();
+            }
+        }
+
+        from.to_string()
     }
 
     /// Format agent message as structured JSON.
@@ -1907,7 +2385,7 @@ impl MessageSender {
 ///   - "response" → "respagent" (external agent's response, filtered from main chat)
 ///   - "broadcast" → "broadcast" (broadcast message)
 ///   - unknown → "agent"
-fn agent_message_role(
+pub(crate) fn agent_message_role(
     message_type: &str,
     sender_agent_id: &str,
     conversation_owner_agent_id: &str,

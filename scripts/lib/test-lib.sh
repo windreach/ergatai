@@ -18,7 +18,7 @@ NC='\033[0m'
 # 全局配置
 # ============================================================================
 API_URL="${API_URL:-http://localhost:3000}"
-if [ -z "$API_TOKEN" ] && [ -f "$HOME/.local/share/ergatai/.api-token" ]; then
+if [ -z "${API_TOKEN:-}" ] && [ -f "$HOME/.local/share/ergatai/.api-token" ]; then
     API_TOKEN=$(cat "$HOME/.local/share/ergatai/.api-token")
 fi
 API_TOKEN="${API_TOKEN:-}"

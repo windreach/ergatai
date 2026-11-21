@@ -94,7 +94,8 @@ pub trait AcpBackendInterface: Send + Sync + 'static {
         resources: &[crate::types::AgentResource],
     ) -> ErgataiResult<()> {
         let _ = resources;
-        self.inject_message_with_images(handle, message, images).await
+        self.inject_message_with_images(handle, message, images)
+            .await
     }
 
     /// Capture agent output for result collection.

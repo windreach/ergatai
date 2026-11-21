@@ -341,6 +341,14 @@ pub async fn try_auto_resume_suspended_agent(
         }
     }
 
+    // NOTE: Do not fall back to "any suspended agent whose profile matches the
+    // target string". Suspended records are historical; picking one by
+    // `max(suspended_at)` silently resumes an unrelated conversation and starts
+    // a duplicate process. Name-style targets must be scoped by the caller's
+    // chat (see `MessageSender::resolve_target_in_sender_chat`), which maps the
+    // name to the chat's conversation and then resumes by `conversation_id`
+    // above.
+
     // Step 3: Locate a running agent bound to this conversation.
     //
     // Prefer the runtime registry's conversation index (O(1), authoritative)
@@ -348,7 +356,11 @@ pub async fn try_auto_resume_suspended_agent(
     // legacy agents that predate the conversation_index binding, so older
     // in-flight processes are still recoverable.
     if let Some(conversation_id) = conversation_id {
-        if let Some(info) = runtime.registry().resolve_conversation_id(conversation_id).await {
+        if let Some(info) = runtime
+            .registry()
+            .resolve_conversation_id(conversation_id)
+            .await
+        {
             if info.lifecycle.is_alive() {
                 tracing::debug!(
                     conversation_id = %conversation_id,
@@ -362,11 +374,7 @@ pub async fn try_auto_resume_suspended_agent(
         let agents = runtime.list_agents().await;
         for agent in agents {
             let matches = agent.conversation_id.as_deref() == Some(conversation_id)
-                || agent
-                    .handle
-                    .workspace
-                    .metadata
-                    .get("conversation_id")
+                || agent.handle.workspace.metadata.get("conversation_id")
                     == Some(&conversation_id.to_string())
                 || agent
                     .handle
@@ -374,15 +382,9 @@ pub async fn try_auto_resume_suspended_agent(
                     .metadata
                     .get("ergatai_conversation_id")
                     == Some(&conversation_id.to_string())
-                || agent
-                    .handle
-                    .metadata
-                    .get("conversation_id")
+                || agent.handle.metadata.get("conversation_id")
                     == Some(&conversation_id.to_string())
-                || agent
-                    .handle
-                    .metadata
-                    .get("ergatai_conversation_id")
+                || agent.handle.metadata.get("ergatai_conversation_id")
                     == Some(&conversation_id.to_string());
 
             if matches && agent.lifecycle.is_alive() {
@@ -406,8 +408,9 @@ pub async fn try_auto_resume_suspended_agent(
 /// conversation is preferred over any stale agent ID the caller may still
 /// hold. This is the shared entry point that prompt/stream/messaging paths
 /// should use instead of re-implementing the suspended-agent lookup.
-static CONVERSATION_RESOLVE_LOCKS: OnceLock<Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>> =
-    OnceLock::new();
+static CONVERSATION_RESOLVE_LOCKS: OnceLock<
+    Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+> = OnceLock::new();
 
 fn conversation_resolve_lock(conv: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     CONVERSATION_RESOLVE_LOCKS
@@ -426,7 +429,11 @@ pub async fn resolve_agent_for_conversation(conversation_id: &str) -> Option<Str
     let runtime = crate::context::get_app_context().agent_runtime.clone();
 
     // 1. Already running and bound to this conversation.
-    if let Some(info) = runtime.registry().resolve_conversation_id(conversation_id).await {
+    if let Some(info) = runtime
+        .registry()
+        .resolve_conversation_id(conversation_id)
+        .await
+    {
         if info.lifecycle.is_alive() {
             return Some(info.agent_id);
         }
@@ -453,12 +460,14 @@ pub async fn resolve_agent_for_conversation(conversation_id: &str) -> Option<Str
     }
 
     // 3. Resume a suspended agent for this conversation.
-    let resumed = try_auto_resume_suspended_agent(&runtime, conversation_id, Some(conversation_id)).await;
+    let resumed =
+        try_auto_resume_suspended_agent(&runtime, conversation_id, Some(conversation_id)).await;
 
     // Persist the new binding so future restarts can recover without resume.
     if let Some(resumed_id) = resumed.as_ref() {
         if let Ok(conv_id) = ConversationId::decode(conversation_id) {
-            let _ = crate::user_data_db::conversations::set_current_agent_id(conv_id, Some(resumed_id));
+            let _ =
+                crate::user_data_db::conversations::set_current_agent_id(conv_id, Some(resumed_id));
         }
     }
 
@@ -1196,6 +1205,8 @@ pub struct AgentListFilter {
 pub struct AgentListItem {
     pub agent_id: String,
     pub workspace_id: String,
+    /// Stable conversation routing identity bound to this runtime agent.
+    pub conversation_id: Option<String>,
     /// Lowercase lifecycle state name (e.g., "running", "idle").
     pub state: String,
     pub task_id: Option<String>,
@@ -1334,6 +1345,7 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
             AgentListItem {
                 agent_id: a.agent_id,
                 workspace_id: a.workspace_id,
+                conversation_id: a.conversation_id,
                 state,
                 task_id: a.task_id,
                 mcp_agent_id: a.mcp_agent_id,
@@ -1398,6 +1410,10 @@ pub async fn list_agents_filtered(filter: AgentListFilter) -> Vec<AgentListItem>
         items.push(AgentListItem {
             agent_id: record.id,
             workspace_id: record.workspace_id,
+            conversation_id: record
+                .conversation_id
+                .starts_with("conv_")
+                .then(|| record.conversation_id.clone()),
             state: "suspended".to_string(),
             task_id: None,
             mcp_agent_id: None,

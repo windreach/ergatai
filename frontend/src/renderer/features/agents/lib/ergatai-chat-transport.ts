@@ -19,6 +19,7 @@ import { getQueryClient } from "../../../contexts/TRPCProvider"
 import { trpcClient } from "../../../lib/trpc"
 import { useAgentConversationStore } from "../stores/conversation-store"
 import { updateExtensionMeta } from "./extension-meta-store"
+import { applyAgentTerminalExtension } from "./agent-terminal-store"
 import {
   appendSubagentMessage,
   upsertSubagentRun,
@@ -552,6 +553,11 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                 // Keep a consumable extension-meta snapshot for UI components.
                 if (event.type === "extension_update") {
                   updateExtensionMeta(agentId, event.kind, event.payload)
+                  applyAgentTerminalExtension(
+                    conversationId,
+                    event.kind,
+                    event.payload,
+                  )
 
                   // Claude metadata is diagnostic-only: keep it in debug logs.
                   if (event.kind === "claude_code") {

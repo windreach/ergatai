@@ -867,7 +867,10 @@ pub struct ClaudeAcpClassifier;
 impl AcpCommandClassifier for ClaudeAcpClassifier {
     fn classify(&self, cmd: &Value, known_skills: &HashSet<String>) -> AcpCommandKind {
         let name = cmd.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let description = cmd.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        let description = cmd
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
         if known_skills.contains(name) {
             return AcpCommandKind::Skill(name.to_string());
@@ -2153,7 +2156,14 @@ mod tests {
             ]
         });
 
-        let result = merge_sources("test-agent", "claude", &convention, &sdk, &json!([]), &json!([]));
+        let result = merge_sources(
+            "test-agent",
+            "claude",
+            &convention,
+            &sdk,
+            &json!([]),
+            &json!([]),
+        );
         let skills = result["skills"].as_array().unwrap();
 
         // Should have 3 unique skills (shared-skill deduped)

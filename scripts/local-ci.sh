@@ -2,7 +2,7 @@
 set -e  # 遇到错误立即退出，模拟 CI 的 fail-fast
 
 # Ensure we run from the project root (where Cargo.lock lives)
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/.."
 
 export CARGO_TERM_COLOR=always
 export RUST_BACKTRACE=1

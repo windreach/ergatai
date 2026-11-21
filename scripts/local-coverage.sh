@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 echo "==> 1. 生成 LCOV 报告"
 cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info

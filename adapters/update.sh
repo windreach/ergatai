@@ -1,7 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ACP Adapters 更新管理器
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ADAPTERS_DIR="$SCRIPT_DIR"

@@ -10,6 +10,7 @@ type PersistedSessionMessage = {
   parts: unknown[]
   content?: string | null
   metadata?: Record<string, unknown> | null
+  createdAt?: Date | string | number
   turnId?: string | null
   stop_reason?: string | null
   projectionKind?: string | null
@@ -85,6 +86,16 @@ export function mapSessionMessage(message: PersistedSessionMessage): ChatMessage
     messageType: readString("messageType"),
     metadata: mergedMetadata,
     parts: displayParts,
+    // Preserve canonical ordering keys. Without them the projection service
+    // sorts every persisted message after live/runtime messages, which makes
+    // freshly fetched user turns render below the reply that answered them.
+    sequence: message.sequence,
+    createdAt:
+      message.createdAt instanceof Date
+        ? message.createdAt
+        : message.createdAt !== undefined
+          ? new Date(message.createdAt)
+          : undefined,
     turnId: message.turnId ?? null,
     stopReason: stopReason ?? null,
   }

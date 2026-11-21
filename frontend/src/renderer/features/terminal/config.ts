@@ -1,4 +1,4 @@
-import type { ITerminalOptions, ITheme } from "xterm"
+import type { ITerminalOptions, ITheme } from "@xterm/xterm"
 import { extractTerminalTheme } from "@/lib/themes/terminal-theme-mapper"
 
 // Nerd Fonts first for shell theme compatibility (Oh My Posh, Powerlevel10k, etc.)
@@ -140,6 +140,11 @@ export const TERMINAL_OPTIONS: ITerminalOptions = {
   fontFamily: TERMINAL_FONT_FAMILY,
   theme: TERMINAL_THEME_DARK, // Default, will be overridden dynamically
   allowProposedApi: true,
+  // Draw block/box-drawing characters ourselves instead of relying on the
+  // font. Font glyphs for █▀▄ rarely fill the cell exactly, so pixel-art
+  // output (e.g. the opencode splash) shows seams/black gaps, especially
+  // with lineHeight > 1.
+  customGlyphs: true,
   scrollback: 10000,
   macOptionIsMeta: true,
   cursorStyle: "block",

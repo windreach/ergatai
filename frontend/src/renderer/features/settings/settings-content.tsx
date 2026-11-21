@@ -10,10 +10,9 @@ import { AgentsAppearanceTab } from "../../components/dialogs/settings-tabs/agen
 import { AgentsDebugTab } from "../../components/dialogs/settings-tabs/agents-debug-tab"
 import { AgentsKeyboardTab } from "../../components/dialogs/settings-tabs/agents-keyboard-tab"
 import { AgentsPreferencesTab } from "../../components/dialogs/settings-tabs/agents-preferences-tab"
-import { AgentsProfileTab } from "../../components/dialogs/settings-tabs/agents-profile-tab"
+// Account tab temporarily hidden
+// import { AgentsProfileTab } from "../../components/dialogs/settings-tabs/agents-profile-tab"
 import { AgentsProjectsTab } from "../../components/dialogs/settings-tabs/agents-project-worktree-tab"
-import { AgentsWorktreesTab } from "../../components/dialogs/settings-tabs/agents-worktrees-tab"
-
 // Check if we're in development mode
 const isDevelopment = import.meta.env.DEV
 
@@ -37,8 +36,9 @@ export function SettingsContent() {
 
   const renderTabContent = () => {
     switch (activeTab) {
-      case "profile":
-        return <AgentsProfileTab />
+      // Account tab temporarily hidden
+      // case "profile":
+      //   return <AgentsProfileTab />
       case "appearance":
         return <AgentsAppearanceTab />
       case "keyboard":
@@ -47,8 +47,6 @@ export function SettingsContent() {
         return <AgentsPreferencesTab />
       case "projects":
         return <AgentsProjectsTab />
-      case "worktrees":
-        return <AgentsWorktreesTab />
       case "debug":
         return showDebugTab ? <AgentsDebugTab /> : null
       default:

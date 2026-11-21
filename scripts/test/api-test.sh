@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Ergatai API 全量测试 - 主调度器
-# 按顺序加载并运行 scripts/tests/*.sh 中的所有测试模块
+# 按顺序加载并运行 scripts/test/api/*.sh 中的所有测试模块
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$PROJECT_DIR"
 
 # 加载共享库
-source "$SCRIPT_DIR/test-lib.sh"
+source "$SCRIPT_DIR/../lib/test-lib.sh"
 
 # ============================================================================
 # 主测试流程
@@ -40,7 +40,7 @@ run_all_tests() {
     trap cleanup_all_resources EXIT
 
     # 按顺序加载并运行测试模块
-    local test_files=("$SCRIPT_DIR"/tests/*.sh)
+    local test_files=("$SCRIPT_DIR"/api/*.sh)
     local module_count=0
     local total_modules=${#test_files[@]}
 

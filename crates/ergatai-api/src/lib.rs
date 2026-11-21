@@ -406,7 +406,7 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route("/api/v1/agents/{id}/prompt", post(api::agents::prompt_agent))
         // ACP monitoring endpoints
         .route("/api/v1/agents/{id}/plan", get(api::agents::get_agent_plan))
-        .route(
+        .route("/api/v1/files/read", get(api::files::read_file))        .route(
             "/api/v1/agents/{id}/elicitations",
             get(api::agents::get_agent_elicitations),
         )

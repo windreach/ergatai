@@ -53,4 +53,19 @@ describe("mapSessionMessage", () => {
     expect(result.reasoning).toBe("thinking")
     expect(result.content).toBe("answer")
   })
+
+  it("preserves backend sequence and creation time for ordering", () => {
+    const result = mapSessionMessage({
+      id: "msg_4",
+      sequence: 4,
+      role: "user",
+      parts: [{ type: "text", text: "你好" }],
+      content: null,
+      metadata: null,
+      createdAt: new Date(1_795_262_125 * 1000),
+    })
+
+    expect(result.sequence).toBe(4)
+    expect(result.createdAt).toEqual(new Date(1_795_262_125 * 1000))
+  })
 })

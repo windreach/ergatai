@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # UI 测试启动脚本
 # 启动后端、Xvfb 虚拟显示，然后运行 Playwright Electron 测试
 
@@ -49,7 +49,8 @@ cleanup() {
 trap cleanup EXIT
 
 # 项目根目录
-PROJECT_ROOT="/root/ergatai"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FRONTEND_DIR="$PROJECT_ROOT/frontend"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$SCRIPT_DIR/logs"

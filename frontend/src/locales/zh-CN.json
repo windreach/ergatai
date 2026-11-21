@@ -107,6 +107,11 @@
   },
   "Agent": "Agent",
   "Agent Request": "Agent 请求",
+  "Agent terminals": "Agent 终端任务",
+  "Completed": "已完成",
+  "No output yet": "暂无输出",
+  "Running": "运行中",
+  "Stopped": "已停止",
   "Agents": "Agents",
   "Agents interface": "Agents 界面",
   "All Platforms": "所有平台",
@@ -177,6 +182,7 @@
     }
   },
   "Create session": "创建会话",
+  "Create the chat before adding an agent": "请先创建会话，再添加 Agent",
   "Creating diagram": {
     "": {
       "": {
@@ -256,6 +262,7 @@
   "Kotlin icon": "Kotlin 图标",
   "Load session": "加载会话",
   "Loading agent binding…": "正在加载 Agent 绑定…",
+  "Loading agents…": "正在加载 Agent…",
   "Loading conversation…": "正在加载对话…",
   "Loading file": {
     "": {
@@ -1197,6 +1204,7 @@
     "": "尚无上游分支。"
   },
   "This agent has no bound conversation yet": "此 Agent 尚未绑定对话",
+  "This agent is already active in this chat": "该 Agent 已在此会话中运行",
   "This is a bug — please report it": {
     "": "这是 bug — 请报告。"
   },

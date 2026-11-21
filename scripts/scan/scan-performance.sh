@@ -1,5 +1,5 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
 echo "── React Doctor 性能扫描脚本 ──"
 echo ""

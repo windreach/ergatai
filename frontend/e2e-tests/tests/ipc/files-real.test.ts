@@ -195,20 +195,6 @@ describe('IPC: Files Router (Real)', () => {
     })
   })
 
-  describe('files.readFile (requires registered worktree)', () => {
-    test('应该报错（未注册 worktree）', async () => {
-      // 先创建一个测试文件
-      const testFile = path.join(testProjectDir, 'read-test.txt')
-      await fs.writeFile(testFile, 'read content')
-
-      await expect(
-        ctx.page.evaluate(async (filePath: string) => {
-          return await (window as any).trpc.files.readFile.query({ filePath })
-        }, testFile)
-      ).rejects.toThrow()
-    })
-  })
-
   describe('files.readTextFile (requires registered worktree)', () => {
     test('应该报错（未注册 worktree）', async () => {
       const testFile = path.join(testProjectDir, 'read-text-test.txt')

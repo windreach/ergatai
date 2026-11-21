@@ -4,7 +4,6 @@ import { ChevronLeft } from "lucide-react"
 import { useCallback, useEffect, useMemo } from "react"
 import {
   EyeOpenFilledIcon,
-  ProfileIconFilled,
   SlidersFilledIcon,
 } from "../../icons"
 import {
@@ -15,10 +14,7 @@ import {
 } from "../../lib/atoms"
 import { cn } from "../../lib/utils"
 import {
-  PluginFilledIcon,
   BugFilledIcon,
-  FolderFilledIcon,
-  GitBranchFilledIcon,
   KeyboardFilledIcon,
 } from "../../components/ui/icons"
 import { desktopViewAtom } from "../agents"
@@ -34,11 +30,6 @@ const MAIN_TABS = [
     icon: SlidersFilledIcon,
   },
   {
-    id: "profile" as SettingsTab,
-    label: "Account",
-    icon: ProfileIconFilled,
-  },
-  {
     id: "appearance" as SettingsTab,
     label: "Appearance",
     icon: EyeOpenFilledIcon,
@@ -47,20 +38,6 @@ const MAIN_TABS = [
     id: "keyboard" as SettingsTab,
     label: "Keyboard",
     icon: KeyboardFilledIcon,
-  },
-]
-
-// Advanced tabs (base - without Debug)
-const ADVANCED_TABS_BASE = [
-  {
-    id: "projects" as SettingsTab,
-    label: "Projects",
-    icon: FolderFilledIcon,
-  },
-  {
-    id: "worktrees" as SettingsTab,
-    label: "Worktrees",
-    icon: GitBranchFilledIcon,
   },
 ]
 
@@ -165,22 +142,6 @@ export function SettingsSidebar() {
             />
           ))}
         </div>
-
-        {/* Separator */}
-        <div className="border-t border-border/50 mx-2" />
-
-        {/* Advanced Tabs */}
-        <div className="space-y-1">
-          {ADVANCED_TABS_BASE.map((tab) => (
-            <TabButton
-              key={tab.id}
-              tab={tab}
-              isActive={activeTab === tab.id}
-              onClick={() => handleTabClick(tab.id)}
-            />
-          ))}
-        </div>
-
       </div>
     </div>
   )

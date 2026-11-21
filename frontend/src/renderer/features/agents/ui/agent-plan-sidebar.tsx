@@ -1,14 +1,14 @@
 import i18n from "@/lib/i18n"
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Button } from "../../../components/ui/button"
 import { IconDoubleChevronRight, IconSpinner, PlanIcon, MarkdownIcon, CodeIcon } from "../../../components/ui/icons"
 import { Kbd } from "../../../components/ui/kbd"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip"
 import { ChatMarkdownRenderer } from "../../../components/chat-markdown-renderer"
 import { cn } from "../../../lib/utils"
-import { useAgentPlan } from "../hooks/use-agent-plan"
+import { trpc } from "@/lib/trpc"
 import { CopyButton } from "./message-action-buttons"
 import type { AgentMode } from "../atoms"
 
@@ -39,12 +39,27 @@ export function AgentPlanSidebar({
     setViewMode((prev) => (prev === "rendered" ? "plaintext" : "rendered"))
   }
 
-  // Fetch plan content from backend API
-  const { planContent, isLoading, error } = useAgentPlan({
-    chatId,
-    conversationId,
-    enabled: !!planPath,
-  })
+  // Fetch plan content from backend file read API
+  const {
+    data: planContent,
+    isLoading,
+    error,
+    refetch,
+  } = trpc.ergatai.readFile.useQuery(
+    { filePath: planPath! },
+    { enabled: !!planPath },
+  )
+
+  useEffect(() => {
+    const handlePlanUpdate = (event: Event) => {
+      const customEvent = event as CustomEvent<{ filePath?: string }>
+      if (planPath && (!customEvent.detail?.filePath || customEvent.detail.filePath === planPath)) {
+        refetch()
+      }
+    }
+    window.addEventListener("plan-updated", handlePlanUpdate)
+    return () => window.removeEventListener("plan-updated", handlePlanUpdate)
+  }, [planPath, refetch])
 
   // Extract plan title from markdown (first H1)
   const planTitle = useMemo(() => {

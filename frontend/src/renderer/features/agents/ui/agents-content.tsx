@@ -109,7 +109,7 @@ export function AgentsContent() {
     agentsConversationsSidebarModeAtom,
   )
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useAtom(selectedWorkspaceIdAtom)
-  const [_selectedProjectEntry] = useAtom(selectedWorkspaceAtom)
+  const [selectedProjectEntry, setSelectedProjectEntry] = useAtom(selectedWorkspaceAtom)
 
   // Only validate workspace after initial load is complete
   // This prevents clearing workspace due to transient errors during app startup
@@ -321,6 +321,31 @@ export function AgentsContent() {
     if (!projects) return new Map()
     return new Map(projects.map((p) => [p.id, p]))
   }, [projects])
+
+  // Keep the project context (selectedWorkspace atom) in sync with the selected
+  // managed workspace's default project. Otherwise NewChatForm falls back to the
+  // workspace/project selector, which looks like the workspace management page.
+  useEffect(() => {
+    if (!projectsMap || projectsMap.size === 0) return
+    const defaultProjectId =
+      selectedWorkspace?.defaultProjectId &&
+      projectsMap.has(selectedWorkspace.defaultProjectId)
+        ? selectedWorkspace.defaultProjectId
+        : Array.from(projectsMap.keys())[0]
+    if (!defaultProjectId || !projectsMap.has(defaultProjectId)) return
+    if (selectedProjectEntry && selectedProjectEntry.id === defaultProjectId) return
+    const proj = projectsMap.get(defaultProjectId)
+    if (!proj) return
+    setSelectedProjectEntry({
+      id: proj.id,
+      name: proj.name,
+      path: proj.path,
+      gitRemoteUrl: proj.gitRemoteUrl,
+      gitProvider: proj.gitProvider as NonNullable<typeof selectedProjectEntry>["gitProvider"],
+      gitOwner: proj.gitOwner,
+      gitRepo: proj.gitRepo,
+    })
+  }, [selectedWorkspace, projectsMap, selectedProjectEntry, setSelectedProjectEntry])
 
   // Fetch current chat data for preview info
   // Only fetch if selectedChatId looks like a valid chat ID (starts with "chat_")
@@ -964,11 +989,44 @@ export function AgentsContent() {
   const handleNewChatClick = useCallback(() => {
     setSelectedChatId(null)
     setSelectedDraftId(null)
+    // Keep the project context in sync with the selected managed workspace so
+    // NewChatForm shows the chat input instead of falling back to the
+    // workspace/project selector (which looks like the workspace management page).
+    const defaultProjectId =
+      selectedWorkspace?.defaultProjectId &&
+      projectsMap.has(selectedWorkspace.defaultProjectId)
+        ? selectedWorkspace.defaultProjectId
+        : projectsMap.size > 0
+          ? Array.from(projectsMap.keys())[0]
+          : null
+    if (
+      defaultProjectId &&
+      projectsMap.has(defaultProjectId) &&
+      (!selectedProjectEntry ||
+        selectedProjectEntry.id !== defaultProjectId)
+    ) {
+      const proj = projectsMap.get(defaultProjectId)
+      if (proj) {
+        setSelectedProjectEntry({
+          id: proj.id,
+          name: proj.name,
+          path: proj.path,
+          gitRemoteUrl: proj.gitRemoteUrl,
+          gitProvider: proj.gitProvider as NonNullable<typeof selectedProjectEntry>["gitProvider"],
+          gitOwner: proj.gitOwner,
+          gitRepo: proj.gitRepo,
+        })
+      }
+    }
     setShowNewChatForm(true)
     setDesktopView(null)
   }, [
     setSelectedChatId,
     setSelectedDraftId,
+    selectedProjectEntry,
+    selectedWorkspace,
+    projectsMap,
+    setSelectedProjectEntry,
     setShowNewChatForm,
     setDesktopView,
   ])

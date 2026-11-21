@@ -6,7 +6,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import {
-  IconDoubleChevronRight,
   SearchIcon,
   ExpandIcon,
   CollapseIcon,
@@ -15,6 +14,7 @@ import { Kbd } from "@/components/ui/kbd"
 import { useResolvedHotkeyDisplay } from "@/lib/hotkeys"
 import type { DetailsSidebarTab } from "../atoms"
 import { WidgetSettingsPopup } from "../widget-settings-popup"
+import { SidebarCloseButton } from "@/components/ui/sidebar-close-button"
 
 // The sidebar shows one independent page at a time (Details widgets, Files
 // or Git changes) — there is no tab bar. Files / Git are opened from icon
@@ -50,23 +50,13 @@ export function DetailsSidebarHeader({
   return (
     <div className="flex items-center justify-between px-2 h-10 bg-tl-background flex-shrink-0 border-b border-border/50">
       <div className="flex items-center gap-2">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onClose}
-              className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
-              aria-label={i18n.t('Close details')}
-            >
-              <IconDoubleChevronRight className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            Close details
-            {toggleDetailsHotkey && <Kbd>{toggleDetailsHotkey}</Kbd>}
-          </TooltipContent>
-        </Tooltip>
+        <SidebarCloseButton
+          onClick={onClose}
+          tooltipLabel="Close details"
+          ariaLabel={i18n.t('Close details')}
+          hotkey={toggleDetailsHotkey}
+          className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] text-foreground flex-shrink-0 rounded-md"
+        />
 
         {/* Current page title */}
         <span className="text-xs font-medium text-foreground">

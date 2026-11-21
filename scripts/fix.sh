@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 # 切到项目根目录（Cargo.lock 所在目录，和你原来脚本保持一致）
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/.."
 
 export CARGO_TERM_COLOR=always
 export RUST_BACKTRACE=1

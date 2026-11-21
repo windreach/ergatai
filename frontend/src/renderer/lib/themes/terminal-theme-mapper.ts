@@ -4,7 +4,7 @@
  * Extracts terminal colors from VS Code theme and converts to xterm.js ITheme format
  */
 
-import type { ITheme } from "xterm"
+import type { ITheme } from "@xterm/xterm"
 import { isLightColor } from "./vscode-to-css-mapping"
 
 /**

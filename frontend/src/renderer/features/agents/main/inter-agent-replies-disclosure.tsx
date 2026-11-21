@@ -1,7 +1,7 @@
 import i18n from "@/lib/i18n"
 "use client"
 
-import { useEffect, useMemo, useRef } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import { ChatMarkdownRenderer } from "../../../components/chat-markdown-renderer"
 import {
@@ -16,7 +16,14 @@ import {
   useConversationMessages,
   type Message,
 } from "../hooks/use-conversation-messages"
-import { isErgataiSendMessagePart } from "../lib/ergatai-mcp-detection"
+import {
+  subscribeConversationRuntime,
+  type ConversationRuntimeState,
+} from "../../details-sidebar"
+import {
+  getPartInput,
+  isErgataiSendMessagePart,
+} from "../lib/ergatai-mcp-detection"
 
 // `Message` is imported from the hook; it is the authoritative shape
 // (id, sequence, role, parts, metadata, conversationId, createdAt).
@@ -96,6 +103,73 @@ function getMessageText(message: PersistedMessage) {
     .trim()
 }
 
+/**
+ * Build the comparable identities for an agent reference.
+ *
+ * The same agent appears in three forms across persistence/API boundaries:
+ * - typed runtime ID: `agent_506420019732_000_0000`
+ * - raw Snowflake integer: `2124079514442006528`
+ * - configured profile name: `opencode`
+ *
+ * Normalise typed IDs to their raw Snowflake form (and keep the original
+ * lower-cased value) so a message's `fromAgentId`/`fromAgentName` can match a
+ * binding's `agentId`/`agentName` regardless of which pair was persisted.
+ */
+function agentIdentities(value: unknown): Set<string> {
+  const identities = new Set<string>()
+  if (typeof value === "number" && Number.isFinite(value)) {
+    identities.add(String(Math.trunc(value)))
+    return identities
+  }
+  if (typeof value !== "string") return identities
+
+  const raw = value.trim().toLowerCase()
+  if (!raw) return identities
+  identities.add(raw)
+
+  const typed = /^agent_(\d+)_(\d+)_(\d+)$/.exec(raw)
+  if (typed) {
+    try {
+      const snowflake =
+        (BigInt(typed[1]) << 22n) |
+        (BigInt(typed[2]) << 12n) |
+        BigInt(typed[3])
+      identities.add(snowflake.toString())
+    } catch {
+      // Ignore malformed numeric components; the raw value is still usable.
+    }
+  }
+  return identities
+}
+
+function replySenderMatches(
+  message: PersistedMessage,
+  agentId?: string,
+  agentName?: string,
+) {
+  const expected = new Set<string>()
+  for (const identity of agentIdentities(agentId)) expected.add(identity)
+  for (const identity of agentIdentities(agentName)) expected.add(identity)
+  if (expected.size === 0) return true
+
+  // Prefer the structured columns, but also consult metadata: older rows may
+  // only carry the sender there, and metadata keeps the typed agent id even
+  // when `from_agent_id` was serialised as a lossy JSON number.
+  const metadata = message.metadata as Record<string, unknown> | null
+  const storedCandidates = [
+    message.fromAgentId,
+    message.fromAgentName,
+    metadata?.senderAgentId,
+    metadata?.senderAgentName,
+  ]
+  for (const stored of storedCandidates) {
+    for (const identity of agentIdentities(stored)) {
+      if (expected.has(identity)) return true
+    }
+  }
+  return false
+}
+
 type InterAgentTarget = {
   key: string
   requestedAgentId?: string
@@ -110,39 +184,114 @@ function isSendMessageToolPart(candidate: unknown) {
   return isErgataiSendMessagePart(candidate)
 }
 
-function parseToolOutputObject(part: unknown) {
-  const candidate = part as { output?: unknown } | null
-  const rawOutput = candidate?.output
-  const outputText = (Array.isArray(rawOutput) ? rawOutput : [])
-    .map((item) => {
-      const it = item as { text?: unknown } | null
-      return typeof it?.text === "string" ? it.text : ""
-    })
-    .join("\n")
+/**
+ * Collect textual payloads from the many output shapes different agents use:
+ * - live AI SDK parts: `[{ type: "text", text }]`
+ * - ACP/MCP persisted parts: `{ stdout: "..." }`
+ * - provider raw output: `{ content: [...] }` / `{ rawOutput: [...] }`
+ * - plain strings
+ */
+function collectToolOutputText(value: unknown, depth = 0): string {
+  if (value == null || depth > 4) return ""
+  if (typeof value === "string") return value
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => collectToolOutputText(item, depth + 1))
+      .filter((text) => text.length > 0)
+      .join("\n")
+  }
+  if (typeof value !== "object") return ""
+
+  const record = value as Record<string, unknown>
+  if (typeof record.text === "string") return record.text
+  if (typeof record.stdout === "string") return record.stdout
+  if (Array.isArray(record.content)) {
+    return collectToolOutputText(record.content, depth + 1)
+  }
+  if (Array.isArray(record.rawOutput)) {
+    return collectToolOutputText(record.rawOutput, depth + 1)
+  }
+  return ""
+}
+
+function readToolOutputFields(value: unknown) {
+  const parsed = value as {
+    target_agent?: unknown
+    message_id?: unknown
+    correlation_id?: unknown
+  } | null
+  return {
+    targetAgentId:
+      typeof parsed?.target_agent === "string" && parsed.target_agent.length > 0
+        ? parsed.target_agent
+        : undefined,
+    messageId:
+      typeof parsed?.message_id === "string" && parsed.message_id.length > 0
+        ? parsed.message_id
+        : undefined,
+    correlationId:
+      typeof parsed?.correlation_id === "string" && parsed.correlation_id.length > 0
+        ? parsed.correlation_id
+        : undefined,
+  }
+}
+
+function parseToolOutputObject(part: unknown): {
+  targetAgentId?: string
+  messageId?: string
+  correlationId?: string
+} {
+  const candidate = part as { output?: unknown; result?: unknown } | null
+  const rawOutput = candidate?.output ?? candidate?.result
+
+  // Some backends persist the structured response directly.
+  if (rawOutput && typeof rawOutput === "object" && !Array.isArray(rawOutput)) {
+    const direct = rawOutput as Record<string, unknown>
+    if (
+      "target_agent" in direct ||
+      "message_id" in direct ||
+      "correlation_id" in direct
+    ) {
+      return readToolOutputFields(direct)
+    }
+  }
+
+  const outputText = collectToolOutputText(rawOutput).trim()
+  if (!outputText) return {}
 
   try {
-    const parsed = JSON.parse(outputText || "{}") as {
-      target_agent?: unknown
-      message_id?: unknown
-      correlation_id?: unknown
-    }
-    return {
-      targetAgentId:
-        typeof parsed.target_agent === "string" && parsed.target_agent.length > 0
-          ? parsed.target_agent
-          : undefined,
-      messageId:
-        typeof parsed.message_id === "string" && parsed.message_id.length > 0
-          ? parsed.message_id
-          : undefined,
-      correlationId:
-        typeof parsed.correlation_id === "string" && parsed.correlation_id.length > 0
-          ? parsed.correlation_id
-          : undefined,
-    }
+    return readToolOutputFields(JSON.parse(outputText))
   } catch {
     return {}
   }
+}
+
+// Persisted ACP tool parts use "result"/"completed"; live AI SDK parts use
+// "output-available". Treat every terminal success state as completed so the
+// disclosure also works after a page reload.
+const COMPLETED_TOOL_STATES = new Set([
+  "output-available",
+  "result",
+  "completed",
+  "done",
+  "success",
+])
+
+function isCompletedToolPart(candidate: {
+  state?: unknown
+  output?: unknown
+  result?: unknown
+}) {
+  const state =
+    typeof candidate.state === "string"
+      ? candidate.state.trim().toLowerCase()
+      : ""
+  if (COMPLETED_TOOL_STATES.has(state)) return true
+  // Imported history may omit the state but still carry the tool output.
+  return (
+    state.length === 0 &&
+    (candidate.output != null || candidate.result != null)
+  )
 }
 
 function getInterAgentTargets(parts: unknown[]): InterAgentTarget[] {
@@ -152,20 +301,22 @@ function getInterAgentTargets(parts: unknown[]): InterAgentTarget[] {
       toolKind?: unknown
       state?: unknown
       toolCallId?: unknown
-      input?: { target_agent_id?: unknown; message?: unknown }
+      input?: unknown
       output?: unknown
+      result?: unknown
     }
-    if (
-      !isSendMessageToolPart(candidate) ||
-      candidate.state !== "output-available"
-    ) {
+    if (!isSendMessageToolPart(candidate) || !isCompletedToolPart(candidate)) {
       return []
     }
 
-    const requestedAgentId = typeof candidate.input?.target_agent_id === "string"
-      && candidate.input.target_agent_id.length > 0
-      ? candidate.input.target_agent_id
-      : undefined
+    // Reuse the shared extractor: agents may put the real arguments under
+    // `input`, `args`, or an `input` JSON string.
+    const input = getPartInput(candidate)
+    const requestedAgentId =
+      typeof input?.target_agent_id === "string" &&
+      input.target_agent_id.length > 0
+        ? input.target_agent_id
+        : undefined
     const output = parseToolOutputObject(candidate)
     const runtimeAgentId = output.targetAgentId
 
@@ -198,27 +349,107 @@ function AgentReplyDisclosure({
   replyToMessageId?: string
   correlationId?: string
 }) {
-  // External agent's own conversation: used for streaming previews and as a
-  // fallback source.
-  const externalPipeline = useConversationMessages(conversationId, agentId)
-  // Host conversation: where the MCP-delivered reply (messageType "response")
-  // is persisted with its real content. Reading this avoids parsing the
-  // external agent's turn output.
+  // Only the host conversation carries MCP-delivered replies (role
+  // "respagent"). The external agent's own conversation is intentionally not
+  // used as a fallback: its assistant text can be an un-delivered attempt
+  // (e.g. Codex printing a `send_message` call as plain text), which must not
+  // be presented as a reply.
   const hostPipeline = useConversationMessages(
     hostConversationId ?? conversationId,
     undefined,
   )
-  const externalMessages = externalPipeline.messages
-  const hostMessages = hostConversationId ? hostPipeline.messages : []
-  const isLoading = externalPipeline.isLoading || (hostConversationId ? hostPipeline.isLoading : false)
-  const error = externalPipeline.error || (hostConversationId ? hostPipeline.error : null)
+  const baseHostMessages = hostConversationId ? hostPipeline.messages : []
+  const isLoading = hostConversationId ? hostPipeline.isLoading : false
+  const error = hostConversationId ? hostPipeline.error : null
+
+  // Real-time merge: subscribe to the host conversation runtime so that replies
+  // that land after this disclosure mounted are merged in without a refetch.
+  const [runtimeMessages, setRuntimeMessages] = useState<PersistedMessage[]>([])
+  const seenRuntimeMessageIdsRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    seenRuntimeMessageIdsRef.current = new Set()
+    setRuntimeMessages([])
+    if (!hostConversationId) return
+    const targetConversationId = hostConversationId
+
+    const unsubscribe = subscribeConversationRuntime(targetConversationId, (state: ConversationRuntimeState) => {
+      const newMessages: PersistedMessage[] = []
+      for (const entry of state.events ?? []) {
+        const event = entry.event as {
+          type?: string
+          role?: string | null
+          message_type?: string | null
+          content?: string
+          parts?: unknown
+          metadata?: unknown
+          timestamp_ms?: number
+          sender_agent_id?: string | null
+          sender_agent_name?: string | null
+          message_id?: string | null
+        }
+        if (event?.type !== "conversation_message") continue
+        const messageId = event.message_id
+        if (typeof messageId !== "string" || !messageId) continue
+        // Only inter-agent replies are relevant for this disclosure.
+        const eventHasExternalId =
+          typeof event.metadata === "object" &&
+          event.metadata !== null &&
+          typeof (event.metadata as Record<string, unknown>).externalMessageId === "string" &&
+          ((event.metadata as Record<string, unknown>).externalMessageId as string).length > 0
+        const isReply =
+          event.role === "respagent" ||
+          (event.message_type === "response" && eventHasExternalId)
+        if (!isReply) continue
+        if (seenRuntimeMessageIdsRef.current.has(messageId)) continue
+        seenRuntimeMessageIdsRef.current.add(messageId)
+        const parts =
+          Array.isArray(event.parts) && (event.parts as unknown[]).length > 0
+            ? (event.parts as PersistedMessage["parts"])
+            : [{ type: "text", text: event.content ?? "" }]
+        newMessages.push({
+          id: messageId,
+          role: (event.role as PersistedMessage["role"]) ?? "respagent",
+          conversationId: targetConversationId,
+          sequence: entry.sequence,
+          parts,
+          metadata: (event.metadata as Record<string, unknown>) ?? undefined,
+          createdAt: new Date(event.timestamp_ms ?? Date.now()),
+          content: event.content,
+          messageType: event.message_type ?? null,
+          fromAgentId: event.sender_agent_id ?? undefined,
+          fromAgentName: event.sender_agent_name ?? undefined,
+        } as PersistedMessage)
+      }
+      if (newMessages.length > 0) {
+        setRuntimeMessages((prev) => [...prev, ...newMessages])
+      }
+    })
+
+    return () => {
+      unsubscribe()
+    }
+  }, [hostConversationId])
+
+  const hostMessages = useMemo<PersistedMessage[]>(() => {
+    const byId = new Map<string, PersistedMessage>()
+    for (const m of baseHostMessages) byId.set(m.id, m)
+    for (const m of runtimeMessages) {
+      if (!byId.has(m.id)) byId.set(m.id, m)
+    }
+    return [...byId.values()].sort((left, right) => {
+      const leftTime = left.createdAt instanceof Date ? left.createdAt.getTime() : 0
+      const rightTime = right.createdAt instanceof Date ? right.createdAt.getTime() : 0
+      if (leftTime !== rightTime) return leftTime - rightTime
+      return (left.sequence ?? 0) - (right.sequence ?? 0)
+    })
+  }, [baseHostMessages, runtimeMessages])
 
   if (error) {
-    // Surface load errors to the console; the surrounding UI falls back to
-    // an empty disclosure, so we log rather than swallow silently.
-     
+    // Surface load errors to the console; the surrounding UI renders an empty
+    // disclosure, so we log rather than swallow silently.
     console.warn(
-      `[InterAgentRepliesDisclosure] Failed to load conversation ${conversationId}:`,
+      `[InterAgentRepliesDisclosure] Failed to load host conversation ${hostConversationId}:`,
       error,
     )
   }
@@ -242,80 +473,37 @@ function AgentReplyDisclosure({
           (Boolean(correlationId) && messageCorrelationId === correlationId)
     }
 
-    // Host conversation: MCP-delivered replies with real content. Prefer these
-    // over the external agent's own turn output.
-    // External agent responses now have role="respagent" (set by backend based on
-    // sender vs conversation owner comparison), so we filter by role directly
-    // instead of the fragile messageType check.
-    const hostReplies = hostMessages
+    // Host conversation: MCP-delivered replies only. External agent responses
+    // have role="respagent" (set by backend based on sender vs conversation
+    // owner comparison).
+    return hostMessages
       .filter((message) => {
-        const agentMatches =
-          !agentName ||
-          message.fromAgentName === agentName ||
-          String(message.fromAgentId ?? "") === agentId
+        const hasExternalId =
+          typeof message.metadata?.externalMessageId === "string" &&
+          (message.metadata.externalMessageId as string).length > 0
+        const isReply =
+          message.role === "respagent" ||
+          (message.messageType === "response" && hasExternalId)
         return (
-          message.role === "respagent" &&
-          agentMatches &&
+          isReply &&
+          replySenderMatches(message, agentId, agentName) &&
           matchesRequestFor(message) &&
           getMessageText(message).length > 0
         )
       })
-      .sort((left, right) => left.sequence - right.sequence)
-      .map((message) => ({ ...message, text: getMessageText(message) }))
-      .filter((message) => message.text.length > 0)
-
-    if (hostReplies.length > 0) return hostReplies
-
-    // Live streaming previews (in-flight turn) take precedence over stale
-    // persisted turns so the user sees the reply being typed instead of an
-    // older copy. Persisted turns win again once the refetch lands (the
-    // preview is dropped at that point), avoiding duplicate rendering.
-    const externalStreaming = externalMessages
-      .filter((message) => {
-        const metadata = message.metadata as { streaming?: unknown } | null
-        return (
-          message.role === "assistant" &&
-          metadata?.streaming === true &&
-          getMessageText(message).length > 0
-        )
+      .sort((left, right) => {
+        const leftTime =
+          left.createdAt instanceof Date ? left.createdAt.getTime() : 0
+        const rightTime =
+          right.createdAt instanceof Date ? right.createdAt.getTime() : 0
+        if (leftTime !== rightTime) return leftTime - rightTime
+        return (left.sequence ?? 0) - (right.sequence ?? 0)
       })
-      .sort((left, right) => left.sequence - right.sequence)
-      .map((message) => ({ ...message, text: getMessageText(message) }))
-      .filter((message) => message.text.length > 0)
-
-    if (externalStreaming.length > 0) return externalStreaming
-
-    // External agent conversation fallback: persisted turns.
-    const externalPersisted = externalMessages
-      .filter((message) => {
-        const metadata = message.metadata as
-          | { streaming?: unknown; correlationId?: unknown; replyToMessageId?: unknown }
-          | null
-        const isStreamingPreview = metadata?.streaming === true
-        if (isStreamingPreview) return false
-        const matchesRequest = matchesRequestFor(message)
-        return (
-          message.role === "assistant" &&
-          matchesRequest &&
-          getMessageText(message).length > 0
-        )
-      })
-      .sort((left, right) => left.sequence - right.sequence)
-      .map((message) => ({ ...message, text: getMessageText(message) }))
-      .filter((message) => message.text.length > 0)
-
-    if (externalPersisted.length > 0) return externalPersisted
-
-    return externalMessages
-      .filter((message) => message.role === "assistant" && getMessageText(message).length > 0)
-      .sort((left, right) => left.sequence - right.sequence)
       .map((message) => ({ ...message, text: getMessageText(message) }))
       .filter((message) => message.text.length > 0)
   }, [
     correlationId,
-    externalMessages,
     hostMessages,
-    hostConversationId,
     replyToMessageId,
     isLoading,
     agentName,
@@ -382,9 +570,16 @@ function AgentReplyDisclosure({
 export function InterAgentRepliesDisclosure({
   message,
   chatId,
+  hostConversationId,
 }: {
   message: { parts?: unknown[]; conversationId?: string }
   chatId: string
+  /**
+   * Conversation that owns the assistant message. AI SDK UI messages do not
+   * carry `conversationId`, so the chat surface passes the authoritative value
+   * here; fall back to the persisted field when present.
+   */
+  hostConversationId?: string
 }) {
   const isPersistedChat = chatId.startsWith("chat_")
   const { data: bindings } = trpc.ergatai.getAgentBindings.useQuery(
@@ -434,7 +629,7 @@ export function InterAgentRepliesDisclosure({
           conversationId={binding.conversationId}
           agentId={binding.agentId}
           agentName={binding.agentName}
-          hostConversationId={message?.conversationId}
+          hostConversationId={hostConversationId ?? message?.conversationId}
           replyToMessageId={target.messageId}
           correlationId={target.correlationId}
         />

@@ -127,10 +127,15 @@ export interface AgentConversation {
 
 // ── Core Agent Options (templates for spawning) ────────────────────────
 
-export type CoreAgentId =
-  | "claude-code"
-  | "codex"
-  | "opencode"
+// Dynamic: any installed agent profile name can be a "core agent" option.
+// Known agents (claude-code / codex / opencode) still get canonical display
+// names and icons; unknown profiles fall back to their profile name.
+export type CoreAgentId = string
+
+// Avatar URLs reported by the agent config table (profile name -> avatar_url).
+// Populated by listCoreAgents() and consumed by getCoreAgentIcon() so dynamic
+// agents show their saved icon instead of a generic fallback.
+export const coreAgentAvatarUrls = new Map<string, string | null>()
 
 export interface CoreAgentOption {
   /** Profile-level id (e.g. "claude-code"). NOT a runtime agent_id. */
@@ -398,16 +403,15 @@ export const agentContractApi: AgentContractApi = {
       // Only expose installed agents as selectable options
       const optionsById = new Map<CoreAgentId, CoreAgentOption>()
 
-      for (const profile of profiles.filter(
-        (p) => p.installed && isSupportedCoreAgentProfile(p.name),
-      )) {
-        const id = mapSupportedProfileNameToCoreAgentId(profile.name)
-        if (!id) continue
+      for (const profile of profiles.filter((p) => p.installed)) {
+        // Use the profile name as the stable id so any agent registered in the
+        // agent config table (not just the 3 bundled core agents) can be
+        // selected. Known profiles still resolve to their canonical display name.
+        const id = profile.name
+        coreAgentAvatarUrls.set(id, profile.avatar_url ?? null)
 
         const option: CoreAgentOption = {
           id,
-          // Unified friendly display name (i18n.t('Claude Code')); the raw backend
-          // profile name stays the stable key (profileName/install targets).
           name: getCoreAgentDisplayName(id) ?? profile.name,
           description: i18n.t("Installed ({{type}})", { type: profile.agent_type }),
           defaultCommand: profile.command,
@@ -415,9 +419,7 @@ export const agentContractApi: AgentContractApi = {
           nativeTriggers: profile.native_triggers ?? [],
         }
 
-        // Older databases may contain both "claude" and a legacy
-        // "claude-code" profile. Keep the current canonical mapping.
-        if (!optionsById.has(id) || profile.name === "claude") {
+        if (!optionsById.has(id)) {
           optionsById.set(id, option)
         }
       }

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # xvfb-run 包装器 - 为 Electron 提供虚拟显示环境
 # 使用方式: ./xvfb-wrapper.sh [electron 参数...]
 

@@ -26,7 +26,7 @@ import { AgentPreview } from "../ui/agent-preview"
 import { getCoreAgentIcon } from "../components/core-agent-selector"
 import { groupAgentChatRequestAtomFamily } from "../collaboration/group-chat-context"
 import { trpc } from "../../../lib/trpc"
-import type { CoreAgentId } from "../lib/agent-contract-api"
+import { resolveCoreAgentId, type CoreAgentId } from "../lib/agent-contract-api"
 import { useSetAtom } from "jotai"
 import type { AgentBinding } from "../../../../main/lib/trpc/routers/ergatai-shared"
 
@@ -135,15 +135,62 @@ export function ChatViewSidebars(props: any) {
   )
   const agentBindings = agentBindingsQuery.data ?? []
 
-  // Filter out the main backend agent to avoid duplication
-  const sideAgents = useMemo(
-    () => agentBindings.filter((binding) => binding.agentId !== backendAgentId),
-    // react-doctor-disable-next-line exhaustive-deps
-    [agentBindings, backendAgentId],
+  // Filter out the main backend agent to avoid duplication. The backend agent
+  // is identified both by its runtime id (when available) and by the
+  // conversation it drives: its binding points at the main/active conversation,
+  // so any binding whose conversation matches the active or chat-level
+  // conversation is the main agent and must not appear as a side agent.
+  // The oldest binding is also treated as the supervisor so suspended/resumed
+  // main agents (whose runtime id may change) stay excluded.
+  const primaryBinding = useMemo(
+    () =>
+      agentBindings
+        .slice()
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0],
+    [agentBindings],
   )
+  const sideAgents = useMemo(() => {
+    const participants = agentBindings.filter(
+      (binding) =>
+        binding.agentId !== backendAgentId &&
+        binding.agentId !== primaryBinding?.agentId &&
+        binding.conversationId !== activeConversationId &&
+        binding.conversationId !== chatId &&
+        binding.conversationId !== primaryBinding?.conversationId,
+    )
+
+    // Legacy databases can contain two bindings for the same profile: the old
+    // participant plus a duplicate auto-spawned after its binding name was
+    // clobbered. Collapse them so the rail never renders two identical logos,
+    // preferring the most recently updated conversation (the live one).
+    const byIdentity = new Map<string, AgentBinding>()
+    for (const binding of participants) {
+      const identity =
+        resolveCoreAgentId(binding.agentCommand ?? undefined, binding.agentName) ??
+        (binding.agentCommand ?? binding.agentName ?? binding.agentId)
+          .toLowerCase()
+          .trim()
+      const existing = byIdentity.get(identity)
+      if (!existing || binding.updatedAt.getTime() >= existing.updatedAt.getTime()) {
+        byIdentity.set(identity, binding)
+      }
+    }
+    return [...byIdentity.values()]
+  }, [
+    agentBindings,
+    backendAgentId,
+    primaryBinding,
+    activeConversationId,
+    chatId,
+  ])
 
   const handleOpenAgentSideChat = (binding: AgentBinding) => {
-    const coreAgentId = (binding.agentCommand ?? binding.agentId) as CoreAgentId
+    const coreAgentId = (resolveCoreAgentId(
+      binding.agentCommand ?? undefined,
+      binding.agentName,
+    ) ??
+      binding.agentCommand ??
+      binding.agentId) as CoreAgentId
     const isSameAgent = sideChatAgentId === binding.agentId
 
     if (isSameAgent && isSideChatSidebarOpen) {
@@ -398,6 +445,7 @@ export function ChatViewSidebars(props: any) {
         {isUnifiedSidebarEnabled && !isMobileFullscreen && worktreePath && (
           <DetailsSidebar
             chatId={chatId}
+            agentId={backendAgentId}
             worktreePath={worktreePath}
             branch={meta?.branch ?? null}
             terminalScopeKey={terminalScopeKey}

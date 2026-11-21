@@ -38,6 +38,7 @@
         "@xterm/addon-serialize": "^0.14.0",
         "@xterm/addon-web-links": "^0.12.0",
         "@xterm/addon-webgl": "^0.19.0",
+        "@xterm/xterm": "^5.5.0",
         "ai": "^7.0.107",
         "async-mutex": "^0.5.0",
         "chokidar": "^5.0.0",
@@ -74,7 +75,6 @@
         "tailwindcss-animate": "^1.0.7",
         "trpc-electron": "^0.1.2",
         "unique-names-generator": "^4.7.1",
-        "xterm": "^5.3.0",
         "zod": "^4.6.6",
         "zustand": "^5.0.3",
       },
@@ -1949,8 +1949,6 @@
     "ws": ["ws@8.22.1", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-oyL6OPYme/CmiFvNuGzeoxCJ4nOrZE2O1FwM9MWM1AsGri6nLXB2pg+lNA8aLeXMSav0J6eIVS1j6vUPzUtK9g=="],
 
     "xmlbuilder": ["xmlbuilder@15.1.1", "", {}, "sha512-yMqGBqtXyeN1e3TGYvgNgDVZ3j84W4cwkOXQswghol6APgZWaff9lnbvN7MHYJOiXsvGPXtjTYJEiC9J2wv9Eg=="],
-
-    "xterm": ["xterm@5.3.0", "", {}, "sha512-8QqjlekLUFTrU6x7xck1MsPzPA571K5zNqWm0M0oroYEWVOptZ0+ubQSkQ3uxIEhcIHRujJy6emDWX4A7qyFzg=="],
 
     "y18n": ["y18n@5.0.8", "", {}, "sha512-0pfFzegeDWJHJIAmTLRP2DwHjdF5s7jo9tuztdQxAhINCdvS+3nGINqPd00AphqJR/0LhANUS6/+7SCb98YOfA=="],
 

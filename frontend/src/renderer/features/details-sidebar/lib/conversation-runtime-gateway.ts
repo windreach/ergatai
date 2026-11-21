@@ -3,6 +3,10 @@ import { useCallback, useSyncExternalStore } from "react"
 
 import { trpcClient } from "../../../lib/trpc"
 import { createLogger } from "../../../../main/lib/logger"
+import {
+  applyAgentTerminalExtension,
+  clearAgentTerminals,
+} from "../../agents/lib/agent-terminal-store"
 
 import {
   readPersistedSequence,
@@ -14,9 +18,17 @@ export type RuntimeAgentEvent = {
   type: string
   role?: string | null
   message_type?: string | null
+  content?: string
+  parts?: unknown
+  metadata?: unknown
+  timestamp_ms?: number
+  sender_agent_id?: string | null
+  sender_agent_name?: string | null
   delta?: string
   id?: string
   name?: string
+  kind?: string
+  payload?: unknown
   input?: unknown
   output?: unknown
   locations?: Array<{ path: string; line?: number }>
@@ -155,7 +167,31 @@ function notify(channel: RuntimeChannel) {
 }
 
 export { mergeSnapshot, shouldResnapshot } from "./conversation-runtime-merge"
-import { mergeSnapshot } from "./conversation-runtime-merge"
+import {
+  mergeSnapshot,
+  shouldResnapshot,
+} from "./conversation-runtime-merge"
+
+/**
+ * Feed agent terminal metadata into the Terminal widget store.
+ *
+ * The runtime gateway is the active chat's event source, so terminal updates
+ * must be consumed here as well as in the chat transport and message pipeline.
+ */
+function applyTerminalTaskRuntimeEvent(
+  conversationId: string,
+  event: RuntimeAgentEvent,
+  observedAt?: number,
+): void {
+  if (event.type === "extension_update") {
+    applyAgentTerminalExtension(
+      conversationId,
+      event.kind,
+      event.payload,
+      observedAt,
+    )
+  }
+}
 
 function connect(conversationId: string) {
   const channel = channels.get(conversationId)
@@ -190,6 +226,9 @@ function connect(conversationId: string) {
             : { status: message.snapshot.status, events: message.snapshot.events.length }),
         })
         if (message.kind === "snapshot") {
+          const previous = channel.state
+          const reset = shouldResnapshot(previous, message.snapshot)
+          const previousLastSequence = previous.lastSequence
           channel.state = mergeSnapshot(conversationId, channel.state, message.snapshot)
           channel.retryAttempt = 0
           channel.forceSnapshot = false
@@ -199,6 +238,23 @@ function connect(conversationId: string) {
             removePersistedSequence(conversationId)
           } else {
             persistSequence(conversationId, channel.state.lastSequence)
+          }
+
+          // Rebuild terminal tasks from replayable events. A reset replaces the
+          // store; otherwise only events past the previous high-water mark are
+          // applied so delta payloads are not appended twice.
+          if (reset) clearAgentTerminals(conversationId)
+          for (const runtimeEvent of message.snapshot.events) {
+            if (
+              runtimeEvent.conversationId === conversationId &&
+              (reset || runtimeEvent.sequence > previousLastSequence)
+            ) {
+              applyTerminalTaskRuntimeEvent(
+                conversationId,
+                runtimeEvent.event,
+                runtimeEvent.timestampMs,
+              )
+            }
           }
         } else {
           const event = message.event
@@ -258,6 +314,11 @@ function connect(conversationId: string) {
           }
 
           if (event.turnId !== channel.state.turnId) {
+            applyTerminalTaskRuntimeEvent(
+              conversationId,
+              event.event,
+              event.timestampMs,
+            )
             channel.state = {
               ...channel.state,
               status: resolveRuntimeStatusAfterEvent(channel.state.status, event.event),
@@ -301,6 +362,11 @@ function connect(conversationId: string) {
             return
           }
 
+          applyTerminalTaskRuntimeEvent(
+            conversationId,
+            event.event,
+            event.timestampMs,
+          )
           channel.state = {
             ...channel.state,
             status: resolveRuntimeStatusAfterEvent(channel.state.status, event.event),

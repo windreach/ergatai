@@ -27,6 +27,8 @@ import { trpc } from "../../lib/trpc"
 interface DetailsSidebarProps {
   /** Workspace/chat ID */
   chatId: string
+  /** Runtime agent id for this chat (used for extension metadata) */
+  agentId?: string | null
   /** Worktree path for terminal */
   worktreePath: string | null
   /** Chat branch - used to key terminal sessions (must match TerminalSidebar) */
@@ -91,6 +93,7 @@ interface DetailsSidebarProps {
 
 export function DetailsSidebar({
   chatId,
+  agentId,
   worktreePath,
   branch,
   terminalScopeKey,
@@ -229,6 +232,7 @@ export function DetailsSidebar({
         <div className={cn("flex-1 overflow-y-auto py-2", activeTab !== "details" && "hidden")}>
           <WidgetsPanel
             chatId={chatId}
+            agentId={agentId}
             worktreePath={worktreePath}
             branch={branch}
             terminalScopeKey={terminalScopeKey}

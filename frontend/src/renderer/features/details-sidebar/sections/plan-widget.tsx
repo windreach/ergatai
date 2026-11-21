@@ -83,7 +83,7 @@ export const PlanWidget = memo(function PlanWidget({
     isLoading,
     error,
     refetch,
-  } = trpc.files.readFile.useQuery({ filePath: planPath! }, { enabled: !!planPath })
+  } = trpc.ergatai.readFile.useQuery({ filePath: planPath! }, { enabled: !!planPath })
 
   // Update cache when content loads successfully
   useEffect(() => {
@@ -102,6 +102,18 @@ export const PlanWidget = memo(function PlanWidget({
       refetch()
     }
   }, [refetchTrigger, planPath, refetch])
+
+  // Refetch when a plan file is written/edited anywhere in the app
+  useEffect(() => {
+    const handlePlanUpdate = (event: Event) => {
+      const customEvent = event as CustomEvent<{ conversationId?: string; filePath?: string }>
+      if (planPath && (!customEvent.detail?.filePath || customEvent.detail.filePath === planPath)) {
+        refetch()
+      }
+    }
+    window.addEventListener("plan-updated", handlePlanUpdate)
+    return () => window.removeEventListener("plan-updated", handlePlanUpdate)
+  }, [planPath, refetch])
 
   // Use cached content while loading new content to prevent flashing
   const displayContent = useMemo(() => {

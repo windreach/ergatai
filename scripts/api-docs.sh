@@ -1,7 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # OpenAPI 文档生成和测试工具
 
-set -e
+set -euo pipefail
 
 API_URL="http://localhost:3000"
 OPENAPI_FILE="openapi.json"

@@ -211,7 +211,6 @@ export type SettingsTab =
   | "appearance"
   | "preferences"
   | "projects"
-  | "worktrees"
   | "debug"
   | "keyboard"
 export const agentsSettingsDialogActiveTabAtom = atom<SettingsTab>("preferences")

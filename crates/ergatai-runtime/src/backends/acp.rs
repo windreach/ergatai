@@ -89,15 +89,13 @@ impl StartupPhaseExecutor for AcpInitializePhase<'_> {
         // Advertise form elicitation support so agents (e.g. OpenCode's
         // `question` tool) can render interactive forms instead of failing with
         // "The question couldn't be shown to the user in this client".
-        let mut meta = serde_json::Map::new();
-        meta.insert("terminal-auth".to_string(), serde_json::json!(true));
+        let meta = build_initialize_client_meta();
 
         let client_capabilities = ClientCapabilities::new()
             .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()))
             .session(
-                agent_client_protocol::schema::v1::ClientSessionCapabilities::new().compaction(
-                    agent_client_protocol::schema::v1::CompactionCapabilities::new(),
-                ),
+                agent_client_protocol::schema::v1::ClientSessionCapabilities::new()
+                    .compaction(agent_client_protocol::schema::v1::CompactionCapabilities::new()),
             )
             .auth(agent_client_protocol::schema::v1::AuthCapabilities::new().terminal(true))
             .meta(meta);
@@ -134,6 +132,74 @@ impl StartupPhaseExecutor for AcpInitializePhase<'_> {
     }
 }
 
+/// Timeout hint for ACP adapters that start MCP servers asynchronously.
+///
+/// codex-acp 2.8+ returns from `session/new` before its MCP clients finish
+/// starting unless the client sends `_meta.mcpStartupAwaitTimeoutMs`. Without
+/// this hint the first turn can race MCP registration, leaving the model
+/// without the Ergatai tools (it may then print a `send_message(...)` call as
+/// plain text instead of invoking the tool).
+const MCP_STARTUP_AWAIT_TIMEOUT_MS: u64 = 5_000;
+
+/// Merge the Claude Code compatibility meta with the MCP startup wait hint.
+///
+/// The map is passed through as the ACP request `_meta` object. Returns `None`
+/// when there is nothing to send.
+fn build_session_meta(
+    claude_code_mcp_meta: Option<serde_json::Map<String, serde_json::Value>>,
+    mcp_startup_await_ms: Option<u64>,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let mut meta = claude_code_mcp_meta.unwrap_or_default();
+    if let Some(timeout_ms) = mcp_startup_await_ms {
+        meta.insert(
+            "mcpStartupAwaitTimeoutMs".to_string(),
+            serde_json::json!(timeout_ms),
+        );
+    }
+    if meta.is_empty() {
+        None
+    } else {
+        Some(meta)
+    }
+}
+
+/// Capabilities carried on `initialize` that gate adapter extension output.
+///
+/// - `terminal-auth`: agents may run auth flows in a terminal.
+/// - `terminal_output` / `terminal_output_delta`: agents may report command
+///   tool calls as display terminals (`_meta.terminal_info` etc.). The delta
+///   variant asks for incremental chunks instead of full-output snapshots.
+/// - `jetbrains.air.capabilities`: AIR async-task lifecycle events.
+fn build_initialize_client_meta() -> serde_json::Map<String, serde_json::Value> {
+    let mut meta = serde_json::Map::new();
+    meta.insert("terminal-auth".to_string(), serde_json::json!(true));
+    meta.insert("terminal_output".to_string(), serde_json::json!(true));
+    meta.insert("terminal_output_delta".to_string(), serde_json::json!(true));
+    meta.insert(
+        "jetbrains".to_string(),
+        serde_json::json!({
+            "air": {
+                "version": 1,
+                "capabilities": ["asyncTasks"]
+            }
+        }),
+    );
+    meta
+}
+
+/// Add the MCP startup wait hint for adapters that support it.
+fn with_mcp_startup_await_meta(
+    meta: Option<serde_json::Map<String, serde_json::Value>>,
+    adapter_kind: &str,
+    has_mcp_server: bool,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    if adapter_kind == "codex" && has_mcp_server {
+        build_session_meta(meta, Some(MCP_STARTUP_AWAIT_TIMEOUT_MS))
+    } else {
+        meta
+    }
+}
+
 /// Phase 3: Session Create
 ///
 /// Creates or loads an ACP session.
@@ -145,6 +211,8 @@ struct SessionCreatePhase<'a> {
     mcp_declaration: Option<McpServer>,
     user_mcp_declarations: Vec<McpServer>,
     claude_code_mcp_meta: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Timeout hint for adapters that understand `_meta.mcpStartupAwaitTimeoutMs`.
+    mcp_startup_await_ms: Option<u64>,
     /// Output: session_id (filled on success)
     session_id: Arc<tokio::sync::Mutex<Option<String>>>,
     /// Output: config_options (filled on success)
@@ -158,6 +226,7 @@ impl StartupPhaseExecutor for SessionCreatePhase<'_> {
     }
 
     async fn execute(&self) -> ergatai_error::ErgataiResult<()> {
+        let session_meta = self.session_meta();
         let (session_id, config_opts) = if let Some(saved_sid) = &self.saved_session_id {
             // Try to load existing session
             let mut load_request = LoadSessionRequest::new(saved_sid.clone(), &self.cwd);
@@ -167,7 +236,7 @@ impl StartupPhaseExecutor for SessionCreatePhase<'_> {
             for decl in &self.user_mcp_declarations {
                 load_request.mcp_servers.push(decl.clone());
             }
-            if let Some(meta) = &self.claude_code_mcp_meta {
+            if let Some(meta) = &session_meta {
                 load_request.meta = Some(meta.clone());
             }
 
@@ -226,6 +295,10 @@ impl StartupPhaseExecutor for SessionCreatePhase<'_> {
 }
 
 impl SessionCreatePhase<'_> {
+    fn session_meta(&self) -> Option<serde_json::Map<String, serde_json::Value>> {
+        build_session_meta(self.claude_code_mcp_meta.clone(), self.mcp_startup_await_ms)
+    }
+
     async fn create_new_session(
         &self,
     ) -> ergatai_error::ErgataiResult<(
@@ -239,9 +312,7 @@ impl SessionCreatePhase<'_> {
         for decl in &self.user_mcp_declarations {
             new_request.mcp_servers.push(decl.clone());
         }
-        if let Some(meta) = &self.claude_code_mcp_meta {
-            new_request.meta = Some(meta.clone());
-        }
+        new_request.meta = self.session_meta();
 
         let new_resp = self
             .connection
@@ -711,7 +782,35 @@ async fn persist_out_of_turn_error(
 async fn begin_turn_lifecycle(
     task_current_turn_token: &Arc<RwLock<Option<crate::output_accumulator::TurnToken>>>,
     conversation_id: &str,
+    autonomous: bool,
+    agent_id: Option<&str>,
 ) -> Option<crate::output_accumulator::TurnToken> {
+    // If an autonomous turn is currently active, finalize it before starting a
+    // new turn (e.g. a user prompt) so output is not lost or merged.
+    let current_token = task_current_turn_token.read().clone();
+    if let Some(t) = current_token {
+        let is_autonomous =
+            if let Some(reg) = crate::output_accumulator::get_global_accumulator_registry() {
+                if let Some(acc) = reg.get(&t).await {
+                    acc.lock().await.autonomous
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+        if is_autonomous {
+            end_turn_lifecycle(
+                &Some(t),
+                task_current_turn_token,
+                agent_id.unwrap_or(""),
+                "end_turn",
+                "turn boundary",
+            )
+            .await;
+        }
+    }
+
     // Flush any pending out-of-turn chunk before starting a new turn, so chunk
     // messages and turn messages do not interleave out of order.
     if let Some(buffer) = crate::output_accumulator::get_global_chunk_buffer() {
@@ -731,6 +830,15 @@ async fn begin_turn_lifecycle(
     let turn_token =
         if let Some(registry) = crate::output_accumulator::get_global_accumulator_registry() {
             let token = registry.begin_turn(conversation_id).await;
+            // Stamp autonomous/agent metadata onto the accumulator for idle
+            // finalization and sender attribution outside the connection task.
+            if let Some(acc) = registry.get(&token).await {
+                let mut guard = acc.lock().await;
+                guard.autonomous = autonomous;
+                if let Some(aid) = agent_id {
+                    guard.agent_id = Some(aid.to_string());
+                }
+            }
             *task_current_turn_token.write() = Some(token.clone());
 
             // Emit explicit TurnStarted event to make turn boundaries visible to the frontend
@@ -821,6 +929,83 @@ async fn send_output_event_with_turn_token(
     }
 }
 
+/// Wire payload for a `terminal_task_update` extension event.
+///
+/// Output travels as a delta unless the adapter sent a full snapshot or the
+/// terminal exited, so a long-running background command does not resend its
+/// whole output on every chunk.
+#[derive(serde::Serialize)]
+struct AgentTerminalTaskEvent<'a> {
+    terminal_id: &'a str,
+    title: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_delta: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signal: Option<&'a str>,
+    status: &'a str,
+    backgrounded: bool,
+    updated_at: i64,
+}
+
+/// Publish the latest state of one agent terminal task.
+async fn emit_agent_terminal_update(
+    turn_token: &Arc<RwLock<Option<crate::output_accumulator::TurnToken>>>,
+    conversation_id: &str,
+    terminal: &AgentTerminalTask,
+    meta: Option<&crate::acp_custom_fields::TerminalTaskMeta>,
+) {
+    let (output, output_delta) = match meta {
+        // Exit reports carry the final accumulated output so a client that
+        // missed earlier deltas can still render the finished task.
+        _ if meta.is_some_and(|meta| meta.exited) => (Some(terminal.output.as_str()), None),
+        Some(meta) if meta.output.is_some() => (meta.output.as_deref(), None),
+        Some(meta) if meta.output_delta.is_some() => (None, meta.output_delta.as_deref()),
+        _ => (None, None),
+    };
+
+    let event = AgentTerminalTaskEvent {
+        terminal_id: &terminal.terminal_id,
+        title: &terminal.title,
+        command: terminal.command.as_deref(),
+        output,
+        output_delta,
+        exit_code: terminal.exit_code,
+        signal: terminal.signal.as_deref(),
+        status: &terminal.status,
+        backgrounded: terminal.backgrounded,
+        updated_at: terminal.updated_at,
+    };
+
+    let payload = match serde_json::to_value(&event) {
+        Ok(payload) => payload,
+        Err(error) => {
+            warn!(
+                terminal_id = %terminal.terminal_id,
+                error = %error,
+                "Failed to serialize agent terminal task"
+            );
+            return;
+        }
+    };
+
+    send_output_event_with_turn_token(
+        turn_token,
+        conversation_id,
+        AgentOutputEvent::ExtensionUpdate {
+            role: "assistant".to_string(),
+            kind: "terminal_task_update".to_string(),
+            payload,
+        },
+    )
+    .await;
+}
+
 /// Internal implementation for send_output_event
 async fn send_output_event_internal(
     token: Option<&crate::output_accumulator::TurnToken>,
@@ -847,6 +1032,8 @@ async fn send_output_event_internal(
 
         if let Some(accumulator) = accumulator {
             let mut acc = accumulator.lock().await;
+            // Track activity for autonomous-turn idle finalization.
+            acc.touch();
 
             match &event {
                 AgentOutputEvent::Text { delta, .. } => {
@@ -1101,9 +1288,8 @@ fn convert_prompt_tokens(message: &str, adapter_kind: &str) -> String {
                     if let Some(idx) = payload.find(':') {
                         let encoded = &payload[idx + 1..];
                         match base64::engine::general_purpose::STANDARD.decode(encoded) {
-                            Ok(bytes) => {
-                                String::from_utf8(bytes).unwrap_or_else(|_| payload[..idx].to_string())
-                            }
+                            Ok(bytes) => String::from_utf8(bytes)
+                                .unwrap_or_else(|_| payload[..idx].to_string()),
                             Err(_) => payload[..idx].to_string(),
                         }
                     } else {
@@ -1513,8 +1699,16 @@ async fn handle_standard_session_notification(
                         "Duplicate tool call start with no input update, skipping"
                     );
                 }
-                // Update the tracked record (in case other fields changed)
+                // Update the tracked record (in case other fields changed),
+                // then refresh the terminal task so a title/command that only
+                // arrives in the second phase reaches the UI.
                 tool_calls.record_initial(tc);
+                if let Some(terminal) = tool_calls
+                    .get_by_id(&tool_call_id)
+                    .and_then(|call| call.terminal)
+                {
+                    emit_agent_terminal_update(turn_token, conversation_id, &terminal, None).await;
+                }
                 return;
             }
 
@@ -1677,6 +1871,12 @@ async fn handle_standard_session_notification(
                 crate::acp_custom_fields::extract_claude_tool_name(tc.meta.as_ref());
 
             tool_calls.record_initial(tc);
+            if let Some(terminal) = tool_calls
+                .get_by_id(&tool_call_id)
+                .and_then(|call| call.terminal)
+            {
+                emit_agent_terminal_update(turn_token, conversation_id, &terminal, None).await;
+            }
             usage.update_active_subagent_tool_call(
                 parent_tool_use_id.clone(),
                 claude_tool_name.clone(),
@@ -1722,7 +1922,21 @@ async fn handle_standard_session_notification(
                 in_tool_call.store(false, Ordering::SeqCst);
             }
 
-            tool_calls.apply_update(update);
+            let terminal_meta =
+                crate::acp_custom_fields::extract_terminal_task_meta(update.meta.as_ref());
+            tool_calls.apply_update(update, &terminal_meta);
+            if let Some(terminal) = tool_calls
+                .get_by_id(&update.tool_call_id.to_string())
+                .and_then(|call| call.terminal)
+            {
+                emit_agent_terminal_update(
+                    turn_token,
+                    conversation_id,
+                    &terminal,
+                    Some(&terminal_meta),
+                )
+                .await;
+            }
 
             if is_complete || is_error {
                 let tracked = tool_calls.get_by_id(&update.tool_call_id.to_string());
@@ -2493,6 +2707,175 @@ fn evict_oldest_entries<V>(
     }
 }
 
+/// Display state of one agent terminal task.
+///
+/// The Claude ACP adapter reports command tool calls as terminals. The runtime
+/// accumulates their metadata here so the UI can list each command as a task
+/// and show its live output without depending on the chat transcript.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AgentTerminalTask {
+    /// Tool-call id the adapter uses as the display terminal id.
+    pub terminal_id: String,
+    /// Human-readable task title (usually the command).
+    pub title: String,
+    /// The command line when the adapter exposes one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Latest terminal output snapshot.
+    pub output: String,
+    /// Exit code, when the terminal has exited and the adapter reported one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i64>,
+    /// Terminating signal, when the adapter reported one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signal: Option<String>,
+    /// `running`, `completed`, or `failed`.
+    pub status: String,
+    /// True when the command was detached into the background.
+    pub backgrounded: bool,
+    /// Adapter async-task id when the command runs in the background.
+    #[serde(skip)]
+    pub async_task_id: Option<String>,
+    /// Last update time (Unix milliseconds).
+    pub updated_at: i64,
+}
+
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Keep the terminal widget bounded for commands that stream a lot of output.
+const MAX_AGENT_TERMINAL_OUTPUT_CHARS: usize = 256 * 1024;
+
+fn truncate_terminal_output(output: &mut String) {
+    if output.len() <= MAX_AGENT_TERMINAL_OUTPUT_CHARS {
+        return;
+    }
+    let mut start = output.len() - MAX_AGENT_TERMINAL_OUTPUT_CHARS;
+    while !output.is_char_boundary(start) {
+        start += 1;
+    }
+    *output = output[start..].to_string();
+}
+
+fn command_from_raw_input(input: Option<&serde_json::Value>) -> Option<String> {
+    let obj = input?.as_object()?;
+    obj.get("command")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| obj.get("description").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+}
+
+/// Mirror terminal output/exit data into the tool call's `raw_output`.
+///
+/// Advertising `terminal_output` makes the adapter send command results only
+/// through terminal metadata. The chat tool card still reads `raw_output`, so
+/// keep both views in sync.
+fn apply_terminal_meta_to_raw_output(
+    raw_output: &mut Option<serde_json::Value>,
+    meta: &crate::acp_custom_fields::TerminalTaskMeta,
+) {
+    if meta.output.is_none() && meta.output_delta.is_none() && !meta.exited {
+        return;
+    }
+
+    let mut output = raw_output.take().unwrap_or_else(|| serde_json::json!({}));
+    if !output.is_object() {
+        output = serde_json::json!({ "stdout": output });
+    }
+
+    if let Some(object) = output.as_object_mut() {
+        if let Some(full) = &meta.output {
+            object.insert("stdout".to_string(), serde_json::json!(full));
+        } else if let Some(delta) = &meta.output_delta {
+            let mut stdout = object
+                .get("stdout")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            stdout.push_str(delta);
+            object.insert("stdout".to_string(), serde_json::json!(stdout));
+        }
+        if meta.exited {
+            if let Some(code) = meta.exit_code {
+                object.insert("exitCode".to_string(), serde_json::json!(code));
+            }
+            if let Some(signal) = &meta.signal {
+                object.insert("signal".to_string(), serde_json::json!(signal));
+            }
+        }
+    }
+
+    *raw_output = Some(output);
+}
+
+impl AgentTerminalTask {
+    fn new(terminal_id: String, title: String, command: Option<String>) -> Self {
+        Self {
+            terminal_id,
+            title,
+            command,
+            output: String::new(),
+            exit_code: None,
+            signal: None,
+            status: "running".to_string(),
+            backgrounded: false,
+            async_task_id: None,
+            updated_at: now_unix_ms(),
+        }
+    }
+
+    fn apply_meta(&mut self, meta: &crate::acp_custom_fields::TerminalTaskMeta) {
+        if let Some(output) = &meta.output {
+            self.output = output.clone();
+        }
+        if let Some(delta) = &meta.output_delta {
+            self.output.push_str(delta);
+        }
+        if meta.backgrounded {
+            self.backgrounded = true;
+        }
+        if meta.exited {
+            // Claude ACP reports the Bash tool result as an exit while a
+            // background task keeps running. The async-task state update is the
+            // real completion signal; ignore the premature exit.
+            let premature_background_exit =
+                self.backgrounded && self.async_task_id.is_some() && self.status == "running";
+            if !premature_background_exit {
+                self.exit_code = meta.exit_code;
+                self.signal = meta.signal.clone();
+                self.status = if meta.signal.is_some()
+                    || meta.exit_code.map(|code| code != 0).unwrap_or(false)
+                {
+                    "failed".to_string()
+                } else {
+                    "completed".to_string()
+                };
+            }
+        }
+        truncate_terminal_output(&mut self.output);
+        self.updated_at = now_unix_ms();
+    }
+
+    fn apply_tool_status(&mut self, status: ToolCallStatus) {
+        if matches!(status, ToolCallStatus::Failed) {
+            self.status = "failed".to_string();
+        } else if matches!(status, ToolCallStatus::Completed)
+            && !self.backgrounded
+            && self.exit_code.is_none()
+            && self.signal.is_none()
+        {
+            // A backgrounded command completes its tool call immediately while
+            // the terminal keeps running; keep showing it as running.
+            self.status = "completed".to_string();
+        }
+        self.updated_at = now_unix_ms();
+    }
+}
+
 /// A tracked ACP tool call with full structured fields.
 ///
 /// Captures the complete lifecycle of a tool call: initial creation via
@@ -2520,6 +2903,10 @@ pub struct TrackedToolCall {
     pub raw_input: Option<serde_json::Value>,
     /// Tool results (JSON). May be large; HTTP API truncates to preview.
     pub raw_output: Option<serde_json::Value>,
+    /// Agent terminal display state for command tools. Kept internal so the
+    /// tool-call API response does not carry full terminal output.
+    #[serde(skip)]
+    pub terminal: Option<AgentTerminalTask>,
 }
 
 /// Per-agent tool call tracker.
@@ -2680,7 +3067,19 @@ impl ToolCallTracker {
             }
         }
 
-        let tracked = TrackedToolCall {
+        let terminal_meta = crate::acp_custom_fields::extract_terminal_task_meta(tc.meta.as_ref());
+        let command = command_from_raw_input(raw_input.as_ref());
+        let terminal = terminal_meta.terminal_id.clone().map(|terminal_id| {
+            let mut task = AgentTerminalTask::new(
+                terminal_id,
+                command.clone().unwrap_or_else(|| tc.title.clone()),
+                command,
+            );
+            task.apply_meta(&terminal_meta);
+            task
+        });
+
+        let mut tracked = TrackedToolCall {
             tool_call_id: id.clone(),
             title: Some(tc.title.clone()),
             kind: Some(tc.kind),
@@ -2697,12 +3096,23 @@ impl ToolCallTracker {
                     Some(serde_json::json!({ "stdout": text }))
                 }
             }),
+            terminal,
         };
         let mut calls = self.calls.write();
         let mut order = self.order.write();
-        // If we've seen this id before (unexpected but handle gracefully), replace.
-        if calls.contains_key(&id) {
-            calls.insert(id.clone(), tracked);
+        // A repeated tool_call notification refreshes metadata but must not
+        // discard terminal output/status accumulated between the two phases.
+        if let Some(existing) = calls.get_mut(&id) {
+            if let Some(mut existing_terminal) = existing.terminal.take() {
+                if let Some(new_terminal) = tracked.terminal {
+                    existing_terminal.title = new_terminal.title;
+                    if new_terminal.command.is_some() {
+                        existing_terminal.command = new_terminal.command;
+                    }
+                }
+                tracked.terminal = Some(existing_terminal);
+            }
+            *existing = tracked;
             return;
         }
         // Evict oldest if at capacity.
@@ -2717,7 +3127,11 @@ impl ToolCallTracker {
     /// overwrite; scalars (title, status, kind) replace if present.
     /// If the tool_call_id is unknown, creates a new record with only the
     /// provided fields (status defaults to Pending).
-    fn apply_update(&self, update: &ToolCallUpdate) {
+    fn apply_update(
+        &self,
+        update: &ToolCallUpdate,
+        terminal_meta: &crate::acp_custom_fields::TerminalTaskMeta,
+    ) {
         let id = update.tool_call_id.to_string();
         let mut calls = self.calls.write();
         let mut order = self.order.write();
@@ -2828,9 +3242,84 @@ impl ToolCallTracker {
                     existing.raw_output = Some(output);
                 }
             }
+
+            let terminal_title = update.fields.title.clone();
+            let terminal_command = command_from_raw_input(update.fields.raw_input.as_ref());
+            if let Some(terminal) = existing.terminal.as_mut() {
+                // A background task's friendly name (from async_task_spawned)
+                // is better than the raw command title.
+                if let Some(title) = terminal_title {
+                    if terminal.async_task_id.is_none()
+                        || terminal.title.is_empty()
+                        || terminal.title == "Terminal"
+                    {
+                        terminal.title = title;
+                    }
+                }
+                if let Some(command) = terminal_command {
+                    if terminal.title.is_empty() || terminal.title == "Terminal" {
+                        terminal.title = command.clone();
+                    }
+                    terminal.command = Some(command);
+                }
+                terminal.apply_meta(terminal_meta);
+                if let Some(status) = update.fields.status {
+                    terminal.apply_tool_status(status);
+                }
+            } else if let Some(terminal_id) = terminal_meta.terminal_id.clone() {
+                let command = command_from_raw_input(existing.raw_input.as_ref());
+                let mut terminal = AgentTerminalTask::new(
+                    terminal_id,
+                    command
+                        .clone()
+                        .or_else(|| existing.title.clone())
+                        .unwrap_or_default(),
+                    command,
+                );
+                terminal.apply_meta(terminal_meta);
+                if let Some(status) = update.fields.status {
+                    terminal.apply_tool_status(status);
+                }
+                existing.terminal = Some(terminal);
+            }
+            apply_terminal_meta_to_raw_output(&mut existing.raw_output, terminal_meta);
+
             existing.last_updated = now;
         } else {
             // Unknown id — create a minimal record from the update.
+            let raw_input = update.fields.raw_input.clone();
+            let command = command_from_raw_input(raw_input.as_ref());
+            let mut terminal = terminal_meta.terminal_id.clone().map(|terminal_id| {
+                let mut task = AgentTerminalTask::new(
+                    terminal_id,
+                    command
+                        .clone()
+                        .or_else(|| update.fields.title.clone())
+                        .unwrap_or_default(),
+                    command,
+                );
+                task.apply_meta(terminal_meta);
+                task
+            });
+            if let (Some(task), Some(status)) = (terminal.as_mut(), update.fields.status) {
+                task.apply_tool_status(status);
+            }
+
+            let mut raw_output = update.fields.raw_output.clone();
+            if let Some(content) = &update.fields.content {
+                let text = extract_text_from_tool_call_content(content);
+                if !text.is_empty() {
+                    let mut merged = raw_output.clone().unwrap_or_else(|| serde_json::json!({}));
+                    if let Some(object) = merged.as_object_mut() {
+                        object.insert("stdout".to_string(), serde_json::json!(text));
+                    } else {
+                        merged = serde_json::json!({ "stdout": text });
+                    }
+                    raw_output = Some(merged);
+                }
+            }
+            apply_terminal_meta_to_raw_output(&mut raw_output, terminal_meta);
+
             let tracked = TrackedToolCall {
                 tool_call_id: id.clone(),
                 title: update.fields.title.clone(),
@@ -2839,30 +3328,68 @@ impl ToolCallTracker {
                 first_seen: now,
                 last_updated: now,
                 locations: update.fields.locations.clone().unwrap_or_default(),
-                raw_input: update.fields.raw_input.clone(),
-                raw_output: {
-                    let mut output = update.fields.raw_output.clone();
-                    if let Some(content) = &update.fields.content {
-                        let text = extract_text_from_tool_call_content(content);
-                        if !text.is_empty() {
-                            let mut merged =
-                                output.clone().unwrap_or_else(|| serde_json::json!({}));
-                            if let Some(object) = merged.as_object_mut() {
-                                object.insert("stdout".to_string(), serde_json::json!(text));
-                            } else {
-                                merged = serde_json::json!({ "stdout": text });
-                            }
-                            output = Some(merged);
-                        }
-                    }
-                    output
-                },
+                raw_input,
+                raw_output,
+                terminal,
             };
             // Evict oldest if at capacity.
             evict_oldest_entries(&mut order, &mut calls, self.max_entries);
             calls.insert(id.clone(), tracked);
             order.push_back(id);
         }
+    }
+
+    /// Bind a shell async task to its display terminal and mark it running.
+    fn attach_async_task(
+        &self,
+        tool_call_id: &str,
+        async_task_id: &str,
+        name: Option<&str>,
+    ) -> Option<AgentTerminalTask> {
+        let mut calls = self.calls.write();
+        let call = calls.get_mut(tool_call_id)?;
+        let terminal = call.terminal.as_mut()?;
+
+        terminal.async_task_id = Some(async_task_id.to_string());
+        terminal.backgrounded = true;
+        terminal.status = "running".to_string();
+        terminal.exit_code = None;
+        terminal.signal = None;
+        if let Some(name) = name.filter(|name| !name.is_empty()) {
+            terminal.title = name.to_string();
+        }
+        terminal.updated_at = now_unix_ms();
+        Some(terminal.clone())
+    }
+
+    /// Finish the terminal bound to an async task when the task reports a
+    /// terminal state.
+    fn update_terminal_async_task_state(
+        &self,
+        async_task_id: &str,
+        state: &str,
+    ) -> Option<AgentTerminalTask> {
+        let status = match state {
+            "completed" => "completed",
+            "failed" => "failed",
+            "cancelled" | "cancelled_by_user" | "stopped" => "cancelled",
+            _ => return None,
+        };
+
+        let mut calls = self.calls.write();
+        for call in calls.values_mut() {
+            let Some(terminal) = call.terminal.as_mut() else {
+                continue;
+            };
+            if terminal.async_task_id.as_deref() != Some(async_task_id) {
+                continue;
+            }
+            terminal.status = status.to_string();
+            terminal.backgrounded = true;
+            terminal.updated_at = now_unix_ms();
+            return Some(terminal.clone());
+        }
+        None
     }
 
     /// Return the most recent `limit` tool calls, newest first.
@@ -5589,6 +6116,7 @@ impl AcpBackendInterface for AcpBackend {
         // cross-turn pollution when late notifications arrive after the next turn starts.
         let task_current_turn_token: Arc<RwLock<Option<crate::output_accumulator::TurnToken>>> =
             Arc::new(RwLock::new(None));
+        let task_autonomous_task_id: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
         let cwd = handle
             .metadata
             .get("work_dir")
@@ -5643,6 +6171,65 @@ impl AcpBackendInterface for AcpBackend {
         let task_agent_id_for_save = task_agent_id.clone();
         let connection_agent_id = task_agent_id.clone();
         let connection_conversation_id = task_conversation_id.clone();
+
+        // Per-agent idle watchdog for autonomous turns.
+        {
+            let wd_token = task_current_turn_token.clone();
+            let wd_task_id = task_autonomous_task_id.clone();
+            let wd_agent = task_agent_id.clone();
+            let wd_alive = task_alive.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    if !wd_alive.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
+                    let token = match wd_token.read().clone() {
+                        Some(t) => t,
+                        None => continue,
+                    };
+                    let is_autonomous = if let Some(reg) =
+                        crate::output_accumulator::get_global_accumulator_registry()
+                    {
+                        if let Some(acc) = reg.get(&token).await {
+                            acc.lock().await.autonomous
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if !is_autonomous {
+                        continue;
+                    }
+                    let idle_ok = if let Some(reg) =
+                        crate::output_accumulator::get_global_accumulator_registry()
+                    {
+                        if let Some(acc) = reg.get(&token).await {
+                            let guard = acc.lock().await;
+                            guard.last_activity.elapsed() >= std::time::Duration::from_secs(30)
+                                && !guard.has_pending_tool_calls()
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if !idle_ok {
+                        continue;
+                    }
+                    end_turn_lifecycle(
+                        &Some(token),
+                        &wd_token,
+                        &wd_agent,
+                        "end_turn",
+                        "autonomous idle",
+                    )
+                    .await;
+                    *wd_task_id.write() = None;
+                }
+            });
+        }
         let task_http_mcp_url = self.http_mcp_url.as_ref().map(|base_url| {
             let encoded_agent_id = percent_encoding::utf8_percent_encode(
                 &task_agent_id_label,
@@ -5787,6 +6374,7 @@ impl AcpBackendInterface for AcpBackend {
                         let notify_in_thinking = task_in_thinking.clone();
                         let notify_in_tool_call = task_in_tool_call.clone();
                         let notify_turn_token = task_current_turn_token.clone();
+                        let notify_autonomous_task_id = task_autonomous_task_id.clone();
                         let notify_adapter_kind = task_adapter_kind;
                         async move |notification: ExtendedSessionNotification, _cx| {
                             // Capture mode: collect replayed history without normal side effects.
@@ -5843,6 +6431,139 @@ impl AcpBackendInterface for AcpBackend {
                                             "payload": payload,
                                         }),
                                     );
+
+                                    // Autonomous turn lifecycle handling (asyncTasks capability).
+                                    if kind == "async_task_spawned" {
+                                        let task_type = payload.get("taskType").and_then(|v| v.as_str());
+                                        // Shell tasks are the agent's background commands;
+                                        // bind the async-task lifecycle to its display terminal.
+                                        if task_type == Some("shell") {
+                                            let tool_call_id = payload
+                                                .get("toolCallId")
+                                                .and_then(|v| v.as_str());
+                                            let async_task_id = payload
+                                                .get("asyncTaskId")
+                                                .and_then(|v| v.as_str());
+                                            let name = payload
+                                                .get("name")
+                                                .and_then(|v| v.as_str())
+                                                .or_else(|| {
+                                                    payload
+                                                        .get("description")
+                                                        .and_then(|v| v.as_str())
+                                                });
+                                            if let (Some(tool_call_id), Some(async_task_id)) =
+                                                (tool_call_id, async_task_id)
+                                            {
+                                                if let Some(terminal) = tool_calls
+                                                    .attach_async_task(
+                                                        tool_call_id,
+                                                        async_task_id,
+                                                        name,
+                                                    )
+                                                {
+                                                    emit_agent_terminal_update(
+                                                        &notify_turn_token,
+                                                        &notify_conversation_id,
+                                                        &terminal,
+                                                        None,
+                                                    )
+                                                    .await;
+                                                }
+                                            }
+                                        }
+                                        if task_type == Some("turn") {
+                                            // Validate token against registry; clear if stale (e.g. after idle finalization).
+                                            let current_tok = notify_turn_token.read().clone();
+                                            let token_valid = if let Some(t) = current_tok.clone() {
+                                                if let Some(reg) = crate::output_accumulator::get_global_accumulator_registry() {
+                                                    reg.get(&t).await.is_some()
+                                                } else {
+                                                    false
+                                                }
+                                            } else {
+                                                false
+                                            };
+                                            if !token_valid && notify_turn_token.read().is_some() {
+                                                *notify_turn_token.write() = None;
+                                            }
+                                            // Only open a new turn when none is active.
+                                            if notify_turn_token.read().clone().is_none() {
+                                                let token = begin_turn_lifecycle(
+                                                    &notify_turn_token,
+                                                    &notify_conversation_id,
+                                                    true,
+                                                    Some(&notify_agent_id),
+                                                ).await;
+                                                if let Some(t) = token {
+                                                    // record active autonomous task id
+                                                    if let Some(id) = payload.get("asyncTaskId").and_then(|v| v.as_str()) {
+                                                        *notify_autonomous_task_id.write() = Some(id.to_string());
+                                                    }
+                                                    let _ = t;
+                                                }
+                                            }
+                                        }
+                                        // Publish for frontend panel but do not accumulate/buffer.
+                                        if let Some(publisher) = crate::output_publisher::get_global_output_publisher() {
+                                            let _ = publisher.publish(
+                                                &notify_conversation_id,
+                                                AgentOutputEvent::ExtensionUpdate {
+                                                    role: "assistant".to_string(),
+                                                    kind: kind.clone(),
+                                                    payload: payload.clone(),
+                                                },
+                                            ).await;
+                                        }
+                                        return Ok(());
+                                    }
+
+                                    if kind == "async_task_state_update" {
+                                        let state = payload.get("state").and_then(|v| v.as_str()).unwrap_or("");
+                                        let task_id = payload.get("asyncTaskId").and_then(|v| v.as_str());
+                                        if let Some(task_id) = task_id {
+                                            if let Some(terminal) = tool_calls
+                                                .update_terminal_async_task_state(task_id, state)
+                                            {
+                                                emit_agent_terminal_update(
+                                                    &notify_turn_token,
+                                                    &notify_conversation_id,
+                                                    &terminal,
+                                                    None,
+                                                )
+                                                .await;
+                                            }
+                                        }
+                                        let active_id = notify_autonomous_task_id.read().clone();
+                                        if matches!(state, "completed" | "failed")
+                                            && task_id.is_some()
+                                            && active_id.as_deref() == task_id
+                                        {
+                                            let token = notify_turn_token.read().clone();
+                                            let stop_reason = if state == "completed" { "end_turn" } else { "error" };
+                                            end_turn_lifecycle(
+                                                &token,
+                                                &notify_turn_token,
+                                                &notify_agent_id,
+                                                stop_reason,
+                                                "autonomous wakeup",
+                                            ).await;
+                                            *notify_autonomous_task_id.write() = None;
+                                        }
+                                        if let Some(publisher) = crate::output_publisher::get_global_output_publisher() {
+                                            let _ = publisher.publish(
+                                                &notify_conversation_id,
+                                                AgentOutputEvent::ExtensionUpdate {
+                                                    role: "assistant".to_string(),
+                                                    kind: kind.clone(),
+                                                    payload: payload.clone(),
+                                                },
+                                            ).await;
+                                        }
+                                        return Ok(());
+                                    }
+
+                                    // Normal extension update path.
                                     send_output_event_with_turn_token(
                                         &notify_turn_token,
                                         &notify_conversation_id,
@@ -6278,6 +6999,25 @@ impl AcpBackendInterface for AcpBackend {
                     let user_mcp_declarations =
                         Self::load_user_mcp_servers(task_profile_id.as_deref(), mcp_http_supported);
 
+                    // codex-acp 2.8+ starts MCP servers asynchronously. Ask it to
+                    // wait for MCP readiness before returning from session/new
+                    // (or session/load), otherwise the first turn can run without
+                    // the Ergatai tools.
+                    let mcp_startup_await_ms = if task_adapter_kind == "codex"
+                        && mcp_declaration.is_some()
+                    {
+                        Some(MCP_STARTUP_AWAIT_TIMEOUT_MS)
+                    } else {
+                        None
+                    };
+                    if let Some(timeout_ms) = mcp_startup_await_ms {
+                        debug!(
+                            timeout_ms,
+                            agent_id = %task_agent_id_label,
+                            "Waiting for MCP startup before creating ACP session"
+                        );
+                    }
+
                     // Step 2: Create or load an ACP session (with retry and timeout).
                     let session_id_arc = Arc::new(tokio::sync::Mutex::new(None));
                     let session_phase = SessionCreatePhase {
@@ -6287,6 +7027,7 @@ impl AcpBackendInterface for AcpBackend {
                         mcp_declaration: mcp_declaration.clone(),
                         user_mcp_declarations: user_mcp_declarations.clone(),
                         claude_code_mcp_meta: claude_code_mcp_meta.clone(),
+                        mcp_startup_await_ms,
                         session_id: session_id_arc.clone(),
                         config_options: task_config_options.clone(),
                     };
@@ -6404,6 +7145,8 @@ impl AcpBackendInterface for AcpBackend {
                                 let turn_token = begin_turn_lifecycle(
                                     &task_current_turn_token,
                                     &connection_conversation_id,
+                                    false,
+                                    Some(&connection_agent_id),
                                 ).await;
 
                                 let prompt_started_at = Instant::now();
@@ -6686,6 +7429,8 @@ impl AcpBackendInterface for AcpBackend {
                                 let turn_token = begin_turn_lifecycle(
                                     &task_current_turn_token,
                                     &connection_conversation_id,
+                                    false,
+                                    Some(&connection_agent_id),
                                 ).await;
 
                                 let prompt_started_at = Instant::now();
@@ -6878,6 +7623,8 @@ impl AcpBackendInterface for AcpBackend {
                                 let turn_token = begin_turn_lifecycle(
                                     &task_current_turn_token,
                                     &connection_conversation_id,
+                                    false,
+                                    Some(&connection_agent_id),
                                 ).await;
 
                                 let prompt_started_at = Instant::now();
@@ -7115,6 +7862,17 @@ impl AcpBackendInterface for AcpBackend {
                             }
                             Some(AcpCommand::Stop) => {
                                 info!("ACP connection task received stop command");
+                                // Finalize any active turn (autonomous or prompt) on stop.
+                                let tok = task_current_turn_token.read().clone();
+                                if tok.is_some() {
+                                    end_turn_lifecycle(
+                                        &tok,
+                                        &task_current_turn_token,
+                                        &connection_agent_id,
+                                        "end_turn",
+                                        "agent stop",
+                                    ).await;
+                                }
                                 break;
                             }
                             Some(AcpCommand::SetSessionModel { model, response_tx }) => {
@@ -7149,6 +7907,37 @@ impl AcpBackendInterface for AcpBackend {
                                 );
                                 match request.block_task().await {
                                     Ok(_) => {
+                                        // The upstream agent answers with the v1
+                                        // config-option shape while this request
+                                        // is typed as v2, so its response payload
+                                        // cannot be used to refresh the cache.
+                                        // Apply the accepted value directly: the
+                                        // request succeeded, and `set_agent`
+                                        // already normalized the value.
+                                        {
+                                            let mut options = task_config_options.write();
+                                            for option in options.iter_mut() {
+                                                if option.id.0.as_ref() != config_id.as_str() {
+                                                    continue;
+                                                }
+                                                match &mut option.kind {
+                                                    agent_client_protocol::schema::v1::SessionConfigKind::Select(select) => {
+                                                        select.current_value =
+                                                            agent_client_protocol::schema::v1::SessionConfigValueId::new(
+                                                                value.clone(),
+                                                            );
+                                                    }
+                                                    agent_client_protocol::schema::v1::SessionConfigKind::Boolean(boolean) => {
+                                                        boolean.current_value = matches!(
+                                                            value.as_str(),
+                                                            "on" | "true" | "1"
+                                                        );
+                                                    }
+                                                    _ => {}
+                                                }
+                                                break;
+                                            }
+                                        }
                                         info!(
                                             agent_id = %connection_agent_id,
                                             config_id = %config_id,
@@ -7236,6 +8025,11 @@ impl AcpBackendInterface for AcpBackend {
                                 if let Some(declaration) = &mcp_declaration {
                                     request.mcp_servers.push(declaration.clone());
                                 }
+                                request.meta = with_mcp_startup_await_meta(
+                                    request.meta.take(),
+                                    task_adapter_kind,
+                                    mcp_declaration.is_some(),
+                                );
                                 let result = connection
                                     .send_request(request)
                                     .block_task()
@@ -7306,6 +8100,11 @@ impl AcpBackendInterface for AcpBackend {
                                 if let Some(declaration) = &mcp_declaration {
                                     request.mcp_servers.push(declaration.clone());
                                 }
+                                request.meta = with_mcp_startup_await_meta(
+                                    request.meta.take(),
+                                    task_adapter_kind,
+                                    mcp_declaration.is_some(),
+                                );
                                 let result = connection
                                     .send_request(request)
                                     .block_task()
@@ -7441,6 +8240,11 @@ impl AcpBackendInterface for AcpBackend {
                                 if let Some(declaration) = &mcp_declaration {
                                     request.mcp_servers.push(declaration.clone());
                                 }
+                                request.meta = with_mcp_startup_await_meta(
+                                    request.meta.take(),
+                                    task_adapter_kind,
+                                    mcp_declaration.is_some(),
+                                );
 
                                 let result = connection
                                     .send_request(request)
@@ -8264,6 +9068,31 @@ mod tests {
     }
 
     #[test]
+    fn test_build_session_meta_merges_claude_and_mcp_startup_hint() {
+        let claude_meta = serde_json::json!({
+            "claudeCode": { "options": { "mcpServers": {} } }
+        })
+        .as_object()
+        .expect("object")
+        .clone();
+
+        let meta = build_session_meta(Some(claude_meta), Some(MCP_STARTUP_AWAIT_TIMEOUT_MS))
+            .expect("meta");
+
+        assert!(meta.contains_key("claudeCode"));
+        assert_eq!(
+            meta.get("mcpStartupAwaitTimeoutMs")
+                .and_then(serde_json::Value::as_u64),
+            Some(MCP_STARTUP_AWAIT_TIMEOUT_MS)
+        );
+    }
+
+    #[test]
+    fn test_build_session_meta_returns_none_when_empty() {
+        assert!(build_session_meta(None, None).is_none());
+    }
+
+    #[test]
     fn test_initialize_request_advertises_form_elicitation() {
         let request = InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
             ClientCapabilities::new().elicitation(
@@ -8275,6 +9104,32 @@ mod tests {
         assert_eq!(
             value["clientCapabilities"]["elicitation"]["form"],
             serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn test_initialize_meta_advertises_async_tasks_and_terminal_output() {
+        let meta = build_initialize_client_meta();
+        let caps = ClientCapabilities::new().meta(meta);
+        let value = serde_json::to_value(
+            InitializeRequest::new(ProtocolVersion::V1).client_capabilities(caps),
+        )
+        .expect("initialize request");
+        let caps_arr = value["clientCapabilities"]["_meta"]["jetbrains"]["air"]["capabilities"]
+            .as_array()
+            .expect("capabilities array");
+        assert!(caps_arr.iter().any(|v| v == "asyncTasks"));
+        assert_eq!(
+            value["clientCapabilities"]["_meta"]["jetbrains"]["air"]["version"],
+            1
+        );
+        assert_eq!(
+            value["clientCapabilities"]["_meta"]["terminal_output"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            value["clientCapabilities"]["_meta"]["terminal_output_delta"],
+            serde_json::json!(true)
         );
     }
 
@@ -8509,6 +9364,80 @@ mod tests {
         assert_eq!(backend.get_agent_by_pid(222), None);
         assert_eq!(backend.get_agent_by_pid(111), Some("agent-1".to_string()));
         assert_eq!(backend.get_agent_by_pid(333), Some("agent-3".to_string()));
+    }
+
+    #[test]
+    fn test_agent_terminal_task_accumulates_output_and_exit() {
+        let mut task = AgentTerminalTask::new(
+            "tool_1".to_string(),
+            "pnpm test".to_string(),
+            Some("pnpm test".to_string()),
+        );
+
+        task.apply_meta(&crate::acp_custom_fields::TerminalTaskMeta {
+            output: Some("first".to_string()),
+            ..Default::default()
+        });
+        task.apply_meta(&crate::acp_custom_fields::TerminalTaskMeta {
+            output_delta: Some("-second".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(task.output, "first-second");
+        assert_eq!(task.status, "running");
+
+        task.apply_meta(&crate::acp_custom_fields::TerminalTaskMeta {
+            terminal_id: Some("tool_1".to_string()),
+            exit_code: Some(0),
+            exited: true,
+            ..Default::default()
+        });
+        assert_eq!(task.status, "completed");
+        assert_eq!(task.exit_code, Some(0));
+
+        let json = serde_json::to_value(&task).expect("serialize terminal task");
+        assert_eq!(json["terminal_id"], "tool_1");
+        assert_eq!(json["output"], "first-second");
+        assert_eq!(json["exit_code"], 0);
+        assert_eq!(json["status"], "completed");
+    }
+
+    #[test]
+    fn test_backgrounded_agent_terminal_stays_running_after_tool_completion() {
+        let mut task = AgentTerminalTask::new(
+            "tool_2".to_string(),
+            "npm run dev".to_string(),
+            Some("npm run dev".to_string()),
+        );
+
+        task.apply_meta(&crate::acp_custom_fields::TerminalTaskMeta {
+            backgrounded: true,
+            ..Default::default()
+        });
+        task.apply_tool_status(ToolCallStatus::Completed);
+
+        assert_eq!(task.status, "running");
+    }
+
+    #[test]
+    fn test_backgrounded_async_terminal_ignores_premature_exit() {
+        let mut task = AgentTerminalTask::new(
+            "tool_3".to_string(),
+            "watch".to_string(),
+            Some("watch".to_string()),
+        );
+        task.backgrounded = true;
+        task.async_task_id = Some("task_3".to_string());
+
+        task.apply_meta(&crate::acp_custom_fields::TerminalTaskMeta {
+            terminal_id: Some("tool_3".to_string()),
+            exit_code: Some(0),
+            exited: true,
+            ..Default::default()
+        });
+        task.apply_tool_status(ToolCallStatus::Completed);
+
+        assert_eq!(task.status, "running");
+        assert_eq!(task.exit_code, None);
     }
 }
 

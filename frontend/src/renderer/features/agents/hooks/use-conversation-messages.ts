@@ -1,6 +1,7 @@
 import i18n from "@/lib/i18n"
 import { useMemo, useSyncExternalStore } from "react"
 import { trpcClient } from "../../../lib/trpc"
+import { applyAgentTerminalExtension } from "../lib/agent-terminal-store"
 
 /**
  * Message type representing a normalized conversation message.
@@ -526,6 +527,14 @@ class ConversationPipeline {
         onData: (event) => {
           const type = (event as { type?: string }).type
           const deltaEvent = event as StreamDeltaEvent
+
+          if (type === "extension_update") {
+            applyAgentTerminalExtension(
+              this.conversationId,
+              deltaEvent.kind,
+              deltaEvent.payload,
+            )
+          }
 
           // Reset per-turn smoothing state when a new turn begins.
           if (this.turnFinished && type !== "done") {

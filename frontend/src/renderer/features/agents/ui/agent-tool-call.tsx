@@ -26,6 +26,25 @@ interface AgentToolCallProps {
   onClick?: () => void
 }
 
+function resolveErrorDetail(
+  title: string,
+  subtitle: string | undefined,
+  errorText?: string,
+): string {
+  const rawErrorText = errorText?.trim() ?? ""
+  if (!rawErrorText) return i18n.t("Failed")
+  // Older persisted parts stored the tool title as the error message; don't
+  // echo it under the row as if it were a failure reason. Compare
+  // case-insensitively because ACP tool names arrive lowercase (e.g. the
+  // Read tool reports its title as "read").
+  const normalizeEcho = (value: string) => value.trim().toLowerCase()
+  const isTitleEcho =
+    normalizeEcho(rawErrorText) === normalizeEcho(title) ||
+    (Boolean(subtitle) &&
+      normalizeEcho(rawErrorText) === normalizeEcho(`${title} ${subtitle}`))
+  return isTitleEcho ? i18n.t("Failed") : rawErrorText
+}
+
 export const AgentToolCall = memo(
   function AgentToolCall({
     title,
@@ -42,19 +61,7 @@ export const AgentToolCall = memo(
     const titleStr = String(title)
     const subtitleStr = subtitle ? String(subtitle) : undefined
     const showError = Boolean(isError) && !isPending
-    const rawErrorText = errorText?.trim() ?? ""
-    // Older persisted parts stored the tool title as the error message; don't
-    // echo it under the row as if it were a failure reason. Compare
-    // case-insensitively because ACP tool names arrive lowercase (e.g. the
-    // Read tool reports its title as "read").
-    const normalizeEcho = (value: string) => value.trim().toLowerCase()
-    const isTitleEcho =
-      normalizeEcho(rawErrorText) === normalizeEcho(titleStr) ||
-      (Boolean(subtitleStr) &&
-        normalizeEcho(rawErrorText) ===
-          normalizeEcho(`${titleStr} ${subtitleStr}`))
-    const errorDetail =
-      rawErrorText && !isTitleEcho ? rawErrorText : i18n.t("Failed")
+    const errorDetail = resolveErrorDetail(titleStr, subtitleStr, errorText)
 
     // Inline errors replace the subtitle (usually the file name) with the
     // failure reason, keeping the row neutral instead of red.

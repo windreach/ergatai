@@ -1116,7 +1116,7 @@ impl AgentRuntime {
                 None, // chat_id (the durable conversation binding is restored below)
                 Some(&suspended.conversation_id),
                 Some(&suspended.profile_name),
-                None, // transport (default stdio)
+                None,                // transport (default stdio)
                 Some(&suspended.id), // reuse agent id for stable identity
             )
             .await?;

@@ -63,6 +63,8 @@ export interface MessagePart {
 export interface Message {
   id: string
   role: MessageRole
+  /** Persisted conversation id (used to load inter-agent replies). */
+  conversationId?: string
   parts?: MessagePart[]
   metadata?: Record<string, unknown>
   createdAt?: Date
@@ -955,10 +957,22 @@ function deduplicateMessages(messages: Message[]): Message[] {
   const seenIds = new Set<string>()
   // Track seen role+turnId pairs for cross-source dedup
   const seenTurnKeys = new Set<string>()
+  // Track seen externalMessageId for cross-source dedup (backend duplicate rows)
+  const seenExternalIds = new Set<string>()
 
   for (const message of messages) {
     // Dedup by exact id
     if (seenIds.has(message.id)) continue
+
+    // Dedup by externalMessageId (defense against duplicate persisted rows)
+    const externalId =
+      typeof message.metadata?.externalMessageId === "string"
+        ? (message.metadata.externalMessageId as string)
+        : null
+    if (externalId) {
+      if (seenExternalIds.has(externalId)) continue
+      seenExternalIds.add(externalId)
+    }
 
     // Dedup by role+turnId (cross-source dedup for assistant messages)
     const turnId = getMessageTurnId(message)

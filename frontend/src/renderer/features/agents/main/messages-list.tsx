@@ -81,6 +81,8 @@ interface MergedMsgGroup {
   parts: MessagePart[]
   /** Union of metadata from the group (later messages win on conflicts). */
   metadata?: Record<string, unknown>
+  /** Host conversation id (needed to resolve inter-agent replies). */
+  conversationId?: string
   /** Last message id in the group (for isLastMessage detection). */
   lastId: string
 }
@@ -151,6 +153,7 @@ export function buildMergedMsgGroups(
       ids: buf.map((m) => m.id),
       parts: mergedParts,
       metadata,
+      conversationId: (first as { conversationId?: string }).conversationId,
       lastId: last.id,
     })
     buf = []
@@ -196,6 +199,7 @@ export function buildMergedMsgGroups(
       ids: [id],
       parts,
       metadata: msg.metadata,
+      conversationId: (msg as { conversationId?: string }).conversationId,
       lastId: id,
     })
   }
@@ -292,6 +296,7 @@ const AssistantMessageGroupItem = memo(function AssistantMessageGroupItem({
         role: "assistant",
         parts: group.parts,
         metadata: group.metadata,
+        conversationId: group.conversationId,
       }
     : message
 

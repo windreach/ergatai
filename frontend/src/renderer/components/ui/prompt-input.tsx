@@ -195,8 +195,11 @@ function PromptInputActions({
   className,
   ...props
 }: PromptInputActionsProps) {
+  // Container query scope: chat panes resize independently of the viewport
+  // (sidebars are draggable), so toolbar controls collapse based on their own
+  // available width rather than viewport breakpoints.
   return (
-    <div className={cn("flex items-center gap-2", className)} {...props}>
+    <div className={cn("@container flex items-center gap-2", className)} {...props}>
       {children}
     </div>
   )

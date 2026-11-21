@@ -51,14 +51,19 @@ export function WorkModeSelector({
       <PopoverTrigger asChild>
         <button
           type="button"
+          title={selectedOption.id === "local" ? "Mode" : selectedOption.label}
+          aria-label={
+            selectedOption.id === "local" ? "Mode" : selectedOption.label
+          }
           className={cn(
             "flex items-center gap-1.5 px-2 py-1 text-sm text-muted-foreground hover:text-foreground transition-[background-color,color] duration-150 ease-out rounded-md hover:bg-muted/50 outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70",
             disabled && "opacity-50 pointer-events-none",
           )}
           disabled={disabled}
         >
-          <Icon className="w-4 h-4" />
-          <span>
+          <Icon className="w-4 h-4 shrink-0" />
+          {/* Icon-only once the input toolbar is narrow. */}
+          <span className="hidden whitespace-nowrap @[560px]:inline">
             {selectedOption.id === "local" ? "Mode" : selectedOption.label}
           </span>
           <IconChevronDown className="h-3 w-3 shrink-0 opacity-50" />

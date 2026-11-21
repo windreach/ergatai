@@ -2,10 +2,10 @@ import i18n from "@/lib/i18n"
 "use client"
 
 import { useEffect, useRef } from "react"
-import { Terminal as XTerm } from "xterm"
+import { Terminal as XTerm } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import { useTheme } from "next-themes"
-import "xterm/css/xterm.css"
+import "@xterm/xterm/css/xterm.css"
 
 interface AgentTerminalOutputProps {
   content: string

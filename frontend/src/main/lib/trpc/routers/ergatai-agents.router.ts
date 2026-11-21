@@ -231,6 +231,15 @@ export const agentsRouter = router({
       }
     }),
 
+  /** Read a file's contents via the Ergatai backend (no local scope restriction) */
+  readFile: publicProcedure
+    .input(z.object({ filePath: z.string() }))
+    .query(async ({ input }) => {
+      const result = await ergataiFetch<{ content: string }>(
+        `/api/v1/files/read?path=${encodeURIComponent(input.filePath)}`,
+      )
+      return result.content
+    }),
   /** List all agent bindings for a chat (use /agents endpoint) */
   getAgentBindings: publicProcedure
     .input(z.object({ chatId: chatIdSchema }))

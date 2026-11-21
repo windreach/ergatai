@@ -564,25 +564,7 @@ export const filesRouter = router({
       return { success: true }
     }),
 
-  /**
-   * Read file contents from filesystem
-   */
-  readFile: publicProcedure
-    .input(z.object({ filePath: z.string() }))
-    .query(async ({ input }) => {
-      const { filePath } = input
-      validatePathSafe(filePath)
-      await assertPathInRegisteredScope(filePath)
-
-      try {
-        const content = await readFile(filePath, "utf-8")
-        return content
-      } catch (error) {
-        console.error(`[files] Error reading file ${filePath}:`, error)
-        throw new Error(t('Failed to read file: {{error instanceof Error ? error.message : "Unknown error"}}'))
-      }
-    }),
-
+  // removed: readFile procedure (dead code after plan widget switched to backend read)
   /**
    * Read a text file with size/binary validation
    * Returns structured result with error reasons

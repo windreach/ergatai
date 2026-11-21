@@ -138,6 +138,24 @@ export function useSideChatController(chatId: string, isActive: boolean): SideCh
         conversation.agent.id === agent.id,
     )
     if (existing) {
+      // A duplicate binding (legacy bug) can leave this participant pointed at
+      // an old conversation while new messages go to the re-bound one. Follow
+      // the binding so the side chat does not stay stuck on stale messages.
+      if (existing.backendConversationId !== resolvedConversationId) {
+        const conversation = await chatContractApi.createConversation(
+          agent,
+          resolvedConversationId,
+        )
+        setSideChats((current) => [
+          ...current.filter(
+            (item) =>
+              item.id !== existing.id && item.agent.id !== agent.id,
+          ),
+          conversation,
+        ])
+        setActiveSideChatId(conversation.id)
+        return
+      }
       setActiveSideChatId(existing.id)
       return
     }
@@ -197,9 +215,17 @@ export function useSideChatController(chatId: string, isActive: boolean): SideCh
         )
 
     if (existingConversation) {
-      setAgentChatRequest(null)
-      setActiveSideChatId(existingConversation.id)
-      return
+      const followsRequestedConversation =
+        !request.conversationId ||
+        existingConversation.backendConversationId === request.conversationId
+      if (followsRequestedConversation) {
+        setAgentChatRequest(null)
+        setActiveSideChatId(existingConversation.id)
+        return
+      }
+      // Same agent, but the binding now points at another conversation. Fall
+      // through so processAgentRequest can re-bind the side chat instead of
+      // leaving it on the stale conversation.
     }
 
     const groupAgent =

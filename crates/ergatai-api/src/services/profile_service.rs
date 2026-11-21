@@ -116,7 +116,9 @@ pub struct ProfileModelCatalog {
     pub verified_at: Option<i64>,
     /// Backwards-compatible field. Runtime selected model is not cached here.
     pub current: Option<String>,
-    /// Default model detected from native config / SDK.
+    /// Default model for new chats. The profile models endpoint overrides the
+    /// detected native default with the agent's default provider connection
+    /// model when one is configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
     /// True when the latest detection would have downgraded the catalog and was

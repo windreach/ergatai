@@ -686,7 +686,9 @@ export function AgentModelSelector({
             triggerClassName,
           )}
         >
-          <span className="truncate max-w-[200px]">{selectedModelLabel}</span>
+          <span className="max-w-[120px] truncate whitespace-nowrap @[560px]:max-w-[200px]">
+            {selectedModelLabel}
+          </span>
           <IconChevronDown className="h-3 w-3 shrink-0 opacity-50" />
         </button>
       </PopoverTrigger>

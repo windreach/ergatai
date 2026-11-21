@@ -203,6 +203,80 @@ pub fn extract_terminal_meta(meta: Option<&serde_json::Map<String, Value>>) -> O
     }
 }
 
+/// Normalized terminal-task metadata carried on a tool call or tool call update.
+///
+/// The Claude ACP adapter reports command tools as display terminals through
+/// `_meta.terminal_info` / `terminal_output` / `terminal_output_delta` /
+/// `terminal_exit`. This is separate from [`extract_terminal_meta`], which
+/// retains the raw extension payload for diagnostics.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TerminalTaskMeta {
+    pub terminal_id: Option<String>,
+    pub output: Option<String>,
+    pub output_delta: Option<String>,
+    pub exit_code: Option<i64>,
+    pub signal: Option<String>,
+    pub exited: bool,
+    pub backgrounded: bool,
+}
+
+/// Extract normalized terminal-task metadata from an ACP tool call `_meta`.
+pub fn extract_terminal_task_meta(
+    meta: Option<&serde_json::Map<String, Value>>,
+) -> TerminalTaskMeta {
+    let mut out = TerminalTaskMeta::default();
+    let Some(meta) = meta else {
+        return out;
+    };
+
+    let info = meta.get("terminal_info").and_then(Value::as_object);
+    let output = meta.get("terminal_output").and_then(Value::as_object);
+    let delta = meta.get("terminal_output_delta").and_then(Value::as_object);
+    let exit = meta.get("terminal_exit").and_then(Value::as_object);
+
+    out.terminal_id = [info, output, delta, exit]
+        .into_iter()
+        .flatten()
+        .find_map(|obj| {
+            obj.get("terminal_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+
+    out.output = output
+        .and_then(|obj| obj.get("data").and_then(Value::as_str))
+        .map(str::to_string);
+    out.output_delta = delta
+        .and_then(|obj| obj.get("data").and_then(Value::as_str))
+        .map(str::to_string);
+
+    if let Some(exit) = exit {
+        out.exited = true;
+        out.exit_code = exit.get("exit_code").and_then(Value::as_i64);
+        out.signal = exit
+            .get("signal")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+    }
+
+    // The background marker is nested under `jetbrains.air.asyncTasks` for
+    // Claude ACP (`withAirMeta(..., "asyncTasks", { backgrounded: true })`).
+    out.backgrounded = extract_air(Some(meta))
+        .and_then(|air| {
+            air.get("backgrounded")
+                .and_then(Value::as_bool)
+                .or_else(|| {
+                    air.get("asyncTasks")
+                        .and_then(Value::as_object)
+                        .and_then(|tasks| tasks.get("backgrounded"))
+                        .and_then(Value::as_bool)
+                })
+        })
+        .unwrap_or(false);
+
+    out
+}
+
 /// Extract an ask-user-question custom answer (top-level or AIR nested).
 pub fn extract_custom_answer(meta: Option<&serde_json::Map<String, Value>>) -> Option<Value> {
     let meta = meta?;
@@ -311,4 +385,64 @@ pub fn extract_air_field(
             None
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn meta(value: Value) -> serde_json::Map<String, Value> {
+        value.as_object().cloned().expect("object meta")
+    }
+
+    #[test]
+    fn extracts_terminal_task_start_and_delta() {
+        let meta = meta(json!({
+            "terminal_info": { "terminal_id": "tool_1" },
+            "terminal_output_delta": {
+                "terminal_id": "tool_1",
+                "data": "hello "
+            },
+            "jetbrains": {
+                "air": {
+                    "version": 1,
+                    "capabilities": ["asyncTasks"],
+                    "asyncTasks": {
+                        "backgrounded": true
+                    }
+                }
+            }
+        }));
+
+        let task = extract_terminal_task_meta(Some(&meta));
+        assert_eq!(task.terminal_id.as_deref(), Some("tool_1"));
+        assert_eq!(task.output, None);
+        assert_eq!(task.output_delta.as_deref(), Some("hello "));
+        assert!(task.backgrounded);
+        assert!(!task.exited);
+    }
+
+    #[test]
+    fn extracts_terminal_task_full_output_and_exit() {
+        let meta = meta(json!({
+            "terminal_output": {
+                "terminal_id": "tool_2",
+                "data": "done\n"
+            },
+            "terminal_exit": {
+                "terminal_id": "tool_2",
+                "exit_code": 0,
+                "signal": null
+            }
+        }));
+
+        let task = extract_terminal_task_meta(Some(&meta));
+        assert_eq!(task.terminal_id.as_deref(), Some("tool_2"));
+        assert_eq!(task.output.as_deref(), Some("done\n"));
+        assert!(task.exited);
+        assert_eq!(task.exit_code, Some(0));
+        assert_eq!(task.signal, None);
+        assert!(!task.backgrounded);
+    }
 }

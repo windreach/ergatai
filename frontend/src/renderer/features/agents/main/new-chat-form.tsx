@@ -40,7 +40,6 @@ import {
   lastSelectedBranchesAtom,
   lastSelectedModelIdAtom,
   conversationModelIdAtomFamily,
-  agentModelIdAtomFamily,
   lastSelectedWorkModeAtom,
   type WorkMode,
   pendingInitialPromptAtomFamily,
@@ -330,6 +329,14 @@ export const NewChatForm = memo(function NewChatForm({
   // Fetch projects to validate selectedWorkspace exists
   const { data: projectsList, isLoading: isLoadingProjects } =
     trpc.projects.list.useQuery()
+  // Resolve the default project from the selected managed workspace so the form
+  // does not fall back to the workspace/project selector when the project
+  // context is missing.
+  const { data: managedWorkspaceForProject } =
+    trpc.ergatai.getManagedWorkspace.useQuery(
+      { id: selectedWorkspaceId! },
+      { enabled: !!selectedWorkspaceId },
+    )
 
   // Validate selected project exists in DB
   // While loading, trust the stored value to prevent flicker
@@ -342,6 +349,33 @@ export const NewChatForm = memo(function NewChatForm({
     const exists = projectsList.some((p) => p.id === selectedWorkspace.id)
     return exists ? selectedWorkspace : null
   }, [selectedWorkspace, projectsList, isLoadingProjects])
+
+  // Keep the project context in sync with the selected managed workspace's
+  // default project so NewChatForm shows the chat input instead of the
+  // workspace/project selector.
+  useEffect(() => {
+    if (!projectsList || projectsList.length === 0) return
+    // Prefer the managed workspace's default project; fall back to the first
+    // available project so the form does not show the workspace/project selector.
+    const defaultProjectId =
+      managedWorkspaceForProject?.defaultProjectId &&
+      projectsList.some((p) => p.id === managedWorkspaceForProject.defaultProjectId)
+        ? managedWorkspaceForProject.defaultProjectId
+        : projectsList[0].id
+    if (selectedWorkspace && selectedWorkspace.id === defaultProjectId) return
+    if (!projectsList.some((p) => p.id === defaultProjectId)) return
+    const proj = projectsList.find((p) => p.id === defaultProjectId)
+    if (!proj) return
+    setSelectedWorkspace({
+      id: proj.id,
+      name: proj.name,
+      path: proj.path,
+      gitRemoteUrl: proj.gitRemoteUrl,
+      gitProvider: proj.gitProvider as NonNullable<typeof selectedWorkspace>["gitProvider"],
+      gitOwner: proj.gitOwner,
+      gitRepo: proj.gitRepo,
+    })
+  }, [managedWorkspaceForProject, projectsList, selectedWorkspace, setSelectedWorkspace])
 
   // Fetch registered triggers from backend (for dynamic trigger detection)
   const { mentionTrigger, slashTrigger: slashTriggerConfig, discoveryTriggers } = useEditorTriggerConfigs(
@@ -515,11 +549,6 @@ export const NewChatForm = memo(function NewChatForm({
     [enabledAgents],
   )
   const [selectedAgent, setSelectedAgent] = useState<CoreAgentOption>(fallbackAgent)
-  const agentModelIdAtom = useMemo(
-    () => agentModelIdAtomFamily(selectedAgent?.id ?? "claude-code"),
-    [selectedAgent?.id],
-  )
-  const [agentModelId] = useAtom(agentModelIdAtom)
 
   const selectedAgentKind = useMemo(() => {
     if (selectedAgent.id === "claude-code") return "claude"
@@ -590,90 +619,56 @@ export const NewChatForm = memo(function NewChatForm({
     (typeof availableModels.models)[number] | undefined
   >(
     () => {
-      // Priority: backend current model > last selected > first available
-      const backendCurrent = availableModels.currentModelId
-        ? availableModels.models.find((m) => m.id === availableModels.currentModelId)
-        : null
-      const agentSelected = availableModels.models.find((m) => m.id === agentModelId)
-      const runtimeSelected = availableModels.agentSelectedModelId
-        ? availableModels.models.find((m) => m.id === availableModels.agentSelectedModelId)
-        : null
+      // The provider connection default is the agent's configured model, so it
+      // wins over the global "last picked" convenience value. A manual pick in
+      // this form is still honored via userSelectedModelRef below.
+      const lastSelected = availableModels.models.find(
+        (m) => m.id === lastSelectedModelId,
+      )
       const defaultSelected = availableModels.defaultModelId
         ? availableModels.models.find((m) => m.id === availableModels.defaultModelId)
         : null
-      const lastSelected = availableModels.models.find((m) => m.id === lastSelectedModelId)
-      return backendCurrent || runtimeSelected || agentSelected || defaultSelected || lastSelected || availableModels.models[0]
+      return defaultSelected || lastSelected || availableModels.models[0]
     },
   )
 
-  // 当 selectedModel 为 undefined 但 models 可用时，初始化 selectedModel
+  // Codex has its own UI model list (model + thinking level). Keep a pick made
+  // in this form separate so it can be reset when the active agent changes.
+  const [selectedCodexModelId, setSelectedCodexModelId] = useState<string | null>(null)
+
+  // Keep the selected model aligned with the effective default. This runs when
+  // the model catalogue arrives, when the provider connection default changes,
+  // and when the active agent changes. A model manually picked in this form is
+  // never overridden.
   // react-doctor-disable-next-line no-effect-chain
   useEffect(() => {
-    if (!selectedModel && availableModels.models.length > 0) {
-      const backendCurrent = availableModels.currentModelId
-        ? availableModels.models.find((m) => m.id === availableModels.currentModelId)
-        : null
-      const agentSelected = availableModels.models.find((m) => m.id === agentModelId)
-      const runtimeSelected = availableModels.agentSelectedModelId
-        ? availableModels.models.find((m) => m.id === availableModels.agentSelectedModelId)
-        : null
-      const defaultSelected = availableModels.defaultModelId
-        ? availableModels.models.find((m) => m.id === availableModels.defaultModelId)
-        : null
-      const lastSelected =
-        selectedAgent.id === "claude-code"
-          ? availableModels.models.find((m) => m.id === lastSelectedModelId)
-          : null
-      setSelectedModel(backendCurrent || runtimeSelected || agentSelected || defaultSelected || lastSelected || availableModels.models[0])
+    if (userSelectedModelRef.current) return
+    if (availableModels.models.length === 0) return
+
+    const lastSelected = availableModels.models.find(
+      (m) => m.id === lastSelectedModelId,
+    )
+    const defaultSelected = availableModels.defaultModelId
+      ? availableModels.models.find((m) => m.id === availableModels.defaultModelId)
+      : null
+    const preferred = defaultSelected || lastSelected || availableModels.models[0]
+
+    if (preferred && preferred.id !== selectedModel?.id) {
+      setSelectedModel(preferred)
     }
   }, [
-    selectedModel,
+    selectedModel?.id,
     availableModels.models,
-    availableModels.currentModelId,
-    availableModels.agentSelectedModelId,
     availableModels.defaultModelId,
-    agentModelId,
     lastSelectedModelId,
-    selectedAgent.id,
   ])
-
-  // Sync selectedModel when backend current model or atom value changes
-  // react-doctor-disable-next-line no-effect-chain
-  useEffect(() => {
-    // Once the user has manually selected a model, do not override it with
-    // backend/current model updates.
-    if (userSelectedModelRef.current) {
-      return
-    }
-
-    // 安全检查：如果 selectedModel 未定义，跳过同步
-    if (!selectedModel) {
-      return
-    }
-
-    // If backend reports a current model, prefer it
-    if (availableModels.currentModelId) {
-      const backendModel = availableModels.models.find((m) => m.id === availableModels.currentModelId)
-      if (backendModel) {
-        if (backendModel.id !== selectedModel.id) {
-          setSelectedModel(backendModel)
-        }
-        return
-      }
-    }
-    if (selectedAgent.id === "claude-code") {
-      const model = availableModels.models.find((m) => m.id === lastSelectedModelId)
-      if (model && model.id !== selectedModel.id) {
-        setSelectedModel(model)
-      }
-    }
-  }, [availableModels.models, availableModels.currentModelId, lastSelectedModelId, selectedModel, selectedAgent.id])
 
   // Avoid stale model selections leaking across agents (e.g. Claude Code -> opencode).
   // react-doctor-disable-next-line no-effect-chain
   useEffect(() => {
     userSelectedModelRef.current = false
     setSelectedModel(undefined)
+    setSelectedCodexModelId(null)
   }, [selectedAgent.id])
 
   const hiddenModels = useAtomValue(hiddenModelsAtom)
@@ -686,13 +681,26 @@ export const NewChatForm = memo(function NewChatForm({
     () => buildCodexUiModels(availableModels.models, hiddenModels),
     [availableModels.models, hiddenModels],
   )
-  const selectedCodexModel = useMemo(
-    () =>
+  const selectedCodexModel = useMemo(() => {
+    const connectionDefault = availableModels.defaultModelId
+      ? codexUiModels.find((model) => model.id === availableModels.defaultModelId)
+      : null
+    const explicit = selectedCodexModelId
+      ? codexUiModels.find((model) => model.id === selectedCodexModelId)
+      : null
+    return (
+      explicit ||
       codexUiModels.find((model) => model.id === lastSelectedCodexModelId) ||
+      connectionDefault ||
       codexUiModels[0] ||
-      CODEX_MODELS[0]!,
-    [codexUiModels, lastSelectedCodexModelId],
-  )
+      CODEX_MODELS[0]!
+    )
+  }, [
+    codexUiModels,
+    selectedCodexModelId,
+    availableModels.defaultModelId,
+    lastSelectedCodexModelId,
+  ])
 
   const selectedCodexThinking = useMemo<CodexThinkingLevel>(() => {
     if (
@@ -1462,14 +1470,17 @@ export const NewChatForm = memo(function NewChatForm({
       // Use a readable slice of the prompt as the chat name. Mention tokens are
       // internal serialization and must not leak into titles.
       name: promptToTitle(message) || undefined,
-      model: selectedChatModel || undefined, // Only send model if explicitly selected
+      // Send the resolved model so the launched agent matches the selector:
+      // an explicit/remembered user pick wins, then the provider connection
+      // default, then the agent's native default.
+      model: selectedChatModel || undefined,
       initialMessageParts: parts.length > 0 ? parts : undefined,
       baseBranch:
         effectiveWorkMode === "worktree" ? selectedBranch || undefined : undefined,
       branchType:
         effectiveWorkMode === "worktree" ? selectedBranchType : undefined,
       branchMode:
-        effectiveWorkMode === "worktree" ? "new" : undefined,
+        effectiveWorkMode === "worktree" ? "existing" : undefined,
       useWorktree: effectiveWorkMode === "worktree",
       mode: agentMode,
       collaborationMode,
@@ -1800,6 +1811,8 @@ export const NewChatForm = memo(function NewChatForm({
           onSelectModel: (modelId) => {
             const m = codexUiModels.find((item) => item.id === modelId)
             if (!m) return
+            userSelectedModelRef.current = true
+            setSelectedCodexModelId(m.id)
             _setLastSelectedCodexModelId(m.id)
           },
           selectedThinking: selectedCodexThinking,

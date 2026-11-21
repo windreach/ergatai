@@ -57,6 +57,7 @@ interface UseAgentParticipantsInput {
   workspaceId?: string | null
   runtimeWorkspaceId?: string | null
   supervisorAgentId?: string | null
+  activeConversationId?: string | null
 }
 
 export function useAgentParticipants({
@@ -64,6 +65,7 @@ export function useAgentParticipants({
   workspaceId,
   runtimeWorkspaceId: _runtimeWorkspaceId,
   supervisorAgentId,
+  activeConversationId: activeConversationIdOverride,
 }: UseAgentParticipantsInput) {
   const { agents: groupAgents, isGroupChat } = useGroupChat()
   const ensuredGroupMembersRef = useRef<Set<string>>(new Set())
@@ -80,9 +82,13 @@ export function useAgentParticipants({
   )
   // Conversation currently displayed in the main chat. The supervisor's
   // binding points at this conversation, so it identifies the supervisor.
-  const activeConversationId = useAgentConversationStore(
+  const storeActiveConversationId = useAgentConversationStore(
     (state) => state.activeConversationId,
   )
+  const activeConversationId =
+    activeConversationIdOverride !== undefined
+      ? activeConversationIdOverride
+      : storeActiveConversationId
   const addGroupMember = trpc.groupChat.addMember.useMutation()
   const runtimeStatus = useAgentRuntimeAgents(!isGroupChat)
   const runtimeAgents = runtimeStatus.agents
@@ -145,7 +151,12 @@ export function useAgentParticipants({
 
   return useMemo(() => {
     if (isGroupChat) {
-      return groupAgents.map<AgentParticipant>((agent) => {
+      // Guard against duplicate group participants (same agent id) so the rail
+      // and widgets never render two identical agent logos.
+      const uniqueGroupAgents = Array.from(
+        new Map(groupAgents.map((agent) => [agent.id, agent])).values(),
+      )
+      return uniqueGroupAgents.map<AgentParticipant>((agent) => {
         const status = runtimeStatuses[agent.id]
         const member = groupMembers?.find(
           (row) =>
@@ -188,7 +199,21 @@ export function useAgentParticipants({
       [...newestBindingByConversation.values()].map((entry) => entry.agentId),
     )
 
-    const scopedRuntimeAgents = runtimeAgents.filter(
+    // The main (supervisor) agent is the oldest binding for this chat. It
+    // drives the main conversation, so it must never appear as a side-chat
+    // participant — even when it is suspended and later resumed (where its
+    // runtime id may change but the binding identity/conversation stays).
+    const primaryBinding = (runtimeBindings ?? [])
+      .slice()
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0]
+    const primaryAgentId = primaryBinding?.agentId
+    const primaryConversationIds = new Set(
+      [chatId, activeConversationId, primaryBinding?.conversationId].filter(
+        Boolean,
+      ) as string[],
+    )
+
+    const scopedRuntimeAgentsRaw = runtimeAgents.filter(
       (agent) => visibleBindingAgentIds.has(agent.id),
     )
       .filter((agent) => {
@@ -204,31 +229,105 @@ export function useAgentParticipants({
       // agent type) so same-type side agents still show.
       .filter(
         (agent) =>
+          agent.id !== primaryAgentId &&
           !runtimeBindings?.some(
             (binding) =>
               binding.agentId === agent.id &&
-              (binding.conversationId === chatId ||
-                binding.conversationId === activeConversationId),
+              primaryConversationIds.has(binding.conversationId),
           ),
       )
+
+    // A suspended agent that gets resumed (or re-activated by inter-agent
+    // messages) can leave both the old and the new runtime entry pointing at
+    // different conversations/bindings. Collapse entries that resolve to the
+    // same core-agent identity, keeping the newest binding so the rail and
+    // widgets never show two identical agent logos.
+    const runtimeIdentityKey = (agent: (typeof runtimeAgents)[number]) =>
+      (
+        inferCoreAgentId(agent.profile) ??
+        inferCoreAgentId(agent.name) ??
+        agent.profile ??
+        agent.name ??
+        agent.id
+      )
+        .toLowerCase()
+        .trim()
+    const scopedRuntimeAgentsByIdentity = new Map<string, (typeof runtimeAgents)[number]>()
+    for (const agent of scopedRuntimeAgentsRaw) {
+      const key = runtimeIdentityKey(agent)
+      const existing = scopedRuntimeAgentsByIdentity.get(key)
+      if (!existing) {
+        scopedRuntimeAgentsByIdentity.set(key, agent)
+        continue
+      }
+      const existingBinding = runtimeBindings?.find(
+        (binding) => binding.agentId === existing.id,
+      )
+      const newBinding = runtimeBindings?.find(
+        (binding) => binding.agentId === agent.id,
+      )
+      const existingTime =
+        existingBinding?.createdAt?.getTime() ?? 0
+      const newTime = newBinding?.createdAt?.getTime() ?? 0
+      if (newTime >= existingTime) {
+        scopedRuntimeAgentsByIdentity.set(key, agent)
+      }
+    }
+    const scopedRuntimeAgents = [...scopedRuntimeAgentsByIdentity.values()]
 
     // Include stopped agents: those in bindings but not in runtime agents.
     // Backend returns all bindings (including stopped ones), but runtimeAgents
     // only contains alive agents. We need to show stopped agents too so users
     // can still see the full participant list and access historical conversations.
     const aliveAgentIds = new Set(scopedRuntimeAgents.map((a) => a.id))
-    const stoppedAgents = (runtimeBindings ?? [])
+    const runtimeIdentityKeys = new Set(
+      scopedRuntimeAgents.map((agent) =>
+        (
+          inferCoreAgentId(agent.profile) ??
+          inferCoreAgentId(agent.name) ??
+          agent.profile ??
+          agent.name ??
+          agent.id
+        )
+          .toLowerCase()
+          .trim(),
+      ),
+    )
+    const stoppedBindingIdentityKey = (binding: NonNullable<typeof runtimeBindings>[number]) =>
+      (
+        inferCoreAgentId(binding.agentCommand) ??
+        inferCoreAgentId(binding.agentName) ??
+        binding.agentCommand ??
+        binding.agentName ??
+        binding.agentId
+      )
+        .toLowerCase()
+        .trim()
+
+    const stoppedAgentsRaw = (runtimeBindings ?? [])
       .filter((binding) => !aliveAgentIds.has(binding.agentId))
+      .filter((binding) => binding.agentId !== primaryAgentId)
       .filter((binding) => {
         const coreAgentId =
           inferCoreAgentId(binding.agentCommand) ?? inferCoreAgentId(binding.agentName)
         return !supervisorAgentId || coreAgentId !== supervisorAgentId
       })
       .filter(
-        (binding) =>
-          binding.conversationId !== chatId &&
-          binding.conversationId !== activeConversationId,
+        (binding) => !primaryConversationIds.has(binding.conversationId),
       )
+      // Hide stopped bindings whose profile is already represented by a live
+      // (possibly resumed) runtime agent, so duplicates never surface.
+      .filter((binding) => !runtimeIdentityKeys.has(stoppedBindingIdentityKey(binding)))
+
+    const stoppedAgentsByIdentity = new Map<string, NonNullable<typeof runtimeBindings>[number]>()
+    for (const binding of stoppedAgentsRaw) {
+      const key = stoppedBindingIdentityKey(binding)
+      const existing = stoppedAgentsByIdentity.get(key)
+      if (!existing || binding.createdAt > existing.createdAt) {
+        stoppedAgentsByIdentity.set(key, binding)
+      }
+    }
+    const stoppedAgents = [...stoppedAgentsByIdentity.values()]
 
       return [
         ...scopedRuntimeAgents.map<AgentParticipant>((agent) => ({

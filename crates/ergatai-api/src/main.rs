@@ -726,10 +726,13 @@ async fn async_main(args: Args) -> Result<()> {
                 },
             );
             ergatai_runtime::set_global_persist_callback(persist_callback);
-            let discovery_invalidate_callback: ergatai_runtime::DiscoveryInvalidateCallback = Box::new(|agent_id| {
-                ergatai_api::services::discovery_service::invalidate_agent(&agent_id, None);
-            });
-            ergatai_runtime::set_global_discovery_invalidate_callback(discovery_invalidate_callback);
+            let discovery_invalidate_callback: ergatai_runtime::DiscoveryInvalidateCallback =
+                Box::new(|agent_id| {
+                    ergatai_api::services::discovery_service::invalidate_agent(&agent_id, None);
+                });
+            ergatai_runtime::set_global_discovery_invalidate_callback(
+                discovery_invalidate_callback,
+            );
             tracing::info!("✅ Global accumulator registry and persistence callback initialized");
 
             // Initialize chunk buffer for out-of-turn durable events

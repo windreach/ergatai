@@ -1,7 +1,7 @@
 {
   "name": "ergatai",
   "version": "1.0.0",
-  "description": "> 多 Agent 协作工作台 — Organize independent AI coding assistants into a collaborative team.",
+  "description": "多 Agent 协作工作台 — Organize independent AI coding assistants into a collaborative team.",
   "main": "index.js",
   "directories": {
     "doc": "docs"

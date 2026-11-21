@@ -703,17 +703,19 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
             // Persist user message to SQLite (NO SSE publish)
             let external_id_for_meta = external_message_id.clone();
+            let user_external_id = external_message_id.clone();
             let append_result = tokio::task::spawn_blocking(move || {
                 let metadata = serde_json::json!({
                     "externalMessageId": external_id_for_meta,
                     "deliveryStatus": "pending",  // Will be updated to "delivered" or "failed" after injection
                 });
-                crate::user_data_db::messages::append(
+                crate::user_data_db::messages::append_idempotent(
                     conversation_id,
                     "user",
                     serde_json::Value::Array(parts),
                     metadata,
                     None, // User messages don't need agent-specific fields
+                    Some(&user_external_id),
                 )
             })
             .await;
@@ -750,12 +752,10 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
             let from_agent = from.to_string();
             let message_type = payload.message_type.clone();
 
-            // Determine role based on message type
-            let role = match message_type.as_str() {
-                "request" => "agent",
-                "response" | "broadcast" => "assistant",
-                _ => "agent",
-            };
+            // Determine role based on message type and sender relationship,
+            // unified with the sender-side agent_message_role() so that
+            // external responses are persisted as `respagent`.
+            let role = crate::messaging::agent_message_role(&message_type, &from_agent, to);
 
             // Parse the JSON message to extract structured data
             let parsed_content: Option<serde_json::Value> =
@@ -785,6 +785,7 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
 
             // Persist agent message to SQLite with structured fields
             let external_id_for_meta = external_message_id.clone();
+            let agent_external_id_for_closure = external_message_id.clone();
             let correlation_id_for_meta = payload.correlation_id.clone();
             let append_result = tokio::task::spawn_blocking(move || {
                 let metadata = serde_json::json!({
@@ -805,30 +806,38 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                     ..Default::default()
                 };
 
-                crate::user_data_db::messages::append(
+                crate::user_data_db::messages::append_idempotent(
                     conversation_id,
                     role,
                     serde_json::json!([{ "type": "text", "text": message_content }]),
                     metadata,
                     Some(agent_fields),
+                    Some(&agent_external_id_for_closure),
                 )
             })
             .await;
 
             match append_result {
-                Ok(Ok(persisted_msg)) => {
-                    // Publish to conversation subject for SSE streaming
-                    crate::messaging::publish_to_conversation_subject_with_message(
-                        persisted_msg,
-                        Some(from.to_string()),
-                        Some(from.to_string()),
-                    )
-                    .await;
-                    info!(
-                        message_id = %external_message_id,
-                        role = role,
-                        "Agent message persisted and published to SSE (early, before inject)"
-                    );
+                Ok(Ok(outcome)) => {
+                    if outcome.inserted {
+                        // Publish to conversation subject for SSE streaming
+                        crate::messaging::publish_to_conversation_subject_with_message(
+                            outcome.message,
+                            Some(from.to_string()),
+                            Some(from.to_string()),
+                        )
+                        .await;
+                        info!(
+                            message_id = %external_message_id,
+                            role = role,
+                            "Agent message persisted and published to SSE (early, before inject)"
+                        );
+                    } else {
+                        tracing::debug!(
+                            message_id = %external_message_id,
+                            "Agent message already persisted (duplicate); skipping SSE push"
+                        );
+                    }
                 }
                 Ok(Err(e)) => {
                     warn!(

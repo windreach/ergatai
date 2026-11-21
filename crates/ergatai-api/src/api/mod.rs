@@ -6,6 +6,7 @@ pub mod agent_sdk;
 pub mod agents;
 pub mod chats;
 pub mod collaboration_sessions;
+pub mod files;
 pub mod ids;
 pub mod locks;
 pub mod mcp_servers;

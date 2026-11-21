@@ -124,11 +124,10 @@ pub fn get_current_prompt_conversation(agent_id: &str) -> Option<String> {
 
 pub use output_accumulator::{
     get_global_accumulator_registry, get_global_discovery_invalidate_callback,
-    get_global_persist_callback, set_global_accumulator_registry, set_global_discovery_invalidate_callback,
-    set_global_persist_callback, AgentOutputData, DiscoveryInvalidateCallback, OutputAccumulatorRegistry,
-    OutputMetadata,
-    PersistCallback, TextChunk, ThinkingBlock, TokenUsage, ToolCallLocation, ToolCallRecord,
-    TurnAccumulator,
+    get_global_persist_callback, set_global_accumulator_registry,
+    set_global_discovery_invalidate_callback, set_global_persist_callback, AgentOutputData,
+    DiscoveryInvalidateCallback, OutputAccumulatorRegistry, OutputMetadata, PersistCallback,
+    TextChunk, ThinkingBlock, TokenUsage, ToolCallLocation, ToolCallRecord, TurnAccumulator,
 };
 pub use output_publisher::{
     get_global_output_publisher, set_global_output_publisher, NoOpOutputPublisher, OutputPublisher,
@@ -146,6 +145,6 @@ pub use runtime::{
 pub use session_store::{SessionRecord, SessionStore};
 pub use suspend_store::{SuspendReason, SuspendStore, SuspendedAgentRecord};
 pub use types::{
-    AgentFile, AgentHandle, AgentImage, AgentInfo, AgentResource, BackendCapabilities, ResourceLimits,
-    SessionInfo, WaitResult, WorkspaceHandle, WorkspaceSpec,
+    AgentFile, AgentHandle, AgentImage, AgentInfo, AgentResource, BackendCapabilities,
+    ResourceLimits, SessionInfo, WaitResult, WorkspaceHandle, WorkspaceSpec,
 };

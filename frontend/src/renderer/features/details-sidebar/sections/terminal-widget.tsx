@@ -23,15 +23,20 @@ import {
 import type { TerminalInstance } from "@/features/terminal"
 import { cn } from "@/lib/utils"
 import { killTerminalSession } from "@/features/terminal"
-import { AgentTerminalOutput } from "../../agents/ui/agent-terminal-output"
+import { AgentTerminalOutput } from "../../agents"
+import {
+  isAgentTerminalVisible,
+  useAgentTerminals,
+  type AgentTerminalTask,
+} from "../../agents/lib/agent-terminal-store"
 import { randomToken } from "../../../../shared/id"
 
 interface TerminalWidgetProps {
   /** Must match the TerminalSidebar scope key so tasks map 1:1 to sidebar terminals */
   scopeKey: string
   onExpand?: () => void
-  /** Agent terminal output entries (from extension meta terminal_update) */
-  terminalEntries?: { key: string; value: unknown }[]
+  /** Conversation whose agent-reported terminal tasks should be shown */
+  conversationId?: string | null
 }
 
 function generateTerminalId(): string {
@@ -56,18 +61,56 @@ function getNextTerminalName(terminals: TerminalInstance[]): string {
 }
 
 /**
+ * Re-render once per second while any agent task is running so a task that
+ * crosses the visibility threshold appears even if it emits no new output.
+ */
+function useAgentTerminalClock(tasks: AgentTerminalTask[]): number {
+  const [now, setNow] = useState(() => Date.now())
+  const hasRunningTask = tasks.some((task) => task.status === "running")
+
+  useEffect(() => {
+    if (!hasRunningTask) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [hasRunningTask])
+
+  return now
+}
+
+function agentTerminalStatusLabel(task: AgentTerminalTask): string {
+  if (task.status === "running") return i18n.t("Running")
+  if (task.status === "failed") {
+    return task.exitCode != null
+      ? `${i18n.t("Failed")} (${task.exitCode})`
+      : i18n.t("Failed")
+  }
+  if (task.status === "cancelled") return i18n.t("Stopped")
+  return i18n.t("Completed")
+}
+
+/**
  * Terminal tasks widget for the Details sidebar.
  * Lists the chat's terminal sessions (same scope key as TerminalSidebar);
  * clicking a task enters the real terminal (expanded sidebar) to view
  * live output and interact with it. No terminal is auto-created.
+ *
+ * Agent commands are listed separately from user terminals: the adapter
+ * reports them as display terminals, so they are read-only and open inline.
  */
-const EMPTY_TERMINAL_ENTRIES: TerminalWidgetProps["terminalEntries"] & {} = []
-
 export const TerminalWidget = memo(function TerminalWidget({
   scopeKey,
   onExpand,
-  terminalEntries = EMPTY_TERMINAL_ENTRIES,
+  conversationId,
 }: TerminalWidgetProps) {
+  const agentTerminals = useAgentTerminals(conversationId ?? null)
+  const agentTerminalNow = useAgentTerminalClock(agentTerminals)
+  const visibleAgentTerminals = useMemo(
+    () =>
+      agentTerminals.filter((task) =>
+        isAgentTerminalVisible(task, agentTerminalNow),
+      ),
+    [agentTerminals, agentTerminalNow],
+  )
   const [allTerminals, setAllTerminals] = useAtom(terminalsAtom)
   const [allActiveIds, setAllActiveIds] = useAtom(activeTerminalIdAtom)
 
@@ -98,21 +141,35 @@ export const TerminalWidget = memo(function TerminalWidget({
     [allActiveIds, scopeKey],
   )
 
-  const [selectedTerminalKey, setSelectedTerminalKey] = useState<string | null>(null)
+  const [selectedAgentTerminalId, setSelectedAgentTerminalId] = useState<
+    string | null
+  >(null)
   useEffect(() => {
+    if (visibleAgentTerminals.length === 0) {
+      if (selectedAgentTerminalId) {
+        // react-doctor-disable-next-line no-adjust-state-on-prop-change
+        setSelectedAgentTerminalId(null)
+      }
+      return
+    }
     if (
-      terminalEntries.length > 0 &&
-      (!selectedTerminalKey ||
-        !terminalEntries.some((entry) => entry.key === selectedTerminalKey))
+      !selectedAgentTerminalId ||
+      !visibleAgentTerminals.some(
+        (task) => task.terminalId === selectedAgentTerminalId,
+      )
     ) {
       // react-doctor-disable-next-line no-adjust-state-on-prop-change
-      setSelectedTerminalKey(terminalEntries[0].key)
+      setSelectedAgentTerminalId(visibleAgentTerminals[0].terminalId)
     }
-    if (terminalEntries.length === 0) {
-      // react-doctor-disable-next-line no-adjust-state-on-prop-change
-      setSelectedTerminalKey(null)
-    }
-  }, [terminalEntries, selectedTerminalKey])
+  }, [visibleAgentTerminals, selectedAgentTerminalId])
+
+  const selectedAgentTerminal = useMemo(
+    () =>
+      visibleAgentTerminals.find(
+        (task) => task.terminalId === selectedAgentTerminalId,
+      ) ?? null,
+    [visibleAgentTerminals, selectedAgentTerminalId],
+  )
 
   const scopeKeyRef = useRef(scopeKey)
   // react-doctor-disable-next-line no-ref-current-in-render
@@ -245,40 +302,80 @@ export const TerminalWidget = memo(function TerminalWidget({
           </Tooltip>
         </div>
 
-        {/* Agent terminal output (from extension meta) */}
-        {terminalEntries.length > 0 && (
-          <div className="border-t border-border/40 p-2 space-y-1">
-            <div className="flex flex-wrap gap-1">
-              {terminalEntries.map((entry) => (
-                <button
-                  key={entry.key}
-                  type="button"
-                  onClick={() => setSelectedTerminalKey(entry.key)}
-                  className={cn(
-                    "rounded px-2 py-1 text-left text-[10px]",
-                    selectedTerminalKey === entry.key
-                      ? "bg-muted text-foreground"
-                      : "text-muted-foreground hover:bg-muted/50",
-                  )}
-                >
-                  {entry.key}
-                </button>
-              ))}
+        {/* Agent terminal tasks (reported by the agent adapter) */}
+        {visibleAgentTerminals.length > 0 && (
+          <div className="border-t border-border/40 p-2">
+            <div className="mb-1.5 flex items-center gap-1 px-0.5">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                {i18n.t("Agent terminals")}
+              </span>
+              <span className="text-[10px] text-muted-foreground">
+                ({visibleAgentTerminals.length})
+              </span>
             </div>
-            {selectedTerminalKey ? (
+            <div className="space-y-0.5">
+              {visibleAgentTerminals.map((task) => {
+                const isSelected =
+                  task.terminalId === selectedAgentTerminalId
+                return (
+                  <button
+                    key={task.terminalId}
+                    type="button"
+                    title={task.command || task.title}
+                    onClick={() =>
+                      setSelectedAgentTerminalId(
+                        isSelected ? null : task.terminalId,
+                      )
+                    }
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-muted/50",
+                      isSelected && "bg-muted",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "h-1.5 w-1.5 flex-shrink-0 rounded-full",
+                        task.status === "running"
+                          ? "animate-pulse bg-blue-500"
+                          : task.status === "completed"
+                            ? "bg-green-500"
+                            : "bg-red-500",
+                      )}
+                    />
+                    <span
+                      className={cn(
+                        "min-w-0 flex-1 truncate text-xs",
+                        isSelected
+                          ? "text-foreground"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {task.title}
+                    </span>
+                    <span
+                      className={cn(
+                        "shrink-0 text-[10px]",
+                        task.status === "running"
+                          ? "text-muted-foreground"
+                          : task.status === "completed"
+                            ? "text-green-600 dark:text-green-500"
+                            : "text-red-600 dark:text-red-500",
+                      )}
+                    >
+                      {agentTerminalStatusLabel(task)}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+            {selectedAgentTerminal && (
               <AgentTerminalOutput
-                content={(() => {
-                  const value = terminalEntries.find((e) => e.key === selectedTerminalKey)?.value
-                  if (typeof value === "string") return value
-                  try {
-                    return JSON.stringify(value ?? null, null, 2)
-                  } catch {
-                    return String(value)
-                  }
-                })()}
-                className="h-40 w-full rounded"
+                content={
+                  selectedAgentTerminal.output || i18n.t("No output yet")
+                }
+                className="mt-1.5 h-40 w-full rounded"
               />
-            ) : null}
+            )}
           </div>
         )}
 
