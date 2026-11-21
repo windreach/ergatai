@@ -2149,10 +2149,12 @@ export async function syncWorktreeChangesToBase(
 			error: error instanceof Error ? error.message : String(error),
 		};
 	}
-	const syncState = await readSyncState(syncStatePath);
-
-	// Never start a rebase on top of an existing in-progress git operation.
-	const chatState = await getRepositoryState(worktreePath).catch(() => null);
+	// Read sync state and inspect the worktree state concurrently; neither
+	// depends on the other.
+	const [syncState, chatState] = await Promise.all([
+		readSyncState(syncStatePath),
+		getRepositoryState(worktreePath).catch(() => null),
+	]);
 	if (
 		chatState &&
 		(chatState.isRebasing ||

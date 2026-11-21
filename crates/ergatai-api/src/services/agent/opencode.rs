@@ -454,6 +454,240 @@ pub fn convert_skill_mentions(message: &str) -> String {
     result
 }
 
+/// Placeholder prompt text that OpenCode's `/init` expands to. The real text
+/// will be supplied later; keep this constant as the single swap point.
+pub const OPENCODE_INIT_PROMPT: &str = r###"Create or update  AGENTS.md  for this repository.
+
+The goal is a compact instruction file that helps future OpenCode sessions avoid mistakes and ramp up quickly. Every line should answer: "Would an agent likely miss this without help?" If not, leave it out.
+
+User-provided focus or constraints (honor these):
+
+How to investigate
+
+Read the highest-value sources first:
+
+-  README* , root manifests, workspace config, lockfiles
+- build, test, lint, formatter, typecheck, and codegen config
+- CI workflows and pre-commit / task runner config
+- existing instruction files ( AGENTS.md ,  CLAUDE.md ,  .cursor/rules/ ,  .cursorrules ,  .github/copilot-instructions.md )
+- repo-local OpenCode config such as  opencode.json 
+
+If architecture is still unclear after reading config and docs, inspect a small number of representative code files to find the real entrypoints, package boundaries, and execution flow. Prefer reading the files that explain how the system is wired together over random leaf files.
+
+Prefer executable sources of truth over prose. If docs conflict with config or scripts, trust the executable source and only keep what you can verify.
+
+What to extract
+
+Look for the highest-signal facts for an agent working in this repo:
+
+- exact developer commands, especially non-obvious ones
+- how to run a single test, a single package, or a focused verification step
+- required command order when it matters, such as  lint -> typecheck -> test 
+- monorepo or multi-package boundaries, ownership of major directories, and the real app/library entrypoints
+- framework or toolchain quirks: generated code, migrations, codegen, build artifacts, special env loading, dev servers, infra deploy flow
+- testing quirks: fixtures, integration test prerequisites, snapshot workflows, required services, flaky or expensive suites
+- important constraints from existing instruction files worth preserving
+
+Good  AGENTS.md  content is usually hard-earned context that took reading multiple files to infer.
+
+Questions
+
+Only ask the user questions if the repo cannot answer something important. Use the  question  tool for one short batch at most.
+
+Good questions:
+
+- undocumented team conventions
+- branch / PR / release expectations
+- missing setup or test prerequisites that are known but not written down
+
+Do not ask about anything the repo already makes clear.
+
+Writing rules
+
+Include only high-signal, repo-specific guidance such as:
+
+- exact commands and shortcuts the agent would otherwise guess wrong
+- architecture notes that are not obvious from filenames
+- conventions that differ from language or framework defaults
+- setup requirements, environment quirks, and operational gotchas
+- references to existing instruction sources that matter
+
+Exclude:
+
+- generic software advice
+- long tutorials or exhaustive file trees
+- obvious language conventions
+- speculative claims or anything you could not verify
+- content better stored in another file referenced via  opencode.json   instructions 
+
+When in doubt, omit.
+
+Prefer short sections and bullets. If the repo is simple, keep the file simple. If the repo is large, summarize the few structural facts that actually change how an agent should work.
+
+If  AGENTS.md  already exists at  /root/ergatai , improve it in place rather than rewriting blindly. Preserve verified useful guidance, delete fluff or stale claims, and reconcile it with the current codebase."###;
+
+/// Placeholder prompt text that OpenCode's `/review` expands to. The real text
+/// will be supplied later; keep this constant as the single swap point.
+pub const OPENCODE_REVIEW_PROMPT: &str = r####"You are a code reviewer. Your job is to review code changes and provide actionable feedback.
+
+---
+
+Input:
+
+---
+
+## Determining What to Review
+
+Based on the input provided, determine which type of review to perform:
+
+1. **No arguments (default)**: Review all uncommitted changes
+   - Run: `git diff` for unstaged changes
+   - Run: `git diff --cached` for staged changes
+   - Run: `git status --short` to identify untracked (net new) files
+
+2. **Commit hash** (40-char SHA or short hash): Review that specific commit
+   - Run: `git show <hash>`
+
+3. **Branch name**: Compare current branch to the specified branch
+   - Run: `git diff <branch>...HEAD`
+
+4. **PR URL or number** (contains "github.com" or "pull" or looks like a PR number): Review the pull request
+   - Run: `gh pr view <pr>` to get PR context
+   - Run: `gh pr diff <pr>` to get the diff
+
+Use best judgement when processing input.
+
+---
+
+## Gathering Context
+
+**Diffs alone are not enough.** After getting the diff, read the entire file(s) being modified to understand the full context. Code that looks wrong in isolation may be correct given surrounding logic—and vice versa.
+
+- Use the diff to identify which files changed
+- Use `git status --short` to identify untracked files, then read their full contents
+- Read the full file to understand existing patterns, control flow, and error handling
+- Check for existing style guide or conventions files (CONVENTIONS.md, AGENTS.md, .editorconfig, etc.)
+
+---
+
+## What to Look For
+
+**Bugs** - Your primary focus.
+- Logic errors, off-by-one mistakes, incorrect conditionals
+- If-else guards: missing guards, incorrect branching, unreachable code paths
+- Edge cases: null/empty/undefined inputs, error conditions, race conditions
+- Security issues: injection, auth bypass, data exposure
+- Broken error handling that swallows failures, throws unexpectedly or returns error types that are not caught.
+
+**Structure** - Does the code fit the codebase?
+- Does it follow existing patterns and conventions?
+- Are there established abstractions it should use but doesn't?
+- Excessive nesting that could be flattened with early returns or extraction
+
+**Performance** - Only flag if obviously problematic.
+- O(n²) on unbounded data, N+1 queries, blocking I/O on hot paths
+
+**Behavior Changes** - If a behavioral change is introduced, raise it (especially if it's possibly unintentional).
+
+---
+
+## Before You Flag Something
+
+**Be certain.** If you're going to call something a bug, you need to be confident it actually is one.
+
+- Only review the changes - do not review pre-existing code that wasn't modified
+- Don't flag something as a bug if you're unsure - investigate first
+- Don't invent hypothetical problems - if an edge case matters, explain the realistic scenario where it breaks
+- If you need more context to be sure, use the tools below to get it
+
+**Don't be a zealot about style.** When checking code against conventions:
+- Verify the code is *actually* in violation. Don't complain about else statements if early returns are already being used correctly.
+- Some "violations" are acceptable when they're the simplest option. A `let` statement is fine if the alternative is convoluted.
+- Excessive nesting is a legitimate concern regardless of other style choices.
+
+---
+
+## Tools
+
+Use these to inform your review:
+- **Explore agent** - Find how existing code handles similar problems. Check patterns, conventions, and prior art before claiming something doesn't fit.
+- **Available documentation and code-search tools** - Verify correct usage of libraries/APIs before flagging something as wrong.
+- **Web Search** - Research best practices if you're unsure about a pattern.
+
+If you're uncertain about something and can't verify it with these tools, say "I'm not sure about X" rather than flagging it as a definite issue.
+
+---
+
+## Output
+
+1. If there is a bug, be direct and clear about why it is a bug.
+2. Clearly communicate severity of issues. Do not overstate severity.
+3. Critiques should clearly and explicitly communicate the scenarios, environments, or inputs that are necessary for the bug to arise. The comment should immediately indicate that the issue's severity depends on these factors.
+4. Your tone should be matter-of-fact and not accusatory or overly positive. It should read as a helpful AI assistant suggestion without sounding too much like a human reviewer.
+5. Write so the reader can quickly understand the issue without reading too closely.
+6. AVOID flattery, do not give any comments that are not helpful to the reader.
+"####;
+
+/// Intercept OpenCode's `/init` slash command.
+///
+/// OpenCode ships no native `/init`, so Ergatai implements it here by
+/// replacing a bare `/init` message with `OPENCODE_INIT_PROMPT`. Returns
+/// `Some(replacement)` when the message is (after stripping an optional
+/// working-directory note) exactly `/init`; otherwise `None`.
+pub fn intercept_init(message: &str) -> Option<String> {
+    // Split off an optional working-directory note prefix of the form
+    // "[Working directory: ...]\nUse relative paths within this directory for all file operations.\n\n".
+    let (prefix, core) = if let Some(idx) = message.find("\n\n") {
+        let head = &message[..idx];
+        if head.starts_with("[Working directory:") {
+            (&message[..idx + 2], &message[idx + 2..])
+        } else {
+            ("", message)
+        }
+    } else {
+        ("", message)
+    };
+
+    if core.trim() != "/init" {
+        return None;
+    }
+
+    if prefix.is_empty() {
+        Some(OPENCODE_INIT_PROMPT.to_string())
+    } else {
+        Some(format!("{}{}", prefix, OPENCODE_INIT_PROMPT))
+    }
+}
+
+/// Intercept OpenCode's `/review` slash command.
+///
+/// Native `/review` returns empty in this environment, so Ergatai implements it
+/// here by replacing a bare `/review` message with `OPENCODE_REVIEW_PROMPT`.
+/// Returns `Some(replacement)` when the message is (after stripping an optional
+/// working-directory note) exactly `/review`; otherwise `None`.
+pub fn intercept_review(message: &str) -> Option<String> {
+    let (prefix, core) = if let Some(idx) = message.find("\n\n") {
+        let head = &message[..idx];
+        if head.starts_with("[Working directory:") {
+            (&message[..idx + 2], &message[idx + 2..])
+        } else {
+            ("", message)
+        }
+    } else {
+        ("", message)
+    };
+
+    if core.trim() != "/review" {
+        return None;
+    }
+
+    if prefix.is_empty() {
+        Some(OPENCODE_REVIEW_PROMPT.to_string())
+    } else {
+        Some(format!("{}{}", prefix, OPENCODE_REVIEW_PROMPT))
+    }
+}
+
 pub fn list_skills(cwd: Option<&str>) -> Vec<crate::services::skills_service::SkillInfo> {
     use std::path::Path;
     let mut out = Vec::new();

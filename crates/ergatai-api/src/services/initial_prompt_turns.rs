@@ -152,7 +152,24 @@ pub fn convert_prompt_tokens(text: &str, agent_kind: Option<&str>) -> String {
     // Deliberately do not collapse whitespace here: prompts can contain
     // multi-line text and indented code blocks that must reach the agent
     // unchanged (the previous `\s{2,}` collapse also ate newlines).
-    result.trim().to_string()
+    let result = result.trim().to_string();
+
+    // OpenCode ships no native /init (and native /review returns empty here);
+    // intercept them and expand to prompts.
+    if agent_kind == Some("opencode") {
+        if let Some(replacement) =
+            crate::services::agent::opencode::intercept_init(&result)
+        {
+            return replacement;
+        }
+        if let Some(replacement) =
+            crate::services::agent::opencode::intercept_review(&result)
+        {
+            return replacement;
+        }
+    }
+
+    result
 }
 
 const MAX_ATTEMPTS: i64 = 3;
