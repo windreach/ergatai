@@ -249,7 +249,10 @@ impl PermissionHandler for InteractivePermissionHandler {
             // Auto / AutoBash / Ask auto path. Pre-lock write targets for
             // edit-like operations and for Bash (Execute) when it is being
             // auto-approved, so file locks still apply.
-            if matches!(kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move | ToolKind::Execute) {
+            if matches!(
+                kind,
+                ToolKind::Edit | ToolKind::Delete | ToolKind::Move | ToolKind::Execute
+            ) {
                 if let Err(reason) =
                     try_pre_lock_files(agent_id, session_id, &kind, &locations, raw_input).await
                 {

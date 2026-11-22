@@ -244,7 +244,7 @@ cd frontend && bun run ts:check
 
 ## 许可证
 
-[Apache License 2.0](LICENSE) © 2024 Ergatai Authors。
+[Apache License 2.0](LICENSE) © 2026 Ergatai Authors。
 
 桌面 UI（`frontend/`）衍生自 [1Code](https://1code.dev)（[21st.dev](https://21st.dev) 团队），采用 Apache License 2.0。
 归属与修改详情见 `frontend/NOTICE` 与 `frontend/MODIFICATIONS.md`。

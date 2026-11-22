@@ -249,7 +249,7 @@ Contributions welcome. Before opening a PR:
 
 ## License
 
-[Apache License 2.0](LICENSE) © 2024 Ergatai Authors.
+[Apache License 2.0](LICENSE) © 2026 Ergatai Authors.
 
 The desktop UI (`frontend/`) is derived from [1Code](https://1code.dev) by the
 [21st.dev](https://21st.dev) team, licensed under the Apache License 2.0.
