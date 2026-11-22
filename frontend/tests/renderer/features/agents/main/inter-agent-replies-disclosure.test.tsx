@@ -228,6 +228,105 @@ describe("InterAgentRepliesDisclosure MCP reply rendering", () => {
     )
   })
 
+  it("renders a reply for code-mode send_message wrapped in an execute part", async () => {
+    const parts = [
+      {
+        type: "tool-execute",
+        toolCallId: TOOL_CALL_ID,
+        toolKind: null,
+        state: "result",
+        input: {
+          code: `const result = await tools.Ergatai_MCP_Tools.send_message({
+  target_agent_id: "opencode",
+  message: "hello from A",
+  message_type: "request"
+});
+return result;`,
+        },
+        output: {
+          metadata: {
+            toolCalls: [
+              {
+                tool: "Ergatai_MCP_Tools.send_message",
+                status: "completed",
+                input: {
+                  target_agent_id: "opencode",
+                  message: "hello from A",
+                  message_type: "request",
+                },
+              },
+            ],
+          },
+          stdout: JSON.stringify({
+            status: "queued",
+            target_agent: "agent_B",
+            message_id: REPLY_TO_MESSAGE_ID,
+            correlation_id: CORRELATION_ID,
+          }),
+        },
+      },
+    ]
+
+    renderDisclosure(parts)
+
+    await waitFor(() => expect(getTriggerButton()).toBeTruthy())
+    fireEvent.click(getTriggerButton())
+    await waitFor(() => expect(screen.getByText("B 的回复第一版")).toBeTruthy())
+  })
+
+  it("renders replies linked by replyToTurnId without parsing tool parts", async () => {
+    queryMock.mockImplementation(() =>
+      Promise.resolve([
+        makeReplyMessage({
+          metadata: { replyToTurnId: "turn_host_1" },
+        }),
+      ]),
+    )
+
+    render(
+      <InterAgentRepliesDisclosure
+        message={{
+          parts: [],
+          conversationId: HOST_CONVERSATION_ID,
+          metadata: { turnId: "turn_host_1" },
+        }}
+        chatId="chat_123"
+      />,
+    )
+
+    await waitFor(() => expect(getTriggerButton()).toBeTruthy())
+    fireEvent.click(getTriggerButton())
+    await waitFor(() => expect(screen.getByText("B 的回复第一版")).toBeTruthy())
+  })
+
+  it("does not render the same turn-linked reply twice when tool detection also matches", async () => {
+    queryMock.mockImplementation(() =>
+      Promise.resolve([
+        makeReplyMessage({
+          metadata: {
+            replyToTurnId: "turn_host_1",
+            correlationId: CORRELATION_ID,
+            replyToMessageId: REPLY_TO_MESSAGE_ID,
+          },
+        }),
+      ]),
+    )
+
+    render(
+      <InterAgentRepliesDisclosure
+        message={{
+          parts: makeMessageParts(),
+          conversationId: HOST_CONVERSATION_ID,
+          metadata: { turnId: "turn_host_1" },
+        }}
+        chatId="chat_123"
+      />,
+    )
+
+    await waitFor(() => expect(getTriggerButton()).toBeTruthy())
+    expect(screen.getAllByRole("button", { name: /opencode/ })).toHaveLength(1)
+  })
+
   it("correlates persisted stdout results to the matching reply only", async () => {
     vi.mocked(trpc.ergatai.getAgentBindings.useQuery).mockReturnValue({
       data: [

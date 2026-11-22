@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { Terminal as XTerm } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import { WebglAddon } from "@xterm/addon-webgl"

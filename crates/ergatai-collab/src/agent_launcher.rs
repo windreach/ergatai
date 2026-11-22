@@ -21,7 +21,8 @@ use std::sync::{Arc, OnceLock};
 use ergatai_error::id::{format as format_id, generate, IdType};
 use ergatai_error::{ErgataiError, ErgataiResult, TaskId};
 use ergatai_lock::SystemToken;
-use ergatai_runtime::{get_agent_runtime, WorkspaceSpec};
+use ergatai_runtime::get_agent_runtime;
+use ergatai_runtime::launch::{AgentLauncher as RuntimeAgentLauncher, LaunchPlan};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::info;
@@ -926,15 +927,9 @@ identifiers, configuration values, etc.).
         // 1. Get global AgentRuntime singleton (fixes lifetime bug)
         let runtime = get_agent_runtime();
 
-        // 2. Create workspace spec
+        // 2. Allocate a workspace ID. The mechanical launcher owns the
+        //    WorkspaceSpec construction.
         let workspace_id = format_id(generate(), IdType::Workspace);
-        let spec = WorkspaceSpec {
-            id: workspace_id.clone(),
-            work_dir: work_dir.to_path_buf(),
-            env: std::collections::HashMap::new(),
-            resources: Default::default(),
-            capture_thoughts: false,
-        };
 
         // 3. Build the agent launch command.
         //    Default: `claude` (Claude Code CLI). Users can override by setting
@@ -977,19 +972,37 @@ identifiers, configuration values, etc.).
         //     use tools without prompting.
         let agent_command = format!("{} --yes", base_command);
 
-        // 4. Launch agent via runtime (creates workspace + starts process)
-        let runtime_agent_id = runtime
-            .launch_agent(
-                spec,
-                &agent_command,
-                Some(instruction),
-                Some(agent_name),
-                None,
-            )
+        // 4. Launch agent through the shared mechanical launcher. The
+        //    instruction is injected after startup so the launch path stays
+        //    identical to every other caller (no pre-model prompt side channel).
+        let plan = LaunchPlan {
+            workspace_id: workspace_id.clone(),
+            work_dir: work_dir.to_path_buf(),
+            env: std::collections::HashMap::new(),
+            resources: Default::default(),
+            capture_thoughts: false,
+            command: agent_command,
+            chat_id: None,
+            conversation_id: None,
+            profile_name: Some(agent_name.to_string()),
+            transport: None,
+            reuse_agent_id: None,
+        };
+        let runtime_agent_id = RuntimeAgentLauncher::new(&runtime)
+            .launch(plan)
             .await
             .map_err(|e| {
                 ergatai_error::ErgataiError::AgentSpawnFailed(format!(
                     "Failed to launch agent '{}': {}",
+                    agent_id, e
+                ))
+            })?;
+        runtime
+            .inject_message(&runtime_agent_id, instruction)
+            .await
+            .map_err(|e| {
+                ergatai_error::ErgataiError::AgentSpawnFailed(format!(
+                    "Failed to inject instruction into agent '{}': {}",
                     agent_id, e
                 ))
             })?;

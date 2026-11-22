@@ -115,6 +115,29 @@ export const profilesRouter = router({
       )
     }),
 
+  /** Copy one provider connection (including its API key) to another agent. */
+  copyProviderConnection: publicProcedure
+    .input(
+      z.object({
+        id: z.string().min(1),
+        agentId: z.string().min(1),
+        name: z.string().min(1).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      return ergataiFetch<{ connection: { id: string; name: string } }>(
+        "/api/v1/provider-connections/copy",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            id: input.id,
+            agent_id: input.agentId,
+            name: input.name,
+          }),
+        },
+      )
+    }),
+
 
   /** List agent profiles (templates) */
   listProfiles: publicProcedure.query(async () => {

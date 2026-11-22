@@ -36,11 +36,21 @@ export function useActiveChatEffects({
 
     if (
       isRuntimeStreaming ||
+      conversationRuntime?.status === "error" ||
       messages.some((message: any) => message.role === "assistant")
     ) {
+      // A failed initial prompt has no assistant message to wait for. The
+      // backend publishes a terminal runtime error, so clear the local
+      // "Generating" handle instead of leaving it pending forever.
       setPendingInitialPrompt(null)
     }
-  }, [isRuntimeStreaming, messages, pendingInitialPrompt, setPendingInitialPrompt])
+  }, [
+    isRuntimeStreaming,
+    messages,
+    pendingInitialPrompt,
+    setPendingInitialPrompt,
+    conversationRuntime?.status,
+  ])
 
   useEffect(() => {
     const storedParentChatId = agentChatStore.getParentChatId(conversationId)

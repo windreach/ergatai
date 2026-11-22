@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 /**
  * Queue utilities for managing message queue in agents chat
  * Adapted from canvas chat queue implementation

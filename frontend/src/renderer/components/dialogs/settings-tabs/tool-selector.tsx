@@ -1,33 +1,94 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { cn } from "../../../lib/utils"
 
 export const AVAILABLE_TOOLS = [
   // File Operations
-  { id: "Read", name: "Read File", category: "file", description: "Read file contents" },
-  { id: "Write", name: "Write File", category: "file", description: "Create or overwrite files" },
-  { id: "Edit", name: "Edit File", category: "file", description: "Make precise edits" },
-  { id: "Glob", name: "Glob Pattern", category: "file", description: "Find files by pattern" },
-  { id: "Grep", name: "Search Content", category: "file", description: "Search in file contents" },
-  { id: "NotebookEdit", name: "Notebook Edit", category: "file", description: "Edit Jupyter notebooks" },
+  {
+    id: "Read",
+    name: i18n.t("settings.tools.read.name"),
+    category: "file",
+    description: i18n.t("settings.tools.read.description"),
+  },
+  {
+    id: "Write",
+    name: i18n.t("settings.tools.write.name"),
+    category: "file",
+    description: i18n.t("settings.tools.write.description"),
+  },
+  {
+    id: "Edit",
+    name: i18n.t("settings.tools.edit.name"),
+    category: "file",
+    description: i18n.t("settings.tools.edit.description"),
+  },
+  {
+    id: "Glob",
+    name: i18n.t("settings.tools.glob.name"),
+    category: "file",
+    description: i18n.t("settings.tools.glob.description"),
+  },
+  {
+    id: "Grep",
+    name: i18n.t("settings.tools.grep.name"),
+    category: "file",
+    description: i18n.t("settings.tools.grep.description"),
+  },
+  {
+    id: "NotebookEdit",
+    name: i18n.t("settings.tools.notebookEdit.name"),
+    category: "file",
+    description: i18n.t("settings.tools.notebookEdit.description"),
+  },
 
   // System
-  { id: "Bash", name: "Bash Commands", category: "system", description: "Execute shell commands" },
-  { id: "Task", name: "Launch Subagent", category: "system", description: "Launch specialized agents" },
+  {
+    id: "Bash",
+    name: i18n.t("settings.tools.bash.name"),
+    category: "system",
+    description: i18n.t("settings.tools.bash.description"),
+  },
+  {
+    id: "Task",
+    name: i18n.t("settings.tools.task.name"),
+    category: "system",
+    description: i18n.t("settings.tools.task.description"),
+  },
 
   // Web
-  { id: "WebSearch", name: "Web Search", category: "web", description: "Search the internet" },
-  { id: "WebFetch", name: "Fetch URL", category: "web", description: "Fetch webpage content" },
+  {
+    id: "WebSearch",
+    name: i18n.t("settings.tools.webSearch.name"),
+    category: "web",
+    description: i18n.t("settings.tools.webSearch.description"),
+  },
+  {
+    id: "WebFetch",
+    name: i18n.t("settings.tools.webFetch.name"),
+    category: "web",
+    description: i18n.t("settings.tools.webFetch.description"),
+  },
 
   // Planning & Interaction
-  { id: "TodoWrite", name: "Todo List", category: "planning", description: "Manage task list" },
-  { id: "AskUserQuestion", name: "Ask User", category: "planning", description: "Ask clarifying questions" },
+  {
+    id: "TodoWrite",
+    name: i18n.t("settings.tools.todoWrite.name"),
+    category: "planning",
+    description: i18n.t("settings.tools.todoWrite.description"),
+  },
+  {
+    id: "AskUserQuestion",
+    name: i18n.t("settings.tools.askUser.name"),
+    category: "planning",
+    description: i18n.t("settings.tools.askUser.description"),
+  },
 ]
 
 const CATEGORIES = [
-  { id: "file", name: "File Operations" },
-  { id: "system", name: "System" },
-  { id: "web", name: "Web" },
-  { id: "planning", name: "Planning" },
+  { id: "file", name: i18n.t("settings.tools.categories.file") },
+  { id: "system", name: i18n.t("settings.tools.categories.system") },
+  { id: "web", name: i18n.t("settings.tools.categories.web") },
+  { id: "planning", name: i18n.t("settings.tools.categories.planning") },
 ]
 
 interface ToolSelectorProps {
@@ -62,7 +123,7 @@ export function ToolSelector({ selectedTools, onChange, mode }: ToolSelectorProp
           onClick={handleSelectAll}
           className="text-xs text-muted-foreground hover:text-foreground transition-colors"
         >
-          Select all
+          {i18n.t("settings.tools.selectAll")}
         </button>
         <span className="text-muted-foreground">·</span>
         <button
@@ -70,11 +131,11 @@ export function ToolSelector({ selectedTools, onChange, mode }: ToolSelectorProp
           onClick={handleSelectNone}
           className="text-xs text-muted-foreground hover:text-foreground transition-colors"
         >
-          Clear
+          {i18n.t("settings.tools.clear")}
         </button>
         <span className="flex-1" />
         <span className="text-xs text-muted-foreground">
-          {selectedTools.length} selected
+          {i18n.t("settings.tools.selectedCount", { count: selectedTools.length })}
         </span>
       </div>
 
@@ -153,8 +214,8 @@ export function ToolSelector({ selectedTools, onChange, mode }: ToolSelectorProp
       {/* Hint */}
       <p className="text-xs text-muted-foreground">
         {mode === "allowlist"
-          ? "Agent will ONLY have access to selected tools"
-          : "Agent will have access to ALL tools EXCEPT selected ones"}
+          ? i18n.t("settings.tools.allowlistHint")
+          : i18n.t("settings.tools.denylistHint")}
       </p>
     </div>
   )

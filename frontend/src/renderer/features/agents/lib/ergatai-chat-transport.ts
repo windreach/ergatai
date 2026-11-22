@@ -15,6 +15,7 @@ import { conversationRuntimeAgentStorage } from "./conversation-runtime-agent-st
 
 import type { ChatTransport, UIMessage, UIMessageChunk } from "ai"
 import { getOrCreateActiveAgent } from "./ergatai-agent-manager"
+import { promptConversation } from "./agent-session-api"
 import { getQueryClient } from "../../../contexts/TRPCProvider"
 import { trpcClient } from "../../../lib/trpc"
 import { useAgentConversationStore } from "../stores/conversation-store"
@@ -29,7 +30,7 @@ import {
 import { getRuntimeSessionStore } from "../../conversation"
 import type { AgentOutputEvent } from "../../../../main/lib/ergatai/sse-client"
 import { appStore } from "../../../lib/jotai-store"
-import { agentStatusLineAtom } from "../atoms"
+import { agentStatusLineAtomFamily } from "../atoms"
 import { isPersistedMessageId } from "../../../../shared/id"
 import { promptToTitle, mentionsToReadableText } from "../../../../shared/mention-title"
 import { normalizeChatError } from "../../../../shared/chat-error"
@@ -172,7 +173,8 @@ function transformEvent(
       return [{ type: "text-delta", id: textBlockId, delta: event.delta }]
 
     case "status":
-      return [{ type: "text-delta", id: textBlockId, delta: event.message + "\n" }]
+      // Diagnostics are surfaced in the status card, not as assistant prose.
+      return []
 
     case "thinking":
       return [
@@ -804,12 +806,18 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                 }
 
                 if (event.type === "status") {
-                  console.log("[ErgataiChatTransport] received status event:", event.message)
-                  // Render agent stderr/status lines directly in the chat stream.
-                  appStore.set(agentStatusLineAtom, event.message)
+                  // Status lines are diagnostics for the status card, not chat
+                  // content. Key them by conversation so a line from another
+                  // chat cannot leak into this one.
+                  appStore.set(
+                    agentStatusLineAtomFamily(conversationId),
+                    event.message,
+                  )
+                  return
                 }
 
                 if (event.type === "done" || event.type === "error") {
+                  appStore.set(agentStatusLineAtomFamily(conversationId), null)
                   // Let close() handle the closing of text/reasoning blocks
                   close([...transformEvent(event, getTextBlockId(), getReasoningBlockId())])
                 } else {
@@ -822,7 +830,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                     activeBlock = "reasoning"
                   }
 
-                  if ((event.type === "text" || event.type === "status") && activeBlock !== "text") {
+                  if (event.type === "text" && activeBlock !== "text") {
                     if (activeBlock === "reasoning") {
                       controller.enqueue({ type: "reasoning-end", id: getReasoningBlockId() })
                     }
@@ -839,6 +847,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               },
               onError: (error) => {
                 console.error("[ErgataiTransport] SSE error:", error)
+                appStore.set(agentStatusLineAtomFamily(conversationId), null)
                 close([
                   {
                     type: "error",
@@ -848,6 +857,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                 ])
               },
               onComplete: () => {
+                appStore.set(agentStatusLineAtomFamily(conversationId), null)
                 close([{ type: "finish" }])
               },
             },
@@ -985,7 +995,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               // optimistic message, let the backend assign the canonical ID; do
               // not create frontend UUIDs for durable message metadata.
               const clientRequestId = persistedMessageId
-              const promptResult = await trpcClient.ergatai.promptAgent.mutate({
+              const promptResult = await promptConversation({
                 agentId: effectiveAgentId,
                 message: expandedPrompt,
                 conversationId: effectiveConversationId,

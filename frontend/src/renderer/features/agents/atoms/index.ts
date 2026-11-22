@@ -1,13 +1,15 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { atom } from "jotai"
 import { atomWithStorage } from "jotai/utils"
 import { atomFamily } from "jotai/utils"
 import { atomWithWindowStorage } from "../../../lib/window-storage"
 import type { FileMentionOption } from "../mentions/agents-mentions-editor"
-import type {
-  AgentRegistration,
-  CoreAgentId,
-  CoreAgentOption,
+import {
+  resolveAgentRuntimeId,
+  type AgentRegistration,
+  type CoreAgentId,
+  type CoreAgentOption,
 } from "../lib/agent-contract-api"
 
 // Agent mode type - extensible for future modes like "debug"
@@ -40,6 +42,8 @@ export const registeredAgentsAtom = atomWithStorage<AgentRegistration[]>(
 
 export type ChatAgentLogo = {
   agentId: CoreAgentId
+  /** Runtime used for the built-in logo when no custom avatar is set. */
+  runtimeId?: CoreAgentId
   name: string
   avatarUrl?: string
 }
@@ -66,11 +70,13 @@ export function createChatAgentLogos(
     const registeredAgent = registeredAgents.find((agent) => (
       agent.runtimeId === agentId ||
       agent.id === agentId ||
+      agent.profileName?.toLowerCase() === normalizedName ||
       agent.name.toLowerCase() === normalizedName
     ))
 
     return {
       agentId,
+      runtimeId: registeredAgent?.runtimeId ?? agentId,
       name,
       avatarUrl: registeredAgent?.avatarUrl,
     }
@@ -83,12 +89,12 @@ export function areVisibleChatAgentLogosEqual(
 ): boolean {
   const previous = previousLogos
     ?.slice(0, MAX_CHAT_AGENT_LOGOS)
-    .map((logo) => `${logo.agentId}:${logo.avatarUrl ?? ""}`)
+    .map((logo) => `${logo.agentId}:${logo.runtimeId ?? ""}:${logo.avatarUrl ?? ""}`)
     .sort()
     .join("|") ?? ""
   const next = nextLogos
     .slice(0, MAX_CHAT_AGENT_LOGOS)
-    .map((logo) => `${logo.agentId}:${logo.avatarUrl ?? ""}`)
+    .map((logo) => `${logo.agentId}:${logo.runtimeId ?? ""}:${logo.avatarUrl ?? ""}`)
     .sort()
     .join("|")
 
@@ -106,15 +112,13 @@ export const chatAgentLogosAtom = atom(
   (get) => {
     const storedValue = get(storedChatAgentLogosAtom)
     // react-doctor-disable-next-line jotai-derived-atom-returns-fresh-object
-    return Object.fromEntries(
-      Object.entries(storedValue).map(([chatId, logos]) => [
-        chatId,
-        Array.isArray(logos) ? logos : [logos],
-      ]),
-    ) as ChatAgentLogosMap
+    return normalizeChatAgentLogos(storedValue, get(registeredAgentsAtom))
   },
   (get, set, update: ChatAgentLogosUpdate) => {
-    const current = normalizeChatAgentLogos(get(storedChatAgentLogosAtom))
+    const current = normalizeChatAgentLogos(
+      get(storedChatAgentLogosAtom),
+      get(registeredAgentsAtom),
+    )
     const next = typeof update === "function" ? update(current) : update
     if (next === current) return
 
@@ -122,12 +126,23 @@ export const chatAgentLogosAtom = atom(
   },
 )
 
-function normalizeChatAgentLogos(value: StoredChatAgentLogosMap) {
+function normalizeChatAgentLogos(
+  value: StoredChatAgentLogosMap,
+  registeredAgents: AgentRegistration[],
+): ChatAgentLogosMap {
   return Object.fromEntries(
-    Object.entries(value).map(([chatId, logos]) => [
-      chatId,
-      Array.isArray(logos) ? logos : [logos],
-    ]),
+    Object.entries(value).map(([chatId, logos]) => {
+      const normalized = (Array.isArray(logos) ? logos : [logos]).map((logo) => {
+        if (logo.runtimeId) return logo
+        const runtimeId = resolveAgentRuntimeId(
+          registeredAgents,
+          logo.agentId,
+          logo.name,
+        )
+        return runtimeId ? { ...logo, runtimeId } : logo
+      })
+      return [chatId, normalized]
+    }),
   ) as ChatAgentLogosMap
 }
 
@@ -1233,8 +1248,12 @@ export const showMessageJsonAtom = atomWithStorage<boolean>(
 
 // Desktop view mode - takes priority over chat-based rendering
 // null = default behavior (chat/new-chat/kanban)
-export type DesktopView = "settings" | "add-agent" | null
+export type DesktopView = "settings" | "add-agent" | "new-workspace" | null
 export const desktopViewAtom = atom<DesktopView>(null)
+
+// Manage Agents section, exposed so onboarding can deep-link to Provider setup.
+export type ManageAgentsSection = "providers" | "agents" | "install"
+export const manageAgentsSectionAtom = atom<ManageAgentsSection>("agents")
 
 // Settings inner sidebar widths (for Keyboard, Projects two-panel layouts)
 // Non-persisted — resets to default on re-render
@@ -1311,8 +1330,10 @@ export const fileViewerBracketPairsAtom = atomWithStorage<boolean>(
 // File search dialog open state (Cmd+P)
 export const fileSearchDialogOpenAtom = atom<boolean>(false)
 
-/** Latest agent status line (e.g. stderr retries) to show in the status card. */
-export const agentStatusLineAtom = atom<string | null>(null)
+/** Latest agent status line (e.g. stderr retries) per conversation. */
+export const agentStatusLineAtomFamily = atomFamily(
+  (_conversationId: string) => atom<string | null>(null),
+)
 
 // File viewer open state - stores the currently open file path per chatId
 const fileViewerOpenStorageAtom = atom<Record<string, string | null>>({})

@@ -2,14 +2,21 @@ import i18n from "@/lib/i18n"
 "use client"
 
 import { useState } from "react"
-import { useSetAtom } from "jotai"
+import { useAtomValue, useSetAtom } from "jotai"
 import { Bot } from "lucide-react"
 
 import { cn } from "../../../lib/utils"
 import { sideChatSidebarOpenAtom } from "../../details-sidebar"
 import { groupAgentChatRequestAtomFamily } from "./group-chat-context"
 import { getCoreAgentIcon } from "../components/core-agent-selector"
-import { resolveCoreAgentId, type CoreAgentId } from "../lib/agent-contract-api"
+import {
+  resolveAgentRuntimeId,
+  resolveCoreAgentId,
+  resolveRuntimeAgentIdFromCommand,
+  type AgentRegistration,
+  type CoreAgentId,
+} from "../lib/agent-contract-api"
+import { registeredAgentsAtom } from "../atoms"
 import type { AgentParticipant } from "./agent-participant"
 
 const STATUS_LABELS: Record<AgentParticipant["status"], string> = {
@@ -32,8 +39,26 @@ const STATUS_BALL_CLASSES: Record<AgentParticipant["status"], string> = {
 
 const MAX_VISIBLE_PARTICIPANTS = 3
 
-function getParticipantIcon(participant: AgentParticipant) {
-  if (participant.coreAgentId) return getCoreAgentIcon(participant.coreAgentId)
+function getParticipantIcon(
+  participant: AgentParticipant,
+  registeredAgents: AgentRegistration[],
+) {
+  const runtimeId =
+    resolveAgentRuntimeId(
+      registeredAgents,
+      participant.profile,
+      participant.coreAgentId,
+      participant.agentId,
+    ) ??
+    resolveRuntimeAgentIdFromCommand(participant.profile) ??
+    participant.coreAgentId
+
+  if (runtimeId) {
+    return getCoreAgentIcon(
+      (participant.coreAgentId ?? participant.agentId) as CoreAgentId,
+      runtimeId,
+    )
+  }
 
   return Bot
 }
@@ -53,6 +78,7 @@ export function AgentRail({
 }: AgentRailProps) {
   const setIsSideChatSidebarOpen = useSetAtom(sideChatSidebarOpenAtom)
   const setAgentChatRequest = useSetAtom(groupAgentChatRequestAtomFamily(chatId))
+  const registeredAgents = useAtomValue(registeredAgentsAtom)
   const [isExpanded, setIsExpanded] = useState(false)
 
   if (participants.length === 0) return null
@@ -78,7 +104,7 @@ export function AgentRail({
       className
     )}>
         {visibleParticipants.map((participant) => {
-          const Icon = getParticipantIcon(participant)
+          const Icon = getParticipantIcon(participant, registeredAgents)
 
           return (
             <button

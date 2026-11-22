@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { useEffect, useCallback } from "react"
 import { useAtom } from "jotai"
 import { justUpdatedAtom, justUpdatedVersionAtom } from "../atoms"
@@ -52,7 +53,7 @@ export function useJustUpdated() {
     if (api) {
       // Link to changelog with anchor to current version
       const version = justUpdatedVersion ? `#v${justUpdatedVersion}` : ""
-      api.openExternal(`https://github.com/windreach/ergatai-ui/releases${version}`)
+      api.openExternal(`https://github.com/windreach/ergatai/releases${version}`)
     }
     dismissJustUpdated()
   }, [justUpdatedVersion, dismissJustUpdated])

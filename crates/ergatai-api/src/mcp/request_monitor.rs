@@ -29,6 +29,19 @@ struct PendingRequest {
     sent_at: u64,
     /// Timeout in milliseconds
     timeout_ms: u64,
+    /// Conversation that issued the request (used to attach the reply to the
+    /// correct UI turn).
+    origin_conversation_id: Option<String>,
+    /// Turn that issued the request. Persisted on the reply as
+    /// `replyToTurnId` so the UI never has to re-parse tool calls.
+    origin_turn_id: Option<String>,
+}
+
+/// Durable-ish link from a request to the turn that issued it.
+#[derive(Debug, Clone, Default)]
+pub struct RequestOrigin {
+    pub conversation_id: Option<String>,
+    pub turn_id: Option<String>,
 }
 
 /// Maximum number of pending requests to track
@@ -72,6 +85,34 @@ impl RequestMonitor {
         correlation_id: String,
         timeout_ms: u64,
     ) {
+        self.track_request_with_origin(
+            message_id,
+            from_agent,
+            to_agent,
+            correlation_id,
+            timeout_ms,
+            None,
+            None,
+        )
+        .await;
+    }
+
+    /// Track a new request and remember which conversation/turn issued it.
+    ///
+    /// The origin is copied onto the eventual response so the UI can attach
+    /// the reply to the originating turn without inspecting agent-specific
+    /// tool-call shapes.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn track_request_with_origin(
+        &self,
+        message_id: String,
+        from_agent: String,
+        to_agent: String,
+        correlation_id: String,
+        timeout_ms: u64,
+        origin_conversation_id: Option<String>,
+        origin_turn_id: Option<String>,
+    ) {
         // Use saturating_sub to handle clock skew: if now < sent_at, treat as 0 elapsed
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -91,6 +132,8 @@ impl RequestMonitor {
             correlation_id: correlation_id.clone(),
             sent_at: now,
             timeout_ms,
+            origin_conversation_id,
+            origin_turn_id,
         };
 
         debug!(
@@ -119,6 +162,17 @@ impl RequestMonitor {
                 "Overwriting existing pending request with same correlation_id"
             );
         }
+    }
+
+    /// Look up the origin of a tracked request without consuming it.
+    ///
+    /// Called when a response is sent, before the pending request is removed.
+    pub async fn request_origin(&self, correlation_id: &str) -> Option<RequestOrigin> {
+        let pending = self.pending.read().await;
+        pending.get(correlation_id).map(|request| RequestOrigin {
+            conversation_id: request.origin_conversation_id.clone(),
+            turn_id: request.origin_turn_id.clone(),
+        })
     }
 
     /// Mark a request as responded to
@@ -366,6 +420,30 @@ mod tests {
 
         // Should have 0 pending now
         assert_eq!(monitor.check_timeouts().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_request_origin_is_available_until_response_is_marked() {
+        let monitor = RequestMonitor::new();
+
+        monitor
+            .track_request_with_origin(
+                "msg-1".to_string(),
+                "agent-1".to_string(),
+                "agent-2".to_string(),
+                "corr-1".to_string(),
+                30_000,
+                Some("conv-1".to_string()),
+                Some("turn-1".to_string()),
+            )
+            .await;
+
+        let origin = monitor.request_origin("corr-1").await.expect("origin");
+        assert_eq!(origin.conversation_id.as_deref(), Some("conv-1"));
+        assert_eq!(origin.turn_id.as_deref(), Some("turn-1"));
+
+        monitor.mark_responded("corr-1").await;
+        assert!(monitor.request_origin("corr-1").await.is_none());
     }
 
     #[tokio::test]

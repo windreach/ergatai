@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import * as fs from "fs/promises"
 import type { Dirent } from "fs"
 import * as path from "path"

@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import React from "react"
 import whyDidYouRender from "@welldone-software/why-did-you-render"
 

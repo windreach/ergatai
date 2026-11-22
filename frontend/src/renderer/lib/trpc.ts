@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { createTRPCReact } from "@trpc/react-query"
 import { createTRPCProxyClient } from "@trpc/client"
 import { ipcLink } from "./ipc-link"

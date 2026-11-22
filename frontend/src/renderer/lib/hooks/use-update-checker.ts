@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { useEffect, useCallback, useRef } from "react"
 import { useAtom } from "jotai"
 import { updateStateAtom } from "../atoms"

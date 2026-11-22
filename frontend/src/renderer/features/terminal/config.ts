@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import type { ITerminalOptions, ITheme } from "@xterm/xterm"
 import { extractTerminalTheme } from "@/lib/themes/terminal-theme-mapper"
 

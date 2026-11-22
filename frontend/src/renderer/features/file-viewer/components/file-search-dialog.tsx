@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"

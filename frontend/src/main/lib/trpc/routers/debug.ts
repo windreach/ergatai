@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { router, publicProcedure } from "../index"
 import { app, shell } from "electron"
 import { getAuthManager } from "../../../auth-manager"

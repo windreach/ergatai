@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 "use client"
 
@@ -10,12 +11,15 @@ import { ChatMarkdownRenderer } from "../../../components/chat-markdown-renderer
 import { cn } from "../../../lib/utils"
 import { trpc } from "@/lib/trpc"
 import { CopyButton } from "./message-action-buttons"
+import { resolveWorkspaceRelativePath } from "./agent-tool-utils"
 import type { AgentMode } from "../atoms"
 
 interface AgentPlanSidebarProps {
   chatId: string
   conversationId: string | null
   planPath: string | null
+  /** Chat workspace root, used to resolve agent-relative plan paths */
+  worktreePath?: string | null
   onClose: () => void
   onBuildPlan?: () => void
   /** Current agent mode (plan or agent) */
@@ -27,12 +31,20 @@ export function AgentPlanSidebar({
   chatId,
   conversationId,
   planPath,
+  worktreePath,
   onClose,
   onBuildPlan,
   mode = "agent",
 }: AgentPlanSidebarProps) {
   // View mode: rendered markdown or plaintext
   const [viewMode, setViewMode] = useState<"rendered" | "plaintext">("rendered")
+
+  // Agents may report plan paths relative to their session cwd. Resolve them
+  // against the chat workspace so the backend reads the right file.
+  const resolvedPlanPath = useMemo(
+    () => (planPath ? resolveWorkspaceRelativePath(planPath, worktreePath) : null),
+    [planPath, worktreePath],
+  )
 
   // Toggle view mode
   const handleToggleViewMode = () => {
@@ -46,20 +58,24 @@ export function AgentPlanSidebar({
     error,
     refetch,
   } = trpc.ergatai.readFile.useQuery(
-    { filePath: planPath! },
-    { enabled: !!planPath },
+    { filePath: resolvedPlanPath! },
+    { enabled: !!resolvedPlanPath },
   )
 
   useEffect(() => {
     const handlePlanUpdate = (event: Event) => {
       const customEvent = event as CustomEvent<{ filePath?: string }>
-      if (planPath && (!customEvent.detail?.filePath || customEvent.detail.filePath === planPath)) {
+      const updatedPath = customEvent.detail?.filePath
+      if (
+        resolvedPlanPath &&
+        (!updatedPath || updatedPath === resolvedPlanPath || updatedPath === planPath)
+      ) {
         refetch()
       }
     }
     window.addEventListener("plan-updated", handlePlanUpdate)
     return () => window.removeEventListener("plan-updated", handlePlanUpdate)
-  }, [planPath, refetch])
+  }, [resolvedPlanPath, planPath, refetch])
 
   // Extract plan title from markdown (first H1)
   const planTitle = useMemo(() => {
@@ -195,7 +211,7 @@ export function AgentPlanSidebar({
         ) : (
           <div
             className="px-4 py-3 allow-text-selection"
-            data-plan-path={planPath}
+            data-plan-path={resolvedPlanPath ?? planPath}
           >
             {viewMode === "rendered" ? (
               <ChatMarkdownRenderer

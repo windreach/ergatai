@@ -3,6 +3,7 @@ import i18n from "@/lib/i18n"
 
 import { useEffect, useState } from "react"
 import type { ComponentType } from "react"
+import { useAtomValue } from "jotai"
 import {
   ChevronDown,
   Plus,
@@ -24,10 +25,12 @@ import { cn } from "@/lib/utils"
 import {
   agentContractApi,
   coreAgentAvatarUrls,
+  resolveAgentRuntimeId,
   type CoreAgentId,
   type CoreAgentOption,
 } from "../lib/agent-contract-api"
 import { CORE_AGENT_LOGO_URLS } from "../lib/agent-logo-urls"
+import { registeredAgentsAtom } from "../atoms"
 
 interface CoreAgentSelectorProps {
   value?: CoreAgentId
@@ -49,12 +52,17 @@ const coreAgentLogoComponentCache = new Map<
   ComponentType<{ className?: string }>
 >()
 
-export function getCoreAgentIcon(agentId: CoreAgentId) {
-  const cached = coreAgentLogoComponentCache.get(agentId)
+export function getCoreAgentIcon(
+  agentId: CoreAgentId,
+  runtimeId?: CoreAgentId,
+) {
+  const resolvedRuntimeId = runtimeId ?? agentId
+  const cacheKey = `${agentId}:${resolvedRuntimeId}`
+  const cached = coreAgentLogoComponentCache.get(cacheKey)
   if (cached) return cached
 
   const FallbackIcon =
-    FALLBACK_CORE_AGENT_ICONS[agentId] ?? TerminalSquare
+    FALLBACK_CORE_AGENT_ICONS[resolvedRuntimeId] ?? TerminalSquare
 
   const Component = function CoreAgentLogo({
     className,
@@ -63,11 +71,14 @@ export function getCoreAgentIcon(agentId: CoreAgentId) {
   }) {
     // Resolve at render time so avatars loaded after the first render
     // (listCoreAgents is async) are still picked up.
-    const savedAvatarUrl = coreAgentAvatarUrls.get(agentId) ?? undefined
+    const savedAvatarUrl =
+      coreAgentAvatarUrls.get(agentId) ??
+      coreAgentAvatarUrls.get(resolvedRuntimeId) ??
+      undefined
     const logoUrl =
       savedAvatarUrl ||
-      (agentId in CORE_AGENT_LOGO_URLS
-        ? CORE_AGENT_LOGO_URLS[agentId as keyof typeof CORE_AGENT_LOGO_URLS]
+      (resolvedRuntimeId in CORE_AGENT_LOGO_URLS
+        ? CORE_AGENT_LOGO_URLS[resolvedRuntimeId as keyof typeof CORE_AGENT_LOGO_URLS]
         : undefined)
     if (logoUrl) {
       return (
@@ -81,7 +92,7 @@ export function getCoreAgentIcon(agentId: CoreAgentId) {
     return <FallbackIcon className={className} />
   }
 
-  coreAgentLogoComponentCache.set(agentId, Component)
+  coreAgentLogoComponentCache.set(cacheKey, Component)
   return Component
 }
 
@@ -106,6 +117,9 @@ export function CoreAgentSelector({
     id: value,
     name: getCoreAgentDisplayName(value),
   })
+  const registeredAgents = useAtomValue(registeredAgentsAtom)
+  const resolveIconId = (agentId: CoreAgentId) =>
+    resolveAgentRuntimeId(registeredAgents, agentId) ?? agentId
 
   useEffect(() => {
     let cancelled = false
@@ -174,7 +188,10 @@ export function CoreAgentSelector({
           )}
         >
           {(() => {
-            const SelectedIcon = getCoreAgentIcon(selectedAgent.id)
+            const SelectedIcon = getCoreAgentIcon(
+              selectedAgent.id,
+              resolveIconId(selectedAgent.id),
+            )
 
             return <SelectedIcon className="h-3.5 w-3.5 shrink-0" />
           })()}
@@ -187,7 +204,7 @@ export function CoreAgentSelector({
       </PopoverTrigger>
       <PopoverContent align="start" className="w-44 p-1">
         {agents.map((agent) => {
-          const Icon = getCoreAgentIcon(agent.id)
+          const Icon = getCoreAgentIcon(agent.id, resolveIconId(agent.id))
 
           return (
             <button
@@ -231,6 +248,9 @@ function GroupAgentSelector({
   const [open, setOpen] = useState(false)
   const [draftAgentIds, setDraftAgentIds] =
     useState<CoreAgentId[]>(selectedAgentIds)
+  const registeredAgents = useAtomValue(registeredAgentsAtom)
+  const resolveIconId = (agentId: CoreAgentId) =>
+    resolveAgentRuntimeId(registeredAgents, agentId) ?? agentId
 
   useEffect(() => {
     if (open) {
@@ -253,7 +273,7 @@ function GroupAgentSelector({
   return (
     <div className={cn("flex items-center gap-0.5", className)}>
       {visibleAgents.map((agent) => {
-        const Icon = getCoreAgentIcon(agent.id)
+        const Icon = getCoreAgentIcon(agent.id, resolveIconId(agent.id))
 
         return (
           <span
@@ -297,7 +317,7 @@ function GroupAgentSelector({
           </div>
           <div className="space-y-0.5">
             {agents.map((agent) => {
-              const Icon = getCoreAgentIcon(agent.id)
+              const Icon = getCoreAgentIcon(agent.id, resolveIconId(agent.id))
               // react-doctor-disable-next-line js-set-map-lookups
               const isSelected = draftAgentIds.includes(agent.id)
 

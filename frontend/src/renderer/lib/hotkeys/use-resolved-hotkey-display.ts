@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { useAtomValue } from "jotai"
 import { customHotkeysAtom } from "../atoms"
 import { getResolvedHotkey, hotkeyToDisplay, getShortcutAction, keysToHotkeyString } from "./shortcut-registry"

@@ -218,8 +218,11 @@ export function useAvailableModels(agentId?: string | null, profileHint?: string
   const showOfflineFeatures = useAtomValue(showOfflineModeFeaturesAtom)
   const globalAgentId = useAtomValue(ergataiActiveAgentIdAtom)
 
-  // Prefer passed agentId, fall back to global atom
-  const effectiveAgentId = agentId ?? globalAgentId
+  // Prefer the passed agentId, fall back to the global atom only when the
+  // caller did not specify one. An explicit `null` means "this view has no
+  // backend agent yet" (for example the new-chat form), so the profile hint
+  // must drive the catalogue instead of an unrelated active chat's agent.
+  const effectiveAgentId = agentId === undefined ? globalAgentId : agentId
 
   // Query active agent to get profile name
   const { data: agents } = trpc.ergatai.listAgents.useQuery(undefined, {

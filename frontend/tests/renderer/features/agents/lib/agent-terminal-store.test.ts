@@ -46,6 +46,28 @@ describe("agent-terminal-store", () => {
     })
   })
 
+  it("keeps backgrounded terminal tasks visible immediately", () => {
+    applyAgentTerminalUpdate("conv_1", {
+      terminal_id: "tool_bg",
+      title: "sleep 10",
+      command: "sleep 10",
+      status: "running",
+      backgrounded: true,
+      updated_at: 1_000,
+    })
+
+    const task = getAgentTerminals("conv_1")[0]
+    expect(task).toMatchObject({
+      terminalId: "tool_bg",
+      title: "sleep 10",
+      command: "sleep 10",
+      status: "running",
+      backgrounded: true,
+    })
+    // Background tasks bypass the 15s visibility threshold.
+    expect(task ? isAgentTerminalVisible(task, 1_000) : false).toBe(true)
+  })
+
   it("appends output deltas and accepts full snapshots", () => {
     applyAgentTerminalUpdate("conv_1", {
       terminal_id: "tool_1",
@@ -226,6 +248,12 @@ describe("agent-terminal-store", () => {
       finishedAt: 20_000,
     }
     expect(isAgentTerminalVisible(longCompleted, 100_000)).toBe(true)
+
+    const quickBackground: AgentTerminalTask = {
+      ...quickCompleted,
+      backgrounded: true,
+    }
+    expect(isAgentTerminalVisible(quickBackground, 1_000)).toBe(true)
   })
 
   it("accepts camelCase fields as a fallback", () => {

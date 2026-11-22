@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { execFile } from "node:child_process";
 import { t } from "../../i18n"
 import { promisify } from "node:util";

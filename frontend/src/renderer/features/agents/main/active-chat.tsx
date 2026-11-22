@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 "use client"
 import { ChatViewSidebars } from "./active-chat-sidebars"
@@ -1380,11 +1381,17 @@ export function ChatView({
 
   // Check if diff button can be shown (stats available)
   // This shows the Changes button with stats in header
-  const canShowDiffButton = !!worktreePath
+  // Plain folders have no git status/diff, so the Changes panel would be empty.
+  const { data: isGitRepository } = trpc.changes.isGitRepository.useQuery(
+    { path: worktreePath || "" },
+    { enabled: !!worktreePath, staleTime: 60_000 },
+  )
+  const hasGitRepository = isGitRepository === true
+  const canShowDiffButton = !!worktreePath && hasGitRepository
 
   // Check if diff sidebar can be opened (actual diff content available)
   // Desktop remote chats (sandboxId without worktree) cannot open diff sidebar - only stats in header
-  const canOpenDiff = !!worktreePath
+  const canOpenDiff = !!worktreePath && hasGitRepository
 
   // Create list of conversations with changed files for filtering
   // Only include conversations that have uncommitted changes, sorted by most recent first
@@ -1890,7 +1897,6 @@ export function ChatView({
                         }
                       />
                       <ConversationSelector
-                        onCreateNew={handleCreateNewConversation}
                         isMobile={false}
                         onBackToChats={onBackToChats}
                         onOpenPreview={onOpenPreview}
@@ -2388,6 +2394,7 @@ export function ChatView({
             scopeKey={terminalScopeKey}
             cwd={worktreePath}
             workspaceId={chatId}
+            conversationId={activeConversationId}
             onClose={() => setIsTerminalSidebarOpen(false)}
           />
         </ResizableBottomPanel>

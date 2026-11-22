@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 // react-doctor-disable-next-line prefer-dynamic-import

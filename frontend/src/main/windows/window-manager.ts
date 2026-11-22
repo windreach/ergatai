@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { BrowserWindow } from "electron"
 import { cleanupWindowSubscriptions } from "../lib/git/watcher/ipc-bridge"
 

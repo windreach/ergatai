@@ -1,8 +1,9 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 "use client"
 
 import { useEffect, memo, useCallback, useMemo, useRef, useState } from "react"
-import { useAtom, useAtomValue } from "jotai"
+import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { useTheme } from "next-themes"
 import { fullThemeDataAtom } from "@/lib/atoms"
 import { ArrowUpRight, TerminalSquare, X } from "lucide-react"
@@ -19,16 +20,17 @@ import { getDefaultTerminalBg } from "@/features/terminal"
 import {
   terminalsAtom,
   activeTerminalIdAtom,
+  activeAgentTerminalIdAtomFamily,
+  agentTerminalStatusLabel,
 } from "@/features/terminal"
 import type { TerminalInstance } from "@/features/terminal"
 import { cn } from "@/lib/utils"
 import { killTerminalSession } from "@/features/terminal"
-import { AgentTerminalOutput } from "../../agents"
 import {
   isAgentTerminalVisible,
   useAgentTerminals,
   type AgentTerminalTask,
-} from "../../agents/lib/agent-terminal-store"
+} from "../../agents"
 import { randomToken } from "../../../../shared/id"
 
 interface TerminalWidgetProps {
@@ -75,17 +77,6 @@ function useAgentTerminalClock(tasks: AgentTerminalTask[]): number {
   }, [hasRunningTask])
 
   return now
-}
-
-function agentTerminalStatusLabel(task: AgentTerminalTask): string {
-  if (task.status === "running") return i18n.t("Running")
-  if (task.status === "failed") {
-    return task.exitCode != null
-      ? `${i18n.t("Failed")} (${task.exitCode})`
-      : i18n.t("Failed")
-  }
-  if (task.status === "cancelled") return i18n.t("Stopped")
-  return i18n.t("Completed")
 }
 
 /**
@@ -141,34 +132,17 @@ export const TerminalWidget = memo(function TerminalWidget({
     [allActiveIds, scopeKey],
   )
 
-  const [selectedAgentTerminalId, setSelectedAgentTerminalId] = useState<
-    string | null
-  >(null)
-  useEffect(() => {
-    if (visibleAgentTerminals.length === 0) {
-      if (selectedAgentTerminalId) {
-        // react-doctor-disable-next-line no-adjust-state-on-prop-change
-        setSelectedAgentTerminalId(null)
-      }
-      return
-    }
-    if (
-      !selectedAgentTerminalId ||
-      !visibleAgentTerminals.some(
-        (task) => task.terminalId === selectedAgentTerminalId,
-      )
-    ) {
-      // react-doctor-disable-next-line no-adjust-state-on-prop-change
-      setSelectedAgentTerminalId(visibleAgentTerminals[0].terminalId)
-    }
-  }, [visibleAgentTerminals, selectedAgentTerminalId])
-
-  const selectedAgentTerminal = useMemo(
-    () =>
-      visibleAgentTerminals.find(
-        (task) => task.terminalId === selectedAgentTerminalId,
-      ) ?? null,
-    [visibleAgentTerminals, selectedAgentTerminalId],
+  const activeAgentTerminalAtom = useMemo(
+    () => activeAgentTerminalIdAtomFamily(scopeKey),
+    [scopeKey],
+  )
+  const setActiveAgentTerminalId = useSetAtom(activeAgentTerminalAtom)
+  const openAgentTerminal = useCallback(
+    (terminalId: string) => {
+      setActiveAgentTerminalId(terminalId)
+      onExpand?.()
+    },
+    [setActiveAgentTerminalId, onExpand],
   )
 
   const scopeKeyRef = useRef(scopeKey)
@@ -314,68 +288,43 @@ export const TerminalWidget = memo(function TerminalWidget({
               </span>
             </div>
             <div className="space-y-0.5">
-              {visibleAgentTerminals.map((task) => {
-                const isSelected =
-                  task.terminalId === selectedAgentTerminalId
-                return (
-                  <button
-                    key={task.terminalId}
-                    type="button"
-                    title={task.command || task.title}
-                    onClick={() =>
-                      setSelectedAgentTerminalId(
-                        isSelected ? null : task.terminalId,
-                      )
-                    }
+              {visibleAgentTerminals.map((task) => (
+                <button
+                  key={task.terminalId}
+                  type="button"
+                  title={task.command || task.title}
+                  onClick={() => openAgentTerminal(task.terminalId)}
+                  className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-muted/50"
+                >
+                  <span
                     className={cn(
-                      "flex w-full items-center gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-muted/50",
-                      isSelected && "bg-muted",
+                      "h-1.5 w-1.5 flex-shrink-0 rounded-full",
+                      task.status === "running"
+                        ? "animate-pulse bg-blue-500"
+                        : task.status === "completed"
+                          ? "bg-green-500"
+                          : "bg-red-500",
+                    )}
+                  />
+                  <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                    {task.title}
+                  </span>
+                  <span
+                    className={cn(
+                      "shrink-0 text-[10px]",
+                      task.status === "running"
+                        ? "text-muted-foreground"
+                        : task.status === "completed"
+                          ? "text-green-600 dark:text-green-500"
+                          : "text-red-600 dark:text-red-500",
                     )}
                   >
-                    <span
-                      className={cn(
-                        "h-1.5 w-1.5 flex-shrink-0 rounded-full",
-                        task.status === "running"
-                          ? "animate-pulse bg-blue-500"
-                          : task.status === "completed"
-                            ? "bg-green-500"
-                            : "bg-red-500",
-                      )}
-                    />
-                    <span
-                      className={cn(
-                        "min-w-0 flex-1 truncate text-xs",
-                        isSelected
-                          ? "text-foreground"
-                          : "text-muted-foreground",
-                      )}
-                    >
-                      {task.title}
-                    </span>
-                    <span
-                      className={cn(
-                        "shrink-0 text-[10px]",
-                        task.status === "running"
-                          ? "text-muted-foreground"
-                          : task.status === "completed"
-                            ? "text-green-600 dark:text-green-500"
-                            : "text-red-600 dark:text-red-500",
-                      )}
-                    >
-                      {agentTerminalStatusLabel(task)}
-                    </span>
-                  </button>
-                )
-              })}
+                    {agentTerminalStatusLabel(task)}
+                  </span>
+                  <ArrowUpRight className="h-3 w-3 flex-shrink-0 text-muted-foreground/60" />
+                </button>
+              ))}
             </div>
-            {selectedAgentTerminal && (
-              <AgentTerminalOutput
-                content={
-                  selectedAgentTerminal.output || i18n.t("No output yet")
-                }
-                className="mt-1.5 h-40 w-full rounded"
-              />
-            )}
           </div>
         )}
 

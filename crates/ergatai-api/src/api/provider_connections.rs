@@ -26,6 +26,16 @@ pub struct ImportNativeConfigRequest {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
+pub struct CopyProviderConnectionRequest {
+    /// Source connection to copy.
+    pub id: String,
+    /// Target agent profile name that will own the copied connection.
+    pub agent_id: String,
+    /// Optional name for the copied connection (defaults to the source name).
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ProviderConnectionInput {
     pub id: Option<String>,
     pub name: String,
@@ -136,11 +146,7 @@ pub async fn import_native_config(
     let agent_id = request.agent_id.trim().to_string();
     let kind = crate::services::agent::resolve_kind_by_name(&agent_id).await;
     match tokio::task::spawn_blocking(move || {
-        if kind == crate::services::agent::AgentKind::Unknown {
-            crate::services::native_agent_config::import(&agent_id)
-        } else {
-            crate::services::agent::import_native_config(kind)
-        }
+        crate::services::native_agent_config::import_for_kind(kind, &agent_id)
     })
     .await
     {
@@ -153,6 +159,48 @@ pub async fn import_native_config(
             .into_response(),
         Ok(Err(error)) => internal(error, "import_native_config").into_response(),
         Err(error) => internal(error, "import_native_config_join").into_response(),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/provider-connections/copy",
+    tag = "Provider Connections",
+    request_body = CopyProviderConnectionRequest,
+    responses(
+        (status = 200, description = "Copied provider connection", body = ProviderConnectionMutationResponse),
+        (status = 400, description = "Invalid copy request", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError)
+    )
+)]
+pub async fn copy_provider_connection(
+    Json(input): Json<CopyProviderConnectionRequest>,
+) -> impl axum::response::IntoResponse {
+    if input.agent_id.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(crate::ErrorResponse {
+                error: "agent_id is required".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    match tokio::task::spawn_blocking(move || {
+        provider_connection_service::copy_to_agent(
+            &input.id,
+            &input.agent_id,
+            input.name.as_deref(),
+        )
+    })
+    .await
+    {
+        Ok(Ok(connection)) => (
+            StatusCode::OK,
+            Json(ProviderConnectionMutationResponse { connection }),
+        )
+            .into_response(),
+        Ok(Err(error)) => internal(error, "copy_provider_connection").into_response(),
+        Err(error) => internal(error, "copy_provider_connection_join").into_response(),
     }
 }
 

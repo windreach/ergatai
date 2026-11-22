@@ -1,8 +1,13 @@
 import i18n from "@/lib/i18n"
 "use client"
 
+import { useAtomValue } from "jotai"
 import { cn } from "../../../lib/utils"
-import type { CoreAgentId } from "../lib/agent-contract-api"
+import {
+  resolveAgentRuntimeId,
+  type CoreAgentId,
+} from "../lib/agent-contract-api"
+import { registeredAgentsAtom } from "../atoms"
 import { getCoreAgentIcon } from "../components/core-agent-selector"
 
 interface GroupAgentMessageHeaderProps {
@@ -16,9 +21,13 @@ export function GroupAgentMessageHeader({
   agentName,
   className,
 }: GroupAgentMessageHeaderProps) {
+  const registeredAgents = useAtomValue(registeredAgentsAtom)
+
   if (!agentName) return null
 
-  const Icon = getCoreAgentIcon(agentId ?? "claude-code")
+  const runtimeId =
+    resolveAgentRuntimeId(registeredAgents, agentId, agentName) ?? undefined
+  const Icon = getCoreAgentIcon(agentId ?? "claude-code", runtimeId)
 
   return (
     <div className={cn("flex items-center gap-2", className)}>

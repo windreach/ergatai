@@ -282,23 +282,57 @@ export const workspacesRouter = router({
         projectId: projectIdSchema.optional(),
         projectPath: z.string().optional(),
         projectName: z.string().optional(),
-        isDefault: z.boolean().optional(),
       }),
     )
     .mutation(async ({ input }) => {
-      const workspace = await ergataiFetch<BackendManagedWorkspace>(
+      // The backend POST /workspaces/{id}/projects endpoint accepts project
+      // details (name/path/git fields), not a project id. Resolve the full
+      // record first when the caller only has a project id.
+      let name = input.projectName
+      let path = input.projectPath
+      let description: string | null = null
+      let gitRemoteUrl: string | null = null
+      let gitProvider: string | null = null
+      let gitOwner: string | null = null
+      let gitRepo: string | null = null
+      let iconPath: string | null = null
+
+      if (input.projectId) {
+        const project = await ergataiFetch<BackendWorkspaceProject>(
+          `/api/v1/projects/${encodeURIComponent(input.projectId)}`,
+          { method: "GET" },
+        )
+        name = name ?? project.name
+        path = path ?? project.path
+        description = project.description
+        gitRemoteUrl = project.git_remote_url
+        gitProvider = project.git_provider
+        gitOwner = project.git_owner
+        gitRepo = project.git_repo
+        iconPath = project.icon_path
+      }
+
+      if (!name || !path) {
+        throw new Error("Project name and path are required")
+      }
+
+      const project = await ergataiFetch<BackendWorkspaceProject>(
         `/api/v1/workspaces/managed/${encodeURIComponent(input.id)}/projects`,
         {
           method: "POST",
           body: JSON.stringify({
-            project_id: input.projectId,
-            project_path: input.projectPath,
-            project_name: input.projectName,
-            is_default: input.isDefault ?? false,
+            name,
+            path,
+            description,
+            git_remote_url: gitRemoteUrl,
+            git_provider: gitProvider,
+            git_owner: gitOwner,
+            git_repo: gitRepo,
+            icon_path: iconPath,
           }),
         },
       )
-      return mapManagedWorkspace(workspace)
+      return mapWorkspaceProject(project)
     }),
 
 

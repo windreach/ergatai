@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 /**
  * Built-in VS Code themes with full color definitions
  * 

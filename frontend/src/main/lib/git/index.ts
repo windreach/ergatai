@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 /**
  * Git module - combines all git-related routers
  * Flattened structure to match Superset API (changes.getStatus, changes.stageFile, etc.)

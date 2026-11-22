@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 /**
  * Hotkeys manager for Agents
  * Centralized keyboard shortcut handling
@@ -28,7 +29,7 @@ const SHORTCUT_TO_ACTION_MAP: Record<ShortcutActionId, string> = {
   "toggle-sidebar": "toggle-sidebar",
   "toggle-details": "toggle-details",
   "undo-archive": "undo-archive",
-  "new-workspace": "create-new-agent",
+  "new-workspace": "create-new-workspace",
   "search-workspaces": "search-workspaces",
   "archive-workspace": "archive-workspace",
   "quick-switch-workspaces": "quick-switch-workspaces",
@@ -285,6 +286,17 @@ export function useAgentsHotkeys(
         }
       }
 
+      // Check new-workspace hotkey (configurable; only when not in input)
+      if (!isInputFocused) {
+        const newWorkspaceHotkey = getHotkeyForAction("new-workspace")
+        if (newWorkspaceHotkey && matchesHotkey(e, newWorkspaceHotkey)) {
+          e.preventDefault()
+          e.stopPropagation()
+          handleHotkeyAction("create-new-workspace")
+          return
+        }
+      }
+
       // Check new-agent hotkey (configurable; only when not in input)
       if (!isInputFocused) {
         const newAgentHotkey = getHotkeyForAction("new-agent")
@@ -301,6 +313,7 @@ export function useAgentsHotkeys(
         (action) =>
           action.hotkey !== undefined &&
           action.id !== "create-new-agent" &&
+          action.id !== "create-new-workspace" &&
           action.id !== "toggle-sidebar" &&
           action.id !== "open-shortcuts" &&
           action.id !== "open-settings" &&

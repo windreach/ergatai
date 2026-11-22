@@ -21,7 +21,7 @@ import {
   type ConversationRuntimeState,
 } from "../../details-sidebar"
 import {
-  getPartInput,
+  getSendMessageArgs,
   isErgataiSendMessagePart,
 } from "../lib/ergatai-mcp-detection"
 
@@ -173,6 +173,7 @@ function replySenderMatches(
 type InterAgentTarget = {
   key: string
   requestedAgentId?: string
+  requestedConversationId?: string
   runtimeAgentId?: string
   messageId?: string
   correlationId?: string
@@ -310,23 +311,24 @@ function getInterAgentTargets(parts: unknown[]): InterAgentTarget[] {
     }
 
     // Reuse the shared extractor: agents may put the real arguments under
-    // `input`, `args`, or an `input` JSON string.
-    const input = getPartInput(candidate)
-    const requestedAgentId =
-      typeof input?.target_agent_id === "string" &&
-      input.target_agent_id.length > 0
-        ? input.target_agent_id
-        : undefined
+    // `input`, `args`, `input.code` (code-mode wrappers), or the result
+    // metadata (`output.metadata.toolCalls[].input`).
+    const input = getSendMessageArgs(candidate)
+    const requestedAgentId = input?.target_agent_id
+    const requestedConversationId = input?.target_conversation_id
     const output = parseToolOutputObject(candidate)
     const runtimeAgentId = output.targetAgentId
 
-    if (!requestedAgentId && !runtimeAgentId) return []
+    if (!requestedAgentId && !requestedConversationId && !runtimeAgentId) {
+      return []
+    }
 
     return [{
       key: typeof candidate.toolCallId === "string"
         ? candidate.toolCallId
         : `mcp-${index}`,
       requestedAgentId,
+      requestedConversationId,
       runtimeAgentId,
       messageId: output.messageId,
       correlationId: output.correlationId,
@@ -334,33 +336,17 @@ function getInterAgentTargets(parts: unknown[]): InterAgentTarget[] {
   })
 }
 
-function AgentReplyDisclosure({
-  conversationId,
-  agentId,
-  agentName,
-  hostConversationId,
-  replyToMessageId,
-  correlationId,
-}: {
-  conversationId: string
-  agentId: string
-  agentName: string
-  hostConversationId?: string
-  replyToMessageId?: string
-  correlationId?: string
-}) {
-  // Only the host conversation carries MCP-delivered replies (role
-  // "respagent"). The external agent's own conversation is intentionally not
-  // used as a fallback: its assistant text can be an un-delivered attempt
-  // (e.g. Codex printing a `send_message` call as plain text), which must not
-  // be presented as a reply.
-  const hostPipeline = useConversationMessages(
-    hostConversationId ?? conversationId,
-    undefined,
-  )
-  const baseHostMessages = hostConversationId ? hostPipeline.messages : []
-  const isLoading = hostConversationId ? hostPipeline.isLoading : false
-  const error = hostConversationId ? hostPipeline.error : null
+/**
+ * Load the host conversation plus live `conversation_message` events.
+ *
+ * Both the legacy tool-correlation path and the new turn-linked path read from
+ * this single source; the pipeline itself is shared per conversation.
+ */
+function useHostConversationMessages(hostConversationId: string) {
+  const hostPipeline = useConversationMessages(hostConversationId, undefined)
+  const baseHostMessages = hostPipeline.messages
+  const isLoading = hostPipeline.isLoading
+  const error = hostPipeline.error
 
   // Real-time merge: subscribe to the host conversation runtime so that replies
   // that land after this disclosure mounted are merged in without a refetch.
@@ -370,7 +356,6 @@ function AgentReplyDisclosure({
   useEffect(() => {
     seenRuntimeMessageIdsRef.current = new Set()
     setRuntimeMessages([])
-    if (!hostConversationId) return
     const targetConversationId = hostConversationId
 
     const unsubscribe = subscribeConversationRuntime(targetConversationId, (state: ConversationRuntimeState) => {
@@ -454,6 +439,84 @@ function AgentReplyDisclosure({
     )
   }
 
+  return { hostMessages, isLoading }
+}
+
+function getReplyToTurnId(message: PersistedMessage): string | undefined {
+  const metadata = message.metadata as Record<string, unknown> | null
+  const value = metadata?.replyToTurnId
+  return typeof value === "string" && value.length > 0 ? value : undefined
+}
+
+function getHostTurnId(message: { metadata?: unknown }): string | undefined {
+  const metadata = message.metadata as Record<string, unknown> | null | undefined
+  const value = metadata?.turnId
+  return typeof value === "string" && value.length > 0 ? value : undefined
+}
+
+function ReplyCard({
+  agentName,
+  replies,
+}: {
+  agentName: string
+  replies: ReplyItem[]
+}) {
+  if (replies.length === 0) return null
+
+  return (
+    <Collapsible className="mt-2 w-fit max-w-full">
+      <CollapsibleTrigger className="group flex w-fit max-w-full items-center gap-1 rounded-md bg-muted/60 px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted">
+        <span className="min-w-0 truncate font-medium">{agentName}</span>
+        <ChevronDown
+          className={cn(
+            "h-3.5 w-3.5 shrink-0 transition-transform duration-200",
+            "group-data-[state=open]:rotate-180",
+          )}
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="mt-1 min-w-64 max-w-full space-y-3 rounded-lg border border-border/70 bg-muted/20 px-3 py-3">
+          {replies.map((reply) => (
+            <div key={reply.id} className="space-y-1">
+              <ChatMarkdownRenderer content={reply.text} size="sm" />
+            </div>
+          ))}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+function AgentReplyDisclosure({
+  conversationId,
+  agentId,
+  agentName,
+  hostConversationId,
+  replyToMessageId,
+  correlationId,
+  excludeReplyToTurnId,
+}: {
+  conversationId: string
+  agentId: string
+  agentName: string
+  hostConversationId?: string
+  replyToMessageId?: string
+  correlationId?: string
+  /**
+   * Replies already rendered through the structured `replyToTurnId` link are
+   * excluded here to avoid showing the same reply twice.
+   */
+  excludeReplyToTurnId?: string
+}) {
+  // Only the host conversation carries MCP-delivered replies (role
+  // "respagent"). The external agent's own conversation is intentionally not
+  // used as a fallback: its assistant text can be an un-delivered attempt
+  // (e.g. Codex printing a `send_message` call as plain text), which must not
+  // be presented as a reply.
+  const { hostMessages, isLoading } = useHostConversationMessages(
+    hostConversationId ?? conversationId,
+  )
+
   const replies = useMemo<ReplyItem[]>(() => {
     if (isLoading) return []
 
@@ -486,6 +549,8 @@ function AgentReplyDisclosure({
           (message.messageType === "response" && hasExternalId)
         return (
           isReply &&
+          (!excludeReplyToTurnId ||
+            getReplyToTurnId(message) !== excludeReplyToTurnId) &&
           replySenderMatches(message, agentId, agentName) &&
           matchesRequestFor(message) &&
           getMessageText(message).length > 0
@@ -503,6 +568,7 @@ function AgentReplyDisclosure({
       .filter((message) => message.text.length > 0)
   }, [
     correlationId,
+    excludeReplyToTurnId,
     hostMessages,
     replyToMessageId,
     isLoading,
@@ -543,27 +609,89 @@ function AgentReplyDisclosure({
 
   if (displayReplies.length === 0) return null
 
+  return <ReplyCard agentName={agentName} replies={displayReplies} />
+}
+
+/**
+ * Render replies linked by the backend-provided `replyToTurnId`.
+ *
+ * This is the shape-independent path: the backend records the turn that
+ * issued a request and persists it on the response, so the UI does not need
+ * to understand agent-specific tool-call wrappers (direct MCP parts,
+ * code-mode `execute`, ...).
+ */
+function TurnLinkedReplies({
+  hostConversationId,
+  hostTurnId,
+  agentBindings,
+}: {
+  hostConversationId: string
+  hostTurnId: string
+  agentBindings: Array<{
+    agentId: string
+    agentName: string
+    conversationId: string
+  }>
+}) {
+  const { hostMessages, isLoading } = useHostConversationMessages(hostConversationId)
+
+  const groups = useMemo(() => {
+    if (isLoading) return []
+    const byAgent = new Map<
+      string,
+      { agentName: string; replies: ReplyItem[] }
+    >()
+
+    for (const message of hostMessages) {
+      if (getReplyToTurnId(message) !== hostTurnId) continue
+      if (message.role !== "respagent" && message.messageType !== "response") {
+        continue
+      }
+      const text = getMessageText(message)
+      if (text.length === 0) continue
+
+      const binding = [...agentBindings]
+        .reverse()
+        .find((candidate) =>
+          replySenderMatches(message, candidate.agentId, candidate.agentName),
+        )
+      const senderId =
+        message.fromAgentId ??
+        (message.metadata as Record<string, unknown> | null)?.senderAgentId
+      const senderName =
+        binding?.agentName ??
+        message.fromAgentName ??
+        (message.metadata as Record<string, unknown> | null)?.senderAgentName
+      const key = String(binding?.conversationId ?? senderId ?? senderName ?? "agent")
+      const existing = byAgent.get(key) ?? {
+        agentName: String(senderName ?? "Agent"),
+        replies: [],
+      }
+      existing.replies.push({ ...message, text })
+      byAgent.set(key, existing)
+    }
+
+    return [...byAgent.entries()].map(([key, group]) => ({
+      key,
+      agentName: group.agentName,
+      replies: group.replies.sort(
+        (left, right) => (left.sequence ?? 0) - (right.sequence ?? 0),
+      ),
+    }))
+  }, [agentBindings, hostMessages, hostTurnId, isLoading])
+
+  if (groups.length === 0) return null
+
   return (
-    <Collapsible className="mt-2 w-fit max-w-full">
-      <CollapsibleTrigger className="group flex w-fit max-w-full items-center gap-1 rounded-md bg-muted/60 px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted">
-        <span className="min-w-0 truncate font-medium">{agentName}</span>
-        <ChevronDown
-          className={cn(
-            "h-3.5 w-3.5 shrink-0 transition-transform duration-200",
-            "group-data-[state=open]:rotate-180",
-          )}
+    <>
+      {groups.map((group) => (
+        <ReplyCard
+          key={group.key}
+          agentName={group.agentName}
+          replies={group.replies}
         />
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="mt-1 min-w-64 max-w-full space-y-3 rounded-lg border border-border/70 bg-muted/20 px-3 py-3">
-          {displayReplies.map((reply) => (
-            <div key={reply.id} className="space-y-1">
-              <ChatMarkdownRenderer content={reply.text} size="sm" />
-            </div>
-          ))}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
+      ))}
+    </>
   )
 }
 
@@ -572,7 +700,11 @@ export function InterAgentRepliesDisclosure({
   chatId,
   hostConversationId,
 }: {
-  message: { parts?: unknown[]; conversationId?: string }
+  message: {
+    parts?: unknown[]
+    conversationId?: string
+    metadata?: unknown
+  }
   chatId: string
   /**
    * Conversation that owns the assistant message. AI SDK UI messages do not
@@ -586,6 +718,9 @@ export function InterAgentRepliesDisclosure({
     { chatId },
     { enabled: isPersistedChat },
   )
+
+  const hostConversation = hostConversationId ?? message?.conversationId
+  const hostTurnId = getHostTurnId(message)
 
   const targets = useMemo(
     () => getInterAgentTargets(Array.isArray(message?.parts) ? message.parts : []),
@@ -608,6 +743,13 @@ export function InterAgentRepliesDisclosure({
             return true
           }
 
+          if (
+            target.requestedConversationId &&
+            b?.conversationId === target.requestedConversationId
+          ) {
+            return true
+          }
+
           return Boolean(normalizedRequested) && [
             b?.agentName,
             b?.agentCommand,
@@ -619,19 +761,27 @@ export function InterAgentRepliesDisclosure({
     })
   }, [bindings, targets])
 
-  if (!isPersistedChat || resolvedTargets.length === 0) return null
+  if (!isPersistedChat || !hostConversation) return null
 
   return (
     <>
+      {hostTurnId && (
+        <TurnLinkedReplies
+          hostConversationId={hostConversation}
+          hostTurnId={hostTurnId}
+          agentBindings={bindings ?? []}
+        />
+      )}
       {resolvedTargets.map(({ key, target, binding }) => (
         <AgentReplyDisclosure
           key={key}
           conversationId={binding.conversationId}
           agentId={binding.agentId}
           agentName={binding.agentName}
-          hostConversationId={hostConversationId ?? message?.conversationId}
+          hostConversationId={hostConversation}
           replyToMessageId={target.messageId}
           correlationId={target.correlationId}
+          excludeReplyToTurnId={hostTurnId}
         />
       ))}
     </>

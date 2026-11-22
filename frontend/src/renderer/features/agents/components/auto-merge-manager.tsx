@@ -127,7 +127,16 @@ export function AutoMergeManager() {
     }
 
     const syncChat = async (chat: SyncCandidate): Promise<void> => {
-      if (cancelled || !chat.branch || !chat.baseBranch || !chat.worktreePath) {
+      if (
+        cancelled ||
+        !chat.branch ||
+        !chat.baseBranch ||
+        !chat.worktreePath ||
+        // A chat whose branch is the same as its base branch has no distinct
+        // branch delta to propagate; auto-syncing it only races with the user's
+        // own edits on that branch and produces spurious base_dirty conflicts.
+        chat.branch === chat.baseBranch
+      ) {
         return
       }
 
@@ -143,9 +152,10 @@ export function AutoMergeManager() {
       // `all_idle` is vacuously true for a chat with no agents (and the API
       // fails open to an empty list). Requiring at least one binding avoids
       // syncing a chat before any agent has ever run.
+      const agents = agentsResp.agents ?? []
       if (
         cancelled ||
-        agentsResp.agents.length === 0 ||
+        agents.length === 0 ||
         !agentsResp.all_idle
       ) {
         return
@@ -199,7 +209,8 @@ export function AutoMergeManager() {
             !chat.archivedAt &&
             !!chat.branch &&
             !!chat.baseBranch &&
-            !!chat.worktreePath,
+            !!chat.worktreePath &&
+            chat.branch !== chat.baseBranch,
         )
 
         // Bound concurrency: worktree config resolution shells out to git, and

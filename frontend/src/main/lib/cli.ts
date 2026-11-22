@@ -1,9 +1,10 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 /**
  * CLI command support for ergatai
  * Allows users to open Ergatai from terminal with: ergatai . or ergatai /path/to/project
  *
  * Based on PR #16 by @caffeinum (Aleksey Bykhun)
- * https://github.com/windreach/ergatai-ui
+ * https://github.com/windreach/ergatai
  */
 
 import { app } from "electron"

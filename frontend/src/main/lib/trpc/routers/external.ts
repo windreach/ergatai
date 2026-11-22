@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { clipboard, shell } from "electron";
 import { execFileSync, spawn } from "node:child_process";
 import * as os from "node:os";

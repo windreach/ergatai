@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 export async function initAnalytics() {}
 
 export function capture(_eventName: string, _properties?: Record<string, unknown>) {}

@@ -93,7 +93,7 @@ export function useChatAgentManager({
     { enabled: chatId.startsWith("chat_") },
   )
   const utils = trpc.useUtils()
-  const spawnMutation = trpc.ergatai.spawnAgent.useMutation()
+  const ensureMutation = trpc.ergatai.ensureAgent.useMutation()
   const [creatingAgentKeys, setCreatingAgentKeys] = useState<Set<string>>(
     new Set(),
   )
@@ -266,9 +266,10 @@ export function useChatAgentManager({
         mode: "agent",
       })
       const newConversationId = conversation.id
-      const spawnResult = await spawnMutation.mutateAsync({
+      const spawnResult = await ensureMutation.mutateAsync({
         conversationId: newConversationId,
-        command: agent.profileName || agent.id,
+        profile: agent.profileName || agent.id,
+        mode: "ensure",
       })
       const spawnedAgentId = spawnResult?.agent_id
       await utils.ergatai.getAgentBindings.invalidate({ chatId })

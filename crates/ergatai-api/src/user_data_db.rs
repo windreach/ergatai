@@ -86,6 +86,11 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
     // Create tables if they don't exist (no-op for existing tables)
     create_tables_if_not_exists(conn)?;
 
+    // Workspace↔Project is a many-to-many relationship: `projects` is a global
+    // catalog and each workspace references the projects it manages. This must
+    // run before anything reads workspace projects.
+    migrate_workspace_projects(conn)?;
+
     // Run incremental migrations (add new columns, etc.)
     migrate_message_columns(conn)?;
     migrate_conversation_context_columns(conn)?;
@@ -102,6 +107,164 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         [],
     );
     let _ = conn.execute("ALTER TABLE initial_prompt_turns ADD COLUMN model TEXT", []);
+    migrate_agent_runtime_model_columns(conn)?;
+    migrate_conversation_launch_settings(conn)?;
+    Ok(())
+}
+
+/// Introduce the workspace↔project relationship table.
+///
+/// `projects.workspace_id` stays as the project's owning/creation workspace for
+/// legacy compatibility, but a project can be managed by several workspaces.
+/// The backfill runs only when the table is created for the first time: running
+/// it on every startup would re-link projects the user deliberately removed.
+fn migrate_workspace_projects(conn: &Connection) -> Result<()> {
+    let table_existed: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'workspace_projects'
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS workspace_projects (
+            workspace_id INTEGER NOT NULL,
+            project_id INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (workspace_id, project_id),
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+            FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspace_projects_project
+            ON workspace_projects(project_id);
+        "#,
+    )?;
+
+    if table_existed {
+        return Ok(());
+    }
+
+    // Backfill every project's owning workspace, then repair workspaces whose
+    // default project points at a project owned by another workspace. The old
+    // "reuse existing project" path recorded exactly that without creating a
+    // relationship row.
+    conn.execute_batch(
+        r#"
+        INSERT OR IGNORE INTO workspace_projects
+            (workspace_id, project_id, created_at, updated_at)
+        SELECT p.workspace_id, p.project_id, p.created_at, p.updated_at
+        FROM projects p
+        JOIN workspaces w ON w.workspace_id = p.workspace_id;
+
+        INSERT OR IGNORE INTO workspace_projects
+            (workspace_id, project_id, created_at, updated_at)
+        SELECT w.workspace_id, w.default_project_id, w.created_at, w.updated_at
+        FROM workspaces w
+        JOIN projects p ON p.project_id = w.default_project_id;
+        "#,
+    )?;
+
+    Ok(())
+}
+
+/// Add columns introduced by the unified agent-launch abstraction.
+///
+/// Fresh installs already have these columns via `create_tables_if_not_exists`;
+/// existing databases get them incrementally. `ALTER TABLE ... ADD COLUMN`
+/// failures are intentionally ignored because the column may already exist.
+fn migrate_agent_runtime_model_columns(conn: &Connection) -> Result<()> {
+    let _ = conn.execute(
+        "ALTER TABLE agent_runtime_models ADD COLUMN conversation_id INTEGER",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agent_runtime_models ADD COLUMN model_options_json TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agent_runtime_models ADD COLUMN applied_at INTEGER",
+        [],
+    );
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_runtime_models_conversation \
+         ON agent_runtime_models(conversation_id)",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Ensure the conversation launch-settings table exists and backfill it from
+/// existing data on a best-effort basis.
+fn migrate_conversation_launch_settings(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS conversation_launch_settings (
+            conversation_id INTEGER PRIMARY KEY,
+            profile_name TEXT,
+            model TEXT,
+            model_options_json TEXT NOT NULL DEFAULT '{}',
+            provider_connection_id TEXT,
+            source TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversation_launch_settings_profile
+            ON conversation_launch_settings(profile_name);
+        "#,
+    )?;
+
+    // Best-effort backfill: initial prompt model first, then the runtime model
+    // attached to the conversation's current agent.
+    let _ = conn.execute(
+        r#"
+        INSERT OR IGNORE INTO conversation_launch_settings
+            (conversation_id, model, model_options_json, source, updated_at)
+        SELECT t.conversation_id, t.model, '{}', 'initial', t.updated_at * 1000
+        FROM initial_prompt_turns t
+        WHERE t.model IS NOT NULL AND trim(t.model) <> ''
+        "#,
+        [],
+    );
+
+    let _ = conn.execute(
+        r#"
+        INSERT OR IGNORE INTO conversation_launch_settings
+            (conversation_id, profile_name, model, model_options_json, source, updated_at)
+        SELECT c.conversation_id, m.profile_name, m.selected_model, '{}',
+               CASE
+                   WHEN m.source IN ('user', 'user_selected') THEN 'user'
+                   WHEN m.source = 'initial' THEN 'initial'
+                   ELSE 'agent_runtime'
+               END,
+               m.updated_at
+        FROM conversations c
+        JOIN agent_runtime_models m ON m.agent_id = c.current_agent_id
+        WHERE c.current_agent_id IS NOT NULL
+          AND m.selected_model IS NOT NULL
+          AND trim(m.selected_model) <> ''
+        "#,
+        [],
+    );
+
+    // Backfill the new runtime-model conversation key for existing rows.
+    let _ = conn.execute(
+        r#"
+        UPDATE agent_runtime_models
+        SET conversation_id = (
+            SELECT c.conversation_id
+            FROM conversations c
+            WHERE c.current_agent_id = agent_runtime_models.agent_id
+            LIMIT 1
+        )
+        WHERE conversation_id IS NULL
+        "#,
+        [],
+    );
+
     Ok(())
 }
 
@@ -556,6 +719,26 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
         conn.execute_batch("DROP TABLE IF EXISTS deletion_queue;")?;
     }
 
+    // Durable launch settings per conversation. This is the single source of
+    // truth for the model/provider selection used when an agent is spawned,
+    // resumed, or auto-spawned for that conversation.
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS conversation_launch_settings (
+            conversation_id INTEGER PRIMARY KEY,
+            profile_name TEXT,
+            model TEXT,
+            model_options_json TEXT NOT NULL DEFAULT '{}',
+            provider_connection_id TEXT,
+            source TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversation_launch_settings_profile
+            ON conversation_launch_settings(profile_name);
+        "#,
+    )?;
+
     // Runtime selected model per agent instance (Phase 3).
     conn.execute_batch(
         r#"
@@ -564,9 +747,13 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
             profile_name TEXT,
             selected_model TEXT,
             source TEXT,
-            updated_at INTEGER NOT NULL
+            updated_at INTEGER NOT NULL,
+            conversation_id INTEGER,
+            model_options_json TEXT,
+            applied_at INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_agent_runtime_models_profile ON agent_runtime_models(profile_name);
+        CREATE INDEX IF NOT EXISTS idx_agent_runtime_models_conversation ON agent_runtime_models(conversation_id);
         "#,
     )?;
 
@@ -1183,6 +1370,22 @@ pub struct Conversation {
     pub context_updated_at: i64,
 }
 
+/// Durable launch settings for a conversation.
+///
+/// `model` is the canonical ACP-selectable model value. `model_options_json`
+/// carries provider-specific options (for example Codex thinking level) as
+/// JSON. This row is the single source of truth for spawn/resume/auto-spawn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+pub struct ConversationLaunchSettings {
+    pub conversation_id: ConversationId,
+    pub profile_name: Option<String>,
+    pub model: Option<String>,
+    pub model_options_json: String,
+    pub provider_connection_id: Option<String>,
+    pub source: String,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AgentSession {
     pub agent_session_id: i64,
@@ -1487,10 +1690,11 @@ pub mod projects {
         let conn = db.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT project_id, workspace_id, name, path, description, git_remote_url, git_provider, git_owner, git_repo, icon_path, created_at, updated_at
-             FROM projects
-             WHERE workspace_id = ?1
-             ORDER BY created_at DESC",
+            "SELECT p.project_id, wp.workspace_id, p.name, p.path, p.description, p.git_remote_url, p.git_provider, p.git_owner, p.git_repo, p.icon_path, p.created_at, p.updated_at
+             FROM projects p
+             JOIN workspace_projects wp ON wp.project_id = p.project_id
+             WHERE wp.workspace_id = ?1
+             ORDER BY p.created_at DESC",
         )?;
         let projects = stmt.query_map(params![workspace_id], |row| {
             Ok(Project {
@@ -1549,7 +1753,7 @@ pub mod projects {
         let conn = db.lock().unwrap();
 
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM projects WHERE project_id = ?1 AND workspace_id = ?2",
+            "SELECT COUNT(*) FROM workspace_projects WHERE project_id = ?1 AND workspace_id = ?2",
             params![project_id, workspace_id],
             |row| row.get(0),
         )?;
@@ -1610,8 +1814,19 @@ pub mod projects {
     pub fn delete_by_workspace(workspace_id: i64) -> Result<u64> {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
+        conn.execute(
+            "DELETE FROM workspace_projects WHERE workspace_id = ?1",
+            params![workspace_id],
+        )?;
+        // Only delete projects owned by this workspace that are no longer
+        // referenced by any other workspace.
         let count = conn.execute(
-            "DELETE FROM projects WHERE workspace_id = ?1",
+            "DELETE FROM projects
+             WHERE workspace_id = ?1
+               AND NOT EXISTS (
+                   SELECT 1 FROM workspace_projects wp
+                   WHERE wp.project_id = projects.project_id
+               )",
             params![workspace_id],
         )?;
         Ok(count as u64)
@@ -1691,6 +1906,55 @@ pub mod projects {
             Some(Err(e)) => Err(e),
             None => Ok(None),
         }
+    }
+}
+
+pub mod workspace_projects {
+    use super::*;
+
+    /// Link a project to a workspace. Idempotent.
+    pub fn link(workspace_id: i64, project_id: i64) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO workspace_projects
+                (workspace_id, project_id, created_at, updated_at)
+             VALUES (?1, ?2, strftime('%s', 'now'), strftime('%s', 'now'))",
+            params![workspace_id, project_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn unlink(workspace_id: i64, project_id: i64) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count = conn.execute(
+            "DELETE FROM workspace_projects WHERE workspace_id = ?1 AND project_id = ?2",
+            params![workspace_id, project_id],
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn contains(workspace_id: i64, project_id: i64) -> Result<bool> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM workspace_projects WHERE workspace_id = ?1 AND project_id = ?2",
+            params![workspace_id, project_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Number of workspaces that still reference the project.
+    pub fn count_for_project(project_id: i64) -> Result<i64> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM workspace_projects WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )
     }
 }
 
@@ -2721,12 +2985,14 @@ pub mod conversations {
         let db = get_user_data_db();
         let conn = db.lock().unwrap();
 
-        conn.query_row(
-            "SELECT current_agent_id FROM conversations WHERE conversation_id = ?1",
-            params![conversation_id],
-            |row| row.get(0),
-        )
-        .optional()
+        let value = conn
+            .query_row(
+                "SELECT current_agent_id FROM conversations WHERE conversation_id = ?1",
+                params![conversation_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?;
+        Ok(value.flatten())
     }
 
     /// Persist the runtime agent id bound to a conversation.
@@ -2744,6 +3010,72 @@ pub mod conversations {
         conn.execute(
             "UPDATE conversations SET current_agent_id = ?1 WHERE conversation_id = ?2",
             params![agent_id, conversation_id],
+        )?;
+        Ok(())
+    }
+}
+
+/// Durable launch settings keyed by conversation.
+pub mod conversation_launch_settings {
+    use super::*;
+
+    pub fn get(conversation_id: ConversationId) -> Result<Option<ConversationLaunchSettings>> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT conversation_id, profile_name, model, model_options_json, \
+                    provider_connection_id, source, updated_at \
+             FROM conversation_launch_settings WHERE conversation_id = ?1",
+            params![conversation_id],
+            |row| {
+                Ok(ConversationLaunchSettings {
+                    conversation_id: row.get(0)?,
+                    profile_name: row.get(1)?,
+                    model: row.get(2)?,
+                    model_options_json: row.get(3)?,
+                    provider_connection_id: row.get(4)?,
+                    source: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    pub fn upsert(settings: &ConversationLaunchSettings) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO conversation_launch_settings \
+                (conversation_id, profile_name, model, model_options_json, \
+                 provider_connection_id, source, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             ON CONFLICT(conversation_id) DO UPDATE SET \
+                profile_name = excluded.profile_name, \
+                model = excluded.model, \
+                model_options_json = excluded.model_options_json, \
+                provider_connection_id = excluded.provider_connection_id, \
+                source = excluded.source, \
+                updated_at = excluded.updated_at",
+            params![
+                settings.conversation_id,
+                settings.profile_name,
+                settings.model,
+                settings.model_options_json,
+                settings.provider_connection_id,
+                settings.source,
+                settings.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete(conversation_id: ConversationId) -> Result<()> {
+        let db = get_user_data_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "DELETE FROM conversation_launch_settings WHERE conversation_id = ?1",
+            params![conversation_id],
         )?;
         Ok(())
     }
@@ -5336,6 +5668,18 @@ pub fn set_agent_runtime_model(
     selected_model: Option<&str>,
     source: &str,
 ) -> Result<(), rusqlite::Error> {
+    set_agent_runtime_model_full(agent_id, profile_name, None, selected_model, None, source)
+}
+
+/// Full runtime-model persistence used by the unified launch service.
+pub fn set_agent_runtime_model_full(
+    agent_id: &str,
+    profile_name: Option<&str>,
+    conversation_id: Option<ConversationId>,
+    selected_model: Option<&str>,
+    model_options_json: Option<&str>,
+    source: &str,
+) -> Result<(), rusqlite::Error> {
     let db = get_user_data_db();
     let conn = db.lock().unwrap();
     let now = std::time::SystemTime::now()
@@ -5343,16 +5687,53 @@ pub fn set_agent_runtime_model(
         .unwrap_or_default()
         .as_millis() as i64;
     conn.execute(
-        "INSERT INTO agent_runtime_models (agent_id, profile_name, selected_model, source, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5) \
+        "INSERT INTO agent_runtime_models \
+            (agent_id, profile_name, conversation_id, selected_model, \
+             model_options_json, source, updated_at, applied_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) \
          ON CONFLICT(agent_id) DO UPDATE SET \
             profile_name = excluded.profile_name, \
+            conversation_id = excluded.conversation_id, \
             selected_model = excluded.selected_model, \
+            model_options_json = excluded.model_options_json, \
             source = excluded.source, \
-            updated_at = excluded.updated_at",
-        params![agent_id, profile_name, selected_model, source, now],
+            updated_at = excluded.updated_at, \
+            applied_at = excluded.applied_at",
+        params![
+            agent_id,
+            profile_name,
+            conversation_id,
+            selected_model,
+            model_options_json,
+            source,
+            now,
+        ],
     )?;
     Ok(())
+}
+
+/// Latest model applied to an agent for a conversation, optionally scoped to a
+/// profile. Used only as a fallback when no conversation launch setting exists.
+pub fn get_latest_agent_runtime_model_for_conversation(
+    conversation_id: ConversationId,
+    profile_name: Option<&str>,
+) -> Result<Option<String>, rusqlite::Error> {
+    let db = get_user_data_db();
+    let conn = db.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT selected_model FROM agent_runtime_models \
+         WHERE conversation_id = ?1 \
+           AND (?2 IS NULL OR profile_name = ?2) \
+           AND selected_model IS NOT NULL AND trim(selected_model) <> '' \
+         ORDER BY updated_at DESC LIMIT 1",
+    )?;
+    let mut rows = stmt.query(params![conversation_id, profile_name])?;
+    if let Some(row) = rows.next()? {
+        let model: Option<String> = row.get(0)?;
+        Ok(model)
+    } else {
+        Ok(None)
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -5411,6 +5792,126 @@ mod tests {
         workspaces::delete(workspace.workspace_id).unwrap();
         let deleted = workspaces::get(workspace.workspace_id).unwrap();
         assert!(deleted.is_none());
+    }
+
+    #[test]
+    fn test_workspace_project_relationships() {
+        let _database_guard = lock_user_data_db_for_tests();
+        let base = (std::process::id() as i64) * 10_000 + 5_000;
+        let ws_one = base + 1;
+        let ws_two = base + 2;
+        let project_id = base + 3;
+
+        for (workspace_id, name) in [(ws_one, "ws-one"), (ws_two, "ws-two")] {
+            workspaces::create(Workspace {
+                workspace_id: WorkspaceId::new(workspace_id),
+                name: name.to_string(),
+                work_dir: format!("/tmp/{name}"),
+                env: "{}".to_string(),
+                resources: "{}".to_string(),
+                config: "{}".to_string(),
+                collaboration_mode: "supervisor".to_string(),
+                status: "active".to_string(),
+                default_project_id: None,
+                created_at: 1,
+                updated_at: 1,
+            })
+            .unwrap();
+        }
+
+        projects::create(Project {
+            project_id,
+            workspace_id: ws_one,
+            name: "shared-project".to_string(),
+            path: format!("/tmp/shared-project-{project_id}"),
+            description: None,
+            git_remote_url: None,
+            git_provider: None,
+            git_owner: None,
+            git_repo: None,
+            icon_path: None,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .unwrap();
+
+        workspace_projects::link(ws_one, project_id).unwrap();
+        workspace_projects::link(ws_two, project_id).unwrap();
+
+        // Both workspaces resolve the same global project row, and the
+        // returned workspace_id matches the queried workspace.
+        let one = projects::list(ws_one).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].project_id, project_id);
+        assert_eq!(one[0].workspace_id, ws_one);
+
+        let two = projects::list(ws_two).unwrap();
+        assert_eq!(two.len(), 1);
+        assert_eq!(two[0].project_id, project_id);
+        assert_eq!(two[0].workspace_id, ws_two);
+
+        assert!(projects::exists_and_belongs_to(project_id, ws_two).unwrap());
+
+        // Removing the relationship from one workspace must not delete the
+        // project while another workspace still manages it.
+        workspace_projects::unlink(ws_two, project_id).unwrap();
+        assert!(projects::list(ws_two).unwrap().is_empty());
+        assert!(projects::exists(project_id).unwrap());
+
+        workspace_projects::unlink(ws_one, project_id).unwrap();
+        projects::delete(project_id).unwrap();
+        workspaces::delete(WorkspaceId::new(ws_one)).unwrap();
+        workspaces::delete(WorkspaceId::new(ws_two)).unwrap();
+    }
+
+    #[test]
+    fn test_workspace_projects_migration_backfills_relationships() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_tables(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO workspaces
+                (workspace_id, name, work_dir, env, resources, config,
+                 collaboration_mode, status, default_project_id, created_at, updated_at)
+             VALUES (1, 'owner', '/tmp/owner', '{}', '{}', '{}', 'supervisor', 'active', NULL, 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects
+                (project_id, workspace_id, name, path, created_at, updated_at)
+             VALUES (10, 1, 'shared', '/tmp/shared', 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO workspaces
+                (workspace_id, name, work_dir, env, resources, config,
+                 collaboration_mode, status, default_project_id, created_at, updated_at)
+             VALUES (2, 'referrer', '/tmp/referrer', '{}', '{}', '{}', 'supervisor', 'active', 10, 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        // Simulate upgrading from a database that predates the relationship
+        // table, then run the migration.
+        conn.execute_batch("DROP TABLE workspace_projects;")
+            .unwrap();
+        migrate_workspace_projects(&conn).unwrap();
+
+        let links: Vec<(i64, i64)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT workspace_id, project_id FROM workspace_projects
+                     WHERE project_id = 10 ORDER BY workspace_id",
+                )
+                .unwrap();
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap();
+            rows.collect::<Result<Vec<_>>>().unwrap()
+        };
+        assert_eq!(links, vec![(1, 10), (2, 10)]);
     }
 
     #[test]
@@ -6115,5 +6616,216 @@ mod tests {
             [],
         );
         assert!(duplicate.is_err());
+    }
+
+    #[test]
+    fn test_conversation_launch_settings_backfill_prefers_initial_prompt() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE conversations (
+               conversation_id INTEGER PRIMARY KEY,
+               current_agent_id TEXT
+             );
+             CREATE TABLE initial_prompt_turns (
+               conversation_id INTEGER PRIMARY KEY,
+               model TEXT,
+               updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE agent_runtime_models (
+               agent_id TEXT PRIMARY KEY,
+               profile_name TEXT,
+               selected_model TEXT,
+               source TEXT,
+               updated_at INTEGER NOT NULL,
+               conversation_id INTEGER,
+               model_options_json TEXT,
+               applied_at INTEGER
+             );
+             INSERT INTO conversations VALUES (100, 'agent-100');
+             INSERT INTO conversations VALUES (101, 'agent-101');
+             INSERT INTO initial_prompt_turns VALUES (100, 'glm-5.3-flash', 1000);
+             INSERT INTO agent_runtime_models
+                (agent_id, profile_name, selected_model, source, updated_at)
+                VALUES ('agent-100', 'claude-code', 'qwen3.7-plus', 'user', 900);
+             INSERT INTO agent_runtime_models
+                (agent_id, profile_name, selected_model, source, updated_at)
+                VALUES ('agent-101', 'claude-code', 'glm-5.3-flash', 'user_selected', 900);",
+        )
+        .unwrap();
+
+        migrate_conversation_launch_settings(&conn).unwrap();
+
+        let (model, source): (String, String) = conn
+            .query_row(
+                "SELECT model, source FROM conversation_launch_settings WHERE conversation_id = 100",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(model, "glm-5.3-flash");
+        assert_eq!(source, "initial");
+
+        let (legacy_model, legacy_source): (String, String) = conn
+            .query_row(
+                "SELECT model, source FROM conversation_launch_settings WHERE conversation_id = 101",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(legacy_model, "glm-5.3-flash");
+        assert_eq!(
+            legacy_source, "user",
+            "legacy user_selected runtime rows must stay explicit"
+        );
+
+        let runtime_conversation_id: Option<i64> = conn
+            .query_row(
+                "SELECT conversation_id FROM agent_runtime_models WHERE agent_id = 'agent-100'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(runtime_conversation_id, Some(100));
+    }
+
+    #[test]
+    fn test_conversation_launch_settings_round_trip() {
+        let _database_guard = lock_user_data_db_for_tests();
+        let prefix = std::process::id() as i64;
+        let workspace_id = WorkspaceId::new(prefix * 10000 + 31);
+        let chat_id = ChatId::new(prefix * 10000 + 32);
+        let session_id = CollaborationSessionId::new(prefix * 10000 + 33);
+        let conversation_id = ConversationId::new(prefix * 10000 + 34);
+
+        workspaces::create(Workspace {
+            workspace_id,
+            name: "Launch Settings Workspace".to_string(),
+            work_dir: "/tmp/test".to_string(),
+            env: "{}".to_string(),
+            resources: "{}".to_string(),
+            config: "{}".to_string(),
+            collaboration_mode: "supervisor".to_string(),
+            status: "active".to_string(),
+            default_project_id: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+
+        chats::create(Chat {
+            chat_id,
+            workspace_id,
+            name: Some("Launch Settings Chat".to_string()),
+            collaboration_mode: Some("supervisor".to_string()),
+            worktree_path: None,
+            branch: None,
+            base_branch: None,
+            pr_url: None,
+            pr_number: None,
+            created_at: 1000,
+            updated_at: 1000,
+            archived_at: None,
+        })
+        .unwrap();
+
+        collaboration_sessions::create(CollaborationSession {
+            collaboration_session_id: session_id,
+            chat_id,
+            workspace_id,
+            mode: "supervisor".to_string(),
+            state: "idle".to_string(),
+            goal: None,
+            active_plan_revision: None,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+        .unwrap();
+
+        conversations::create(Conversation {
+            conversation_id,
+            collaboration_session_id: session_id,
+            chat_id,
+            parent_id: None,
+            name: Some("Launch Settings Conversation".to_string()),
+            mode: "agent".to_string(),
+            participant_role: "peer".to_string(),
+            status: "ready".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+            context_used: 0,
+            context_window: 0,
+            context_updated_at: 0,
+        })
+        .unwrap();
+
+        let settings = ConversationLaunchSettings {
+            conversation_id,
+            profile_name: Some("claude-code".to_string()),
+            model: Some("glm-5.3-flash".to_string()),
+            model_options_json: r#"{"thinking":"high"}"#.to_string(),
+            provider_connection_id: Some("conn-1".to_string()),
+            source: "user".to_string(),
+            updated_at: 1234,
+        };
+        conversation_launch_settings::upsert(&settings).unwrap();
+
+        let loaded = conversation_launch_settings::get(conversation_id)
+            .unwrap()
+            .expect("settings row should exist");
+        assert_eq!(loaded, settings);
+
+        conversation_launch_settings::delete(conversation_id).unwrap();
+        assert!(conversation_launch_settings::get(conversation_id)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn test_latest_runtime_model_scoped_by_conversation_and_profile() {
+        let _database_guard = lock_user_data_db_for_tests();
+        let conversation_id = ConversationId::new(std::process::id() as i64 * 10000 + 41);
+        let other_conversation = ConversationId::new(std::process::id() as i64 * 10000 + 42);
+
+        set_agent_runtime_model_full(
+            "agent-test-1",
+            Some("claude-code"),
+            Some(conversation_id),
+            Some("glm-5.3-flash"),
+            None,
+            "user",
+        )
+        .unwrap();
+        set_agent_runtime_model_full(
+            "agent-test-2",
+            Some("opencode"),
+            Some(conversation_id),
+            Some("agnes/agnes-2.5-flash"),
+            None,
+            "user",
+        )
+        .unwrap();
+        set_agent_runtime_model_full(
+            "agent-test-3",
+            Some("claude-code"),
+            Some(other_conversation),
+            Some("qwen3.7-plus"),
+            None,
+            "user",
+        )
+        .unwrap();
+
+        let claude =
+            get_latest_agent_runtime_model_for_conversation(conversation_id, Some("claude-code"))
+                .unwrap();
+        assert_eq!(claude.as_deref(), Some("glm-5.3-flash"));
+
+        let opencode =
+            get_latest_agent_runtime_model_for_conversation(conversation_id, Some("opencode"))
+                .unwrap();
+        assert_eq!(opencode.as_deref(), Some("agnes/agnes-2.5-flash"));
+
+        let other =
+            get_latest_agent_runtime_model_for_conversation(other_conversation, None).unwrap();
+        assert_eq!(other.as_deref(), Some("qwen3.7-plus"));
     }
 }

@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import {
   app,
   BrowserWindow,
@@ -40,6 +41,10 @@ import {
   isDevToolsUnlocked
 } from "./lib/devtools-state"
 import {
+  ensureBackend,
+  stopBackend
+} from "./lib/backend-process"
+import {
   createMainWindow,
   createWindow,
   getWindow,
@@ -58,6 +63,12 @@ const PROTOCOL = IS_DEV ? "ergatai-dev" : "ergatai"
 
 // Keep the Linux app menu and About panel on the product brand in dev mode too.
 app.name = "Ergatai"
+
+// Keep the development window association separate from an installed release,
+// so a locally installed ergatai.desktop is never shadowed by the dev entry.
+if (process.platform === "linux" && !app.isPackaged) {
+  app.setDesktopName("ergatai-dev.desktop")
+}
 
 // Keep all Ergatai-owned frontend data under the same user data root as the
 // backend. Chromium runtime files still live inside this userData directory.
@@ -497,6 +508,13 @@ if (gotTheLock) {
 
   // App ready
   app.whenReady().then(async () => {
+    // Start the bundled backend as early as possible. If a server is already
+    // running (dev.sh, launcher, CLI), this attaches instead of spawning.
+    const backendReady = ensureBackend().catch((error) => {
+      console.error("[Backend] Lifecycle error:", error)
+      return null
+    })
+
     startAuthServer()
 
     // Initialize model snapshot manager (loads cached model lists from disk)
@@ -739,7 +757,7 @@ if (gotTheLock) {
               label: "Learn More",
               click: async () => {
                 const { shell } = await import("electron")
-                await shell.openExternal("https://github.com/windreach/ergatai-ui")
+                await shell.openExternal("https://github.com/windreach/ergatai")
               },
             },
           ],
@@ -777,6 +795,17 @@ if (gotTheLock) {
     authManager = initAuthManager()
     console.log("[App] Local user initialized")
 
+    // Wait briefly for the backend so the renderer's first queries do not
+    // race the server's startup. If startup fails, still open the window so
+    // the user can see diagnostics instead of a permanently hidden app.
+    const backend = await backendReady
+    if (backend) {
+      console.log(
+        `[Backend] Lifecycle: ${backend.state} url=${backend.url}` +
+          (backend.reason ? ` reason=${backend.reason}` : ""),
+      )
+    }
+
     // Create main window
     createMainWindow()
 
@@ -813,10 +842,11 @@ if (gotTheLock) {
       isQuitting = true
       // Prevent immediate quit, do cleanup first
       event.preventDefault()
+      setIsQuitting(true)
       console.log("[App] Shutting down...")
-      cleanupGitWatchers()
-        .catch((err) => console.error("[App] Cleanup error:", err))
-        .finally(() => app.quit())
+      Promise.allSettled([cleanupGitWatchers(), stopBackend()]).finally(() =>
+        app.quit(),
+      )
     }
   })
 

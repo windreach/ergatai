@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { EventEmitter } from "node:events"
 import { t } from "../i18n"
 import { FALLBACK_SHELL, SHELL_CRASH_THRESHOLD_MS } from "./env"

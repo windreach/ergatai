@@ -787,6 +787,8 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
             let external_id_for_meta = external_message_id.clone();
             let agent_external_id_for_closure = external_message_id.clone();
             let correlation_id_for_meta = payload.correlation_id.clone();
+            let origin_turn_id = payload.metadata.get("originTurnId").cloned();
+            let origin_conversation_id = payload.metadata.get("originConversationId").cloned();
             let append_result = tokio::task::spawn_blocking(move || {
                 let metadata = serde_json::json!({
                     "externalMessageId": external_id_for_meta,
@@ -794,6 +796,8 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
                     "senderAgentName": from_agent_name,
                     "messageType": message_type,
                     "correlationId": correlation_id_for_meta,
+                    "replyToTurnId": origin_turn_id,
+                    "replyToConversationId": origin_conversation_id,
                     "deliveryStatus": "pending",  // Will be updated to "delivered" or "failed" after injection
                 });
 

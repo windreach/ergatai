@@ -1,4 +1,5 @@
 "use client"
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
@@ -600,7 +601,13 @@ export const NewChatForm = memo(function NewChatForm({
   ])
 
   // Get available models (with offline support)
-  const availableModels = useAvailableModels(backendAgentId, selectedAgent?.id ?? null)
+  // New chats have no backend agent yet. Follow the agent selected in this
+  // form instead of the binding of a previously opened chat, which may belong
+  // to a different profile and leak its model catalogue into the picker.
+  const availableModels = useAvailableModels(
+    null,
+    selectedAgent?.id ?? null,
+  )
   const [selectedOllamaModel, _setSelectedOllamaModel] = useAtom(selectedOllamaModelAtom)
   const [lastSelectedCodexModelId, _setLastSelectedCodexModelId] = useAtom(
     lastSelectedCodexModelIdAtom,

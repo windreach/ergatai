@@ -252,6 +252,27 @@ export const conversationsRouter = router({
 
 
 
+  /** Durable model/provider selection for a conversation */
+  getConversationLaunchSettings: publicProcedure
+    .input(
+      z.object({
+        conversationId: conversationKeySchema,
+      }),
+    )
+    .query(async ({ input }) => {
+      return ergataiFetch<{
+        conversation_id: string
+        profile_name: string | null
+        model: string | null
+        model_options_json: string
+        provider_connection_id: string | null
+        source: string
+        updated_at: number
+      } | null>(
+        `/api/v1/conversations/${encodeURIComponent(input.conversationId)}/launch-settings`,
+      )
+    }),
+
   /** Get ACP context window usage for a conversation */
   getConversationContextUsage: publicProcedure
     .input(

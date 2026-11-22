@@ -1,7 +1,8 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 "use client"
 
-import { memo, useState, useMemo } from "react"
+import { memo, useEffect, useState, useMemo } from "react"
 import { Check, ChevronRight, X } from "lucide-react"
 import { useAtomValue } from "jotai"
 import { IconSpinner } from "../../../components/ui/icons"
@@ -13,6 +14,10 @@ import type { MessagePart } from "../stores/message-store"
 import type { BashToolOutput } from "./tool-types"
 import { cn } from "../../../lib/utils"
 import { selectedWorkspaceAtom } from "../atoms"
+import {
+  applyAgentTerminalExtension,
+  getAgentTerminals,
+} from "../lib/agent-terminal-store"
 
 interface AgentBashToolProps {
   // AI SDK tool part shape is dynamic/loosely typed
@@ -20,6 +25,8 @@ interface AgentBashToolProps {
   messageId?: string
   partIndex?: number
   chatStatus?: string
+  /** Conversation the terminal task belongs to (for the Terminal widget). */
+  conversationId?: string
 }
 
 // Extract command summary - first word of each command in a pipeline
@@ -57,6 +64,7 @@ export const AgentBashTool = memo(function AgentBashTool({
   messageId,
   partIndex,
   chatStatus,
+  conversationId,
 }: AgentBashToolProps) {
   const [isExpanded, setIsExpanded] = useState(false)
   const { isPending } = getToolStatus(part, chatStatus)
@@ -70,6 +78,69 @@ export const AgentBashTool = memo(function AgentBashTool({
   const stderr = output?.stderr || ""
   const rawExitCode = output?.exitCode ?? output?.exit_code
   const exitCode = rawExitCode !== undefined ? Number(rawExitCode) : undefined
+
+  // Seed the Terminal widget from persisted/background shell tool parts.
+  // The runtime normally emits `terminal_task_update` for these, but replaying
+  // an older message (or an adapter that omits the extension event) should not
+  // leave the task invisible. Live events win because we only seed when the
+  // terminal id is not already present.
+  const isBackgroundShell = part.input?.background === true
+  useEffect(() => {
+    if (!conversationId || !isBackgroundShell || !part.toolCallId) return
+
+    const metadata = (part.output as { metadata?: Record<string, unknown> } | undefined)
+      ?.metadata
+    const shellId =
+      typeof metadata?.shellID === "string"
+        ? metadata.shellID
+        : typeof metadata?.shell_id === "string"
+          ? metadata.shell_id
+          : undefined
+    if (!shellId) return
+
+    if (
+      getAgentTerminals(conversationId).some(
+        (task) => task.terminalId === part.toolCallId,
+      )
+    ) {
+      return
+    }
+
+    const rawStatus =
+      typeof metadata?.status === "string" ? metadata.status : "running"
+    const status =
+      rawStatus === "completed" ||
+      rawStatus === "failed" ||
+      rawStatus === "cancelled"
+        ? rawStatus
+        : "running"
+    const rawObservedAt =
+      (part.completedAt as unknown) ?? (part.startedAt as unknown)
+    const observedAt =
+      typeof rawObservedAt === "number" ? rawObservedAt : undefined
+
+    applyAgentTerminalExtension(
+      conversationId,
+      "terminal_task_update",
+      {
+        terminal_id: part.toolCallId,
+        title: command || shellId,
+        command,
+        status,
+        backgrounded: true,
+        updated_at: observedAt ?? Date.now(),
+      },
+      observedAt,
+    )
+  }, [
+    conversationId,
+    isBackgroundShell,
+    part.toolCallId,
+    part.output,
+    part.completedAt,
+    part.startedAt,
+    command,
+  ])
 
   // For bash tools, success/error is determined by exitCode, not by state
   // exitCode 0 = success, anything else (or undefined if no output yet) = error

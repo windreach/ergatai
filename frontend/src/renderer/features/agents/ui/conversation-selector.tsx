@@ -1,7 +1,7 @@
 import i18n from "@/lib/i18n"
 "use client"
 
-import { useCallback, useMemo, useEffect, useRef, useState, memo, forwardRef, useImperativeHandle } from "react"
+import { useCallback, useMemo, useEffect, useRef, useState } from "react"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import {
   loadingConversationsAtom,
@@ -14,7 +14,7 @@ import {
   unifiedSidebarEnabledAtom,
 } from "../../details-sidebar"
 import { trpc } from "../../../lib/trpc"
-import { Plus, AlignJustify, Play, TerminalSquare, X } from "lucide-react"
+import { AlignJustify, Play, TerminalSquare, X } from "lucide-react"
 import {
   IconSpinner,
   PlanIcon,
@@ -22,7 +22,6 @@ import {
   IconOpenSidebarRight,
   PinFilledIcon,
   DiffIcon,
-  ClockIcon,
   QuestionIcon,
 
 } from "../../../components/ui/icons"
@@ -33,7 +32,6 @@ import {
   type ConversationMeta,
 } from "../stores/conversation-store"
 import { useShallow } from "zustand/react/shallow"
-import { PopoverTrigger } from "../../../components/ui/popover"
 import {
   Tooltip,
   TooltipContent,
@@ -48,116 +46,9 @@ import {
 import { InlineEdit } from "./inline-edit"
 import { api } from "../../../lib/api-adapter"
 import { toast } from "sonner"
-import { SearchCombobox } from "../../../components/ui/search-combobox"
 import { ConversationContextMenu } from "./conversation-context-menu"
-import { formatTimeAgo } from "../utils/format-time-ago"
-
-// Isolated Search History Popover - prevents parent re-renders when popover opens/closes
-interface SearchHistoryPopoverProps {
-  sortedConversations: ConversationMeta[]
-  loadingConversations: Map<string, string>
-  conversationsUnseenChanges: Set<string>
-  pendingQuestionsMap: Map<string, { conversationId: string }>
-  pendingPlanApprovals: Set<string>
-  allConversationsLength: number
-  onSelect: (conversation?: ConversationMeta) => void
-}
-
-export interface SearchHistoryPopoverRef {
-  open: () => void
-}
-
-const SearchHistoryPopover = memo(forwardRef<SearchHistoryPopoverRef, SearchHistoryPopoverProps>(function SearchHistoryPopover({
-  sortedConversations,
-  loadingConversations,
-  conversationsUnseenChanges,
-  pendingQuestionsMap,
-  pendingPlanApprovals,
-  allConversationsLength,
-  onSelect,
-}, ref) {
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false)
-
-  // Expose open function to parent
-  useImperativeHandle(ref, () => ({
-    open: () => setIsHistoryOpen(true)
-  }), [])
-
-  const renderItem = useCallback((conversation?: ConversationMeta) => {
-    const timeAgo = formatTimeAgo(conversation?.updated_at || conversation?.created_at)
-    const isLoading = loadingConversations.has(conversation?.id || "")
-    const hasUnseen = conversationsUnseenChanges.has(conversation?.id || "")
-    const mode = conversation?.mode || "agent"
-    const hasPendingQuestion = pendingQuestionsMap.has(conversation?.id || "")
-    const hasPendingPlan = pendingPlanApprovals.has(conversation?.id || "")
-
-    return (
-      <div className="flex items-center gap-2 flex-1 min-w-0">
-        <div className="flex-shrink-0 w-4 h-4 flex items-center justify-center relative">
-          {hasPendingQuestion ? (
-            <QuestionIcon className="w-4 h-4 text-blue-500" />
-          ) : isLoading ? (
-            <IconSpinner className="w-4 h-4 text-muted-foreground" />
-          ) : mode === "plan" ? (
-            <PlanIcon className="w-4 h-4 text-muted-foreground" />
-          ) : (
-            <AgentIcon className="w-4 h-4 text-muted-foreground" />
-          )}
-          {(hasPendingPlan || hasUnseen) && !isLoading && !hasPendingQuestion && (
-            <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-popover flex items-center justify-center">
-              <div className={cn(
-                "w-1.5 h-1.5 rounded-full",
-                hasPendingPlan ? "bg-amber-500" : "bg-[#307BD0]"
-              )} />
-            </div>
-          )}
-        </div>
-        <span className="text-sm truncate flex-1">
-          {conversation?.name || "New Chat"}
-        </span>
-        <span className="text-sm text-muted-foreground whitespace-nowrap">
-          {timeAgo}
-        </span>
-      </div>
-    )
-  }, [loadingConversations, conversationsUnseenChanges, pendingQuestionsMap, pendingPlanApprovals])
-
-  return (
-    <SearchCombobox
-      isOpen={isHistoryOpen}
-      onOpenChange={setIsHistoryOpen}
-      items={sortedConversations}
-      onSelect={onSelect}
-      placeholder={i18n.t('Search chats...')}
-      emptyMessage="No results"
-      getItemValue={(conversation) => `${conversation?.name || "New Chat"} ${conversation?.id}`}
-      renderItem={renderItem}
-      trigger={
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <PopoverTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md flex items-center justify-center"
-                disabled={allConversationsLength === 0}
-              >
-                <ClockIcon className="h-4 w-4" />
-              </Button>
-            </PopoverTrigger>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            Search chats
-            <Kbd>/</Kbd>
-          </TooltipContent>
-        </Tooltip>
-      }
-    />
-  )
-}))
 
 interface ConversationSelectorProps {
-  onCreateNew: () => void
   isMobile?: boolean
   onBackToChats?: () => void
   onOpenPreview?: () => void
@@ -173,7 +64,6 @@ interface ConversationSelectorProps {
 // react-doctor-disable-next-line no-high-complexity-react-function
 // react-doctor-disable-next-line no-giant-component
 export function ConversationSelector({
-  onCreateNew,
   isMobile = false,
   onBackToChats,
   onOpenPreview,
@@ -237,7 +127,6 @@ export function ConversationSelector({
   const openDiffHotkey = useResolvedHotkeyDisplay("open-diff")
   const toggleTerminalHotkey = useResolvedHotkeyDisplay("toggle-terminal")
   const archiveAgentHotkey = useResolvedHotkeyDisplay("archive-agent")
-  const newAgentHotkey = useResolvedHotkeyDisplay("new-agent")
 
   // Pending plan approvals from DB - only for open conversations
   const { data: pendingPlanApprovalsData } = trpc.chats.getPendingPlanApprovals.useQuery(
@@ -261,7 +150,6 @@ export function ConversationSelector({
   const leftGradientRef = useRef<HTMLDivElement>(null)
   const rightGradientRef = useRef<HTMLDivElement>(null)
   const truncatedTabsRef = useRef<Set<string>>(new Set())
-  const searchHistoryPopoverRef = useRef<SearchHistoryPopoverRef>(null)
 
   const allConversationsById = useMemo(() => {
     const map = new Map<string, ConversationMeta>()
@@ -338,16 +226,6 @@ export function ConversationSelector({
     },
     [setConversationUnseenChanges],
   )
-
-  const onSwitchFromHistory = useCallback((conversationId: string) => {
-    const state = useAgentConversationStore.getState()
-    const isAlreadyOpen = state.openConversationIds.includes(conversationId)
-
-    if (!isAlreadyOpen) {
-      state.addToOpenConversations(conversationId)
-    }
-    state.setActiveConversation(conversationId)
-  }, [])
 
   const onCloseTab = useCallback((conversationId: string) => {
     useAgentConversationStore.getState().removeFromOpenConversations(conversationId)
@@ -448,49 +326,6 @@ export function ConversationSelector({
     setEditingConversationId(null)
   }, [])
 
-  const handleSelectFromHistory = useCallback(
-    (conversation?: ConversationMeta) => {
-      if (conversation?.id) {
-        onSwitchFromHistory(conversation.id)
-      }
-    },
-    [onSwitchFromHistory],
-  )
-
-  // Hotkey: / to open history popover when sidebar is closed (tabs mode)
-  useEffect(() => {
-    const handleHistoryHotkey = (e: KeyboardEvent) => {
-      // Only in tabs mode (sidebar closed)
-      if (conversationsSidebarMode !== "tabs") return
-
-      if (
-        e.key === "/" &&
-        !e.metaKey &&
-        !e.ctrlKey &&
-        !e.altKey &&
-        !e.shiftKey
-      ) {
-        // Don't trigger if already focused on an input/textarea
-        const activeEl = document.activeElement
-        if (
-          activeEl?.tagName === "INPUT" ||
-          activeEl?.tagName === "TEXTAREA" ||
-          activeEl?.hasAttribute("contenteditable")
-        ) {
-          return
-        }
-
-        e.preventDefault()
-        e.stopPropagation()
-        searchHistoryPopoverRef.current?.open()
-      }
-    }
-
-    window.addEventListener("keydown", handleHistoryHotkey, true)
-    return () =>
-      window.removeEventListener("keydown", handleHistoryHotkey, true)
-  }, [conversationsSidebarMode])
-
   // Scroll to active tab when it changes
   useEffect(() => {
     if (!activeConversationId || !tabsContainerRef.current) return
@@ -551,17 +386,6 @@ export function ConversationSelector({
 
     return () => resizeObserver.disconnect()
   }, [openConversations, activeConversationId])
-
-  // Sort conversations by most recent first for history
-  const sortedConversations = useMemo(
-    () =>
-      [...allConversations].sort((a, b) => {
-        const aT = new Date(a.updated_at || a.created_at || "0").getTime()
-        const bT = new Date(b.updated_at || b.created_at || "0").getTime()
-        return bT - aT
-      }),
-    [allConversations],
-  )
 
   const hasNoChats = openConversations.length === 0
   const hasSingleChat = openConversations.length === 1
@@ -683,11 +507,11 @@ export function ConversationSelector({
           style={{ display: "none" }}
         />
 
-        {/* Scrollable tabs container - with padding-right for plus button */}
+        {/* Scrollable tabs container */}
         <div
           ref={tabsContainerRef}
           className={cn(
-            "flex items-center px-1 py-1 -my-1 gap-1 flex-1 min-w-0 overflow-x-auto scrollbar-hide pr-12",
+            "flex items-center px-1 py-1 -my-1 gap-1 flex-1 min-w-0 overflow-x-auto scrollbar-hide",
             // Hide tabs when sidebar is open (desktop) or when only one chat exists
             (conversationsSidebarMode === "sidebar" && !isMobile) && "hidden",
             hasSingleChat && "invisible",
@@ -906,55 +730,7 @@ export function ConversationSelector({
                 )
               })}
         </div>
-
-        {/* Plus button - absolute positioned on right with gradient cover */}
-        {(isMobile || (!isMobile && conversationsSidebarMode === "tabs")) && (
-          <div className="absolute right-0 top-0 bottom-0 flex items-center z-20">
-            {/* Gradient to cover content peeking from the left */}
-            <div className="w-6 h-full bg-gradient-to-r from-transparent to-background" />
-            <div className="h-full flex items-center bg-background pr-1">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={onCreateNew}
-                    className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] rounded-md"
-                  >
-                    <Plus className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  New chat
-                  {newAgentHotkey && <Kbd>{newAgentHotkey}</Kbd>}
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          </div>
-        )}
       </div>
-
-      {/* Action buttons - always visible on mobile, on desktop only in tabs mode */}
-      {(isMobile || (!isMobile && conversationsSidebarMode === "tabs")) && (
-        <div
-          className="flex items-center gap-1"
-          style={{
-            // @ts-expect-error - WebKit-specific property
-            WebkitAppRegion: "no-drag",
-          }}
-        >
-          <SearchHistoryPopover
-            ref={searchHistoryPopoverRef}
-            sortedConversations={sortedConversations}
-            loadingConversations={loadingConversations}
-            conversationsUnseenChanges={conversationsUnseenChanges}
-            pendingQuestionsMap={pendingQuestionsMap}
-            pendingPlanApprovals={pendingPlanApprovals}
-            allConversationsLength={allConversations.length}
-            onSelect={handleSelectFromHistory}
-          />
-        </div>
-      )}
 
       {/* Changes access moved to the right rail */}
 

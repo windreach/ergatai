@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { useMemo, useCallback } from "react"
 import { Loader2, AlertCircle, Check, X } from "lucide-react"

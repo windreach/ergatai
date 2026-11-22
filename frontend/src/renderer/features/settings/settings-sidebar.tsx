@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { ChevronLeft } from "lucide-react"
@@ -26,17 +27,17 @@ const isDevelopment = import.meta.env.DEV
 const MAIN_TABS = [
   {
     id: "preferences" as SettingsTab,
-    label: "Preferences",
+    label: "settings.sidebar.preferences",
     icon: SlidersFilledIcon,
   },
   {
     id: "appearance" as SettingsTab,
-    label: "Appearance",
+    label: "settings.sidebar.appearance",
     icon: EyeOpenFilledIcon,
   },
   {
     id: "keyboard" as SettingsTab,
-    label: "Keyboard",
+    label: "settings.sidebar.keyboard",
     icon: KeyboardFilledIcon,
   },
 ]
@@ -44,7 +45,7 @@ const MAIN_TABS = [
 // Debug tab definition
 const DEBUG_TAB = {
   id: "debug" as SettingsTab,
-  label: "Debug",
+  label: "settings.sidebar.debug",
   icon: BugFilledIcon,
 }
 
@@ -82,7 +83,7 @@ function TabButton({ tab, isActive, onClick }: TabButtonProps) {
           isProjectTab ? "opacity-100" : isActive ? "opacity-100" : "opacity-50"
         )}
       />
-      <span className="flex-1 truncate">{tab.label}</span>
+      <span className="flex-1 truncate">{i18n.t(tab.label)}</span>
     </button>
   )
 }

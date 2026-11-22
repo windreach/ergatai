@@ -300,6 +300,9 @@ pub fn enqueue(input: InitialPromptInput) -> Result<InitialPromptTurn> {
         ergatai_error::id::generate(),
         ergatai_error::id::IdType::Turn,
     );
+    let seed_model = input.model.clone().filter(|model| !model.trim().is_empty());
+    let seed_profile = input.agent_command.clone();
+    let seed_provider_connection_id = input.provider_connection_id.clone();
 
     tx.execute(
         r#"
@@ -325,6 +328,27 @@ pub fn enqueue(input: InitialPromptInput) -> Result<InitialPromptTurn> {
             now,
         ],
     )?;
+
+    // Seed the durable conversation selection in the same transaction so a
+    // later respawn/resume does not have to infer it from the first message.
+    // INSERT OR IGNORE keeps an existing explicit user selection authoritative.
+    if let Some(model) = seed_model {
+        let _ = tx.execute(
+            r#"
+            INSERT OR IGNORE INTO conversation_launch_settings
+                (conversation_id, profile_name, model, model_options_json,
+                 provider_connection_id, source, updated_at)
+            VALUES (?1, ?2, ?3, '{}', ?4, 'initial', ?5)
+            "#,
+            params![
+                input.conversation_id.as_i64(),
+                seed_profile,
+                model,
+                seed_provider_connection_id,
+                now.saturating_mul(1000),
+            ],
+        );
+    }
 
     // Read the effective row inside the same transaction/lock scope. Calling
     // get_by_conversation() here would re-lock the same global SQLite mutex and
@@ -500,80 +524,13 @@ fn turn_error(error: impl std::fmt::Display) -> String {
 }
 
 async fn ensure_agent(turn: &InitialPromptTurn) -> Result<String> {
-    let runtime = crate::context::get_app_context().agent_runtime.clone();
+    let ctx = crate::context::get_app_context();
+    let conversation_id = ConversationId::decode(&turn.conversation_id)
+        .map_err(|error| anyhow::anyhow!("Invalid conversation ID: {}", error))?;
 
-    if let Some(agent) = runtime
-        .registry()
-        .resolve_conversation_id(&turn.conversation_id)
-        .await
-    {
-        if agent.lifecycle.is_alive() {
-            return Ok(agent.agent_id);
-        }
-    }
-
-    if let Some(resumed) =
-        crate::services::agent_service::resolve_agent_for_conversation(&turn.conversation_id).await
-    {
-        return Ok(resumed);
-    }
-
-    let max_agents: usize = std::env::var("ERGATAI_MAX_AGENTS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(50);
-    let running_agent_count = runtime.list_agents().await.len();
-    if running_agent_count >= max_agents {
-        return Err(anyhow::anyhow!(
-            "Agent limit reached ({}/{}); cannot dispatch initial prompt",
-            running_agent_count,
-            max_agents
-        ));
-    }
-
-    let chat_id_typed = ChatId::decode(&turn.chat_id)
-        .map_err(|error| anyhow::anyhow!("Invalid chat ID: {}", error))?;
-    let workspace_id_typed = WorkspaceId::decode(&turn.workspace_id)
-        .map_err(|error| anyhow::anyhow!("Invalid workspace ID: {}", error))?;
-
-    let (chat, workspace) = {
-        let chat_future =
-            tokio::task::spawn_blocking(move || crate::user_data_db::chats::get(chat_id_typed));
-        let workspace_future = tokio::task::spawn_blocking(move || {
-            crate::user_data_db::workspaces::get(workspace_id_typed)
-        });
-        let (chat_result, workspace_result) = tokio::join!(chat_future, workspace_future);
-        (
-            chat_result.map_err(|error| anyhow::anyhow!("Chat query task failed: {}", error))?,
-            workspace_result
-                .map_err(|error| anyhow::anyhow!("Workspace query task failed: {}", error))?,
-        )
-    };
-
-    let chat = chat?.ok_or_else(|| anyhow::anyhow!("Chat {} not found", turn.chat_id))?;
-    let workspace =
-        workspace?.ok_or_else(|| anyhow::anyhow!("Workspace {} not found", turn.workspace_id))?;
-    let work_dir = chat
-        .worktree_path
-        .unwrap_or_else(|| workspace.work_dir.clone());
-    let work_dir = crate::validate_cwd(&work_dir)
-        .map_err(|error| anyhow::anyhow!("Invalid work directory: {}", error))?;
-    let mut env: std::collections::HashMap<String, String> =
-        serde_json::from_str(&workspace.env).unwrap_or_default();
-    let mut model = turn.model.clone();
-    let provider_connection_id = turn.provider_connection_id.as_deref();
-    if let Some(connection) = crate::services::provider_connection_service::resolve(
-        provider_connection_id,
-        Some(turn.agent_command.as_str()),
-    )? {
-        env.extend(crate::services::provider_connection_service::env_for_connection(&connection)?);
-        if model.is_none() {
-            model = connection.default_model.clone();
-        }
-    }
-    let resources: ergatai_runtime::ResourceLimits =
-        serde_json::from_str(&workspace.resources).unwrap_or_default();
-
+    // The launch service resolves the profile too, but the binding below needs
+    // the registered profile metadata and the installed check is a hard gate
+    // for the first prompt.
     let profiles = tokio::task::spawn_blocking(|| {
         crate::services::profile_service::list_profiles_with_status()
     })
@@ -590,49 +547,41 @@ async fn ensure_agent(turn: &InitialPromptTurn) -> Result<String> {
         ));
     }
 
-    let spec = ergatai_runtime::WorkspaceSpec {
-        id: turn.workspace_id.clone(),
-        work_dir,
-        env,
-        resources,
-        capture_thoughts: false,
-    };
-    let agent_id = runtime
-        .launch_agent_scoped(
-            spec,
-            &profile.command,
-            None,
-            Some(&turn.chat_id),
-            Some(&turn.conversation_id),
-            Some(&profile.name),
-            profile.transport.as_deref(),
-            None,
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!("Failed to launch agent: {}", error))?;
-
-    // Prefer turn model, then runtime persisted selected model.
-    let effective_model = if model
+    let model = turn
+        .model
         .as_deref()
-        .map(|m| !m.trim().is_empty())
-        .unwrap_or(false)
-    {
-        model.clone()
-    } else {
-        crate::services::agent_service::get_agent_runtime_selected_model(&agent_id).await
-    };
-    if let Some(model) = effective_model.as_deref().filter(|m| !m.trim().is_empty()) {
-        crate::services::agent_service::set_agent(&agent_id, model.trim())
-            .await
-            .map_err(|error| anyhow::anyhow!("Failed to set agent model: {}", error))?;
-    }
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            crate::services::agent_launch::ModelInput::Seed(
+                crate::services::agent_launch::ModelSelection::new(value),
+            )
+        })
+        .unwrap_or(crate::services::agent_launch::ModelInput::None);
 
-    upsert_agent_binding(&agent_id, &profile, turn).await?;
+    let request = crate::services::agent_launch::EnsureAgentRequest {
+        conversation_id: Some(conversation_id),
+        profile: Some(turn.agent_command.clone()),
+        workspace_id: None,
+        work_dir: None,
+        provider_connection_id: turn.provider_connection_id.clone(),
+        model,
+        mode: crate::services::agent_launch::LaunchMode::Ensure,
+        env: Default::default(),
+        allow_native_default: false,
+    };
+    let result = ctx
+        .agent_launch
+        .ensure(request)
+        .await
+        .map_err(|error| anyhow::anyhow!("Failed to ensure agent: {}", error))?;
+
+    upsert_agent_binding(&result.agent_id, &profile, turn).await?;
 
     // Spawn background model detection (two-phase polling with exponential backoff)
-    crate::api::agents::spawn_model_detection(agent_id.clone(), profile.name.clone());
+    crate::api::agents::spawn_model_detection(result.agent_id.clone(), profile.name.clone());
 
-    Ok(agent_id)
+    Ok(result.agent_id)
 }
 
 async fn upsert_agent_binding(
@@ -664,6 +613,32 @@ async fn upsert_agent_binding(
     .map_err(|error| anyhow::anyhow!("Agent binding task failed: {}", error))?;
     result.map_err(|error| anyhow::anyhow!("Failed to persist agent binding: {}", error))?;
     Ok(())
+}
+
+/// Publish a terminal runtime error for a failed initial prompt.
+///
+/// The durable initial-prompt row and the chat message delivery status are
+/// updated separately. This event is what lets a mounted chat view stop
+/// showing "Generating" and render the failure instead of waiting forever for
+/// an assistant message that will never arrive.
+async fn publish_initial_prompt_failure(conversation_id: &str, message: &str) {
+    let Some(store) = crate::services::conversation_runtime::runtime_store() else {
+        return;
+    };
+    store
+        .ingest(
+            conversation_id.to_string(),
+            ergatai_runtime::AgentOutputEvent::Error {
+                role: "assistant".to_string(),
+                message: message.to_string(),
+                error_name: Some("initial_prompt_failed".to_string()),
+                error_type: Some("initial_prompt_failed".to_string()),
+                service: Some("ergatai".to_string()),
+                code: None,
+                error_data: None,
+            },
+        )
+        .await;
 }
 
 async fn dispatch_turn(mut turn: InitialPromptTurn) -> Result<()> {
@@ -782,12 +757,13 @@ async fn dispatch_turn(mut turn: InitialPromptTurn) -> Result<()> {
                         "Initial prompt delivery failed"
                     );
                     let closure_turn_id = turn_id.clone();
+                    let state_error = error.clone();
                     let result = tokio::task::spawn_blocking(move || {
                         let db = crate::user_data_db::get_user_data_db();
                         let mut conn = db.lock().map_err(|lock_error| {
                             anyhow::anyhow!("Initial prompt database lock poisoned: {}", lock_error)
                         })?;
-                        finish_error_impl(&mut conn, &closure_turn_id, turn.attempt, &error)
+                        finish_error_impl(&mut conn, &closure_turn_id, turn.attempt, &state_error)
                     })
                     .await;
                     let state_result = match result {
@@ -802,15 +778,16 @@ async fn dispatch_turn(mut turn: InitialPromptTurn) -> Result<()> {
                             "Failed to persist initial prompt failure"
                         ),
                     }
-                    // Do not persist/render the failure into the chat stream.
-                    // The error details are already captured in the server logs
-                    // (see turn_error) and in the initial_prompt_turns row.
-                    if matches!(state_result, Ok(InitialPromptStatus::Failed)) {
+                    // Do not persist the failure as chat prose. The runtime
+                    // error event below is the terminal signal the UI uses to
+                    // stop "Generating" and render an error card.
+                    if matches!(&state_result, Ok(InitialPromptStatus::Failed)) {
                         update_message_delivery_status(
                             conversation_id_typed,
                             &turn.message_id,
                             "failed",
                         );
+                        publish_initial_prompt_failure(&conversation_id, &error).await;
                     }
                 }
             }
@@ -825,12 +802,13 @@ async fn dispatch_turn(mut turn: InitialPromptTurn) -> Result<()> {
                 "Failed to prepare initial prompt agent"
             );
             let closure_turn_id = turn_id.clone();
+            let state_error = error.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let db = crate::user_data_db::get_user_data_db();
                 let mut conn = db.lock().map_err(|lock_error| {
                     anyhow::anyhow!("Initial prompt database lock poisoned: {}", lock_error)
                 })?;
-                finish_error_impl(&mut conn, &closure_turn_id, turn.attempt, &error)
+                finish_error_impl(&mut conn, &closure_turn_id, turn.attempt, &state_error)
             })
             .await;
             let state_result = match result {
@@ -845,9 +823,12 @@ async fn dispatch_turn(mut turn: InitialPromptTurn) -> Result<()> {
                     "Failed to persist initial prompt prepare failure"
                 ),
             }
-            // Do not persist/render the failure into the chat stream; log only.
-            if matches!(state_result, Ok(InitialPromptStatus::Failed)) {
+            // Do not persist the failure as chat prose. The runtime error
+            // event below is the terminal signal the UI uses to stop
+            // "Generating" and render an error card.
+            if matches!(&state_result, Ok(InitialPromptStatus::Failed)) {
                 update_message_delivery_status(conversation_id_typed, &turn.message_id, "failed");
+                publish_initial_prompt_failure(&conversation_id, &error).await;
             }
         }
     }

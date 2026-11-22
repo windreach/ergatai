@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { useState, useEffect } from "react"
 import { useAtom } from "jotai"
@@ -82,11 +83,16 @@ export function AgentsDebugTab() {
   const setOfflineSimulationMutation = trpc.debug.setOfflineSimulation.useMutation({
     onSuccess: (data) => {
       refetchOfflineSimulation()
-      toast.success(data.enabled ? "Offline simulation enabled" : "Offline simulation disabled", {
-        description: data.enabled
-          ? "App will behave as if offline"
-          : "Network detection restored to normal"
-      })
+      toast.success(
+        data.enabled
+          ? i18n.t("settings.debug.offlineEnabled")
+          : i18n.t("settings.debug.offlineDisabled"),
+        {
+          description: data.enabled
+            ? i18n.t("settings.debug.offlineEnabledDescription")
+            : i18n.t("settings.debug.offlineDisabledDescription"),
+        },
+      )
     },
     onError: (error) => toast.error(error.message),
   })
@@ -99,7 +105,7 @@ export function AgentsDebugTab() {
   // Mutations
   const clearChatsMutation = trpc.debug.clearChats.useMutation({
     onSuccess: () => {
-      toast.success("All chats cleared")
+      toast.success(i18n.t("settings.debug.allChatsCleared"))
       refetchDb()
     },
     onError: (error) => toast.error(error.message),
@@ -107,7 +113,7 @@ export function AgentsDebugTab() {
 
   const clearAllDataMutation = trpc.debug.clearAllData.useMutation({
     onSuccess: () => {
-      toast.success("All data cleared. Reloading...")
+      toast.success(i18n.t("settings.debug.allDataCleared"))
       setTimeout(() => window.location.reload(), 500)
     },
     onError: (error) => toast.error(error.message),
@@ -115,7 +121,7 @@ export function AgentsDebugTab() {
 
   const logoutMutation = trpc.debug.logout.useMutation({
     onSuccess: () => {
-      toast.success("Logged out. Reloading...")
+      toast.success(i18n.t("settings.debug.loggedOut"))
       setTimeout(() => window.location.reload(), 500)
     },
     onError: (error) => toast.error(error.message),
@@ -141,7 +147,7 @@ export function AgentsDebugTab() {
     }
     await navigator.clipboard.writeText(JSON.stringify(info, null, 2))
     setCopiedInfo(true)
-    toast.success("Debug info copied to clipboard")
+    toast.success(i18n.t("settings.debug.debugInfoCopied"))
     setTimeout(() => setCopiedInfo(false), 2000)
   }
 
@@ -158,19 +164,19 @@ export function AgentsDebugTab() {
         await loadReactScan()
         localStorage.setItem(REACT_SCAN_STORAGE_KEY, "true")
         setReactScanEnabled(true)
-        toast.success("React Scan enabled", {
-          description: "Reload the page to see re-render highlights",
+        toast.success(i18n.t("settings.debug.reactScanEnabled"), {
+          description: i18n.t("settings.debug.reactScanEnabledDescription"),
         })
       } else {
         unloadReactScan()
         localStorage.removeItem(REACT_SCAN_STORAGE_KEY)
         setReactScanEnabled(false)
-        toast.success("React Scan disabled", {
-          description: "Reload the page to fully remove it",
+        toast.success(i18n.t("settings.debug.reactScanDisabled"), {
+          description: i18n.t("settings.debug.reactScanDisabledDescription"),
         })
       }
     } catch (error) {
-      toast.error("Failed to toggle React Scan")
+      toast.error(i18n.t("settings.debug.reactScanFailed"))
       console.error(error)
     } finally {
       setReactScanLoading(false)
@@ -200,7 +206,7 @@ export function AgentsDebugTab() {
         <div>
           <h3 className="text-lg font-semibold mb-1">{i18n.t('Debug')}</h3>
           <p className="text-sm text-muted-foreground">
-            System information and developer tools
+            {i18n.t("settings.debug.subtitle")}
           </p>
         </div>
       )}
@@ -208,23 +214,27 @@ export function AgentsDebugTab() {
       {/* System Info */}
       <div className="space-y-3">
         <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-          System Info
+          {i18n.t("settings.debug.systemInfo")}
         </h4>
         <div className="rounded-lg border bg-muted/30 divide-y">
-          <InfoRow label="Version" value={systemInfo?.version} isLoading={isLoading} />
+          <InfoRow label={i18n.t("settings.debug.version")} value={systemInfo?.version} isLoading={isLoading} />
           <InfoRow
-            label="Platform"
+            label={i18n.t("settings.debug.platform")}
             value={systemInfo ? i18n.t("{{platform}} ({{arch}})", { platform: systemInfo.platform, arch: systemInfo.arch }) : undefined}
             isLoading={isLoading}
           />
           <InfoRow
-            label="Dev Mode"
-            value={systemInfo?.isDev ? "Yes" : "No"}
+            label={i18n.t("settings.debug.devMode")}
+            value={systemInfo?.isDev ? i18n.t("settings.debug.yes") : i18n.t("settings.debug.no")}
             isLoading={isLoading}
           />
           <InfoRow
-            label="Protocol"
-            value={systemInfo?.protocolRegistered ? "Registered" : "Not registered"}
+            label={i18n.t("settings.debug.protocol")}
+            value={
+              systemInfo?.protocolRegistered
+                ? i18n.t("settings.debug.registered")
+                : i18n.t("settings.debug.notRegistered")
+            }
             isLoading={isLoading}
             status={systemInfo?.protocolRegistered ? "success" : "warning"}
           />
@@ -255,12 +265,12 @@ export function AgentsDebugTab() {
       {/* DB Stats */}
       <div className="space-y-3">
         <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-          Database
+          {i18n.t("settings.debug.database")}
         </h4>
         <div className="rounded-lg border bg-muted/30 divide-y">
-          <InfoRow label="Projects" value={dbStats?.projects?.toString()} isLoading={isLoading} />
-          <InfoRow label="Chats" value={dbStats?.chats?.toString()} isLoading={isLoading} />
-          <InfoRow label="Conversations" value={dbStats?.conversations?.toString()} isLoading={isLoading} />
+          <InfoRow label={i18n.t("settings.debug.projects")} value={dbStats?.projects?.toString()} isLoading={isLoading} />
+          <InfoRow label={i18n.t("settings.debug.chats")} value={dbStats?.chats?.toString()} isLoading={isLoading} />
+          <InfoRow label={i18n.t("settings.debug.conversations")} value={dbStats?.conversations?.toString()} isLoading={isLoading} />
         </div>
       </div>
 
@@ -268,7 +278,7 @@ export function AgentsDebugTab() {
       {isDev && (
         <div className="space-y-3">
           <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-            Developer Tools
+            {i18n.t("settings.debug.developerTools")}
           </h4>
           <div className="rounded-lg border bg-muted/30 divide-y">
             <div className="flex items-center justify-between p-3">
@@ -277,7 +287,7 @@ export function AgentsDebugTab() {
                 <div>
                   <span className="text-sm">{i18n.t('React Scan')}</span>
                   <p className="text-xs text-muted-foreground">
-                    Highlight component re-renders
+                    {i18n.t("settings.debug.highlightRerenders")}
                   </p>
                 </div>
               </div>
@@ -293,7 +303,7 @@ export function AgentsDebugTab() {
                 <div>
                   <span className="text-sm">{i18n.t('Mock Chat Replies')}</span>
                   <p className="text-xs text-muted-foreground">
-                    Development default; reload after changing
+                    {i18n.t("settings.debug.mockChatDescription")}
                   </p>
                 </div>
               </div>
@@ -302,9 +312,14 @@ export function AgentsDebugTab() {
                 onCheckedChange={(enabled) => {
                   setMockChatEnabled(enabled)
                   setMockChatEnabledState(enabled)
-                  toast.success(enabled ? "Mock chat replies enabled" : "Mock chat replies disabled", {
-                    description: "Reload the page to apply the change",
-                  })
+                  toast.success(
+                    enabled
+                      ? i18n.t("settings.debug.mockEnabled")
+                      : i18n.t("settings.debug.mockDisabled"),
+                    {
+                      description: i18n.t("settings.debug.reloadToApply"),
+                    },
+                  )
                 }}
               />
             </div>
@@ -314,7 +329,7 @@ export function AgentsDebugTab() {
                 <div>
                   <span className="text-sm">{i18n.t('Simulate Offline')}</span>
                   <p className="text-xs text-muted-foreground">
-                    Test offline mode without disconnecting
+                    {i18n.t("settings.debug.offlineDescription")}
                   </p>
                 </div>
               </div>
@@ -332,7 +347,7 @@ export function AgentsDebugTab() {
                 <div>
                   <span className="text-sm">{i18n.t('Show Message JSON')}</span>
                   <p className="text-xs text-muted-foreground">
-                    Display raw JSON below each message in chat
+                    {i18n.t("settings.debug.messageJsonDescription")}
                   </p>
                 </div>
               </div>
@@ -348,7 +363,7 @@ export function AgentsDebugTab() {
       {/* Quick Actions */}
       <div className="space-y-3">
         <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-          Quick Actions
+          {i18n.t("settings.debug.quickActions")}
         </h4>
         <div className="grid grid-cols-2 gap-2">
           <Button
@@ -358,11 +373,11 @@ export function AgentsDebugTab() {
             disabled={openFolderMutation.isPending}
           >
             <FolderOpen className="h-4 w-4 mr-2" />
-            Open userData
+            {i18n.t("settings.debug.openUserData")}
           </Button>
           <Button variant="outline" size="sm" onClick={handleOpenDevTools}>
             <Terminal className="h-4 w-4 mr-2" />
-            DevTools
+            {i18n.t("settings.debug.devtools")}
           </Button>
           <Button
             variant="outline"
@@ -370,7 +385,7 @@ export function AgentsDebugTab() {
             onClick={() => window.location.reload()}
           >
             <RefreshCw className="h-4 w-4 mr-2" />
-            Reload
+            {i18n.t("settings.debug.reload")}
           </Button>
           <Button
             variant="outline"
@@ -383,7 +398,7 @@ export function AgentsDebugTab() {
             ) : (
               <Copy className="h-4 w-4 mr-2" />
             )}
-            Copy Info
+            {i18n.t("settings.debug.copyInfo")}
           </Button>
         </div>
       </div>
@@ -391,66 +406,80 @@ export function AgentsDebugTab() {
       {/* Toast Testing */}
       <div className="space-y-3">
         <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-          Toast Testing
+          {i18n.t("settings.debug.toastTesting")}
         </h4>
         <div className="grid grid-cols-2 gap-2">
           <Button
             variant="outline"
             size="sm"
             onClick={() =>
-              toast.info("Cancelation sent", {
-                description: "Sent to John Smith",
+              toast.info(i18n.t("settings.debug.cancelationSent"), {
+                description: i18n.t("settings.debug.sentToJohnSmith"),
                 action: {
-                  label: "Undo",
-                  onClick: () => toast("Undone!"),
+                  label: i18n.t("settings.debug.undo"),
+                  onClick: () => toast(i18n.t("settings.debug.undone")),
                 },
               })
             }
           >
-            Info + Undo
+            {i18n.t("settings.debug.infoUndo")}
           </Button>
           <Button
             variant="outline"
             size="sm"
-            onClick={() => toast.success("Success!", { description: "Operation completed" })}
+            onClick={() =>
+              toast.success(i18n.t("settings.debug.successToast"), {
+                description: i18n.t("settings.debug.operationCompleted"),
+              })
+            }
           >
-            Success
+            {i18n.t("settings.debug.success")}
           </Button>
           <Button
             variant="outline"
             size="sm"
-            onClick={() => toast.error("Error", { description: "Something went wrong" })}
+            onClick={() =>
+              toast.error(i18n.t("settings.debug.error"), {
+                description: i18n.t("settings.debug.somethingWentWrong"),
+              })
+            }
           >
-            Error
+            {i18n.t("settings.debug.error")}
           </Button>
           <Button
             variant="outline"
             size="sm"
-            onClick={() => toast("Default toast", { description: "This is a description" })}
+            onClick={() =>
+              toast(i18n.t("settings.debug.defaultToast"), {
+                description: i18n.t("settings.debug.defaultToastDescription"),
+              })
+            }
           >
-            Default
+            {i18n.t("settings.debug.default")}
           </Button>
           <Button
             variant="outline"
             size="sm"
             onClick={() => {
-              const id = toast.loading("Loading...", { description: "Please wait" })
+              const id = toast.loading(i18n.t("settings.debug.loadingEllipsis"), {
+                description: i18n.t("settings.debug.pleaseWait"),
+              })
               setTimeout(() => toast.dismiss(id), 3000)
             }}
           >
-            Loading
+            {i18n.t("settings.debug.loading")}
           </Button>
           <Button
             variant="outline"
             size="sm"
             onClick={() => {
-              const id = toast.loading("Processing...")
+              const id = toast.loading(i18n.t("settings.debug.processing"))
               setTimeout(() => {
-                toast.success("Done!", { id })
+                toast.success(i18n.t("settings.debug.done"), { id })
               }, 2000)
             }}
           >
-            Promise
+            {i18n.t("settings.debug.promise")}
           </Button>
         </div>
       </div>
@@ -458,48 +487,52 @@ export function AgentsDebugTab() {
       {/* Data Management */}
       <div className="space-y-3">
         <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-          Data Management
+          {i18n.t("settings.debug.dataManagement")}
         </h4>
         <div className="grid grid-cols-3 gap-2">
           <Button
             variant="outline"
             size="sm"
             onClick={() => {
-              if (confirm("Clear all chats? Projects will be kept.")) {
+              if (confirm(i18n.t("settings.debug.confirmClearChats"))) {
                 clearChatsMutation.mutate()
               }
             }}
             disabled={clearChatsMutation.isPending}
           >
-            {clearChatsMutation.isPending ? "..." : "Clear Chats"}
+            {clearChatsMutation.isPending
+              ? "..."
+              : i18n.t("settings.debug.clearChats")}
           </Button>
           <Button
             variant="outline"
             size="sm"
             onClick={() => {
-              if (confirm("Logout? You will need to sign in again.")) {
+              if (confirm(i18n.t("settings.debug.confirmLogout"))) {
                 logoutMutation.mutate()
               }
             }}
             disabled={logoutMutation.isPending}
           >
-            {logoutMutation.isPending ? "..." : "Logout"}
+            {logoutMutation.isPending
+              ? "..."
+              : i18n.t("settings.debug.logout")}
           </Button>
           <Button
             variant="destructive"
             size="sm"
             onClick={() => {
               if (
-                confirm(
-                  "Reset everything? This will clear all data and log you out.",
-                )
+                confirm(i18n.t("settings.debug.confirmReset"))
               ) {
                 clearAllDataMutation.mutate()
               }
             }}
             disabled={clearAllDataMutation.isPending}
           >
-            {clearAllDataMutation.isPending ? "..." : "Reset All"}
+            {clearAllDataMutation.isPending
+              ? "..."
+              : i18n.t("settings.debug.resetAll")}
           </Button>
         </div>
       </div>

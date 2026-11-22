@@ -1,4 +1,5 @@
 "use client"
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 
 import { useCallback, useMemo, useState } from "react"
 import { useAtom } from "jotai"

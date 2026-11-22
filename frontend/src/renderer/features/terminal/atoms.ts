@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { atom } from "jotai"
 import { atomWithStorage } from "jotai/utils"
 import { atomFamily } from "jotai/utils"
@@ -83,3 +84,24 @@ export const terminalsAtom = atomWithWindowStorage<
 export const activeTerminalIdAtom = atomWithWindowStorage<
   Record<string, string | null>
 >("active-terminal-by-scope", {}, { getOnInit: true })
+
+/**
+ * Map of scopeKey -> selected agent terminal task id.
+ *
+ * The terminal sidebar shows agent tasks as read-only terminals; selecting one
+ * switches the sidebar content from the PTY to the agent output. Kept in memory
+ * because the task store itself is live-only.
+ */
+const activeAgentTerminalStorageAtom = atom<Record<string, string | null>>({})
+
+export const activeAgentTerminalIdAtomFamily = atomFamily((scopeKey: string) =>
+  atom(
+    (get) => get(activeAgentTerminalStorageAtom)[scopeKey] ?? null,
+    (get, set, terminalId: string | null) => {
+      set(activeAgentTerminalStorageAtom, {
+        ...get(activeAgentTerminalStorageAtom),
+        [scopeKey]: terminalId,
+      })
+    },
+  ),
+)

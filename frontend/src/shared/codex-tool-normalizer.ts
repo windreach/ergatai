@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 type AnyRecord = Record<string, unknown>
 
 const CODEX_VERB_TO_TOOL_TYPE: Record<string, string> = {

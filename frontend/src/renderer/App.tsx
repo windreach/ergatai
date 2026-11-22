@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { Component, type ReactNode } from "react"
 import { Provider as JotaiProvider, useAtom } from "jotai"
 import { ThemeProvider, useTheme } from "next-themes"

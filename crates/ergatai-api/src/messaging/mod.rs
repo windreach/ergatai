@@ -23,12 +23,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ergatai_core::agent_registry::{agent_registry, AgentRegistry};
 use ergatai_core::id::{format as format_id, generate, parse_to_i64, IdType};
 use ergatai_error::{AgentId, ChatId, ConversationId};
+use ergatai_runtime::launch::{AgentLauncher, LaunchPlan};
 use ergatai_runtime::AgentRuntime;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::mcp::conversation::{ConversationConfig, ConversationManager};
 use crate::mcp::request_monitor::RequestMonitor;
+use crate::services::agent_launch::{EnsureAgentRequest, LaunchMode, ModelInput};
 use crate::user_data_db;
 use admission::{
     AdmissionGate, AgentHealthGate, CompositeGate, ConversationLoopGate, MeshPolicyGate,
@@ -92,12 +94,38 @@ fn binding_matches_agent_name(
 /// Resolution is best-effort: a missing or unreadable connection must not stop
 /// the agent from starting with its native configuration.
 async fn spawn_provider_settings(profile_name: &str) -> (HashMap<String, String>, Option<String>) {
+    // Inherit provider connections from a profile that shares the same command
+    // when the requested profile has none of its own. This keeps agent profiles
+    // that are thin wrappers (e.g. "agentcode" over "opencode acp") usable
+    // without duplicating provider configuration.
     let profile_name_owned = profile_name.to_string();
+    let candidate_profiles = {
+        let mut candidates = vec![profile_name_owned.clone()];
+        if let Ok(Some(profile)) =
+            crate::services::profile_service::get_profile_by_name(&profile_name_owned).await
+        {
+            if let Ok(all) = crate::services::profile_service::list_profiles().await {
+                for other in all {
+                    if other.name != profile_name_owned && other.command == profile.command {
+                        candidates.push(other.name);
+                    }
+                }
+            }
+        }
+        candidates
+    };
     let result = tokio::task::spawn_blocking(move || -> Result<_, String> {
-        let Some(connection) =
-            crate::services::provider_connection_service::resolve(None, Some(&profile_name_owned))
-                .map_err(|error| error.to_string())?
-        else {
+        let mut connection = None;
+        for candidate in &candidate_profiles {
+            if let Some(found) =
+                crate::services::provider_connection_service::resolve(None, Some(candidate))
+                    .map_err(|error| error.to_string())?
+            {
+                connection = Some(found);
+                break;
+            }
+        }
+        let Some(connection) = connection else {
             return Ok((HashMap::new(), None));
         };
         // OpenCode custom providers live in opencode.json; `OPENCODE_URL` is
@@ -786,6 +814,27 @@ impl MessageSender {
             _ => None,
         };
 
+        // Responses carry the origin of the request they answer. Read it here,
+        // before `mark_response_delivered` removes the pending request, and
+        // persist it on the reply as `replyToTurnId`. The UI can then attach
+        // replies without re-parsing agent-specific tool-call shapes.
+        let request_origin = if req.message_type == "response" {
+            match correlation_id.as_deref() {
+                Some(correlation_id) => self.request_monitor.request_origin(correlation_id).await,
+                None => None,
+            }
+        } else {
+            None
+        };
+        if let Some(origin) = &request_origin {
+            info!(
+                correlation_id = ?correlation_id,
+                origin_conversation_id = ?origin.conversation_id,
+                origin_turn_id = ?origin.turn_id,
+                "Attaching response to originating request turn"
+            );
+        }
+
         let formatted_content = Self::format_agent_message(
             &sender_display,
             &self.get_sender_conversation_id(&resolved_sender_id).await,
@@ -809,6 +858,15 @@ impl MessageSender {
             // Store frontend-generated client_request_id in metadata for dedup matching
             if let Some(client_request_id) = &req.client_request_id {
                 metadata.insert("clientRequestId".to_string(), client_request_id.clone());
+            }
+            // Link a response to the conversation/turn that issued the request.
+            if let Some(origin) = &request_origin {
+                if let Some(turn_id) = &origin.turn_id {
+                    metadata.insert("originTurnId".to_string(), turn_id.clone());
+                }
+                if let Some(conversation_id) = &origin.conversation_id {
+                    metadata.insert("originConversationId".to_string(), conversation_id.clone());
+                }
             }
             let queued_message_id = format_id(generate(), IdType::Message);
             let queued_external_message_id = req
@@ -846,13 +904,26 @@ impl MessageSender {
                 if let (Some(corr_id), Some(timeout)) =
                     (&payload.correlation_id, payload.timeout_ms)
                 {
+                    // Capture the issuing turn so the eventual response can be
+                    // linked back to it (see `request_origin` above).
+                    let origin_turn_id =
+                        match ergatai_runtime::output_accumulator::get_global_accumulator_registry()
+                        {
+                            Some(registry) => registry
+                                .get_current_token(&sender_conversation_id)
+                                .await
+                                .map(|token| token.turn_id),
+                            None => None,
+                        };
                     self.request_monitor
-                        .track_request(
+                        .track_request_with_origin(
                             payload.message_id.clone(),
                             payload.from_agent.clone(),
                             payload.to_agent.clone(),
                             corr_id.clone(),
                             timeout,
+                            Some(sender_conversation_id.clone()),
+                            origin_turn_id.clone(),
                         )
                         .await;
                     info!(
@@ -860,6 +931,8 @@ impl MessageSender {
                         from = %payload.from_agent,
                         to = %payload.to_agent,
                         timeout_ms = timeout,
+                        origin_conversation_id = %sender_conversation_id,
+                        origin_turn_id = ?origin_turn_id,
                         "Tracking request for reqwatch"
                     );
                 }
@@ -899,6 +972,8 @@ impl MessageSender {
                         "senderAgentName": sender_name,
                         "messageType": req.message_type,
                         "correlationId": correlation_id.clone(),
+                        "replyToTurnId": request_origin.as_ref().and_then(|origin| origin.turn_id.clone()),
+                        "replyToConversationId": request_origin.as_ref().and_then(|origin| origin.conversation_id.clone()),
                         "deliveryStatus": "pending",
                     });
                     let early_parts =
@@ -1072,6 +1147,8 @@ impl MessageSender {
                             "senderAgentName": sender_name,
                             "messageType": message_type,
                             "correlationId": correlation_id_for_meta,
+                            "replyToTurnId": request_origin.as_ref().and_then(|origin| origin.turn_id.clone()),
+                            "replyToConversationId": request_origin.as_ref().and_then(|origin| origin.conversation_id.clone()),
                         });
 
                         // Use AgentMessageFields for structured storage
@@ -1995,15 +2072,6 @@ impl MessageSender {
         // Start with the same provider settings/model as a user-created chat.
         let (provider_env, default_model) = spawn_provider_settings(&profile.name).await;
 
-        // Build WorkspaceSpec
-        let spec = ergatai_runtime::types::WorkspaceSpec {
-            id: workspace_id.clone(),
-            work_dir: std::path::PathBuf::from(&work_dir),
-            env: provider_env,
-            resources: Default::default(),
-            capture_thoughts: false,
-        };
-
         // Launch the agent
         tracing::info!(
             target = target,
@@ -2032,19 +2100,76 @@ impl MessageSender {
             );
         }
 
-        match runtime
-            .launch_agent_scoped(
-                spec,
-                &profile.command,
-                None, // No initial instruction — the message itself is the instruction
-                spawn_chat_id.as_deref(),
-                spawn_conversation_id.as_deref(),
-                Some(&profile.name),
-                profile.transport.as_deref(),
-                None,
-            )
-            .await
-        {
+        // When the target already has a conversation, use the canonical launch
+        // service so the conversation's durable model wins over the provider
+        // default. This is the message-driven counterpart of the chat path.
+        if let Some(conversation_id) = spawn_conversation_id.as_deref() {
+            if let Ok(typed_conversation_id) = ConversationId::decode(conversation_id) {
+                let request = EnsureAgentRequest {
+                    conversation_id: Some(typed_conversation_id),
+                    profile: Some(profile.name.clone()),
+                    workspace_id: None,
+                    work_dir: None,
+                    provider_connection_id: None,
+                    model: ModelInput::None,
+                    mode: LaunchMode::Ensure,
+                    env: Default::default(),
+                    allow_native_default: false,
+                };
+                let service = crate::context::get_app_context().agent_launch.clone();
+                match service.ensure(request).await {
+                    Ok(result) => {
+                        tracing::info!(
+                            agent_id = %result.agent_id,
+                            profile = %profile.name,
+                            action = ?result.action,
+                            "Agent ensured through conversation launch settings"
+                        );
+                        crate::api::agents::spawn_model_detection(
+                            result.agent_id.clone(),
+                            profile.name.clone(),
+                        );
+                        if self
+                            .ensure_target_conversation(sender_runtime_id, &result.agent_id, target)
+                            .await
+                            .is_none()
+                        {
+                            tracing::error!(
+                                agent_id = %result.agent_id,
+                                target = %target,
+                                "Failed to bind ensured agent to a Conversation"
+                            );
+                            return None;
+                        }
+                        return Some(result.agent_id);
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            target = target,
+                            conversation_id = %conversation_id,
+                            error = %error,
+                            "Conversation-aware ensure failed; falling back to provider default"
+                        );
+                    }
+                }
+            }
+        }
+
+        let plan = LaunchPlan {
+            workspace_id: workspace_id.clone(),
+            work_dir: std::path::PathBuf::from(&work_dir),
+            env: provider_env,
+            resources: Default::default(),
+            capture_thoughts: false,
+            command: profile.command.clone(),
+            chat_id: spawn_chat_id,
+            conversation_id: spawn_conversation_id,
+            profile_name: Some(profile.name.clone()),
+            transport: profile.transport.clone(),
+            reuse_agent_id: None,
+        };
+
+        match AgentLauncher::new(runtime).launch(plan).await {
             Ok(agent_id) => {
                 tracing::info!(
                     agent_id = %agent_id,
@@ -2166,15 +2291,6 @@ impl MessageSender {
         // Start with the same provider settings/model as a user-created chat.
         let (provider_env, default_model) = spawn_provider_settings(&profile.name).await;
 
-        // Build WorkspaceSpec
-        let spec = ergatai_runtime::types::WorkspaceSpec {
-            id: workspace_id.clone(),
-            work_dir: std::path::PathBuf::from(&work_dir),
-            env: provider_env,
-            resources: Default::default(),
-            capture_thoughts: false,
-        };
-
         // Launch the agent
         info!(
             agent = %agent_name,
@@ -2183,16 +2299,21 @@ impl MessageSender {
             "Auto-spawning sender agent from profile"
         );
 
-        match runtime
-            .launch_agent(
-                spec,
-                &profile.command,
-                None, // No initial instruction
-                Some(&profile.name),
-                profile.transport.as_deref(),
-            )
-            .await
-        {
+        let plan = LaunchPlan {
+            workspace_id: workspace_id.clone(),
+            work_dir: std::path::PathBuf::from(&work_dir),
+            env: provider_env,
+            resources: Default::default(),
+            capture_thoughts: false,
+            command: profile.command.clone(),
+            chat_id: None,
+            conversation_id: None,
+            profile_name: Some(profile.name.clone()),
+            transport: profile.transport.clone(),
+            reuse_agent_id: None,
+        };
+
+        match AgentLauncher::new(runtime).launch(plan).await {
             Ok(agent_id) => {
                 info!(
                     agent_id = %agent_id,

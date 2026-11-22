@@ -46,10 +46,19 @@ mkdir -p "$BUNDLE_DIR/bin" "$BUNDLE_DIR/app"
 if [[ "$PLATFORM" == "windows" ]]; then
   cp "$ROOT_DIR/target/release/ergatai-server.exe" "$BUNDLE_DIR/bin/"
   LAUNCHER="$ROOT_DIR/target/release/ergatai-launcher.exe"
+  NATS_BIN="$(command -v nats-server.exe 2>/dev/null || true)"
 else
   cp "$ROOT_DIR/target/release/ergatai-server" "$BUNDLE_DIR/bin/"
   chmod +x "$BUNDLE_DIR/bin/ergatai-server"
   LAUNCHER="$ROOT_DIR/target/release/ergatai-launcher"
+  NATS_BIN="$(command -v nats-server 2>/dev/null || true)"
+fi
+# ergatai-server looks for nats-server next to itself before falling back to PATH.
+if [[ -n "$NATS_BIN" ]]; then
+  cp "$NATS_BIN" "$BUNDLE_DIR/bin/"
+  chmod +x "$BUNDLE_DIR/bin/$(basename "$NATS_BIN")" 2>/dev/null || true
+else
+  echo "   WARNING: nats-server not found in PATH; runtime will need it installed" >&2
 fi
 if [[ -f "$LAUNCHER" ]]; then
   cp "$LAUNCHER" "$BUNDLE_DIR/"
@@ -72,8 +81,9 @@ for _ in $(seq 1 60); do
   curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1 && break
   sleep 1
 done
-open "$DIR/app/Ergatai.app"
-wait "$SERVER_PID"
+open -W "$DIR/app/Ergatai.app"
+kill "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
 EOF
     ;;
   linux)
@@ -90,7 +100,13 @@ for _ in $(seq 1 60); do
   curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1 && break
   sleep 1
 done
-exec "$DIR/app/ergatai"
+set +e
+"$DIR/app/ergatai"
+APP_STATUS=$?
+set -e
+kill "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
+exit "$APP_STATUS"
 EOF
     ;;
   windows)
@@ -106,7 +122,8 @@ setlocal
 set DIR=%~dp0
 start "" "%DIR%bin\ergatai-server.exe" --port 3000
 timeout /t 5 /nobreak >nul
-start "" "%DIR%app\ergatai.exe"
+start "" /wait "%DIR%app\ergatai.exe"
+taskkill /IM ergatai-server.exe /F >nul 2>&1
 EOF
     ;;
 esac

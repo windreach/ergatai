@@ -122,6 +122,7 @@ export function ActiveChatDock(props: any) {
             <ConversationStatusCard
               agentId={backendAgentId}
               chatId={parentChatId}
+              conversationId={conversationId}
               isStreaming={isStreaming}
               isCompacting={isCompacting}
               onStop={handleStop}

@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 "use client"
 
@@ -65,7 +66,10 @@ import { ForkContext } from "./fork-context"
 import { SuppressErrorCardsContext } from "./suppress-error-cards-context"
 import { MemoizedTextPart } from "./memoized-text-part"
 import { InterAgentRepliesDisclosure } from "./inter-agent-replies-disclosure"
-import { isErgataiSendMessagePart } from "../lib/ergatai-mcp-detection"
+import {
+  getSendMessageArgs,
+  isErgataiSendMessagePart,
+} from "../lib/ergatai-mcp-detection"
 
 // Map first word of an ACP tool title to a canonical Claude Code tool type.
 // Codex tool calls arrive with type = "tool-Read README.md", "tool-Run echo ---",
@@ -804,14 +808,23 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
 
     // Group agent @mention — intercept send_message MCP tool call (agent-agnostic)
     if (isErgataiSendMessagePart(part)) {
+      // Code-mode agents (e.g. OpenCode `execute`) wrap the MCP call in
+      // `input.code` / result metadata; resolve the real args instead of
+      // reading `part.input` directly.
+      const sendArgs = getSendMessageArgs(part)
       const targetAgent =
-        part.input?.target_agent_id as string | undefined
-        ?? (part.type.match(/target_agent_id[='"]+(\w+)/)?.[1])
+        sendArgs?.target_agent_id
+        ?? sendArgs?.target_conversation_id
+        ?? (part.input?.target_agent_id as string | undefined)
         ?? "agent"
       const sideMessage = part.sideMessage as
         | { text?: string; messageId?: string }
         | undefined
-      const message = sideMessage?.text ?? (part.input?.message as string | undefined) ?? ""
+      const message =
+        sideMessage?.text ??
+        sendArgs?.message ??
+        (part.input?.message as string | undefined) ??
+        ""
       return (
         <div
           key={`send-${part.toolCallId ?? "msg"}`}
@@ -832,7 +845,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
 
     if (part.type === "tool-Bash" || part.type === "tool-shell")
       // react-doctor-disable-next-line no-array-index-as-key
-      return <AgentBashTool key={`${messageRenderKey}-${idx}`} part={part} messageId={message.id} partIndex={idx} chatStatus={status} />
+      return <AgentBashTool key={`${messageRenderKey}-${idx}`} part={part} messageId={message.id} partIndex={idx} chatStatus={status} conversationId={conversationId} />
     // react-doctor-disable-next-line no-array-index-as-key
     if (part.type === "tool-Grep") return <AgentGrepTool key={`${messageRenderKey}-${idx}`} part={part} messageId={message.id} partIndex={idx} chatStatus={status} />
     if (part.type === "reasoning" || part.type === "tool-Thinking") {

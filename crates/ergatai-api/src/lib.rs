@@ -383,6 +383,12 @@ pub fn build_rest_app(state: AppState) -> Router {
             get(api::agents::list_suspended_agents),
         )
         .route("/api/v1/agents/{id}", delete(api::agents::kill_agent))
+        // Keep this outside the `/api/v1/agents/{id}` namespace: axum's
+        // dynamic agent route shadows a static sibling for non-GET methods.
+        .route(
+            "/api/v1/agent-launch/ensure",
+            post(api::agents::ensure_agent),
+        )
         .route(
             "/api/v1/agents/{id}/send",
             post(api::agents::send_message),
@@ -587,6 +593,10 @@ pub fn build_rest_app(state: AppState) -> Router {
             post(api::provider_connections::import_native_config),
         )
         .route(
+            "/api/v1/provider-connections/copy",
+            post(api::provider_connections::copy_provider_connection),
+        )
+        .route(
             "/api/v1/provider-connections/{id}/default",
             post(api::provider_connections::set_default_provider_connection),
         )
@@ -662,6 +672,10 @@ pub fn build_rest_app(state: AppState) -> Router {
         .route(
             "/api/v1/conversations/{conversation_id}/import-history",
             post(api::user_conversations::import_conversation_history),
+        )
+        .route(
+            "/api/v1/conversations/{conversation_id}/launch-settings",
+            get(api::user_conversations::get_conversation_launch_settings),
         )
         .route(
             "/api/v1/conversations/{conversation_id}/initial-prompt",

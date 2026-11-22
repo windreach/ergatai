@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useListKeyboardNav } from "./use-list-keyboard-nav"
@@ -84,7 +85,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
   const renameMutation = trpc.projects.rename.useMutation({
     onSuccess: () => {
       refetchProject()
-      toast.success("Project renamed")
+      toast.success(i18n.t("settings.projects.renamed"))
     },
     onError: (err) => {
       toast.error(i18n.t("Failed to rename: {{message}}", { message: err.message }))
@@ -94,7 +95,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
   // Delete project mutation
   const deleteMutation = trpc.projects.delete.useMutation({
     onSuccess: () => {
-      toast.success("Project removed from list")
+      toast.success(i18n.t("settings.projects.removed"))
       setSelectedWorkspace((current) => {
         if (current?.id === projectId) {
           return null
@@ -113,7 +114,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
       if (!data) return // User cancelled file picker
       invalidateProjectIcon(projectId)
       refetchProject()
-      toast.success("Icon updated")
+      toast.success(i18n.t("settings.projects.iconUpdated"))
     },
     onError: (err) => {
       toast.error(i18n.t("Failed to upload icon: {{message}}", { message: err.message }))
@@ -124,7 +125,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
     onSuccess: () => {
       invalidateProjectIcon(projectId)
       refetchProject()
-      toast.success("Icon removed")
+      toast.success(i18n.t("settings.projects.iconRemoved"))
     },
   })
 
@@ -311,7 +312,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
         onClick={() => addCommand(list, setter)}
       >
         <Plus className="h-3.5 w-3.5" />
-        Add command
+        {i18n.t("settings.projects.addCommand")}
       </button>
     </div>
   )
@@ -376,7 +377,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
                     className="text-muted-foreground hover:text-foreground"
                     onClick={() => removeIconMutation.mutate({ id: projectId })}
                   >
-                    Reset
+                    {i18n.t("settings.projects.reset")}
                   </Button>
                 )}
               </div>
@@ -396,7 +397,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
                 disabled={!project?.path}
               >
                 <img src={finderIcon} alt="" className="h-3.5 w-3.5" />
-                Finder
+                {i18n.t("settings.projects.finder")}
               </Button>
             </div>
 
@@ -475,7 +476,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
                 if (prompt && projectId) {
                   createChatMutation.mutate({
                     projectId,
-                    name: "Worktree Setup",
+                    name: i18n.t("settings.projects.worktreeSetupChatName"),
                     initialMessageParts: [{ type: "text", text: prompt }],
                     useWorktree: false,
                     mode: "agent",
@@ -485,7 +486,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
               disabled={!projectId || createChatMutation.isPending}
             >
               <AIPenIcon className="h-3.5 w-3.5" />
-              Fill with AI
+              {i18n.t("settings.projects.fillWithAI")}
             </Button>
           </div>
           <div className="bg-background rounded-lg border border-border overflow-hidden">
@@ -504,19 +505,19 @@ function ProjectDetail({ projectId }: { projectId: string }) {
               <div>
                 <span className="text-sm font-medium text-foreground">{i18n.t('Setup Commands')}</span>
                 <p className="text-sm text-muted-foreground">
-                  Run after worktree creation.{" "}
+                  {i18n.t("settings.projects.runAfterWorktreeCreation")}{" "}
                   <button
                     type="button"
                     className="font-mono text-xs bg-muted px-1 py-0.5 rounded hover:text-foreground transition-colors cursor-pointer"
                     onClick={() => {
                       navigator.clipboard.writeText("$ROOT_WORKTREE_PATH")
-                      toast.success("Copied to clipboard")
+                      toast.success(i18n.t("Copied to clipboard"))
                     }}
                     title={i18n.t('Click to copy')}
                   >
                     $ROOT_WORKTREE_PATH
                   </button>
-                  {" "}for main repo.
+                  {" "}{i18n.t("settings.projects.forMainRepo")}
                 </p>
               </div>
               {renderCommandList(commands, setCommands, "bun install && cp $ROOT_WORKTREE_PATH/.env .env")}
@@ -557,7 +558,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
                   onClick={() => setShowPlatformSpecific(true)}
                 >
                   <Plus className="h-3.5 w-3.5" />
-                  Add platform-specific overrides
+                  {i18n.t("settings.projects.addPlatformOverrides")}
                 </button>
               </div>
             )}
@@ -572,7 +573,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
             <div className="flex-1">
               <span className="text-sm font-medium text-foreground">{i18n.t('Remove Project')}</span>
               <p className="text-sm text-muted-foreground">
-                Remove from your list. Files on disk will not be deleted.
+                {i18n.t("settings.projects.removeDescription")}
               </p>
             </div>
             <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
@@ -583,14 +584,16 @@ function ProjectDetail({ projectId }: { projectId: string }) {
                   className="gap-1.5 hover:text-destructive hover:border-destructive/30 hover:bg-destructive/10"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
-                  Remove
+                  {i18n.t("Remove")}
                 </Button>
               </AlertDialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
                   <AlertDialogTitle>{i18n.t('Remove Project?')}</AlertDialogTitle>
                   <AlertDialogDescription>
-                    This will remove &quot;{project?.name}&quot; from your project list. Your files will not be deleted.
+                    {i18n.t("settings.projects.removeConfirm", {
+                      name: project?.name,
+                    })}
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
@@ -600,7 +603,9 @@ function ProjectDetail({ projectId }: { projectId: string }) {
                     disabled={deleteMutation.isPending}
                     className={buttonVariants({ variant: "destructive" })}
                   >
-                    {deleteMutation.isPending ? "Removing..." : "Remove"}
+                    {deleteMutation.isPending
+                      ? i18n.t("settings.projects.removing")
+                      : i18n.t("Remove")}
                   </AlertDialogAction>
                 </AlertDialogFooter>
               </AlertDialogContent>
@@ -722,7 +727,6 @@ export function AgentsProjectsTab() {
           {/* Project list */}
           {/* react-doctor-disable-next-line no-static-element-interactions */}
           <div ref={listRef} onKeyDown={listKeyDown} tabIndex={-1} className="flex-1 overflow-y-auto px-2 pt-2 pb-2 outline-none">
-            role="button"
             {isLoading ? (
               <div className="flex items-center justify-center h-full">
                 <FolderFilledIcon className="h-5 w-5 text-muted-foreground animate-pulse" />
@@ -735,7 +739,7 @@ export function AgentsProjectsTab() {
                   onClick={() => openFolderMutation.mutate()}
                   className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
                 >
-                  Add your first project
+                  {i18n.t("settings.projects.addFirstProject")}
                 </button>
               </div>
             ) : filteredProjects.length === 0 ? (
@@ -782,8 +786,8 @@ export function AgentsProjectsTab() {
             <FolderFilledIcon className="h-12 w-12 text-border mb-4" />
             <p className="text-sm text-muted-foreground">
               {projects && projects.length > 0
-                ? "Select a project to view settings"
-                : "No projects added yet"}
+                ? i18n.t("settings.projects.selectProject")
+                : i18n.t("settings.projects.noProjectsAdded")}
             </p>
           </div>
         )}

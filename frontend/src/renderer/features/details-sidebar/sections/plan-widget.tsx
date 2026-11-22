@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 "use client"
 
@@ -10,6 +11,7 @@ import { PlanIcon, ExpandIcon, CollapseIcon, IconSpinner } from "@/components/ui
 import { ChatMarkdownRenderer } from "@/components/chat-markdown-renderer"
 import { trpc } from "@/lib/trpc"
 import { planContentCacheAtomFamily } from "../atoms"
+import { resolveWorkspaceRelativePath } from "../../agents/ui/agent-tool-utils"
 import type { AgentMode } from "../../agents"
 
 interface PlanWidgetProps {
@@ -19,6 +21,8 @@ interface PlanWidgetProps {
   activeConversationId?: string | null
   /** Path to the plan file */
   planPath: string | null
+  /** Chat workspace root, used to resolve agent-relative plan paths */
+  worktreePath?: string | null
   /** Plan refetch trigger */
   refetchTrigger?: number
   /** Current agent mode (plan or agent) */
@@ -42,6 +46,7 @@ export const PlanWidget = memo(function PlanWidget({
   chatId,
   activeConversationId,
   planPath,
+  worktreePath,
   refetchTrigger,
   mode = "agent",
   onApprovePlan,
@@ -77,52 +82,63 @@ export const PlanWidget = memo(function PlanWidget({
   // Plan content cache to avoid flashing loading state
   const [planCache, setPlanCache] = useAtom(planContentCacheAtomFamily(effectiveChatId))
 
+  // Agents may report plan paths relative to their session cwd. Resolve them
+  // against the chat workspace so the backend reads the right file.
+  const resolvedPlanPath = useMemo(
+    () => (planPath ? resolveWorkspaceRelativePath(planPath, worktreePath) : null),
+    [planPath, worktreePath],
+  )
+
   // Fetch plan file content using tRPC
   const {
     data: planContent,
     isLoading,
     error,
     refetch,
-  } = trpc.ergatai.readFile.useQuery({ filePath: planPath! }, { enabled: !!planPath })
+  } = trpc.ergatai.readFile.useQuery({ filePath: resolvedPlanPath! }, { enabled: !!resolvedPlanPath })
 
   // Update cache when content loads successfully
   useEffect(() => {
-    if (planContent && planPath) {
+    if (planContent && resolvedPlanPath) {
       setPlanCache({
         content: planContent,
-        planPath,
+        planPath: resolvedPlanPath,
         isReady: true,
       })
     }
-  }, [planContent, planPath, setPlanCache])
+  }, [planContent, resolvedPlanPath, setPlanCache])
 
   // Refetch when trigger changes
   useEffect(() => {
-    if (refetchTrigger && planPath) {
+    if (refetchTrigger && resolvedPlanPath) {
       refetch()
     }
-  }, [refetchTrigger, planPath, refetch])
+  }, [refetchTrigger, resolvedPlanPath, refetch])
 
   // Refetch when a plan file is written/edited anywhere in the app
   useEffect(() => {
     const handlePlanUpdate = (event: Event) => {
       const customEvent = event as CustomEvent<{ conversationId?: string; filePath?: string }>
-      if (planPath && (!customEvent.detail?.filePath || customEvent.detail.filePath === planPath)) {
+      const updatedPath = customEvent.detail?.filePath
+      if (
+        resolvedPlanPath &&
+        (!updatedPath || updatedPath === resolvedPlanPath || updatedPath === planPath)
+      ) {
         refetch()
       }
     }
     window.addEventListener("plan-updated", handlePlanUpdate)
     return () => window.removeEventListener("plan-updated", handlePlanUpdate)
-  }, [planPath, refetch])
+  }, [resolvedPlanPath, planPath, refetch])
 
   // Use cached content while loading new content to prevent flashing
   const displayContent = useMemo(() => {
     if (planContent) return planContent
-    if (planCache?.isReady && planCache.planPath === planPath) {
+    if (planCache?.isReady && planCache.planPath === resolvedPlanPath) {
       return planCache.content
     }
     return null
-  }, [planContent, planCache, planPath])
+  }, [planContent, planCache, resolvedPlanPath])
 
   // Only show loading if we have no content to display
   const showLoading = isLoading && !displayContent

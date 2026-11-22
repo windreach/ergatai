@@ -4,10 +4,12 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use ergatai_runtime::launch::{AgentLauncher, LaunchPlan};
 use ergatai_runtime::suspend_store::SuspendReason;
-use ergatai_runtime::{ResourceLimits, WorkspaceSpec};
+use ergatai_runtime::ResourceLimits;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use tokio::sync::Mutex;
@@ -602,6 +604,143 @@ async fn validate_command(command: &str) -> Result<(), String> {
     ))
 }
 
+/// HTTP request for the unified agent-ensure endpoint.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct EnsureAgentHttpRequest {
+    pub conversation_id: String,
+    pub profile: Option<String>,
+    pub workspace_id: Option<String>,
+    pub work_dir: Option<String>,
+    pub provider_connection_id: Option<String>,
+    /// Model ID as shown in the selector.
+    pub model: Option<String>,
+    /// Provider-specific thinking level (Codex).
+    pub thinking: Option<String>,
+    /// `seed` (new chat) or `override` (explicit user choice). Defaults to override.
+    pub model_mode: Option<String>,
+    /// `ensure`, `spawn_new`, or `resume_only`. Defaults to ensure.
+    pub mode: Option<String>,
+    pub env: Option<HashMap<String, String>>,
+    /// Only ephemeral/maintenance callers should set this.
+    pub allow_native_default: Option<bool>,
+}
+
+/// Resolve/reuse/resume/spawn an agent for a conversation.
+///
+/// This is the canonical launch entry point; existing spawn/prompt endpoints
+/// will be migrated to call the same service.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agent-launch/ensure",
+    tag = "Agents",
+    request_body = EnsureAgentHttpRequest,
+    responses(
+        (status = 200, description = "Agent ensured", body = crate::services::agent_launch::EnsureAgentResult),
+        (status = 400, description = "Invalid launch request", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn ensure_agent(Json(req): Json<EnsureAgentHttpRequest>) -> Response {
+    let conversation_id = match ConversationId::decode(&req.conversation_id) {
+        Ok(id) => id,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid conversation_id: {}", error),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let mode = match req.mode.as_deref() {
+        None | Some("ensure") => crate::services::agent_launch::LaunchMode::Ensure,
+        Some("spawn_new") => crate::services::agent_launch::LaunchMode::SpawnNew,
+        Some("resume_only") => crate::services::agent_launch::LaunchMode::ResumeOnly,
+        Some(other) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid mode '{}'", other),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let workspace_id = match req.workspace_id.as_deref() {
+        Some(value) => match WorkspaceId::decode(value) {
+            Ok(id) => Some(id),
+            Err(error) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("Invalid workspace_id: {}", error),
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        None => None,
+    };
+
+    let model = match req.model.as_deref().map(str::trim) {
+        Some(model) if !model.is_empty() => {
+            let selection = crate::services::agent_launch::ModelSelection {
+                id: model.to_string(),
+                thinking: req
+                    .thinking
+                    .clone()
+                    .filter(|value| !value.trim().is_empty()),
+            };
+            match req.model_mode.as_deref() {
+                None | Some("override") => {
+                    crate::services::agent_launch::ModelInput::Override(selection)
+                }
+                Some("seed") => crate::services::agent_launch::ModelInput::Seed(selection),
+                Some(other) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("Invalid model_mode '{}'", other),
+                        }),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        _ => crate::services::agent_launch::ModelInput::None,
+    };
+
+    let env: BTreeMap<String, String> = req.env.unwrap_or_default().into_iter().collect();
+    let request = crate::services::agent_launch::EnsureAgentRequest {
+        conversation_id: Some(conversation_id),
+        profile: req.profile.filter(|value| !value.trim().is_empty()),
+        workspace_id,
+        work_dir: req.work_dir.map(PathBuf::from),
+        provider_connection_id: req
+            .provider_connection_id
+            .filter(|value| !value.trim().is_empty()),
+        model,
+        mode,
+        env,
+        allow_native_default: req.allow_native_default.unwrap_or(false),
+    };
+
+    let service = crate::context::get_app_context().agent_launch.clone();
+    match service.ensure(request).await {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: crate::sanitize_error(&error, "ensure_agent"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 #[utoipa::path(
     post,
     path = "/api/v1/agents",
@@ -1027,7 +1166,30 @@ pub async fn spawn_agent(
         }
     };
 
-    let mut requested_model = req.model.clone();
+    let provider_connection_id = provider_connection
+        .as_ref()
+        .map(|(connection, _)| connection.id.clone());
+    let explicit_model = req.model.clone().filter(|model| !model.trim().is_empty());
+    let mut requested_model = explicit_model.clone();
+
+    // A conversation-scoped spawn should honor the durable conversation
+    // selection before falling back to the provider default.
+    if requested_model.is_none() {
+        if let Some(conversation_id) = req
+            .conversation_id
+            .as_deref()
+            .and_then(|value| ConversationId::decode(value).ok())
+        {
+            if let Ok(Ok(Some(settings))) = tokio::task::spawn_blocking(move || {
+                crate::user_data_db::conversation_launch_settings::get(conversation_id)
+            })
+            .await
+            {
+                requested_model = settings.model.filter(|model| !model.trim().is_empty());
+            }
+        }
+    }
+
     if let Some((connection, provider_env)) = provider_connection {
         env.extend(provider_env);
         if requested_model.is_none() {
@@ -1054,34 +1216,28 @@ pub async fn spawn_agent(
         }
     };
 
-    let spec = WorkspaceSpec {
-        id: workspace_id,
+    // Use provided transport type from profile (already set during registration)
+    let effective_transport = transport_type.clone();
+
+    let plan = LaunchPlan {
+        workspace_id,
         work_dir: work_dir_str.as_str().into(),
         env,
         resources,
         capture_thoughts,
+        command: resolved_command.clone(),
+        chat_id: spawn_chat_id.clone(),
+        conversation_id: if is_temporary_agent {
+            None
+        } else {
+            req.conversation_id.clone()
+        },
+        profile_name: profile_name.clone(),
+        transport: effective_transport.clone(),
+        reuse_agent_id: None,
     };
 
-    // Use provided transport type from profile (already set during registration)
-    let effective_transport = transport_type.as_deref();
-
-    match runtime
-        .launch_agent_scoped(
-            spec,
-            &resolved_command,
-            req.instruction.as_deref(),
-            spawn_chat_id.as_deref(),
-            if is_temporary_agent {
-                None
-            } else {
-                req.conversation_id.as_deref()
-            },
-            profile_name.as_deref(),
-            effective_transport,
-            None,
-        )
-        .await
-    {
+    match AgentLauncher::new(&runtime).launch(plan).await {
         Ok(agent_id) => {
             // Workspace boundary was already registered in launch_agent() before agent start.
             // This eliminates the race condition where agent could modify files before registration.
@@ -1096,19 +1252,61 @@ pub async fn spawn_agent(
                 spawn_model_detection(agent_id.clone(), profile_name.clone());
             }
 
+            let conversation_id_typed = req
+                .conversation_id
+                .as_deref()
+                .and_then(|value| ConversationId::decode(value).ok());
             let model_result = if let Some(model) = requested_model
                 .as_deref()
                 .filter(|model| !model.trim().is_empty())
             {
-                crate::services::agent_service::set_agent(&agent_id, model.trim())
-                    .await
-                    .map(|_| ())
+                crate::services::agent_service::set_agent_with_context(
+                    &agent_id,
+                    model.trim(),
+                    conversation_id_typed,
+                    "spawn_request",
+                )
+                .await
+                .map(|_| ())
             } else {
                 Ok(())
             };
 
             match model_result {
                 Ok(()) => {
+                    // Persist an explicit spawn model as the conversation's
+                    // durable selection so a later respawn keeps it.
+                    if let (Some(model), Some(conversation_id)) =
+                        (explicit_model.as_deref(), conversation_id_typed)
+                    {
+                        let selection = crate::services::agent_launch::ModelSelection::new(model);
+                        if let Err(error) = crate::services::agent_launch::settings::save(
+                            conversation_id,
+                            profile_name.as_deref(),
+                            &selection,
+                            crate::services::agent_launch::ModelSource::ConversationUser,
+                            provider_connection_id.as_deref(),
+                        ) {
+                            tracing::warn!(
+                                agent_id = %agent_id,
+                                error = %error,
+                                "Failed to persist spawn model selection"
+                            );
+                        }
+                    }
+
+                    // Apply the model before delivering an initial instruction.
+                    // This is the invariant that prevents the pre-model prompt
+                    // behavior that caused the qwen/glm mismatch.
+                    if let Some(instruction) = req.instruction.as_deref() {
+                        if let Err(error) = runtime.inject_message(&agent_id, instruction).await {
+                            tracing::warn!(
+                                agent_id = %agent_id,
+                                error = %error,
+                                "Failed to send initial instruction after model apply"
+                            );
+                        }
+                    }
                     (StatusCode::CREATED, Json(SpawnAgentResponse { agent_id })).into_response()
                 }
                 Err(error) => (
@@ -1208,6 +1406,9 @@ pub async fn cancel_prompt(
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct SetAgentModelRequest {
     pub model: String,
+    /// Durable conversation whose selection should follow the switch.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
 }
 
 pub async fn set_agent(
@@ -1224,7 +1425,19 @@ pub async fn set_agent(
         )
             .into_response();
     }
-    match crate::services::agent_service::set_agent(&id, &req.model).await {
+    let conversation_id = req
+        .conversation_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .and_then(|value| ConversationId::decode(value).ok());
+    match crate::services::agent_service::set_agent_with_context(
+        &id,
+        &req.model,
+        conversation_id,
+        "user",
+    )
+    .await
+    {
         Ok(output) => (
             StatusCode::OK,
             Json(serde_json::json!({ "status": "ok", "output": output })),
@@ -1599,32 +1812,26 @@ pub async fn send_message(
             }
         };
 
-        let spec = WorkspaceSpec {
-            id: sender_info.workspace_id.clone(),
+        let instruction = format!(
+            "Agent-to-agent message from {}. Target command: {}.",
+            id, target_command
+        );
+
+        let plan = LaunchPlan {
+            workspace_id: sender_info.workspace_id.clone(),
             work_dir: work_dir.as_str().into(),
             env: std::collections::HashMap::new(),
             resources,
             capture_thoughts: false,
+            command: resolved_command.clone(),
+            chat_id: Some(chat_id.clone()),
+            conversation_id: reusable_conversation_id_str.clone(),
+            profile_name: profile_name.clone(),
+            transport: transport_type.clone(),
+            reuse_agent_id: None,
         };
 
-        let instruction = Some(format!(
-            "Agent-to-agent message from {}. Target command: {}.",
-            id, target_command
-        ));
-
-        match runtime
-            .launch_agent_scoped(
-                spec,
-                &resolved_command,
-                instruction.as_deref(),
-                Some(&chat_id),
-                reusable_conversation_id_str.as_deref(),
-                profile_name.as_deref(),
-                transport_type.as_deref(),
-                None,
-            )
-            .await
-        {
+        match AgentLauncher::new(&runtime).launch(plan).await {
             Ok(new_agent_id) => {
                 tracing::info!(
                     from_agent = %id,
@@ -1637,6 +1844,16 @@ pub async fn send_message(
                 // Spawn background model detection if profile is known
                 if let Some(ref pn) = profile_name {
                     crate::api::agents::spawn_model_detection(new_agent_id.clone(), pn.clone());
+                }
+
+                // Deliver the agent-to-agent instruction after startup. The
+                // mechanical launcher no longer accepts a pre-model prompt.
+                if let Err(error) = runtime.inject_message(&new_agent_id, &instruction).await {
+                    tracing::warn!(
+                        new_agent = %new_agent_id,
+                        error = %error,
+                        "Failed to deliver agent-to-agent instruction"
+                    );
                 }
 
                 // Get the conversation_id from the new agent's metadata.
@@ -2200,14 +2417,6 @@ pub async fn spawn_session(
         }
     };
 
-    let spec = WorkspaceSpec {
-        id: workspace_id.clone(),
-        work_dir: work_dir.as_str().into(),
-        env: std::collections::HashMap::new(),
-        resources,
-        capture_thoughts: false,
-    };
-
     // Build instruction based on reason and context inheritance
     let instruction = if req.inherit_context.unwrap_or(false) {
         Some(format!(
@@ -2230,19 +2439,21 @@ pub async fn spawn_session(
         .get("ergatai_chat_id")
         .cloned();
 
-    match runtime
-        .launch_agent_scoped(
-            spec,
-            &resolved_command,
-            instruction.as_deref(),
-            spawn_chat_id.as_deref(),
-            None, // conversation_id - will be generated by runtime
-            profile_name.as_deref(),
-            transport_type.as_deref(),
-            None,
-        )
-        .await
-    {
+    let plan = LaunchPlan {
+        workspace_id: workspace_id.clone(),
+        work_dir: work_dir.as_str().into(),
+        env: std::collections::HashMap::new(),
+        resources,
+        capture_thoughts: false,
+        command: resolved_command.clone(),
+        chat_id: spawn_chat_id.clone(),
+        conversation_id: None, // generated by the runtime
+        profile_name: profile_name.clone(),
+        transport: transport_type.clone(),
+        reuse_agent_id: None,
+    };
+
+    match AgentLauncher::new(&runtime).launch(plan).await {
         Ok(new_agent_id) => {
             tracing::info!(
                 parent_agent_id = %parent_agent_id,
@@ -2255,6 +2466,74 @@ pub async fn spawn_session(
             // Spawn background model detection if profile is known
             if let Some(ref pn) = profile_name {
                 crate::api::agents::spawn_model_detection(new_agent_id.clone(), pn.clone());
+            }
+
+            // Inherit the parent conversation's model (durable setting first,
+            // then the parent agent's runtime row).
+            let parent_conversation_id = parent_info.conversation_id.clone();
+            let inherited_model = match tokio::task::spawn_blocking(move || {
+                let conversation_id = parent_conversation_id
+                    .as_deref()
+                    .and_then(|value| ConversationId::decode(value).ok())?;
+                crate::user_data_db::conversation_launch_settings::get(conversation_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|settings| settings.model)
+                    .filter(|model| !model.trim().is_empty())
+            })
+            .await
+            {
+                Ok(model) => model,
+                Err(error) => {
+                    tracing::warn!(
+                        parent_agent_id = %parent_agent_id,
+                        error = %error,
+                        "Failed to load parent conversation model for fork"
+                    );
+                    None
+                }
+            };
+            let inherited_model = match inherited_model {
+                Some(model) => Some(model),
+                None => {
+                    crate::services::agent_service::get_agent_runtime_selected_model(
+                        &parent_agent_id,
+                    )
+                    .await
+                }
+            };
+            if let Some(model) = inherited_model.as_deref() {
+                let new_conversation_id = runtime
+                    .get_agent(&new_agent_id)
+                    .await
+                    .and_then(|info| info.conversation_id)
+                    .and_then(|value| ConversationId::decode(&value).ok());
+                if let Err(error) = crate::services::agent_service::set_agent_with_context(
+                    &new_agent_id,
+                    model,
+                    new_conversation_id,
+                    "fork",
+                )
+                .await
+                {
+                    tracing::warn!(
+                        new_agent = %new_agent_id,
+                        model = %model,
+                        error = %error,
+                        "Failed to inherit model for forked agent"
+                    );
+                }
+            }
+
+            // Deliver the fork instruction after startup.
+            if let Some(instruction) = instruction.as_deref() {
+                if let Err(error) = runtime.inject_message(&new_agent_id, instruction).await {
+                    tracing::warn!(
+                        new_agent = %new_agent_id,
+                        error = %error,
+                        "Failed to deliver fork instruction"
+                    );
+                }
             }
 
             // Get the session ID for the new agent
@@ -3223,28 +3502,96 @@ pub async fn prompt_agent(
     let message = body.message;
 
     // Resolve the agent ID to a runtime ID (handles profile names, ergatai_agent_id, etc.)
+    // When a conversation is present, route through the unified launch service so
+    // an existing live agent is reconciled to the conversation's durable model
+    // before the prompt is delivered. Fall back to the legacy resolver when the
+    // conversation has no usable launch context yet (migration/backward compat).
     let mut resumed_from_agent_id: Option<String> = None;
-    let runtime_id = match crate::services::agent_service::resolve_agent_for_request(
-        &id,
-        body.conversation_id.as_deref(),
-    )
-    .await
-    {
-        Some(rid) => {
-            if rid != id {
-                resumed_from_agent_id = Some(id.clone());
+    let legacy_resolve = || async {
+        crate::services::agent_service::resolve_agent_for_request(
+            &id,
+            body.conversation_id.as_deref(),
+        )
+        .await
+    };
+    let runtime_id = if let Some(conversation_id) = body.conversation_id.as_deref() {
+        match ConversationId::decode(conversation_id) {
+            Ok(typed_conversation_id) => {
+                let request = crate::services::agent_launch::EnsureAgentRequest {
+                    conversation_id: Some(typed_conversation_id),
+                    profile: None,
+                    workspace_id: None,
+                    work_dir: None,
+                    provider_connection_id: None,
+                    model: crate::services::agent_launch::ModelInput::None,
+                    mode: crate::services::agent_launch::LaunchMode::Ensure,
+                    env: BTreeMap::new(),
+                    allow_native_default: false,
+                };
+                let service = crate::context::get_app_context().agent_launch.clone();
+                match service.ensure(request).await {
+                    Ok(result) => {
+                        if result.agent_id != id {
+                            resumed_from_agent_id = Some(id.clone());
+                        }
+                        result.agent_id
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        // Only fall back when the unified path has no launch
+                        // context to work with. Model/apply failures must be
+                        // surfaced instead of silently prompting the old model.
+                        let can_fallback = message.contains("Cannot resolve agent profile")
+                            || message.contains("Conversation not found")
+                            || message.contains("Chat not found")
+                            || message.contains("Workspace not found");
+                        if !can_fallback {
+                            tracing::error!(
+                                agent_id = %id,
+                                conversation_id = %conversation_id,
+                                error = %error,
+                                "Unified ensure failed; refusing to prompt with an unverified model"
+                            );
+                            return (
+                                StatusCode::CONFLICT,
+                                Json(ErrorResponse {
+                                    error: crate::sanitize_error(&error, "ensure_agent"),
+                                }),
+                            )
+                                .into_response();
+                        }
+                        tracing::warn!(
+                            agent_id = %id,
+                            conversation_id = %conversation_id,
+                            error = %error,
+                            "Unified ensure has no launch context; falling back to legacy agent resolution"
+                        );
+                        legacy_resolve().await.unwrap_or_default()
+                    }
+                }
             }
-            rid
+            Err(error) => {
+                tracing::warn!(
+                    agent_id = %id,
+                    conversation_id = %conversation_id,
+                    error = %error,
+                    "Invalid conversation ID; falling back to legacy agent resolution"
+                );
+                legacy_resolve().await.unwrap_or_default()
+            }
         }
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!("Agent {} not found or not running", id),
-                }),
-            )
-                .into_response();
-        }
+    } else {
+        legacy_resolve().await.unwrap_or_default()
+    };
+
+    if runtime_id.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Agent {} not found or not running", id),
+            }),
+        )
+            .into_response();
     };
 
     let prompt_id = format_id(generate(), IdType::Session);
@@ -3914,26 +4261,51 @@ pub async fn resume_agent(
         .flatten()
         .map(|r| r.conversation_id);
 
-    match runtime.resume_agent(&suspended_id).await {
-        Ok(new_agent_id) => {
-            if let Some(conv_str) = suspended_conversation_id.as_deref() {
-                if let Ok(conv_id) = ConversationId::decode(conv_str) {
-                    let _ = crate::user_data_db::conversations::set_current_agent_id(
-                        conv_id,
-                        Some(&new_agent_id),
-                    );
-                }
-            }
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "status": "resumed",
-                    "old_id": suspended_id,
-                    "new_agent_id": new_agent_id,
-                })),
-            )
-                .into_response()
-        }
+    let Some(conversation_key) = suspended_conversation_id.clone() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(crate::api::ApiError {
+                error: format!("Suspended agent {} has no conversation", suspended_id),
+            }),
+        )
+            .into_response();
+    };
+    let Ok(conversation_id) = ConversationId::decode(&conversation_key) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(crate::api::ApiError {
+                error: format!(
+                    "Suspended agent {} has an invalid conversation ID: {}",
+                    suspended_id, conversation_key
+                ),
+            }),
+        )
+            .into_response();
+    };
+
+    // Route explicit resume through the same policy as auto-resume so the
+    // provider environment and durable conversation model are restored.
+    let request = crate::services::agent_launch::EnsureAgentRequest {
+        conversation_id: Some(conversation_id),
+        profile: None,
+        workspace_id: None,
+        work_dir: None,
+        provider_connection_id: None,
+        model: crate::services::agent_launch::ModelInput::None,
+        mode: crate::services::agent_launch::LaunchMode::ResumeOnly,
+        env: BTreeMap::new(),
+        allow_native_default: false,
+    };
+    match ctx.agent_launch.ensure(request).await {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "resumed",
+                "old_id": suspended_id,
+                "new_agent_id": result.agent_id,
+            })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(crate::api::ApiError {
@@ -5282,25 +5654,22 @@ pub async fn run_migration(State(_state): State<AppState>) -> impl IntoResponse 
             let command = profile.command.clone();
             let profile_name = profile.name.clone();
 
-            let workspace_spec = ergatai_runtime::WorkspaceSpec {
-                id: format!("migration-{}", profile.name),
+            let plan = ergatai_runtime::launch::LaunchPlan {
+                workspace_id: format!("migration-{}", profile.name),
                 work_dir: std::path::PathBuf::from(format!("{}/.ergatai", default_work_dir)),
                 env: std::collections::HashMap::new(),
-                resources: ergatai_runtime::ResourceLimits::default(),
+                resources: Default::default(),
                 capture_thoughts: false,
+                command,
+                chat_id: None,
+                conversation_id: None,
+                profile_name: Some(profile_name.clone()),
+                transport: profile.transport.clone(),
+                reuse_agent_id: None,
             };
 
-            let agent_id = match runtime
-                .launch_agent_scoped(
-                    workspace_spec,
-                    &command,
-                    None,
-                    None,
-                    None,
-                    Some(&profile_name),
-                    profile.transport.as_deref(),
-                    None,
-                )
+            let agent_id = match ergatai_runtime::launch::AgentLauncher::new(&runtime)
+                .launch(plan)
                 .await
             {
                 Ok(id) => {

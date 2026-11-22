@@ -257,11 +257,19 @@ export const DEFAULT_INSTALLED_CORE_AGENT_IDS: CoreAgentId[] = [
 /** Agent registration for UI (stored in localStorage via jotai atoms) */
 export interface AgentRegistration {
   id: string  // Backend-generated profile ID, used for linking/referencing
+  /** Backend profile name that provider connections are keyed by. */
+  profileName?: string
   name: string  // Display name (user-friendly, can be changed)
   runtimeId: CoreAgentId
   startupCommand: string
   avatarUrl?: string
 }
+
+export {
+  getAgentProfileName,
+  resolveAgentRuntimeId,
+  resolveRuntimeAgentIdFromCommand,
+} from "./agent-identity"
 
 // ── Contract Interface ─────────────────────────────────────────────────
 
@@ -270,7 +278,6 @@ export interface AgentContractApi {
   listConversations(agentId?: AgentId): Promise<AgentConversation[]>
   listCoreAgents(): Promise<CoreAgentOption[]>
   // Extended methods for backend features
-  spawnAgent(command: string, workspaceId: string, instruction?: string): Promise<string>
   killAgent(agentId: string): Promise<void>
   sendMessage(agentId: string, message: string): Promise<void>
   listProfiles(): Promise<AgentProfile[]>
@@ -429,15 +436,6 @@ export const agentContractApi: AgentContractApi = {
       // Fallback to static list if backend is unreachable
       return CORE_AGENT_OPTIONS.map((agent) => ({ ...agent }))
     }
-  },
-
-  async spawnAgent(command, workspaceId, instruction) {
-    const response = await trpcClient.ergatai.spawnAgent.mutate({
-      workspaceId,
-      command,
-      instruction,
-    })
-    return response.agent_id
   },
 
   async killAgent(agentId) {

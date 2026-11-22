@@ -148,6 +148,7 @@ export function WidgetsPanel({
                 chatId={chatId}
                 activeConversationId={activeConversationId}
                 planPath={planPath}
+                worktreePath={worktreePath}
                 refetchTrigger={planRefetchTrigger}
                 mode={mode}
                 onApprovePlan={onBuildPlan}

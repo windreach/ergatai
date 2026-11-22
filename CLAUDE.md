@@ -160,7 +160,7 @@ crates/
 ├── ergatai-lock/          文件访问控制 (零信任, token-based, advisory)
 │   └── src/
 │       ├── lock_manager.rs        锁管理核心 (SQLite WAL)
-│       ├── token.rs               SystemToken + FileToken 双层 token
+│       ├── token.rs               SystemToken（FileToken 已废弃，改用 file_locks）
 │       ├── snapshot.rs            Git-based COW 快照 (TOCTOU 防护)
 │       ├── watchdog.rs            Token 过期 + 心跳监控
 │       ├── watcher.rs             文件系统未授权修改检测 (notify crate)
@@ -421,7 +421,7 @@ Agent 通过 MCP 协议 (JSON-RPC over Streamable HTTP, protocol 2025-06-18) 调
 | `TimeoutTier` | `collab/timeout_tier.rs` | 三阶段超时 (Warn 50% / Escalate 80% / Fail 100%) |
 | `UnifiedAgentRegistry` | `core/unified_registry.rs` | 统一 agent 注册表 (合并三个子系统) |
 | `LockManager` | `lock/lock_manager.rs` | 文件锁管理 (SQLite WAL) |
-| `SystemToken` / `FileToken` | `lock/token.rs` | 双层 token (准入 + 操作权限) |
+| `SystemToken` / `file_locks` | `lock/token.rs` | 会话准入 token + 文件锁记录（`FileToken` 已废弃） |
 | `AgentOutput` | `user_data_db.rs` | Agent 完整输出记录 (thinking、tool calls、final text、metadata) |
 | `TurnAccumulator` | `runtime/output_accumulator.rs` | 单个 turn 的输出累积器 |
 | `OutputAccumulatorRegistry` | `runtime/output_accumulator.rs` | 管理所有活跃 conversation 的累积器 |

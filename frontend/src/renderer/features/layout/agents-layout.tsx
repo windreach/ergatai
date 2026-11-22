@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { useCallback, useEffect, useState, useMemo, useRef } from "react"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
@@ -29,7 +30,12 @@ import { ClaudeLoginModal } from "../../components/dialogs/claude-login-modal"
 import { TooltipProvider } from "../../components/ui/tooltip"
 import { ResizableSidebar } from "../../components/ui/resizable-sidebar"
 import { AgentsSidebar } from "../sidebar"
-import { AgentsContent } from "../agents"
+import {
+  AgentsContent,
+  AddAgentViewPage,
+  NewWorkspaceViewPage,
+  FirstRunOnboarding,
+} from "../agents"
 import { UpdateBanner } from "../../components/update-banner"
 import { WindowsTitleBar } from "../../components/windows-title-bar"
 import { useUpdateChecker } from "../../lib/hooks/use-update-checker"
@@ -458,6 +464,15 @@ export function AgentsLayout() {
         {/* Update Banner */}
         <UpdateBanner />
       </div>
+
+      {/* Floating Manage Agents panel */}
+      <AddAgentViewPage />
+
+      {/* Floating New Workspace panel */}
+      <NewWorkspaceViewPage />
+
+      {/* First-run checklist card */}
+      <FirstRunOnboarding />
     </TooltipProvider>
   )
 }

@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 "use client"
 
@@ -1609,12 +1610,9 @@ export function AgentsSidebar({
 
   const handleNewWorkspace = () => {
     triggerHaptic("light")
-    // Clear current selection and navigate to default view (shows "Select repo")
-    setSelectedChatId(null)
-    setSelectedDraftId(null)
-    setSelectedWorkspaceId(null)
-    setShowNewChatForm(false)
-    setDesktopView(null)
+    // Open the floating creation panel over the current view. The current
+    // chat/workspace is preserved until a new workspace is created.
+    setDesktopView("new-workspace")
   }
 
   const handleWorkspaceSelect = useCallback((workspaceId: string) => {

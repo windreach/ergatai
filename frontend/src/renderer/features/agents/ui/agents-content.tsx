@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 "use client"
 
@@ -45,8 +46,6 @@ import {
   ctrlTabTargetAtom,
 } from "../../../lib/atoms"
 import { NewChatForm } from "../main/new-chat-form"
-import { AgentsDefaultView } from "./agents-default-view"
-import { AddAgentViewPage } from "../components/add-agent-view"
 import { ChatView } from "../main/active-chat"
 import { api } from "../../../lib/api-adapter"
 import { trpc } from "../../../lib/trpc"
@@ -91,8 +90,8 @@ export function AgentsContent() {
   const desktopView = useAtomValue(desktopViewAtom)
   const setDesktopView = useSetAtom(desktopViewAtom)
   const { mode: collaborationMode } = useCollaborationMode()
-  const [selectedDraftId, setSelectedDraftId] = useAtom(selectedDraftIdAtom)
-  const [showNewChatForm, setShowNewChatForm] = useAtom(showNewChatFormAtom)
+  const [, setSelectedDraftId] = useAtom(selectedDraftIdAtom)
+  const [, setShowNewChatForm] = useAtom(showNewChatFormAtom)
   const setBillingMethod = useSetAtom(billingMethodAtom)
   const setAnthropicOnboardingCompleted = useSetAtom(
     anthropicOnboardingCompletedAtom,
@@ -965,27 +964,6 @@ export function AgentsContent() {
     setMobileViewMode,
   ])
 
-  const handleWorkspaceCreated = useCallback(
-    (workspaceId: string) => {
-      setSelectedWorkspaceId(workspaceId)
-      setConversationsSidebarMode("sidebar")
-      setSelectedChatId(null)
-      setSelectedDraftId(null)
-      setShowNewChatForm(true)
-      setDesktopView(null)
-      setMobileViewMode("chat")
-    },
-    [
-      setSelectedWorkspaceId,
-      setConversationsSidebarMode,
-      setSelectedChatId,
-      setSelectedDraftId,
-      setShowNewChatForm,
-      setDesktopView,
-      setMobileViewMode,
-    ],
-  )
-
   const handleNewChatClick = useCallback(() => {
     setSelectedChatId(null)
     setSelectedDraftId(null)
@@ -1109,8 +1087,6 @@ export function AgentsContent() {
         {/* Mobile: Settings fullscreen view */}
         {desktopView === "settings" ? (
           <SettingsContent />
-        ) : desktopView === "add-agent" ? (
-          <AddAgentViewPage />
         ) : mobileViewMode === "chats" ? (
           // Chats List Mode (default) - uses AgentsSidebar in fullscreen
           <AgentsSidebar
@@ -1150,6 +1126,7 @@ export function AgentsContent() {
             scopeKey={terminalScopeKey}
             cwd={worktreePath!}
             workspaceId={selectedChatId}
+            conversationId={activeConversationId}
             isMobileFullscreen={true}
             onClose={() => setMobileViewMode("chat")}
           />
@@ -1159,12 +1136,7 @@ export function AgentsContent() {
             className="h-full w-full flex flex-col overflow-hidden select-text"
             data-mobile-chat-mode
           >
-            {!selectedWorkspaceId ? (
-              // No workspace selected - show default view
-              <AgentsDefaultView
-                onWorkspaceCreated={handleWorkspaceCreated}
-              />
-            ) : isWorkspaceLoading || isChatSelectionPending ? (
+            {isWorkspaceLoading || isChatSelectionPending ? (
               // Workspace is still loading - show loading spinner
               <div className="flex h-full items-center justify-center">
                 <IconSpinner className="h-5 w-5 text-muted-foreground" />
@@ -1200,19 +1172,15 @@ export function AgentsContent() {
                     : undefined
                 }
               />
-            ) : selectedDraftId || showNewChatForm ? (
-                <div className="h-full flex flex-col relative overflow-hidden">
-                  <NewChatForm
-                    isMobileFullscreen={true}
-                    selectedWorkspaceId={selectedWorkspaceId}
-                    onBackToChats={() => setMobileViewMode("chats")}
-                  />
-                </div>
-              ) : (
-                <AgentsDefaultView
-                  onWorkspaceCreated={handleWorkspaceCreated}
+            ) : (
+              <div className="h-full flex flex-col relative overflow-hidden">
+                <NewChatForm
+                  isMobileFullscreen={true}
+                  selectedWorkspaceId={selectedWorkspaceId}
+                  onBackToChats={() => setMobileViewMode("chats")}
                 />
-              )}
+              </div>
+            )}
             </div>
           )}
         </div>
@@ -1270,15 +1238,6 @@ export function AgentsContent() {
             >
               {desktopView === "settings" ? (
                 <SettingsContent />
-              ) : desktopView === "add-agent" ? (
-                <AddAgentViewPage />
-              ) : !selectedWorkspaceId ? (
-                // No workspace selected - show default view
-                <div className="h-full flex relative overflow-hidden">
-                  <AgentsDefaultView
-                    onWorkspaceCreated={handleWorkspaceCreated}
-                  />
-                </div>
               ) : isWorkspaceLoading || isChatSelectionPending ? (
                 // Workspace is still loading - show loading spinner
                 <div className="h-full flex items-center justify-center">
@@ -1296,17 +1255,11 @@ export function AgentsContent() {
                     projectPath={selectedWorkspace?.projects?.map((p) => p.projectPath).filter(Boolean) ?? (selectedWorkspace?.workDir ? [selectedWorkspace.workDir] : [])}
                   />
                 </div>
-              ) : selectedDraftId || showNewChatForm ? (
+              ) : (
                 <div className="h-full flex flex-col relative overflow-hidden">
                   <NewChatForm
                     key={`new-chat-${newChatFormKeyRef.current}`}
                     selectedWorkspaceId={selectedWorkspaceId}
-                  />
-                </div>
-              ) : (
-                <div className="h-full flex relative overflow-hidden">
-                  <AgentsDefaultView
-                    onWorkspaceCreated={handleWorkspaceCreated}
                   />
                 </div>
               )}

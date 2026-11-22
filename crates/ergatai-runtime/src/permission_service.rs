@@ -283,6 +283,9 @@ pub enum PermissionMode {
     Ask,
     /// Auto-approve tool permission requests; elicitations still surface.
     Auto,
+    /// Auto-approve tool permission requests including Bash/Execute; file-lock
+    /// checks still apply to writes (conflicts reject).
+    AutoBash,
     /// Auto-approve everything and bypass file-lock checks (full computer access).
     FullAccess,
 }
@@ -293,7 +296,8 @@ static PERMISSION_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU
 pub fn get_permission_mode() -> PermissionMode {
     match PERMISSION_MODE.load(std::sync::atomic::Ordering::Relaxed) {
         1 => PermissionMode::Auto,
-        2 => PermissionMode::FullAccess,
+        2 => PermissionMode::AutoBash,
+        3 => PermissionMode::FullAccess,
         _ => PermissionMode::Ask,
     }
 }
@@ -303,7 +307,8 @@ pub fn set_permission_mode(mode: PermissionMode) {
     let value = match mode {
         PermissionMode::Ask => 0,
         PermissionMode::Auto => 1,
-        PermissionMode::FullAccess => 2,
+        PermissionMode::AutoBash => 2,
+        PermissionMode::FullAccess => 3,
     };
     PERMISSION_MODE.store(value, std::sync::atomic::Ordering::Relaxed);
 }

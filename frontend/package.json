@@ -1,12 +1,14 @@
 {
   "name": "ergatai-ui",
-  "version": "0.0.72",
+  "version": "0.1.0",
   "private": true,
   "description": "Ergatai - UI for parallel work with AI agents",
-  "homepage": "https://github.com/windreach/ergatai-ui",
+  "homepage": "https://github.com/windreach/ergatai",
   "author": {
-    "name": "Ergatai"
+    "name": "Ergatai",
+    "email": "windreach@users.noreply.github.com"
   },
+  "desktopName": "ergatai.desktop",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "bash ../scripts/dev.sh",
@@ -140,6 +142,7 @@
   "build": {
     "appId": "com.ergatai.ui",
     "productName": "Ergatai",
+    "executableName": "ergatai",
     "npmRebuild": true,
     "protocols": [
       {
@@ -235,7 +238,9 @@
         "deb"
       ],
       "icon": "build/icon.png",
-      "category": "Development"
+      "category": "Development",
+      "syncDesktopName": true,
+      "maintainer": "Ergatai <windreach@users.noreply.github.com>"
     },
     "nsis": {
       "oneClick": false,
@@ -261,5 +266,6 @@
     "zod": "4.6.7",
     "minimatch": "11.0.1",
     "katex": "0.18.2"
-  }
+  },
+  "license": "Apache-2.0"
 }

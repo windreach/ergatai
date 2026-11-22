@@ -1,7 +1,7 @@
 import i18n from "@/lib/i18n"
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect } from "react"
 import { Button } from "../../../components/ui/button"
 import { ResizableSidebar } from "../../../components/ui/resizable-sidebar"
 import { IconCloseSidebarRight } from "../../../components/ui/icons"
@@ -16,6 +16,7 @@ import {
   agentsPlanSidebarWidthAtom,
   agentsPreviewSidebarWidthAtom,
   fileViewerSidebarWidthAtom,
+  registeredAgentsAtom,
 } from "../atoms"
 import {
   DiffStateProvider,
@@ -26,8 +27,13 @@ import { AgentPreview } from "../ui/agent-preview"
 import { getCoreAgentIcon } from "../components/core-agent-selector"
 import { groupAgentChatRequestAtomFamily } from "../collaboration/group-chat-context"
 import { trpc } from "../../../lib/trpc"
-import { resolveCoreAgentId, type CoreAgentId } from "../lib/agent-contract-api"
-import { useSetAtom } from "jotai"
+import {
+  resolveAgentRuntimeId,
+  resolveCoreAgentId,
+  resolveRuntimeAgentIdFromCommand,
+  type CoreAgentId,
+} from "../lib/agent-contract-api"
+import { useAtomValue, useSetAtom } from "jotai"
 import type { AgentBinding } from "../../../../main/lib/trpc/routers/ergatai-shared"
 
  
@@ -127,6 +133,24 @@ export function ChatViewSidebars(props: any) {
   // Side chat agent state
   const [sideChatAgentId, setSideChatAgentId] = useState<string | null>(null)
   const setAgentChatRequest = useSetAtom(groupAgentChatRequestAtomFamily(chatId))
+
+  // Keep the file viewer mounted across close/reopen so Monaco doesn't get
+  // torn down and rebuilt on every toggle (that synchronous dispose/remount
+  // is what caused the visible lag when closing the previewer).
+  const [hasOpenedFileViewer, setHasOpenedFileViewer] = useState(false)
+  const [lastFileViewerPath, setLastFileViewerPath] = useState<string | null>(null)
+  useEffect(() => {
+    setHasOpenedFileViewer(false)
+    setLastFileViewerPath(null)
+  }, [chatId])
+  useEffect(() => {
+    if (fileViewerPath) {
+      setHasOpenedFileViewer(true)
+      setLastFileViewerPath(fileViewerPath)
+    }
+  }, [fileViewerPath])
+  const renderedFileViewerPath = fileViewerPath ?? lastFileViewerPath
+  const registeredAgents = useAtomValue(registeredAgentsAtom)
 
   // Get agent bindings for the chat
   const agentBindingsQuery = trpc.ergatai.getAgentBindings.useQuery(
@@ -231,6 +255,7 @@ export function ChatViewSidebars(props: any) {
               chatId={chatId}
               conversationId={activeConversationId}
               planPath={currentPlanPath}
+              worktreePath={worktreePath}
               onClose={() => setIsPlanSidebarOpen(false)}
               onBuildPlan={handleApprovePlanFromSidebar}
               mode={currentMode}
@@ -371,53 +396,67 @@ export function ChatViewSidebars(props: any) {
           </ResizableSidebar>
         )}
 
-        {/* File Viewer - opens when a file is clicked */}
-        {!isMobileFullscreen && fileViewerPath && worktreePath && fileViewerDisplayMode === "side-peek" && (
-          <ResizableSidebar
-            isOpen={!!fileViewerPath}
-            onClose={() => setLinkedFileViewerPath(null)}
-            widthAtom={fileViewerSidebarWidthAtom}
-            minWidth={350}
-            maxWidth={900}
-            side="right"
-            animationDuration={0.24}
-            initialWidth={0}
-            exitWidth={0}
-            outerResizeHandle
-            showResizeTooltip={true}
-            className="bg-tl-background border-l"
-            style={{ borderLeftWidth: "0.5px" }}
-          >
-            <FileViewerSidebar
-              filePath={fileViewerPath}
-              projectPath={worktreePath}
-              onClose={() => setLinkedFileViewerPath(null)}
-            />
-          </ResizableSidebar>
-        )}
-        {fileViewerPath && worktreePath && fileViewerDisplayMode === "center-peek" && (
-          <DiffCenterPeekDialog
-            isOpen={!!fileViewerPath}
-            onClose={() => setLinkedFileViewerPath(null)}
-          >
-            <FileViewerSidebar
-              filePath={fileViewerPath}
-              projectPath={worktreePath}
-              onClose={() => setLinkedFileViewerPath(null)}
-            />
-          </DiffCenterPeekDialog>
-        )}
-        {fileViewerPath && worktreePath && fileViewerDisplayMode === "full-page" && (
-          <DiffFullPageView
-            isOpen={!!fileViewerPath}
-            onClose={() => setLinkedFileViewerPath(null)}
-          >
-            <FileViewerSidebar
-              filePath={fileViewerPath}
-              projectPath={worktreePath}
-              onClose={() => setLinkedFileViewerPath(null)}
-            />
-          </DiffFullPageView>
+        {/* File Viewer - opens when a file is clicked.
+            Kept mounted after the first open so closing/reopening doesn't
+            synchronously dispose and rebuild the Monaco editor (the source of
+            the close lag). */}
+        {!isMobileFullscreen && worktreePath && (fileViewerPath || hasOpenedFileViewer) && (
+          <>
+            {fileViewerDisplayMode === "side-peek" && (
+              <ResizableSidebar
+                isOpen={!!fileViewerPath}
+                onClose={() => setLinkedFileViewerPath(null)}
+                widthAtom={fileViewerSidebarWidthAtom}
+                minWidth={350}
+                maxWidth={900}
+                side="right"
+                animationDuration={0.24}
+                initialWidth={0}
+                exitWidth={0}
+                outerResizeHandle
+                showResizeTooltip={true}
+                persistContent={true}
+                className="bg-tl-background border-l"
+                style={{ borderLeftWidth: "0.5px" }}
+              >
+                {renderedFileViewerPath && (
+                  <FileViewerSidebar
+                    filePath={renderedFileViewerPath}
+                    projectPath={worktreePath}
+                    onClose={() => setLinkedFileViewerPath(null)}
+                  />
+                )}
+              </ResizableSidebar>
+            )}
+            {fileViewerDisplayMode === "center-peek" && (
+              <DiffCenterPeekDialog
+                isOpen={!!fileViewerPath}
+                onClose={() => setLinkedFileViewerPath(null)}
+              >
+                {renderedFileViewerPath && (
+                  <FileViewerSidebar
+                    filePath={renderedFileViewerPath}
+                    projectPath={worktreePath}
+                    onClose={() => setLinkedFileViewerPath(null)}
+                  />
+                )}
+              </DiffCenterPeekDialog>
+            )}
+            {fileViewerDisplayMode === "full-page" && (
+              <DiffFullPageView
+                isOpen={!!fileViewerPath}
+                onClose={() => setLinkedFileViewerPath(null)}
+              >
+                {renderedFileViewerPath && (
+                  <FileViewerSidebar
+                    filePath={renderedFileViewerPath}
+                    projectPath={worktreePath}
+                    onClose={() => setLinkedFileViewerPath(null)}
+                  />
+                )}
+              </DiffFullPageView>
+            )}
+          </>
         )}
 
         {/* Terminal Sidebar - shows when worktree exists (desktop only) */}
@@ -427,6 +466,7 @@ export function ChatViewSidebars(props: any) {
             scopeKey={terminalScopeKey}
             cwd={worktreePath}
             workspaceId={chatId}
+            conversationId={activeConversationId}
           />
         )}
 
@@ -641,8 +681,21 @@ export function ChatViewSidebars(props: any) {
             </button>
             {/* Dynamic agent logos - at the end of rail */}
             {sideAgents.map((binding) => {
+              const runtimeId =
+                resolveAgentRuntimeId(
+                  registeredAgents,
+                  binding.agentCommand,
+                  binding.agentName,
+                  binding.agentId,
+                ) ??
+                resolveRuntimeAgentIdFromCommand(binding.agentCommand) ??
+                resolveCoreAgentId(
+                  binding.agentCommand ?? undefined,
+                  binding.agentName,
+                )
               const Icon = getCoreAgentIcon(
-                (binding.agentCommand ?? binding.agentId) as CoreAgentId
+                (binding.agentCommand ?? binding.agentId) as CoreAgentId,
+                runtimeId ?? undefined,
               )
               const isActive =
                 isSideChatSidebarOpen && sideChatAgentId === binding.agentId

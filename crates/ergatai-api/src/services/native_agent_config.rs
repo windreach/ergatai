@@ -185,15 +185,11 @@ fn native_api_key(agent_id: &str) -> Result<Option<String>> {
     crate::services::agent::native_api_key(kind)
 }
 
-/// Import the agent's native default configuration as a provider connection
-/// owned by that agent. The connection becomes the agent's default so it
-/// reproduces exactly what the agent used before registration.
-pub fn import(
+fn save_import(
     agent_id: &str,
+    config: &NativeAgentConfig,
+    api_key: Option<&str>,
 ) -> Result<crate::user_data_db::provider_connections::ProviderConnection> {
-    let config = detect(agent_id)?
-        .ok_or_else(|| anyhow!("No native configuration found for agent '{}'", agent_id))?;
-
     // Reuse the imported connection if it already exists for this agent.
     let existing = provider_connection_service::list()?
         .into_iter()
@@ -202,8 +198,7 @@ pub fn import(
         })
         .map(|connection| connection.id);
 
-    let api_key = native_api_key(agent_id)?;
-    let saved = provider_connection_service::upsert(
+    provider_connection_service::upsert(
         ProviderConnectionUpsert {
             id: existing,
             name: "Default (imported)".to_string(),
@@ -213,7 +208,35 @@ pub fn import(
             default_model: config.default_model.clone(),
             is_default: true,
         },
-        api_key.as_deref(),
-    )?;
-    Ok(saved)
+        api_key,
+    )
+}
+
+/// Import the agent's native default configuration as a provider connection
+/// owned by that agent. The connection becomes the agent's default so it
+/// reproduces exactly what the agent used before registration.
+pub fn import(
+    agent_id: &str,
+) -> Result<crate::user_data_db::provider_connections::ProviderConnection> {
+    let config = detect(agent_id)?
+        .ok_or_else(|| anyhow!("No native configuration found for agent '{}'", agent_id))?;
+    let api_key = native_api_key(agent_id)?;
+    save_import(agent_id, &config, api_key.as_deref())
+}
+
+/// Import the native configuration for an already-resolved agent kind, but
+/// store the connection under the caller's profile name. Custom profiles that
+/// wrap a bundled runtime (e.g. "agentcode" using OpenCode) therefore get
+/// their own editable connection instead of silently sharing the runtime's.
+pub fn import_for_kind(
+    kind: crate::services::agent::AgentKind,
+    agent_id: &str,
+) -> Result<crate::user_data_db::provider_connections::ProviderConnection> {
+    if kind == crate::services::agent::AgentKind::Unknown {
+        return import(agent_id);
+    }
+    let config = crate::services::agent::detect_native_config(kind)?
+        .ok_or_else(|| anyhow!("No native configuration found for agent '{}'", agent_id))?;
+    let api_key = crate::services::agent::native_api_key(kind)?;
+    save_import(agent_id, &config, api_key.as_deref())
 }

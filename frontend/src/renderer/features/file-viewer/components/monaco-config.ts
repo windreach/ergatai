@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 // react-doctor-disable-next-line prefer-dynamic-import
 import { loader } from "@monaco-editor/react"
 // react-doctor-disable-next-line prefer-dynamic-import

@@ -555,14 +555,30 @@ pub async fn get_profile_models(Path(name): Path<String>) -> axum::response::Res
     // The provider connection marked as this agent's default owns the model new
     // chats should start with. Surface it here so the model picker and the spawn
     // fallback resolve to the same model instead of the agent's native default.
-    let connection_profile = name.clone();
+    // Custom profiles inherit from a profile with the same command when they
+    // have no connection of their own (e.g. "agentcode" -> "opencode acp").
+    let mut connection_candidates = vec![name.clone()];
+    if let Ok(Some(profile)) = profile_service::get_profile_by_name(&name).await {
+        if let Ok(all) = profile_service::list_profiles().await {
+            for other in all {
+                if other.name != profile.name && other.command == profile.command {
+                    connection_candidates.push(other.name);
+                }
+            }
+        }
+    }
     let connection_default_model = tokio::task::spawn_blocking(move || {
-        crate::services::provider_connection_service::resolve(None, Some(&connection_profile))
-            .ok()
-            .flatten()
-            .and_then(|connection| connection.default_model)
-            .map(|model| model.trim().to_string())
-            .filter(|model| !model.is_empty())
+        for candidate in connection_candidates {
+            if let Ok(Some(connection)) =
+                crate::services::provider_connection_service::resolve(None, Some(&candidate))
+            {
+                return connection
+                    .default_model
+                    .map(|model| model.trim().to_string())
+                    .filter(|model| !model.is_empty());
+            }
+        }
+        None
     })
     .await
     .ok()

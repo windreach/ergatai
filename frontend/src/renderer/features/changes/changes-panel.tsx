@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import type { ChangeCategory, ChangedFile } from "../../../shared/changes-types";
 import { ChangesView } from "./changes-view";

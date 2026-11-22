@@ -6,7 +6,7 @@ import { createLogger } from "../../../../main/lib/logger"
 import {
   applyAgentTerminalExtension,
   clearAgentTerminals,
-} from "../../agents/lib/agent-terminal-store"
+} from "../../agents"
 
 import {
   readPersistedSequence,

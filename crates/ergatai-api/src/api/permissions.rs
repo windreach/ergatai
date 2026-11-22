@@ -123,6 +123,7 @@ pub async fn get_mode() -> impl IntoResponse {
 pub enum ApiPermissionMode {
     Ask,
     Auto,
+    AutoBash,
     FullAccess,
 }
 
@@ -150,6 +151,7 @@ pub async fn set_mode(Json(body): Json<SetModeBody>) -> Response {
     let mode = match body.mode {
         ApiPermissionMode::Ask => PermissionMode::Ask,
         ApiPermissionMode::Auto => PermissionMode::Auto,
+        ApiPermissionMode::AutoBash => PermissionMode::AutoBash,
         ApiPermissionMode::FullAccess => PermissionMode::FullAccess,
     };
     set_permission_mode(mode);

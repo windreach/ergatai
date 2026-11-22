@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 "use client"
 
@@ -268,7 +269,7 @@ function ShortcutDetailPanel({
             }
             return (
               <span className="text-sm text-muted-foreground animate-pulse">
-                Press keys...
+                {i18n.t("settings.keyboard.pressKeys")}
               </span>
             )
           }
@@ -313,7 +314,7 @@ function ShortcutDetailPanel({
           </button>
         ) : (
           <p className="text-xs text-muted-foreground text-center">
-            Click to record a new shortcut
+            {i18n.t("settings.keyboard.clickToRecord")}
           </p>
         )}
       </div>
@@ -329,7 +330,7 @@ function EmptyDetailPanel() {
     <div className="flex flex-col items-center justify-center h-full p-8 text-center">
       <Settings2 className="h-10 w-10 text-muted-foreground/20 mb-3" />
       <p className="text-sm text-muted-foreground">
-        Select a shortcut to customize
+        {i18n.t("settings.keyboard.selectShortcut")}
       </p>
     </div>
   )
@@ -460,7 +461,11 @@ export function AgentsKeyboardTab() {
     const conflictingAction = checkConflict(hotkey, selectedActionId)
     if (conflictingAction) {
       // Show conflict message and don't save
-      setConflictMessage(`"${conflictingAction.label}" already uses this shortcut`)
+      setConflictMessage(
+        i18n.t("settings.keyboard.conflict", {
+          label: conflictingAction.label,
+        }),
+      )
       setIsRecording(false)
 
       // Clear message after 2 seconds
@@ -539,10 +544,9 @@ export function AgentsKeyboardTab() {
           {/* Shortcuts list */}
           {/* react-doctor-disable-next-line no-static-element-interactions */}
           <div ref={listRef} onKeyDown={listKeyDown} tabIndex={-1} className="flex-1 overflow-y-auto px-2 pt-2 pb-2 outline-none">
-            role="button"
             {totalShortcuts === 0 ? (
               <div className="text-center py-8 text-sm text-muted-foreground">
-                No shortcuts found
+                {i18n.t("settings.keyboard.noShortcuts")}
               </div>
             ) : (
               <div className="space-y-3">
@@ -586,7 +590,7 @@ export function AgentsKeyboardTab() {
                 className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
               >
                 <RotateCcw className="h-3 w-3" />
-                Reset all to defaults
+                {i18n.t("settings.keyboard.resetAll")}
               </button>
             </div>
           )}

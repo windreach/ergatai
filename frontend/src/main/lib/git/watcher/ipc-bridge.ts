@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { ipcMain, BrowserWindow } from "electron";
 import { gitWatcherRegistry, type GitWatchEvent } from "./git-watcher";
 import { gitCache } from "../cache";

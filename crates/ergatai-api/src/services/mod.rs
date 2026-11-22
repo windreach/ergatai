@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod agent_history_import;
+pub mod agent_launch;
 pub mod agent_output_cleanup;
 pub mod agent_output_persistence;
 pub mod agent_sdk_service;

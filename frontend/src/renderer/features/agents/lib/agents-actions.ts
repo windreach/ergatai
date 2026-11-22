@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 /**
  * Centralized action system for Agents
@@ -67,6 +68,18 @@ const openShortcutsAction: AgentActionDefinition = {
     context.setSettingsActiveTab?.("keyboard")
     context.setDesktopView?.("settings")
     context.setSidebarOpen?.(true)
+    return { success: true }
+  },
+}
+
+const createNewWorkspaceAction: AgentActionDefinition = {
+  id: "create-new-workspace",
+  label: i18n.t("New Workspace"),
+  description: i18n.t("Create a new workspace"),
+  category: "general",
+  hotkey: "cmd+n",
+  handler: async (context) => {
+    context.setDesktopView?.("new-workspace")
     return { success: true }
   },
 }
@@ -189,6 +202,7 @@ const fileSearchAction: AgentActionDefinition = {
 
 export const AGENT_ACTIONS: Record<string, AgentActionDefinition> = {
   "open-shortcuts": openShortcutsAction,
+  "create-new-workspace": createNewWorkspaceAction,
   "create-new-agent": createNewAgentAction,
   "open-settings": openSettingsAction,
   "toggle-sidebar": toggleSidebarAction,

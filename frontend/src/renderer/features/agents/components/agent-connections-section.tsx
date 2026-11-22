@@ -16,6 +16,11 @@ import {
   type ProviderProtocol,
 } from "./agent-connection-row"
 import { ModelAutocompleteInput } from "./model-autocomplete-input"
+import {
+  InheritedConnections,
+  useInheritedConnections,
+} from "./inherited-connections"
+import { NativeConnectionState } from "./native-connection-state"
 
 const EMPTY_FORM = {
   id: "",
@@ -32,6 +37,12 @@ interface AgentConnectionsSectionProps {
   agentId: string
   /** Display name used in copy (e.g. "Claude Code"). */
   agentDisplayName: string
+  /**
+   * Optional profile whose provider connections are inherited when this agent
+   * has none of its own (custom profiles that wrap a bundled runtime).
+   */
+  fallbackAgentId?: string
+  fallbackAgentDisplayName?: string
 }
 
 /**
@@ -45,6 +56,8 @@ interface AgentConnectionsSectionProps {
 export function AgentConnectionsSection({
   agentId,
   agentDisplayName,
+  fallbackAgentId,
+  fallbackAgentDisplayName,
 }: AgentConnectionsSectionProps) {
   const utils = trpc.useUtils()
   const connectionsQuery = trpc.ergatai.listProviderConnections.useQuery(
@@ -55,6 +68,13 @@ export function AgentConnectionsSection({
     () => (connectionsQuery.data ?? []).filter((c) => c.agentId === agentId),
     [connectionsQuery.data, agentId],
   )
+  const inheritedConnections = useInheritedConnections(
+    connectionsQuery.data,
+    agentId,
+    fallbackAgentId,
+  )
+  const inheritedFrom =
+    fallbackAgentDisplayName ?? fallbackAgentId ?? "the runtime agent"
   // Models detected for this agent profile, used as suggestions in the
   // default-model field. Raw ids are kept so they match what the agent
   // expects (e.g. "opencode/longcat-2.5-free").
@@ -132,6 +152,22 @@ export function AgentConnectionsSection({
     },
   })
 
+  const copyToAgentMutation = trpc.ergatai.copyProviderConnection.useMutation({
+    onSuccess: () => {
+      toast.success(i18n.t("Provider copied to this agent"))
+      void utils.ergatai.listProviderConnections.invalidate()
+      // The copied connection becomes this agent's default model source.
+      void utils.ergatai.getAgentProfileModels.invalidate()
+    },
+    onError: (error) => {
+      toast.error(
+        i18n.t("Failed to copy provider: {{message}}", {
+          message: error.message,
+        }),
+      )
+    },
+  })
+
   const importMutation = trpc.ergatai.importNativeConnection.useMutation({
     onSuccess: (data) => {
       toast.success(i18n.t("Provider \"{{name}}\" imported from {{agent}} config", { name: data.connection.name, agent: agentDisplayName }))
@@ -158,12 +194,20 @@ export function AgentConnectionsSection({
   const importNative = importMutation.mutate
   useEffect(() => {
     if (!nativeSourcePath) return
-    if (isLoading || connections.length > 0 || showForm) return
+    if (isLoading || connections.length > 0 || inheritedConnections.length > 0 || showForm) return
     const sourceKey = `${agentId}:${nativeSourcePath}`
     if (autoImportedSource.current === sourceKey) return
     autoImportedSource.current = sourceKey
     importNative({ agentId })
-  }, [agentId, nativeSourcePath, isLoading, connections.length, showForm, importNative])
+  }, [
+    agentId,
+    nativeSourcePath,
+    isLoading,
+    connections.length,
+    inheritedConnections.length,
+    showForm,
+    importNative,
+  ])
 
   function resetForm() {
     setForm({ ...EMPTY_FORM })
@@ -180,7 +224,12 @@ export function AgentConnectionsSection({
   }
 
   function startCreate() {
-    setForm({ ...EMPTY_FORM, protocol: protocolForAgent(agentId) })
+    // Custom profiles wrapping a bundled runtime should default to the
+    // runtime's protocol (e.g. "opencode") rather than openai_compatible.
+    setForm({
+      ...EMPTY_FORM,
+      protocol: protocolForAgent(fallbackAgentId ?? agentId),
+    })
     setEditingId(null)
     setShowForm(true)
     setKeyTouched(false)
@@ -363,99 +412,39 @@ export function AgentConnectionsSection({
           <IconSpinner className="h-4 w-4" />
         </div>
       ) : connections.length === 0 ? (
-        nativeQuery.isLoading ? (
-          <div className="flex items-center justify-center py-3">
-            <IconSpinner className="h-4 w-4" />
-          </div>
-        ) : nativeQuery.isError ? (
-          <div className="space-y-1.5 rounded-lg border border-dashed border-destructive/40 bg-destructive/5 px-3 py-2.5">
-            <p className="text-xs font-medium text-foreground">
-              Could not detect native configuration
-            </p>
-            <p className="text-[11px] leading-4 text-muted-foreground">
-              The backend may be outdated (restart it) or the config file is
-              unreadable.{" "}
-              {nativeQuery.error instanceof Error
-                ? nativeQuery.error.message
-                : ""}
-            </p>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-7 px-2 text-xs"
-              disabled={nativeQuery.isFetching}
-              onClick={() => nativeQuery.refetch()}
-            >
-              {nativeQuery.isFetching ? (
-                <IconSpinner className="mr-1 h-3 w-3" />
-              ) : null}
-              Retry
-            </Button>
-          </div>
-        ) : nativeQuery.data ? (
-          <div className="space-y-1.5 rounded-lg border border-border bg-muted/30 px-3 py-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-xs font-medium text-foreground">
-                {importMutation.isPending
-                  ? "Importing default configuration…"
-                  : importMutation.isError
-                    ? "Import failed"
-                    : "Default configuration detected"}
-              </p>
-              {!importMutation.isPending && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => importMutation.mutate({ agentId })}
-                >
-                  Import
-                </Button>
-              )}
-              {importMutation.isPending && (
-                <IconSpinner className="h-3.5 w-3.5" />
-              )}
-            </div>
-            {importMutation.isError && (
-              <p className="text-[11px] leading-4 text-destructive">
-                {importMutation.error instanceof Error
-                  ? importMutation.error.message
-                  : "Could not import the detected configuration."}
-              </p>
-            )}
-            <p
-              className="truncate font-mono text-[11px] text-muted-foreground"
-              title={nativeQuery.data.sourcePath}
-            >
-              {nativeQuery.data.sourcePath}
-            </p>
-            <p
-              className="truncate text-[11px] text-muted-foreground"
-              title={[
-                nativeQuery.data.baseUrl,
-                nativeQuery.data.defaultModel,
-                nativeQuery.data.hasApiKey ? "API key found" : "No API key found",
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-            >
-              {[
-                nativeQuery.data.baseUrl,
-                nativeQuery.data.defaultModel,
-                nativeQuery.data.hasApiKey
-                  ? "API key found"
-                  : "No API key found",
-              ]
-                .filter(Boolean)
-                .join(" · ") || "No endpoints or models configured"}
-            </p>
-          </div>
+        inheritedConnections.length > 0 ? (
+          <InheritedConnections
+            connections={inheritedConnections}
+            fromDisplayName={inheritedFrom}
+            onCopyToAgent={(connection) =>
+              copyToAgentMutation.mutate({
+                id: connection.id,
+                agentId,
+              })
+            }
+            isCopying={copyToAgentMutation.isPending}
+          />
         ) : (
-          <p className="rounded-lg border border-dashed border-border px-3 py-2.5 text-xs text-muted-foreground">
-            No providers yet.
-          </p>
+          <NativeConnectionState
+            isLoading={nativeQuery.isLoading}
+            isError={nativeQuery.isError}
+            errorMessage={
+              nativeQuery.error instanceof Error
+                ? nativeQuery.error.message
+                : undefined
+            }
+            isFetching={nativeQuery.isFetching}
+            onRetry={() => nativeQuery.refetch()}
+            config={nativeQuery.data}
+            isImporting={importMutation.isPending}
+            isImportError={importMutation.isError}
+            importErrorMessage={
+              importMutation.error instanceof Error
+                ? importMutation.error.message
+                : undefined
+            }
+            onImport={() => importMutation.mutate({ agentId })}
+          />
         )
       ) : (
         <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">

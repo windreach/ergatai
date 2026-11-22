@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 "use client"
 
@@ -27,6 +28,7 @@ import {
   selectedDiffFilePathAtom,
 } from "../atoms"
 import { cn } from "../../../lib/utils"
+import { trpc } from "@/lib/trpc"
 import { getFileIconByExtension } from "../mentions/file-icon-utils"
 import { useFileOpen } from "../mentions"
 import { useWorkspaceChatsStore } from "../stores/workspace-chats-store"
@@ -68,6 +70,13 @@ export const GitActivityBadges = memo(function GitActivityBadges({
     (state) => state.chats.find((chat) => chat.id === chatId)?.worktreePath ?? null,
   )
   const pathRoot = worktreePath ?? selectedWorkspace?.path
+
+  // The diff rail is git-backed. Plain folders have no status/diff to render,
+  // so opening a changed file there must fall back to the file preview.
+  const { data: isGitRepository } = trpc.changes.isGitRepository.useQuery(
+    { path: pathRoot ?? "" },
+    { enabled: !!pathRoot, staleTime: 60_000 },
+  )
 
   const [isExpanded, setIsExpanded] = useState(false)
 
@@ -114,6 +123,13 @@ export const GitActivityBadges = memo(function GitActivityBadges({
   const filesCommitted = activity?.type === "commit" || activity?.type === "pr"
 
   const handleFileClick = useCallback((file: ChangedFileInfo) => {
+    // A plain folder has no git status/diff, so the Changes panel would open
+    // empty. Open the file preview instead so the agent-written content is visible.
+    if (isGitRepository === false && onOpenFile) {
+      onOpenFile(file.filePath)
+      return
+    }
+
     if (filesCommitted) {
       // Files already committed — open file preview
       onOpenFile?.(file.filePath)
@@ -144,7 +160,7 @@ export const GitActivityBadges = memo(function GitActivityBadges({
     setFilteredConversationId(conversationId)
     setDiffActiveTab("changes")
     setDiffSidebarOpen(true)
-  }, [filesCommitted, worktreePath, onOpenFile, conversationId, setSelectedFilePath, setFilteredDiffFiles, setFocusedDiffFile, setFilteredConversationId, setDiffActiveTab, setDiffSidebarOpen])
+  }, [isGitRepository, filesCommitted, worktreePath, onOpenFile, conversationId, setSelectedFilePath, setFilteredDiffFiles, setFocusedDiffFile, setFilteredConversationId, setDiffActiveTab, setDiffSidebarOpen])
 
   if (!activity && changedFiles.length === 0) return null
 

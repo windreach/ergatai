@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { useState, useEffect, useCallback, useRef } from "react"
 import { Input } from "../../ui/input"
@@ -66,7 +67,9 @@ export function AgentsProfileTab() {
     } catch (error) {
       console.error("Error updating profile:", error)
       toast.error(
-        error instanceof Error ? error.message : "Failed to update profile"
+        error instanceof Error
+          ? error.message
+          : i18n.t("settings.profile.updateFailed"),
       )
     }
   }, [fullName])
@@ -95,7 +98,7 @@ export function AgentsProfileTab() {
             <div className="flex-1">
               <Label className="text-sm font-medium">{i18n.t('Full Name')}</Label>
               <p className="text-sm text-muted-foreground">
-                This is your display name
+                {i18n.t("settings.profile.displayNameDescription")}
               </p>
             </div>
             <div className="flex-shrink-0 w-80">
@@ -114,7 +117,7 @@ export function AgentsProfileTab() {
             <div className="flex-1">
               <Label className="text-sm font-medium">{i18n.t('Email')}</Label>
               <p className="text-sm text-muted-foreground">
-                Your account email
+                {i18n.t("settings.profile.emailDescription")}
               </p>
             </div>
             <div className="flex-shrink-0 w-80">

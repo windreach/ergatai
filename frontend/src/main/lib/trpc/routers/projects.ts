@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { z } from "zod"
 import { t } from "../../../lib/i18n"

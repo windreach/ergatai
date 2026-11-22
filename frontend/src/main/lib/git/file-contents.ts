@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import type { FileContents } from "../../../shared/changes-types";
 import { t } from "../i18n"
 import { detectLanguage } from "../../../shared/detect-language";

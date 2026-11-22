@@ -67,6 +67,10 @@ export function isAgentTerminalVisible(
   task: AgentTerminalTask,
   now: number = Date.now(),
 ): boolean {
+  // Background shell tasks are explicitly created by the agent and should be
+  // visible immediately; the lifetime threshold only filters short foreground
+  // commands that would otherwise flash in and out of the widget.
+  if (task.backgrounded) return true
   const endedAt = task.finishedAt ?? now
   return endedAt - task.startedAt >= MIN_AGENT_TERMINAL_LIFETIME_MS
 }

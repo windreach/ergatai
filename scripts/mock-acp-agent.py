@@ -21,6 +21,7 @@ class SimpleAcpAgent:
         self.conversation_history = []
         self.pending_responses = {}  # 存储待响应的请求 ID
         self.response_lock = threading.Lock()
+        self.current_model = "glm-5.3-flash"
 
     def log(self, message: str):
         """日志输出到 stderr"""
@@ -87,6 +88,38 @@ class SimpleAcpAgent:
         print(json.dumps(notification), flush=True)
         self.log(f"通知: {method}")
 
+    def model_config_option(self) -> Dict[str, Any]:
+        """Expose a deterministic model selector for launch/model tests."""
+        return {
+            "id": "model",
+            "name": "Model",
+            "category": "model",
+            "type": "select",
+            "currentValue": self.current_model,
+            "options": [
+                {"value": "glm-5.3-flash", "name": "GLM 5.3 Flash"},
+                {"value": "qwen3.7-plus", "name": "Qwen 3.7 Plus"},
+            ],
+        }
+
+    def handle_session_set_model(self, id: Any, params: Dict):
+        value = (
+            params.get("modelId")
+            or params.get("model")
+            or params.get("value")
+        )
+        if value:
+            self.current_model = value
+        self.log(f"模型切换: {self.current_model}")
+        self.send_response(id, {})
+
+    def handle_session_set_config_option(self, id: Any, params: Dict):
+        value = params.get("value")
+        if value:
+            self.current_model = value
+        self.log(f"配置项切换: model={self.current_model}")
+        self.send_response(id, {"configOptions": [self.model_config_option()]})
+
     def handle_initialize(self, id: Any, params: Dict):
         """处理 initialize 请求"""
         self.log("收到 initialize 请求")
@@ -113,7 +146,8 @@ class SimpleAcpAgent:
 
         result = {
             "sessionId": self.session_id,
-            "status": "started"
+            "status": "started",
+            "configOptions": [self.model_config_option()],
         }
         self.send_response(id, result)
 
@@ -130,7 +164,8 @@ class SimpleAcpAgent:
 
         result = {
             "sessionId": self.session_id,
-            "status": "created"
+            "status": "created",
+            "configOptions": [self.model_config_option()],
         }
         self.send_response(id, result)
 
@@ -493,6 +528,10 @@ class SimpleAcpAgent:
             self.handle_session_resume(id, params)
         elif method == "session/prompt":
             self.handle_session_prompt(id, params)
+        elif method == "session/set_model":
+            self.handle_session_set_model(id, params)
+        elif method == "session/set_config_option":
+            self.handle_session_set_config_option(id, params)
         elif method == "tools/list":
             self.handle_tools_list(id, params)
         elif method == "tools/call":

@@ -16,7 +16,7 @@ import { useExtensionMeta } from "../lib/extension-meta-store"
 // } from "../lib/subagent-message-store"
 
 import { AgentTerminalOutput } from "./agent-terminal-output"
-import { agentStatusLineAtom } from "../atoms"
+import { agentStatusLineAtomFamily } from "../atoms"
 // Removed Resume/history selector; restore status display in the status card header.
 // import { AgentHistorySelector } from "./agent-history-selector"
 
@@ -37,6 +37,7 @@ function AnimatedDots() {
 interface ConversationStatusCardProps {
   agentId?: string | null
   chatId: string
+  conversationId: string
   isStreaming: boolean
   isCompacting?: boolean
   onStop?: () => void
@@ -50,6 +51,7 @@ interface ConversationStatusCardProps {
 export const ConversationStatusCard = memo(function ConversationStatusCard({
   agentId,
   chatId,
+  conversationId,
   isStreaming,
   isCompacting,
   onStop,
@@ -57,7 +59,9 @@ export const ConversationStatusCard = memo(function ConversationStatusCard({
   hasAgentRailAbove = false,
 }: ConversationStatusCardProps) {
   const isBusy = isStreaming || isCompacting
-  const agentStatusLine = useAtomValue(agentStatusLineAtom)
+  const agentStatusLine = useAtomValue(
+    agentStatusLineAtomFamily(conversationId),
+  )
   const [isRailExpanded, setIsRailExpanded] = useState(false)
   const [activeRailSection, setActiveRailSection] = useState<"subagents" | "terminal">("subagents")
   const [selectedTerminalKey, setSelectedTerminalKey] = useState<string | null>(null)

@@ -190,7 +190,10 @@ const ChatItem = memo(function ChatItem({
                   (() => {
                     // Use the first agent's logo
                     const logo = agentLogos[0]
-                    const Icon = getCoreAgentIcon(logo.agentId as CoreAgentId)
+                    const Icon = getCoreAgentIcon(
+                      logo.agentId as CoreAgentId,
+                      (logo.runtimeId ?? logo.agentId) as CoreAgentId,
+                    )
                     return <Icon className="w-4 h-4 text-muted-foreground" />
                   })()
                 ) : (

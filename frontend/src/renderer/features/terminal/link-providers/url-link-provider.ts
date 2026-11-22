@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import type { IBufferLine, ILink, ILinkProvider, Terminal as XTerm } from "@xterm/xterm"
 import { isModifierPressed, showLinkPopup, removeLinkPopup } from "./link-popup"
 

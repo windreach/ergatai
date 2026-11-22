@@ -16,15 +16,16 @@
 //! - Requires agents to support ACP protocol
 //! - No direct terminal I/O (not suitable for interactive CLI agents)
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
@@ -953,6 +954,38 @@ struct AgentTerminalTaskEvent<'a> {
     updated_at: i64,
 }
 
+/// Build the wire payload for a `terminal_task_update` extension event.
+fn terminal_task_event_payload(
+    terminal: &AgentTerminalTask,
+    output: Option<&str>,
+    output_delta: Option<&str>,
+) -> Option<serde_json::Value> {
+    let event = AgentTerminalTaskEvent {
+        terminal_id: &terminal.terminal_id,
+        title: &terminal.title,
+        command: terminal.command.as_deref(),
+        output,
+        output_delta,
+        exit_code: terminal.exit_code,
+        signal: terminal.signal.as_deref(),
+        status: &terminal.status,
+        backgrounded: terminal.backgrounded,
+        updated_at: terminal.updated_at,
+    };
+
+    match serde_json::to_value(&event) {
+        Ok(payload) => Some(payload),
+        Err(error) => {
+            warn!(
+                terminal_id = %terminal.terminal_id,
+                error = %error,
+                "Failed to serialize agent terminal task"
+            );
+            None
+        }
+    }
+}
+
 /// Publish the latest state of one agent terminal task.
 async fn emit_agent_terminal_update(
     turn_token: &Arc<RwLock<Option<crate::output_accumulator::TurnToken>>>,
@@ -969,29 +1002,8 @@ async fn emit_agent_terminal_update(
         _ => (None, None),
     };
 
-    let event = AgentTerminalTaskEvent {
-        terminal_id: &terminal.terminal_id,
-        title: &terminal.title,
-        command: terminal.command.as_deref(),
-        output,
-        output_delta,
-        exit_code: terminal.exit_code,
-        signal: terminal.signal.as_deref(),
-        status: &terminal.status,
-        backgrounded: terminal.backgrounded,
-        updated_at: terminal.updated_at,
-    };
-
-    let payload = match serde_json::to_value(&event) {
-        Ok(payload) => payload,
-        Err(error) => {
-            warn!(
-                terminal_id = %terminal.terminal_id,
-                error = %error,
-                "Failed to serialize agent terminal task"
-            );
-            return;
-        }
+    let Some(payload) = terminal_task_event_payload(terminal, output, output_delta) else {
+        return;
     };
 
     send_output_event_with_turn_token(
@@ -1004,6 +1016,229 @@ async fn emit_agent_terminal_update(
         },
     )
     .await;
+}
+
+/// Publish a terminal update outside an active turn (background shell watcher).
+async fn publish_agent_terminal_event(
+    conversation_id: &str,
+    terminal: &AgentTerminalTask,
+    output: Option<&str>,
+    output_delta: Option<&str>,
+) {
+    let Some(payload) = terminal_task_event_payload(terminal, output, output_delta) else {
+        return;
+    };
+
+    send_output_event_internal(
+        None,
+        Some(conversation_id),
+        AgentOutputEvent::ExtensionUpdate {
+            role: "assistant".to_string(),
+            kind: "terminal_task_update".to_string(),
+            payload,
+        },
+    )
+    .await;
+}
+
+/// Extract the OpenCode shell output file from a tool result.
+///
+/// OpenCode prefixes the background result with
+/// `Output is streaming to: <file>`; unlike its HTTP API the ACP tool result
+/// does not expose a structured `file` field.
+fn opencode_shell_output_file(raw_output: Option<&serde_json::Value>) -> Option<PathBuf> {
+    let text = raw_output?.get("stdout")?.as_str()?;
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix("Output is streaming to: "))
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Read newly appended bytes from a shell output file.
+async fn read_output_delta(file_path: &Path, offset: &mut u64) -> Option<String> {
+    let metadata = tokio::fs::metadata(file_path).await.ok()?;
+    if metadata.len() < *offset {
+        // The file was truncated or replaced.
+        *offset = 0;
+    }
+    if metadata.len() == *offset {
+        return None;
+    }
+
+    let mut file = tokio::fs::File::open(file_path).await.ok()?;
+    file.seek(std::io::SeekFrom::Start(*offset)).await.ok()?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer).await.ok()?;
+    if buffer.is_empty() {
+        return None;
+    }
+    *offset += buffer.len() as u64;
+    Some(String::from_utf8_lossy(&buffer).to_string())
+}
+
+/// Whether some process still has the shell output file open.
+///
+/// OpenCode keeps the output file open for the lifetime of the background
+/// shell, so the file descriptor is a reliable completion signal on Unix.
+#[cfg(target_os = "linux")]
+async fn output_file_is_open(path: &Path) -> Option<bool> {
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        let entries = std::fs::read_dir("/proc").ok()?;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.bytes().all(|byte| byte.is_ascii_digit()) {
+                continue;
+            }
+            let Ok(fds) = std::fs::read_dir(entry.path().join("fd")) else {
+                continue;
+            };
+            for fd in fds.flatten() {
+                if let Ok(link) = std::fs::read_link(fd.path()) {
+                    if link == target {
+                        return Some(true);
+                    }
+                }
+            }
+        }
+        Some(false)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+#[cfg(target_os = "macos")]
+async fn output_file_is_open(path: &Path) -> Option<bool> {
+    let output = tokio::process::Command::new("lsof")
+        .arg("-t")
+        .arg(path)
+        .output()
+        .await
+        .ok()?;
+    match output.status.code() {
+        Some(0) => Some(!output.stdout.is_empty()),
+        // lsof exits 1 when no process holds the file.
+        Some(1) => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+async fn output_file_is_open(_path: &Path) -> Option<bool> {
+    // No portable fd inspection; keep the task running rather than completing
+    // it speculatively.
+    None
+}
+
+/// Watch an OpenCode background shell output file and keep its terminal task
+/// updated.
+///
+/// Polls the file for new output, publishes deltas to the conversation stream,
+/// and marks the task completed once OpenCode closes the file (i.e. the shell
+/// process has exited). This is necessary because the OpenCode ACP adapter does
+/// not emit a terminal/async-task completion notification.
+fn spawn_opencode_shell_output_watcher(
+    conversation_id: &str,
+    shell_id: &str,
+    tool_call_id: &str,
+    file_path: PathBuf,
+    tool_calls: Arc<ToolCallTracker>,
+    poll_interval: Duration,
+) {
+    static WATCHERS: OnceLock<parking_lot::Mutex<HashSet<String>>> = OnceLock::new();
+
+    let key = format!("{conversation_id}:{shell_id}");
+    {
+        let watchers = WATCHERS.get_or_init(|| parking_lot::Mutex::new(HashSet::new()));
+        let mut watchers = watchers.lock();
+        if !watchers.insert(key.clone()) {
+            return;
+        }
+    }
+
+    let conversation_id = conversation_id.to_string();
+    let tool_call_id = tool_call_id.to_string();
+
+    tokio::spawn(async move {
+        let mut offset = 0u64;
+        let mut ticks = 0u64;
+        let mut ever_opened = false;
+        let mut missing_ticks = 0u64;
+
+        loop {
+            tokio::time::sleep(poll_interval).await;
+            ticks += 1;
+
+            // Safety valve for a watcher whose shell never closes.
+            if ticks > 24 * 60 * 60 {
+                break;
+            }
+
+            if let Some(delta) = read_output_delta(&file_path, &mut offset).await {
+                missing_ticks = 0;
+                if let Some(terminal) = tool_calls.append_terminal_output(&tool_call_id, &delta) {
+                    publish_agent_terminal_event(
+                        &conversation_id,
+                        &terminal,
+                        None,
+                        Some(delta.as_str()),
+                    )
+                    .await;
+                }
+            } else if tokio::fs::metadata(&file_path).await.is_err() {
+                missing_ticks += 1;
+                // The shell's output file was removed before/during the run.
+                if missing_ticks >= 5 {
+                    break;
+                }
+            }
+
+            // Checking every other tick keeps /proc scanning reasonable while
+            // still detecting completion within ~2s.
+            if ticks % 2 != 0 {
+                continue;
+            }
+
+            match output_file_is_open(&file_path).await {
+                Some(true) => ever_opened = true,
+                Some(false) if ever_opened || ticks >= 4 => {
+                    // Drain output written between the last poll and file close.
+                    if let Some(delta) = read_output_delta(&file_path, &mut offset).await {
+                        if let Some(terminal) =
+                            tool_calls.append_terminal_output(&tool_call_id, &delta)
+                        {
+                            publish_agent_terminal_event(
+                                &conversation_id,
+                                &terminal,
+                                None,
+                                Some(delta.as_str()),
+                            )
+                            .await;
+                        }
+                    }
+
+                    if let Some(terminal) = tool_calls.mark_terminal_completed(&tool_call_id) {
+                        publish_agent_terminal_event(
+                            &conversation_id,
+                            &terminal,
+                            Some(terminal.output.as_str()),
+                            None,
+                        )
+                        .await;
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(watchers) = WATCHERS.get() {
+            watchers.lock().remove(&key);
+        }
+    });
 }
 
 /// Internal implementation for send_output_event
@@ -1925,17 +2160,35 @@ async fn handle_standard_session_notification(
             let terminal_meta =
                 crate::acp_custom_fields::extract_terminal_task_meta(update.meta.as_ref());
             tool_calls.apply_update(update, &terminal_meta);
-            if let Some(terminal) = tool_calls
-                .get_by_id(&update.tool_call_id.to_string())
-                .and_then(|call| call.terminal)
-            {
+            let tracked = tool_calls.get_by_id(&update.tool_call_id.to_string());
+            if let Some(terminal) = tracked.as_ref().and_then(|call| call.terminal.as_ref()) {
                 emit_agent_terminal_update(
                     turn_token,
                     conversation_id,
-                    &terminal,
+                    terminal,
                     Some(&terminal_meta),
                 )
                 .await;
+
+                // OpenCode does not emit a completion notification for
+                // background shells; follow its output file until it closes.
+                if terminal.backgrounded && terminal.status == "running" {
+                    let output_file = tracked
+                        .as_ref()
+                        .and_then(|call| opencode_shell_output_file(call.raw_output.as_ref()));
+                    if let (Some(shell_id), Some(output_file)) =
+                        (terminal.async_task_id.as_deref(), output_file)
+                    {
+                        spawn_opencode_shell_output_watcher(
+                            conversation_id,
+                            shell_id,
+                            &terminal.terminal_id,
+                            output_file,
+                            tool_calls.clone(),
+                            Duration::from_millis(1000),
+                        );
+                    }
+                }
             }
 
             if is_complete || is_error {
@@ -2909,6 +3162,60 @@ pub struct TrackedToolCall {
     pub terminal: Option<AgentTerminalTask>,
 }
 
+/// Synthesize a display terminal for an OpenCode-style background shell.
+///
+/// Claude AIR reports command terminals through `_meta.terminal_info`. OpenCode
+/// instead marks the tool input with `background: true` and exposes the shell
+/// id in `rawOutput.metadata.shellID` (with `status: "running"`). Without this
+/// mapping the background task never produces a `terminal_task_update`, so the
+/// Terminal widget stays empty even though the command is running.
+fn opencode_background_shell(
+    tool_call_id: &str,
+    raw_input: Option<&serde_json::Value>,
+    raw_output: Option<&serde_json::Value>,
+) -> Option<AgentTerminalTask> {
+    let input = raw_input?.as_object()?;
+    if input.get("background").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+
+    let metadata = raw_output?.get("metadata")?.as_object()?;
+    let shell_id = ["shellID", "shell_id"]
+        .iter()
+        .find_map(|key| metadata.get(*key).and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+
+    let command = input
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let title = command.clone().unwrap_or_else(|| shell_id.to_string());
+    let mut task = AgentTerminalTask::new(tool_call_id.to_string(), title, command);
+    task.async_task_id = Some(shell_id.to_string());
+    task.backgrounded = true;
+    task.status = "running".to_string();
+
+    // OpenCode currently reports `running` for background shells; accept a
+    // terminal status too in case the adapter later reports completion through
+    // the same metadata shape.
+    if let Some(status) = metadata.get("status").and_then(serde_json::Value::as_str) {
+        if matches!(status, "completed" | "failed" | "cancelled") {
+            task.status = status.to_string();
+        }
+    }
+
+    if let Some(stdout) = raw_output
+        .and_then(|output| output.get("stdout"))
+        .and_then(serde_json::Value::as_str)
+    {
+        task.output = stdout.to_string();
+        truncate_terminal_output(&mut task.output);
+    }
+
+    Some(task)
+}
+
 /// Per-agent tool call tracker.
 ///
 /// Stores tool calls in insertion order, merging updates by `tool_call_id`.
@@ -2971,6 +3278,39 @@ fn extract_error_text_from_output(output: &serde_json::Value) -> Option<String> 
     } else {
         Some(trimmed.to_string())
     }
+}
+
+/// Merge ACP tool-call `locations` into a tool input as `_locations`.
+///
+/// Some agents (notably OpenCode) emit `rawInput.path` relative to their
+/// session cwd and only expose the absolute path via `locations`. Downstream
+/// consumers — the frontend plan widget, the persisted timeline projection,
+/// and conversation file-change extraction — read the path from
+/// `input._locations`, so without this merge a plan file written with
+/// `path: "plan.md"` cannot be read back (the server resolves it against its
+/// own cwd instead of the agent workspace).
+fn merge_locations_into_input(
+    input: &mut Option<serde_json::Value>,
+    locations: &[ToolCallLocation],
+) {
+    if locations.is_empty() {
+        return;
+    }
+    let Some(object) = input.as_mut().and_then(|value| value.as_object_mut()) else {
+        return;
+    };
+    if object.contains_key("_locations") {
+        return;
+    }
+    object.insert(
+        "_locations".to_string(),
+        serde_json::json!(locations
+            .iter()
+            .map(|location| serde_json::json!({
+                "path": location.path.to_string_lossy(),
+            }))
+            .collect::<Vec<_>>()),
+    );
 }
 
 impl ToolCallTracker {
@@ -3054,18 +3394,9 @@ impl ToolCallTracker {
                     }
                     raw_input = Some(serde_json::Value::Object(input));
                 }
-            } else if let Some(obj) = raw_input.as_mut().and_then(|v| v.as_object_mut()) {
-                if !obj.contains_key("_locations") && !locations.is_empty() {
-                    obj.insert(
-                        "_locations".to_string(),
-                        serde_json::json!(locations
-                            .iter()
-                            .map(|l| serde_json::json!({"path": l.path.to_string_lossy()}))
-                            .collect::<Vec<_>>()),
-                    );
-                }
             }
         }
+        merge_locations_into_input(&mut raw_input, &locations);
 
         let terminal_meta = crate::acp_custom_fields::extract_terminal_task_meta(tc.meta.as_ref());
         let command = command_from_raw_input(raw_input.as_ref());
@@ -3209,21 +3540,11 @@ impl ToolCallTracker {
                         }
                         existing.raw_input = Some(serde_json::Value::Object(input));
                     }
-                } else if let Some(obj) =
-                    existing.raw_input.as_mut().and_then(|v| v.as_object_mut())
-                {
-                    if !obj.contains_key("_locations") && !existing.locations.is_empty() {
-                        obj.insert(
-                            "_locations".to_string(),
-                            serde_json::json!(existing
-                                .locations
-                                .iter()
-                                .map(|l| serde_json::json!({"path": l.path.to_string_lossy()}))
-                                .collect::<Vec<_>>()),
-                        );
-                    }
                 }
             }
+            // Keep the input in sync with the authoritative ACP locations, even
+            // when the agent supplied raw input in this same patch update.
+            merge_locations_into_input(&mut existing.raw_input, &existing.locations);
             if update.fields.raw_output.is_some() {
                 existing.raw_output = update.fields.raw_output.clone();
             }
@@ -3245,6 +3566,11 @@ impl ToolCallTracker {
 
             let terminal_title = update.fields.title.clone();
             let terminal_command = command_from_raw_input(update.fields.raw_input.as_ref());
+            let opencode_shell = opencode_background_shell(
+                &existing.tool_call_id,
+                existing.raw_input.as_ref(),
+                existing.raw_output.as_ref(),
+            );
             if let Some(terminal) = existing.terminal.as_mut() {
                 // A background task's friendly name (from async_task_spawned)
                 // is better than the raw command title.
@@ -3266,6 +3592,18 @@ impl ToolCallTracker {
                 if let Some(status) = update.fields.status {
                     terminal.apply_tool_status(status);
                 }
+                // Refresh an OpenCode background shell from later metadata
+                // (status transitions) without clobbering a Claude terminal.
+                if let Some(shell) = opencode_shell.as_ref() {
+                    if terminal.async_task_id.as_deref() == shell.async_task_id.as_deref() {
+                        terminal.backgrounded = true;
+                        terminal.status = shell.status.clone();
+                        terminal.updated_at = shell.updated_at;
+                        if terminal.output.is_empty() {
+                            terminal.output = shell.output.clone();
+                        }
+                    }
+                }
             } else if let Some(terminal_id) = terminal_meta.terminal_id.clone() {
                 let command = command_from_raw_input(existing.raw_input.as_ref());
                 let mut terminal = AgentTerminalTask::new(
@@ -3281,13 +3619,27 @@ impl ToolCallTracker {
                     terminal.apply_tool_status(status);
                 }
                 existing.terminal = Some(terminal);
+            } else if let Some(shell) = opencode_shell {
+                existing.terminal = Some(shell);
             }
             apply_terminal_meta_to_raw_output(&mut existing.raw_output, terminal_meta);
 
             existing.last_updated = now;
         } else {
             // Unknown id — create a minimal record from the update.
-            let raw_input = update.fields.raw_input.clone();
+            let mut locations = update.fields.locations.clone().unwrap_or_default();
+            if locations.is_empty() {
+                if let Some(diff) = update.fields.content.as_ref().and_then(|content| {
+                    content.iter().find_map(|item| match item {
+                        ToolCallContent::Diff(diff) => Some(diff),
+                        _ => None,
+                    })
+                }) {
+                    locations.push(ToolCallLocation::new(diff.path.clone()));
+                }
+            }
+            let mut raw_input = update.fields.raw_input.clone();
+            merge_locations_into_input(&mut raw_input, &locations);
             let command = command_from_raw_input(raw_input.as_ref());
             let mut terminal = terminal_meta.terminal_id.clone().map(|terminal_id| {
                 let mut task = AgentTerminalTask::new(
@@ -3319,6 +3671,9 @@ impl ToolCallTracker {
                 }
             }
             apply_terminal_meta_to_raw_output(&mut raw_output, terminal_meta);
+            if terminal.is_none() {
+                terminal = opencode_background_shell(&id, raw_input.as_ref(), raw_output.as_ref());
+            }
 
             let tracked = TrackedToolCall {
                 tool_call_id: id.clone(),
@@ -3327,7 +3682,7 @@ impl ToolCallTracker {
                 status: update.fields.status.unwrap_or(ToolCallStatus::Pending),
                 first_seen: now,
                 last_updated: now,
-                locations: update.fields.locations.clone().unwrap_or_default(),
+                locations,
                 raw_input,
                 raw_output,
                 terminal,
@@ -3337,6 +3692,27 @@ impl ToolCallTracker {
             calls.insert(id.clone(), tracked);
             order.push_back(id);
         }
+    }
+
+    /// Append output read from an agent shell's output file.
+    fn append_terminal_output(&self, tool_call_id: &str, delta: &str) -> Option<AgentTerminalTask> {
+        let mut calls = self.calls.write();
+        let call = calls.get_mut(tool_call_id)?;
+        let terminal = call.terminal.as_mut()?;
+        terminal.output.push_str(delta);
+        truncate_terminal_output(&mut terminal.output);
+        terminal.updated_at = now_unix_ms();
+        Some(terminal.clone())
+    }
+
+    /// Mark a watched terminal as completed after its output file is closed.
+    fn mark_terminal_completed(&self, tool_call_id: &str) -> Option<AgentTerminalTask> {
+        let mut calls = self.calls.write();
+        let call = calls.get_mut(tool_call_id)?;
+        let terminal = call.terminal.as_mut()?;
+        terminal.status = "completed".to_string();
+        terminal.updated_at = now_unix_ms();
+        Some(terminal.clone())
     }
 
     /// Bind a shell async task to its display terminal and mark it running.
@@ -9044,6 +9420,7 @@ impl AcpBackendInterface for AcpBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::schema::v1::ToolCallUpdateFields;
 
     #[test]
     fn test_extract_error_text_from_output_shapes() {
@@ -9065,6 +9442,242 @@ mod tests {
             extract_error_text_from_output(&serde_json::json!({ "success": false })),
             None
         );
+    }
+
+    #[test]
+    fn test_apply_update_backfills_absolute_locations_into_relative_raw_input() {
+        // OpenCode-style sequence: the initial tool_call has no input/locations,
+        // then a patch update carries a relative `path` plus absolute locations.
+        let tracker = ToolCallTracker::new(8);
+        let meta = crate::acp_custom_fields::TerminalTaskMeta::default();
+
+        tracker.apply_update(
+            &ToolCallUpdate::new(
+                "call-plan",
+                ToolCallUpdateFields::new()
+                    .kind(ToolKind::Edit)
+                    .status(ToolCallStatus::Pending)
+                    .title("write")
+                    .raw_input(serde_json::json!({})),
+            ),
+            &meta,
+        );
+        tracker.apply_update(
+            &ToolCallUpdate::new(
+                "call-plan",
+                ToolCallUpdateFields::new()
+                    .status(ToolCallStatus::InProgress)
+                    .locations(vec![ToolCallLocation::new("/workspace/plan-test.md")])
+                    .raw_input(serde_json::json!({
+                        "path": "plan-test.md",
+                        "content": "# plan",
+                    })),
+            ),
+            &meta,
+        );
+
+        let tracked = tracker.get_by_id("call-plan").expect("tracked tool call");
+        let input = tracked.raw_input.expect("raw input");
+        assert_eq!(input["path"], "plan-test.md");
+        assert_eq!(input["_locations"][0]["path"], "/workspace/plan-test.md");
+    }
+
+    #[test]
+    fn test_apply_update_creates_terminal_for_opencode_background_shell() {
+        let tracker = ToolCallTracker::new(8);
+        let meta = crate::acp_custom_fields::TerminalTaskMeta::default();
+
+        tracker.apply_update(
+            &ToolCallUpdate::new(
+                "call-bg",
+                ToolCallUpdateFields::new()
+                    .kind(ToolKind::Execute)
+                    .status(ToolCallStatus::Completed)
+                    .title("shell")
+                    .raw_input(serde_json::json!({
+                        "background": true,
+                        "command": "sleep 10",
+                        "cwd": "/workspace",
+                    }))
+                    .raw_output(serde_json::json!({
+                        "metadata": { "status": "running", "shellID": "sh_bg_1" },
+                        "stdout": "Command moved to the background",
+                    })),
+            ),
+            &meta,
+        );
+
+        let tracked = tracker.get_by_id("call-bg").expect("tracked tool call");
+        let terminal = tracked.terminal.expect("background shell terminal");
+        assert_eq!(terminal.terminal_id, "call-bg");
+        assert_eq!(terminal.title, "sleep 10");
+        assert_eq!(terminal.command.as_deref(), Some("sleep 10"));
+        assert_eq!(terminal.async_task_id.as_deref(), Some("sh_bg_1"));
+        assert!(terminal.backgrounded);
+        // The tool call completed immediately, but the shell keeps running.
+        assert_eq!(terminal.status, "running");
+    }
+
+    #[test]
+    fn test_apply_update_completes_opencode_background_shell_from_metadata() {
+        let tracker = ToolCallTracker::new(8);
+        let meta = crate::acp_custom_fields::TerminalTaskMeta::default();
+
+        tracker.apply_update(
+            &ToolCallUpdate::new(
+                "call-bg",
+                ToolCallUpdateFields::new()
+                    .kind(ToolKind::Execute)
+                    .status(ToolCallStatus::Completed)
+                    .title("shell")
+                    .raw_input(serde_json::json!({
+                        "background": true,
+                        "command": "sleep 10",
+                    }))
+                    .raw_output(serde_json::json!({
+                        "metadata": { "status": "running", "shellID": "sh_bg_1" },
+                    })),
+            ),
+            &meta,
+        );
+
+        tracker.apply_update(
+            &ToolCallUpdate::new(
+                "call-bg",
+                ToolCallUpdateFields::new()
+                    .status(ToolCallStatus::Completed)
+                    .raw_output(serde_json::json!({
+                        "metadata": { "status": "completed", "shellID": "sh_bg_1" },
+                    })),
+            ),
+            &meta,
+        );
+
+        let tracked = tracker.get_by_id("call-bg").expect("tracked tool call");
+        let terminal = tracked.terminal.expect("background shell terminal");
+        assert_eq!(terminal.status, "completed");
+    }
+
+    #[test]
+    fn test_opencode_shell_output_file_parses_background_notice() {
+        let raw_output = serde_json::json!({
+            "stdout": "Command moved to the background (shell ID: sh_1).\nOutput is streaming to: /tmp/shell/sh_1.out\nYou will be notified automatically."
+        });
+        assert_eq!(
+            opencode_shell_output_file(Some(&raw_output)),
+            Some(PathBuf::from("/tmp/shell/sh_1.out"))
+        );
+        assert_eq!(
+            opencode_shell_output_file(Some(&serde_json::json!({ "stdout": "no path" }))),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_output_delta_tracks_file_offset() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("shell.out");
+        std::fs::write(&path, "first\n").expect("write");
+
+        let mut offset = 0u64;
+        assert_eq!(
+            read_output_delta(&path, &mut offset).await.as_deref(),
+            Some("first\n")
+        );
+        assert_eq!(offset, 6);
+        assert_eq!(read_output_delta(&path, &mut offset).await, None);
+
+        std::fs::write(&path, "first\nsecond\n").expect("append");
+        assert_eq!(
+            read_output_delta(&path, &mut offset).await.as_deref(),
+            Some("second\n")
+        );
+        assert_eq!(offset, 13);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn test_output_file_is_open_tracks_file_descriptor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("shell.out");
+        std::fs::write(&path, "output\n").expect("write");
+
+        assert_eq!(output_file_is_open(&path).await, Some(false));
+
+        let held = std::fs::File::open(&path).expect("open");
+        assert_eq!(output_file_is_open(&path).await, Some(true));
+
+        drop(held);
+        assert_eq!(output_file_is_open(&path).await, Some(false));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn test_shell_output_watcher_streams_and_completes() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output_path = dir.path().join("sh_watch.out");
+        let mut output_file = std::fs::File::create(&output_path).expect("create output");
+        writeln!(output_file, "line 1").expect("write output");
+        output_file.flush().expect("flush");
+
+        let tracker = Arc::new(ToolCallTracker::new(8));
+        let meta = crate::acp_custom_fields::TerminalTaskMeta::default();
+        tracker.apply_update(
+            &ToolCallUpdate::new(
+                "call-watch",
+                ToolCallUpdateFields::new()
+                    .kind(ToolKind::Execute)
+                    .status(ToolCallStatus::Completed)
+                    .title("shell")
+                    .raw_input(serde_json::json!({
+                        "background": true,
+                        "command": "sleep 1",
+                    }))
+                    .raw_output(serde_json::json!({
+                        "metadata": { "status": "running", "shellID": "sh_watch" },
+                        "stdout": format!(
+                            "Command moved to the background (shell ID: sh_watch).\nOutput is streaming to: {}\n",
+                            output_path.display()
+                        ),
+                    })),
+            ),
+            &meta,
+        );
+
+        spawn_opencode_shell_output_watcher(
+            "conv_watch",
+            "sh_watch",
+            "call-watch",
+            output_path.clone(),
+            tracker.clone(),
+            Duration::from_millis(20),
+        );
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        let running = tracker.get_by_id("call-watch").expect("tracked");
+        let running_terminal = running.terminal.expect("terminal");
+        assert_eq!(running_terminal.status, "running");
+        assert!(running_terminal.output.contains("line 1"));
+
+        writeln!(output_file, "line 2").expect("write output");
+        output_file.flush().expect("flush");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let streaming = tracker.get_by_id("call-watch").expect("tracked");
+        assert!(streaming
+            .terminal
+            .expect("terminal")
+            .output
+            .contains("line 2"));
+
+        drop(output_file);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let finished = tracker.get_by_id("call-watch").expect("tracked");
+        let finished_terminal = finished.terminal.expect("terminal");
+        assert_eq!(finished_terminal.status, "completed");
+        assert!(finished_terminal.output.contains("line 1"));
+        assert!(finished_terminal.output.contains("line 2"));
     }
 
     #[test]

@@ -24,19 +24,32 @@ import { cn } from "../../../lib/utils"
 import { useTranslation } from "react-i18next"
 import { trpc } from "../../../lib/trpc"
 
-type PermissionMode = "ask" | "auto" | "full_access"
+type PermissionMode = "ask" | "auto" | "auto_bash" | "full_access"
 
 const modeOptions: Array<{
   id: PermissionMode
-  label: string
+  labelKey: string
   description: string
   danger?: boolean
 }> = [
-  { id: "ask", label: "Ask", description: "permissions.askDescription" },
-  { id: "auto", label: "Auto", description: "permissions.autoDescription" },
+  {
+    id: "ask",
+    labelKey: "settings.preferences.permissionModeAsk",
+    description: "permissions.askDescription",
+  },
+  {
+    id: "auto",
+    labelKey: "settings.preferences.permissionModeAuto",
+    description: "permissions.autoDescription",
+  },
+  {
+    id: "auto_bash",
+    labelKey: "settings.preferences.permissionModeAutoBash",
+    description: "permissions.autoBashDescription",
+  },
   {
     id: "full_access",
-    label: "Full Access",
+    labelKey: "settings.preferences.permissionModeFullAccess",
     description: "permissions.fullAccessDescription",
     danger: true,
   },
@@ -95,8 +108,8 @@ export function PermissionModeSelector({
       <PopoverTrigger asChild>
         <button
           type="button"
-          title={selected.label}
-          aria-label={selected.label}
+          title={t(selected.labelKey)}
+          aria-label={t(selected.labelKey)}
           className={cn(
             "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70 transition-[background-color,color] duration-150 ease-out hover:bg-muted/50",
             isFullAccess
@@ -109,7 +122,7 @@ export function PermissionModeSelector({
           <Shield className="w-4 h-4 shrink-0" />
           {/* Icon-only once the input toolbar is narrow. */}
           <span className="hidden whitespace-nowrap @[560px]:inline">
-            {selected.label}
+            {t(selected.labelKey)}
           </span>
           <IconChevronDown className="w-3.5 h-3.5 shrink-0" />
         </button>
@@ -135,7 +148,7 @@ export function PermissionModeSelector({
                     optionDanger && "text-red-500",
                   )}
                 >
-                  {option.label}
+                  {t(option.labelKey)}
                 </div>
                 <div
                   className={cn(
@@ -161,7 +174,7 @@ export function PermissionModeSelector({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle className="text-red-500">
-            Enable Full Access?
+            {t("settings.preferences.enableFullAccessTitle")}
           </AlertDialogTitle>
           <AlertDialogDescription>
             {t("permissions.fullAccessWarning")}
@@ -170,7 +183,7 @@ export function PermissionModeSelector({
         <AlertDialogBody />
         <AlertDialogFooter>
           <Button variant="ghost" size="sm" onClick={() => setConfirmingFullAccess(false)}>
-            Cancel
+            {t("Cancel")}
           </Button>
           <Button
             size="sm"
@@ -181,7 +194,7 @@ export function PermissionModeSelector({
               setConfirmingFullAccess(false)
             }}
           >
-            Enable Full Access
+            {t("settings.preferences.enableFullAccessConfirm")}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>

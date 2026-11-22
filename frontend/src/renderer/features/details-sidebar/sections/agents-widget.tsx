@@ -2,7 +2,7 @@ import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useEffect, useState } from "react"
-import { useSetAtom } from "jotai"
+import { useAtomValue, useSetAtom } from "jotai"
 import { toast } from "sonner"
 import { trpc } from "../../../lib/trpc"
 import { WidgetCard } from "../components/widget-card"
@@ -13,8 +13,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "../../../components/ui/dropdown-menu"
-import { getCoreAgentIcon } from "../../agents"
-import { agentContractApi } from "../../agents/public"
+import { getCoreAgentIcon, registeredAgentsAtom } from "../../agents"
+import {
+  agentContractApi,
+  resolveAgentRuntimeId,
+  resolveRuntimeAgentIdFromCommand,
+} from "../../agents/public"
 import type { CoreAgentOption } from "../../agents/public"
 import {
   sideChatSidebarOpenAtom,
@@ -120,6 +124,7 @@ export const AgentsWidget = memo(function AgentsWidget({ chatId, activeConversat
   })
   const { data: profilesData } = trpc.ergatai.listProfiles.useQuery()
   const profiles = profilesData?.profiles ?? []
+  const registeredAgents = useAtomValue(registeredAgentsAtom)
   const deleteAgentMutation = trpc.ergatai.deleteChatAgent.useMutation()
   const [coreAgents, setCoreAgents] = useState<CoreAgentOption[]>([])
   const [chatAgentsLoaded, setChatAgentsLoaded] = useState(false)
@@ -272,7 +277,23 @@ export const AgentsWidget = memo(function AgentsWidget({ chatId, activeConversat
               </div>
             ) : (
               availableAgents.map((agent) => {
-                const Icon = getCoreAgentIcon(agent.id as any)
+                const profile = profiles.find(
+                  (entry) =>
+                    entry.name === agent.id ||
+                    entry.name === agent.profileName ||
+                    entry.command === agent.defaultCommand,
+                )
+                const runtimeId =
+                  resolveAgentRuntimeId(
+                    registeredAgents,
+                    agent.id,
+                    agent.profileName,
+                    agent.name,
+                  ) ??
+                  resolveRuntimeAgentIdFromCommand(agent.defaultCommand) ??
+                  resolveRuntimeAgentIdFromCommand(profile?.command) ??
+                  agent.id
+                const Icon = getCoreAgentIcon(agent.id, runtimeId)
                 const isCreating = isAgentCreating(agent)
                 return (
                   <DropdownMenuItem
@@ -299,8 +320,24 @@ export const AgentsWidget = memo(function AgentsWidget({ chatId, activeConversat
       <div className="px-1.5 pb-1.5 pt-2.5">
         {visibleParticipants.length > 0 &&
           visibleParticipants.map((participant) => {
+            const participantProfile = profiles.find(
+              (entry) => entry.name === participant.profile,
+            )
+            const runtimeId =
+              resolveAgentRuntimeId(
+                registeredAgents,
+                participant.profile,
+                participant.coreAgentId,
+                participant.agentId,
+              ) ??
+              resolveRuntimeAgentIdFromCommand(participantProfile?.command) ??
+              participant.coreAgentId ??
+              undefined
             const Icon = getCoreAgentIcon(
-              (participant.coreAgentId ?? participant.agentId) as CoreAgentId,
+              (participant.profile ??
+                participant.coreAgentId ??
+                participant.agentId) as CoreAgentId,
+              runtimeId,
             )
             const clickable = Boolean(participant.conversationId)
             const displayName = resolveDisplayName(participant, profiles)

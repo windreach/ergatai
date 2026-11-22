@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 /**
  * Utility functions for agent tool components
  *
@@ -214,14 +215,25 @@ type ToolFileInput = {
  *
  * Keep in sync with the backend's `resolve_tool_file_path`.
  */
-export function getToolFilePath(part: { input?: unknown } | null | undefined): string {
+export function getToolFilePath(part: {
+  input?: unknown
+  locations?: Array<{ path?: string }> | null
+} | null | undefined): string {
   const input = part?.input as ToolFileInput | undefined
-  if (!input) return ""
 
-  const locationPath = input._locations?.[0]?.path
-  if (typeof locationPath === "string" && locationPath.length > 0) {
-    return locationPath
+  const inputLocationPath = input?._locations?.[0]?.path
+  if (typeof inputLocationPath === "string" && inputLocationPath.length > 0) {
+    return inputLocationPath
   }
+
+  // Persisted ACP parts carry `locations` next to `input` rather than nested
+  // under `input._locations`.
+  const topLevelLocationPath = part?.locations?.[0]?.path
+  if (typeof topLevelLocationPath === "string" && topLevelLocationPath.length > 0) {
+    return topLevelLocationPath
+  }
+
+  if (!input) return ""
 
   for (const candidate of [input.file_path, input.filePath, input.path, input.file]) {
     if (typeof candidate === "string" && candidate.length > 0) {
@@ -230,6 +242,25 @@ export function getToolFilePath(part: { input?: unknown } | null | undefined): s
   }
 
   return ""
+}
+
+/**
+ * Resolve a possibly workspace-relative path against the chat's workspace root.
+ *
+ * Some agents report `path` relative to their session cwd. The backend file
+ * read API resolves relative paths against the server process cwd, which is
+ * wrong for desktop chats. Callers that know the workspace root should resolve
+ * before fetching.
+ */
+export function resolveWorkspaceRelativePath(
+  filePath: string,
+  workspacePath?: string | null,
+): string {
+  if (!filePath) return filePath
+  if (filePath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(filePath)) return filePath
+  if (!workspacePath) return filePath
+  const base = workspacePath.replace(/[\\/]+$/, "")
+  return `${base}/${filePath.replace(/^\.\//, "")}`
 }
 
 /**

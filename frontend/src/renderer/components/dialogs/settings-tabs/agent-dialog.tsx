@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { useState, useEffect } from "react"
 import { X } from "lucide-react"
@@ -199,10 +200,12 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
               {/* Header */}
               <div className="flex items-center justify-between px-6 py-4 border-b border-border">
                 <h2 className="text-lg font-semibold text-foreground">
-                  {isEditing ? "Edit Agent" : "Create Agent"}
+                  {isEditing
+                    ? i18n.t("settings.agents.editAgent")
+                    : i18n.t("settings.agents.createAgent")}
                 </h2>
                 <button
-                  aria-label="X"
+                  aria-label={i18n.t("Close")}
                   onClick={() => onOpenChange(false)}
                   className="flex items-center justify-center h-8 w-8 rounded-full hover:bg-foreground/5 transition-colors"
                 >
@@ -215,7 +218,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
                 {/* Name */}
                 <div className="space-y-1.5">
                   <label htmlFor="agent-name" className="text-sm font-medium text-foreground">
-                    Name <span className="text-red-500">*</span>
+                    {i18n.t("Name")} <span className="text-red-500">*</span>
                   </label>
                   <input
                     id="agent-name"
@@ -226,14 +229,14 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
                     className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Will be converted to kebab-case (e.g., "code-reviewer")
+                    {i18n.t("settings.agents.nameHint")}
                   </p>
                 </div>
 
                 {/* Description */}
                 <div className="space-y-1.5">
                   <label htmlFor="agent-description" className="text-sm font-medium text-foreground">
-                    Description <span className="text-red-500">*</span>
+                    {i18n.t("Description")} <span className="text-red-500">*</span>
                   </label>
                   <input
                     id="agent-description"
@@ -244,29 +247,25 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
                     className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Tells Claude when to use this agent
+                    {i18n.t("settings.agents.descriptionHint")}
                   </p>
                 </div>
 
                 {/* Prompt */}
                 <div className="space-y-1.5">
                   <label htmlFor="agent-prompt" className="text-sm font-medium text-foreground">
-                    System Prompt <span className="text-red-500">*</span>
+                    {i18n.t("settings.agents.systemPrompt")} <span className="text-red-500">*</span>
                   </label>
                   <textarea
                     id="agent-prompt"
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
-                    placeholder="You are an expert code reviewer. When invoked:
-
-1. Analyze the code structure
-2. Check for security issues
-3. Suggest improvements"
+                    placeholder={i18n.t("settings.agents.systemPromptPlaceholder")}
                     rows={8}
                     className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none font-mono"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Instructions for the agent when it's invoked
+                    {i18n.t("settings.agents.promptHint")}
                   </p>
                 </div>
 
@@ -286,7 +285,9 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
                             : "border-border bg-background text-muted-foreground hover:border-foreground/20"
                         )}
                       >
-                        {m === "inherit" ? "Inherit (default)" : m.charAt(0).toUpperCase() + m.slice(1)}
+                        {m === "inherit"
+                          ? i18n.t("settings.agents.inheritDefault")
+                          : m.charAt(0).toUpperCase() + m.slice(1)}
                       </button>
                     ))}
                   </div>
@@ -311,9 +312,9 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
                             : "border-border bg-background text-muted-foreground hover:border-foreground/20"
                         )}
                       >
-                        {mode === "all" && "All Tools"}
-                        {mode === "allowlist" && "Only Selected"}
-                        {mode === "denylist" && "Except Selected"}
+                        {mode === "all" && i18n.t("settings.agents.allTools")}
+                        {mode === "allowlist" && i18n.t("settings.agents.onlySelected")}
+                        {mode === "denylist" && i18n.t("settings.agents.exceptSelected")}
                       </button>
                     ))}
                   </div>
@@ -342,7 +343,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
                             : "border-border bg-background text-muted-foreground hover:border-foreground/20"
                         )}
                       >
-                        User (~/.claude/agents/)
+                        {i18n.t("settings.agents.userSource")}
                       </button>
                       <button
                         type="button"
@@ -354,11 +355,11 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
                             : "border-border bg-background text-muted-foreground hover:border-foreground/20"
                         )}
                       >
-                        Project (.claude/agents/)
+                        {i18n.t("settings.agents.projectSource")}
                       </button>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      User agents are available globally, project agents only in the current project
+                      {i18n.t("settings.agents.sourceHint")}
                     </p>
                   </div>
                 )}
@@ -371,7 +372,7 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
                   onClick={() => onOpenChange(false)}
                   className="px-4 py-2 text-sm font-medium rounded-md border border-border bg-background text-foreground hover:bg-foreground/5 transition-colors"
                 >
-                  Cancel
+                  {i18n.t("Cancel")}
                 </button>
                 <button
                   onClick={handleSubmit}
@@ -383,7 +384,11 @@ export function AgentDialog({ open, onOpenChange, agent, onSuccess }: AgentDialo
                       : "bg-foreground/50 text-background/70 cursor-not-allowed"
                   )}
                 >
-                  {isLoading ? "Saving..." : isEditing ? "Save Changes" : "Create Agent"}
+                  {isLoading
+                    ? i18n.t("settings.agents.saving")
+                    : isEditing
+                      ? i18n.t("settings.agents.saveChanges")
+                      : i18n.t("settings.agents.createAgent")}
                 </button>
               </div>
             </motion.div>

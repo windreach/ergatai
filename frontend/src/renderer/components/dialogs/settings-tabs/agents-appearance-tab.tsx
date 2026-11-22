@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { useTheme } from "next-themes"
 import { useState, useEffect, useCallback, useMemo } from "react"
@@ -384,7 +385,7 @@ export function AgentsAppearanceTab() {
         <div className="flex flex-col gap-1.5 text-center sm:text-left">
           <h3 className="text-sm font-semibold text-foreground">{i18n.t('Appearance')}</h3>
           <p className="text-xs text-muted-foreground">
-            Customize the look and feel of the interface
+            {i18n.t("settings.appearance.subtitle")}
           </p>
         </div>
       )}
@@ -395,10 +396,10 @@ export function AgentsAppearanceTab() {
         <div className="flex items-center justify-between p-4">
           <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
-              Interface theme
+              {i18n.t("settings.appearance.interfaceTheme")}
             </span>
             <span className="text-xs text-muted-foreground">
-              Select or customize your interface color scheme
+              {i18n.t("settings.appearance.interfaceThemeDescription")}
             </span>
           </div>
 
@@ -423,7 +424,7 @@ export function AgentsAppearanceTab() {
                   <>
                     <ThemePreviewBox theme={currentTheme} />
                     <span className="text-xs truncate">
-                      {currentTheme?.name || "Select"}
+                      {currentTheme?.name || i18n.t("settings.appearance.select")}
                     </span>
                   </>
                 )}
@@ -471,7 +472,7 @@ export function AgentsAppearanceTab() {
                   <SelectSeparator />
                   <SelectGroup>
                     <SelectLabel className="text-xs text-muted-foreground px-2">
-                      From editors
+                      {i18n.t("settings.appearance.fromEditors")}
                     </SelectLabel>
                     {importedThemes.map((theme) => (
                       <SelectItem key={theme.id} value={theme.id}>
@@ -519,10 +520,10 @@ export function AgentsAppearanceTab() {
               <div className="flex items-center justify-between p-4 border-t border-border">
                 <div className="flex flex-col gap-1">
                   <span className="text-sm font-medium text-foreground">
-                    Light
+                    {i18n.t("settings.appearance.light")}
                   </span>
                   <span className="text-xs text-muted-foreground">
-                    Theme to use for light system appearance
+                    {i18n.t("settings.appearance.lightDescription")}
                   </span>
                 </div>
 
@@ -534,7 +535,7 @@ export function AgentsAppearanceTab() {
                     <div className="flex items-center gap-2 min-w-0 -ml-[3px]">
                       <ThemePreviewBox theme={systemLightTheme || null} />
                       <span className="text-xs truncate">
-                        {systemLightTheme?.name || "Select"}
+                        {systemLightTheme?.name || i18n.t("settings.appearance.select")}
                       </span>
                     </div>
                   </SelectTrigger>
@@ -555,10 +556,10 @@ export function AgentsAppearanceTab() {
               <div className="flex items-center justify-between p-4 border-t border-border">
                 <div className="flex flex-col gap-1">
                   <span className="text-sm font-medium text-foreground">
-                    Dark
+                    {i18n.t("settings.appearance.dark")}
                   </span>
                   <span className="text-xs text-muted-foreground">
-                    Theme to use for dark system appearance
+                    {i18n.t("settings.appearance.darkDescription")}
                   </span>
                 </div>
 
@@ -570,7 +571,7 @@ export function AgentsAppearanceTab() {
                     <div className="flex items-center gap-2 min-w-0 -ml-[3px]">
                       <ThemePreviewBox theme={systemDarkTheme || null} />
                       <span className="text-xs truncate">
-                        {systemDarkTheme?.name || "Select"}
+                        {systemDarkTheme?.name || i18n.t("settings.appearance.select")}
                       </span>
                     </div>
                   </SelectTrigger>

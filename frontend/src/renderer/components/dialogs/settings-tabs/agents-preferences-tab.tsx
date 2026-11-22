@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { resolveLanguage } from "@/lib/language"
 import { useAtom } from "jotai"
@@ -71,17 +72,22 @@ interface EditorOption {
   label: string
 }
 
-// Default mode uses the existing permission system (ask / auto / full_access).
-type PermissionMode = "ask" | "auto" | "full_access"
+// Default mode uses the existing permission system (ask / auto / auto_bash / full_access).
+type PermissionMode = "ask" | "auto" | "auto_bash" | "full_access"
 
 const PERMISSION_MODE_OPTIONS: Array<{
   id: PermissionMode
-  label: string
+  labelKey: string
   danger?: boolean
 }> = [
-  { id: "ask", label: "Ask" },
-  { id: "auto", label: "Auto" },
-  { id: "full_access", label: "Full Access", danger: true },
+  { id: "ask", labelKey: "settings.preferences.permissionModeAsk" },
+  { id: "auto", labelKey: "settings.preferences.permissionModeAuto" },
+  { id: "auto_bash", labelKey: "settings.preferences.permissionModeAutoBash" },
+  {
+    id: "full_access",
+    labelKey: "settings.preferences.permissionModeFullAccess",
+    danger: true,
+  },
 ]
 
 // Order matches Superset: editors, terminals, VS Code, JetBrains
@@ -202,15 +208,18 @@ export function AgentsPreferencesTab() {
     | undefined
   const permissionMode: PermissionMode =
     permissionModeResponse?.mode === "auto" ||
+    permissionModeResponse?.mode === "auto_bash" ||
     permissionModeResponse?.mode === "full_access"
       ? permissionModeResponse.mode
       : "auto"
   const permissionModeLabel =
-    PERMISSION_MODE_OPTIONS.find((option) => option.id === permissionMode)?.label ??
-    "Ask"
+    t(
+      PERMISSION_MODE_OPTIONS.find((option) => option.id === permissionMode)
+        ?.labelKey ?? "settings.preferences.permissionModeAsk",
+    )
 
   const handlePermissionModeChange = (value: string) => {
-    if (value !== "ask" && value !== "auto" && value !== "full_access") return
+    if (value !== "ask" && value !== "auto" && value !== "auto_bash" && value !== "full_access") return
     // Enabling Full Access requires explicit confirmation, mirroring the
     // in-chat permission selector.
     if (value === "full_access" && permissionMode !== "full_access") {
@@ -251,8 +260,7 @@ export function AgentsPreferencesTab() {
               {t("settings.preferences.extendedThinking")}
             </span>
             <span className="text-xs text-muted-foreground">
-              Enable deeper reasoning with more thinking tokens (uses more
-              credits).{" "}
+              {t("settings.preferences.extendedThinkingDescription")}{" "}
               <span className="text-foreground/70">{t('Disables response streaming.')}</span>
             </span>
           </div>
@@ -264,11 +272,10 @@ export function AgentsPreferencesTab() {
         <div className="flex items-center justify-between p-4 border-t border-border">
           <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
-              Default Mode
+              {t("settings.preferences.defaultMode")}
             </span>
             <span className="text-xs text-muted-foreground">
-              Permission mode for agents (Ask = confirm risky operations, Auto =
-              auto-approve, Full Access = bypass all prompts)
+              {t("settings.preferences.defaultModeDescription")}
             </span>
           </div>
           <Select
@@ -294,7 +301,7 @@ export function AgentsPreferencesTab() {
                   value={option.id}
                   className={option.danger ? "text-red-500" : undefined}
                 >
-                  {option.label}
+                  {t(option.labelKey)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -307,7 +314,7 @@ export function AgentsPreferencesTab() {
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle className="text-red-500">
-                Enable Full Access?
+                {t("settings.preferences.enableFullAccessTitle")}
               </AlertDialogTitle>
               <AlertDialogDescription>
                 {t("permissions.fullAccessWarning")}
@@ -320,7 +327,7 @@ export function AgentsPreferencesTab() {
                 size="sm"
                 onClick={() => setConfirmingFullAccess(false)}
               >
-                Cancel
+                {t("Cancel")}
               </Button>
               <Button
                 size="sm"
@@ -330,7 +337,7 @@ export function AgentsPreferencesTab() {
                   setConfirmingFullAccess(false)
                 }}
               >
-                Enable Full Access
+                {t("settings.preferences.enableFullAccessConfirm")}
               </Button>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -342,10 +349,10 @@ export function AgentsPreferencesTab() {
         <div className="flex items-center justify-between p-4">
           <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
-              Desktop Notifications
+              {t("settings.preferences.desktopNotifications")}
             </span>
             <span className="text-xs text-muted-foreground">
-              Show system notifications when agent needs input or completes work
+              {t("settings.preferences.desktopNotificationsDescription")}
             </span>
           </div>
           <Switch checked={desktopNotificationsEnabled} onCheckedChange={setDesktopNotificationsEnabled} />
@@ -353,10 +360,10 @@ export function AgentsPreferencesTab() {
         <div className="flex items-center justify-between p-4 border-t border-border">
           <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
-              Sound Notifications
+              {t("settings.preferences.soundNotifications")}
             </span>
             <span className="text-xs text-muted-foreground">
-              Play a sound when agent completes work while you're away
+              {t("settings.preferences.soundNotificationsDescription")}
             </span>
           </div>
           <Switch checked={soundEnabled} onCheckedChange={setSoundEnabled} />
@@ -364,10 +371,10 @@ export function AgentsPreferencesTab() {
         <div className="flex items-center justify-between p-4 border-t border-border">
           <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
-              Notify When Focused
+              {t("settings.preferences.notifyWhenFocused")}
             </span>
             <span className="text-xs text-muted-foreground">
-              Show notifications even when the app window is active
+              {t("settings.preferences.notifyWhenFocusedDescription")}
             </span>
           </div>
           <Switch
@@ -383,10 +390,12 @@ export function AgentsPreferencesTab() {
         <div className="flex items-center justify-between p-4">
           <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
-              Quick Switch
+              {t("settings.preferences.quickSwitch")}
             </span>
             <span className="text-xs text-muted-foreground">
-              What <Kbd>⌃Tab</Kbd> switches between
+              {t("settings.preferences.quickSwitchDescriptionBefore")}{" "}
+              <Kbd>⌃Tab</Kbd>{" "}
+              {t("settings.preferences.quickSwitchDescriptionAfter")}
             </span>
           </div>
           <Select
@@ -395,7 +404,9 @@ export function AgentsPreferencesTab() {
           >
             <SelectTrigger className="w-auto px-2">
               <span className="text-xs">
-                {ctrlTabTarget === "workspaces" ? "Workspaces" : "Agents"}
+                {ctrlTabTarget === "workspaces"
+                  ? t("Workspaces")
+                  : t("Agents")}
               </span>
             </SelectTrigger>
             <SelectContent>
@@ -407,10 +418,10 @@ export function AgentsPreferencesTab() {
         <div className="flex items-center justify-between p-4 border-t border-border">
           <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
-              Auto-advance
+              {t("settings.preferences.autoAdvance")}
             </span>
             <span className="text-xs text-muted-foreground">
-              Where to go after archiving a workspace
+              {t("settings.preferences.autoAdvanceDescription")}
             </span>
           </div>
           <Select
@@ -420,10 +431,10 @@ export function AgentsPreferencesTab() {
             <SelectTrigger className="w-auto px-2">
               <span className="text-xs">
                 {autoAdvanceTarget === "next"
-                  ? "Go to next workspace"
+                  ? t("Go to next workspace")
                   : autoAdvanceTarget === "previous"
-                    ? "Go to previous workspace"
-                    : "Close workspace"}
+                    ? t("Go to previous workspace")
+                    : t("Close workspace")}
               </span>
             </SelectTrigger>
             <SelectContent>
@@ -436,10 +447,10 @@ export function AgentsPreferencesTab() {
         <div className="flex items-center justify-between p-4 border-t border-border">
           <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
-              Preferred Editor
+              {t("settings.preferences.preferredEditor")}
             </span>
             <span className="text-xs text-muted-foreground">
-              Default app for opening workspaces
+              {t("settings.preferences.preferredEditorDescription")}
             </span>
           </div>
           <DropdownMenu>
@@ -544,10 +555,10 @@ export function AgentsPreferencesTab() {
         <div className="flex items-center justify-between p-4">
           <div className="flex flex-col gap-1">
             <span className="text-sm font-medium text-foreground">
-              Language
+              {t("settings.language")}
             </span>
             <span className="text-xs text-muted-foreground">
-              Choose the display language
+              {t("settings.preferences.languageDescription")}
             </span>
           </div>
           <Select
@@ -557,16 +568,16 @@ export function AgentsPreferencesTab() {
             <SelectTrigger className="w-auto px-2">
               <span className="text-xs">
                 {languagePreference === "system"
-                  ? "System"
+                  ? t("settings.system")
                   : languagePreference === "en"
-                    ? "English"
-                    : "中文"}
+                    ? t("settings.english")
+                    : t("settings.chinese")}
               </span>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="system">{t('System')}</SelectItem>
-              <SelectItem value="en">{t('English')}</SelectItem>
-              <SelectItem value="zh-CN">中文</SelectItem>
+              <SelectItem value="system">{t("settings.system")}</SelectItem>
+              <SelectItem value="en">{t("settings.english")}</SelectItem>
+              <SelectItem value="zh-CN">{t("settings.chinese")}</SelectItem>
             </SelectContent>
           </Select>
         </div>

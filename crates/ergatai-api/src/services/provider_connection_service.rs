@@ -178,6 +178,42 @@ pub fn set_default(id: &str) -> Result<ProviderConnection> {
     .map_err(|error| anyhow!("Failed to set default provider connection: {}", error))
 }
 
+/// Copy a provider connection (including its API key) to another agent.
+///
+/// Used when a custom agent is created from an existing runtime: the user can
+/// pick one of the runtime's connections as the new agent's initial provider
+/// without mutating the runtime's own configuration.
+pub fn copy_to_agent(
+    source_id: &str,
+    target_agent_id: &str,
+    name: Option<&str>,
+) -> Result<ProviderConnection> {
+    if target_agent_id.trim().is_empty() {
+        return Err(anyhow!("Target agent id cannot be empty"));
+    }
+    let source = get(source_id)?;
+    let api_key = get_secret(&source)?;
+    let target_name = name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&source.name)
+        .to_string();
+
+    let saved = upsert(
+        ProviderConnectionUpsert {
+            id: None,
+            name: target_name,
+            agent_id: target_agent_id.trim().to_string(),
+            protocol: source.protocol,
+            base_url: source.base_url,
+            default_model: source.default_model,
+            is_default: true,
+        },
+        api_key.as_deref(),
+    )?;
+    Ok(with_secret_hint(saved))
+}
+
 /// Build the provider-specific environment for a newly spawned agent. Values
 // are used only in-memory and never persisted into workspace state.
 pub fn env_for_connection(connection: &ProviderConnection) -> Result<HashMap<String, String>> {

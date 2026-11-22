@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 /**
  * Cursor IDE Themes with full color definitions and syntax highlighting
  *

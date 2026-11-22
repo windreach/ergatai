@@ -38,6 +38,10 @@ pub struct AppContext {
     /// Previously accessed via `get_agent_runtime()`.
     pub agent_runtime: Arc<AgentRuntime>,
 
+    /// Unified agent launch service. Holds the per-conversation launch locks;
+    /// it must be shared across requests, not constructed per call.
+    pub agent_launch: Arc<crate::services::agent_launch::AgentLaunchService>,
+
     /// NATS connection for messaging and event bus.
     /// Previously accessed via `get_nats_connection()`.
     /// Note: `None` when NATS is not initialized (e.g., startup failure or test context).
@@ -64,8 +68,12 @@ impl AppContext {
         nats_connection: Option<NatsConnection>,
         user_data_db: Arc<Mutex<Connection>>,
     ) -> Self {
+        let agent_launch = Arc::new(crate::services::agent_launch::AgentLaunchService::new(
+            agent_runtime.clone(),
+        ));
         Self {
             agent_runtime,
+            agent_launch,
             nats_connection,
             user_data_db,
             collab_runtime: None,
@@ -89,10 +97,15 @@ impl AppContext {
         let db = Arc::new(Mutex::new(
             Connection::open_in_memory().expect("Failed to create test database"),
         ));
+        let agent_runtime = Arc::new(AgentRuntime::new(std::sync::Arc::new(
+            ergatai_runtime::backends::acp::AcpBackend::new(),
+        )));
+        let agent_launch = Arc::new(crate::services::agent_launch::AgentLaunchService::new(
+            agent_runtime.clone(),
+        ));
         Self {
-            agent_runtime: Arc::new(AgentRuntime::new(std::sync::Arc::new(
-                ergatai_runtime::backends::acp::AcpBackend::new(),
-            ))),
+            agent_runtime,
+            agent_launch,
             nats_connection: None,
             user_data_db: db,
             collab_runtime: None,

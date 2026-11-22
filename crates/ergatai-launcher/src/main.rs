@@ -71,17 +71,14 @@ fn main() {
     }
 
     println!("Starting Ergatai backend...");
-    let mut server_child: Option<Child> = match Command::new(&server)
-        .arg("--port")
-        .arg("3000")
-        .spawn()
-    {
-        Ok(c) => Some(c),
-        Err(e) => {
-            eprintln!("Failed to start backend: {e}");
-            std::process::exit(1);
-        }
-    };
+    let mut server_child: Option<Child> =
+        match Command::new(&server).arg("--port").arg("3000").spawn() {
+            Ok(c) => Some(c),
+            Err(e) => {
+                eprintln!("Failed to start backend: {e}");
+                std::process::exit(1);
+            }
+        };
 
     if !wait_for_server() {
         eprintln!("Backend did not become healthy in time.");

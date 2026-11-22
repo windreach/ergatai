@@ -11,6 +11,7 @@ import i18n from "@/lib/i18n"
 
 import { atom } from "jotai"
 import { trpcClient } from "../../../lib/trpc"
+import { ensureAgentForConversation } from "./agent-session-api"
 import { clearSubagentState } from "./subagent-message-store"
 import { createLogger } from "../../../../main/lib/logger"
 
@@ -83,7 +84,6 @@ export const ergataiActiveAgentIdAtom = atom<string | null>(null)
 export const ergataiAgentsLoadingAtom = atom<boolean>(false)
 
 /** In-flight agent creation promises, keyed by conversation/chat lock. */
-const pendingAgentCreations = new Map<string, Promise<string>>()
 
 // ── API functions ──
 
@@ -91,26 +91,6 @@ const pendingAgentCreations = new Map<string, Promise<string>>()
  * Spawn a new agent via the Rust backend.
  * Returns the agent_id of the spawned agent.
  */
-export async function spawnAgent(
-  request: SpawnAgentRequest
-): Promise<string> {
-  log.info(i18n.t('Spawning agent'), undefined, { request })
-  try {
-    const result = await trpcClient.ergatai.spawnAgent.mutate(request)
-    log.info(i18n.t('Spawn result'), undefined, { result })
-    // Handle both snake_case and camelCase response formats
-    const resultObj = result as Record<string, unknown>
-    const agentId = (resultObj.agent_id ?? resultObj.agentId) as string | undefined
-    if (!agentId) {
-      log.error("Backend did not return agent_id", undefined, { result })
-      throw new Error(i18n.t('Ergatai backend did not return an agent ID'))
-    }
-    return agentId
-  } catch (error) {
-    log.error("spawnAgent failed", error as Error)
-    throw error
-  }
-}
 
 /**
  * List all agents from the Rust backend.
@@ -202,16 +182,27 @@ async function spawnNewAgent(
   // Validate conversation exists before spawning
   await validateConversationExists(conversationId)
 
-  const spawnParams = {
+  // Use the canonical ensure path. The backend resolves the conversation's
+  // durable model selection, resumes a suspended agent when possible, and
+  // applies the model before returning. Callers must not send `model` here:
+  // doing so would re-create the old "some spawn paths carry a model, others
+  // do not" inconsistency.
+  const ensureParams = {
     conversationId,
-    command,
+    profile: command,
+    mode: "ensure" as const,
   }
-  log.debug(i18n.t('Spawning agent with params'), undefined, { spawnParams })
-  const agentId = await spawnAgent(spawnParams)
-  log.info(i18n.t('Spawned new agent'), undefined, { agentId })
-
-  // Note: Agent binding has been removed from the backend
-  log.debug(i18n.t('Agent binding disabled - backend endpoint removed'))
+  log.debug(i18n.t('Ensuring agent with params'), undefined, { ensureParams })
+  const result = await ensureAgentForConversation(ensureParams)
+  const agentId = result?.agent_id
+  if (!agentId) {
+    throw new Error(i18n.t('Ergatai backend did not return an agent ID'))
+  }
+  log.info(i18n.t('Ensured agent'), undefined, {
+    agentId,
+    action: result.action,
+    model: result.model?.selection?.id,
+  })
 
   return agentId
 }
@@ -234,9 +225,6 @@ export async function getOrCreateActiveAgent(
   command: string = "claude",
   conversationId?: string
 ): Promise<string> {
-  // Use conversationId as the lock key to prevent duplicate agents per conversation
-  const lockKey = conversationId || chatId
-
   // FIX #1: Create the creation promise IMMEDIATELY to lock this key BEFORE unknown async work.
   // Without this, two concurrent callers could both pass the pendingFetches.get check below,
   // both call checkExistingAgentBinding, both find no live agent, and both spawn new agents.
@@ -273,14 +261,6 @@ export async function getOrCreateActiveAgent(
       throw new Error(i18n.t("Failed to spawn agent: {{message}}", { message: errorMessage }))
     }
   })()
-
-  // Store the pending promise so concurrent callers can wait for it
-  pendingAgentCreations.set(lockKey, creationPromise)
-
-  // Clean up the pending promise when it settles (success or failure)
-  creationPromise.finally(() => {
-    pendingAgentCreations.delete(lockKey)
-  })
 
   return creationPromise
 }

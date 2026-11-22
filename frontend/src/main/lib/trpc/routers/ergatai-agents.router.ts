@@ -152,6 +152,53 @@ export const agentsRouter = router({
       }
     }),
 
+  /**
+   * Canonical launch entry point: reuse, resume, or spawn an agent for a
+   * conversation. The backend resolves the conversation's durable model
+   * selection, so callers do not need to pass a model on every send.
+   */
+  ensureAgent: publicProcedure
+    .input(
+      z.object({
+        conversationId: conversationKeySchema,
+        profile: z.string().optional(),
+        mode: z.enum(["ensure", "spawn_new", "resume_only"]).optional(),
+        model: z.string().optional(),
+        modelMode: z.enum(["seed", "override"]).optional(),
+        thinking: z.string().optional(),
+        providerConnectionId: z.string().optional(),
+        allowNativeDefault: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      console.log("[tRPC ensureAgent] Input:", JSON.stringify(input))
+      const response = await ergataiFetch<{
+        agent_id?: string
+        action?: string
+        conversation_id?: string
+        model?: { selection?: { id?: string } } | null
+        model_source?: string
+        provider_connection_id?: string | null
+      }>("/api/v1/agent-launch/ensure", {
+        method: "POST",
+        body: JSON.stringify({
+          conversation_id: input.conversationId,
+          profile: input.profile,
+          mode: input.mode,
+          model: input.model,
+          model_mode: input.modelMode,
+          thinking: input.thinking,
+          provider_connection_id: input.providerConnectionId,
+          allow_native_default: input.allowNativeDefault,
+        }),
+      })
+      console.log("[tRPC ensureAgent] Backend response:", JSON.stringify(response))
+      if (!response?.agent_id) {
+        throw new Error("Ergatai backend did not return an agent ID from ensureAgent")
+      }
+      return response
+    }),
+
   /** Kill an agent */
   killAgent: publicProcedure
     .input(z.object({ agentId: agentIdSchema }))
@@ -458,14 +505,14 @@ export const agentsRouter = router({
     })
   }),
 
-  /** Get the current permission mode (ask | auto | full_access) */
+  /** Get the current permission mode (ask | auto | auto_bash | full_access) */
   getPermissionMode: publicProcedure.query(async () => {
     return ergataiFetch("/api/v1/permissions/mode")
   }),
 
   /** Switch the permission mode */
   setPermissionMode: publicProcedure
-    .input(z.object({ mode: z.enum(["ask", "auto", "full_access"]) }))
+    .input(z.object({ mode: z.enum(["ask", "auto", "auto_bash", "full_access"]) }))
     .mutation(async ({ input }) => {
       return ergataiFetch("/api/v1/permissions/mode", {
         method: "POST",

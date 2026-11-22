@@ -2,11 +2,20 @@ import i18n from "@/lib/i18n"
 "use client"
 
 import { memo } from "react"
+import { useAtomValue } from "jotai"
 import { AtSign, CheckCircle2, Loader2, XCircle } from "lucide-react"
 
 import { cn } from "../../../lib/utils"
 import { getCoreAgentIcon } from "../components/core-agent-selector"
-import type { CoreAgentId } from "../lib/agent-contract-api"
+import {
+  resolveAgentRuntimeId,
+  type CoreAgentId,
+} from "../lib/agent-contract-api"
+import { registeredAgentsAtom } from "../atoms"
+
+import {
+  getSendMessageArgs,
+} from "../lib/ergatai-mcp-detection"
 
 const AGENT_DISPLAY_NAMES: Record<string, string> = {
   "claude-code": "Claude Code",
@@ -37,16 +46,29 @@ export const GroupAgentMentionTool = memo(function GroupAgentMentionTool({
   senderAgentId,
   senderAgentName,
 }: GroupAgentMentionToolProps) {
-  const targetAgentId = part.input?.target_agent_id as CoreAgentId | undefined
-  const message = part.input?.message ?? ""
-  const messageType = part.input?.message_type ?? "request"
+  const registeredAgents = useAtomValue(registeredAgentsAtom)
+  const sendArgs = getSendMessageArgs(part)
+  const targetAgentId = (sendArgs?.target_agent_id ??
+    sendArgs?.target_conversation_id) as CoreAgentId | undefined
+  const message = sendArgs?.message ?? ""
+  const messageType = sendArgs?.message_type ?? "request"
   const isPending = !part.output && !part.errorText
   const isError = !!part.errorText
 
+  const senderRuntimeId =
+    resolveAgentRuntimeId(
+      registeredAgents,
+      senderAgentId,
+      senderAgentName,
+    ) ?? undefined
+  const targetRuntimeId =
+    resolveAgentRuntimeId(registeredAgents, targetAgentId) ?? undefined
   const SenderIcon = senderAgentId
-    ? getCoreAgentIcon(senderAgentId as CoreAgentId)
+    ? getCoreAgentIcon(senderAgentId as CoreAgentId, senderRuntimeId)
     : null
-  const TargetIcon = targetAgentId ? getCoreAgentIcon(targetAgentId) : AtSign
+  const TargetIcon = targetAgentId
+    ? getCoreAgentIcon(targetAgentId, targetRuntimeId)
+    : AtSign
 
   const targetName = targetAgentId
     ? (AGENT_DISPLAY_NAMES[targetAgentId] ?? targetAgentId)

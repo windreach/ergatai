@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 "use client"
 
@@ -73,12 +74,12 @@ export function AgentsHelpPopover({
   }
 
   const handleChangelogClick = () => {
-    window.desktopApi?.openExternal("https://github.com/windreach/ergatai-ui/releases")
+    window.desktopApi?.openExternal("https://github.com/windreach/ergatai/releases")
   }
 
   const handleReleaseClick = (version: string) => {
     window.desktopApi?.openExternal(
-      `https://github.com/windreach/ergatai-ui/releases#${version}`,
+      `https://github.com/windreach/ergatai/releases#${version}`,
     )
   }
 

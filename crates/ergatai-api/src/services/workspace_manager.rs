@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use utoipa::ToSchema;
 
 use crate::user_data_db::{
-    chats, projects, workspaces, Chat as DbChat, Project as DbProject, Workspace,
+    chats, projects, workspace_projects, workspaces, Chat as DbChat, Project as DbProject,
+    Workspace,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -227,6 +228,25 @@ async fn count_dirty_worktrees(paths: &[&str]) -> usize {
         .count()
 }
 
+/// Attach a workspace's default project to the workspace↔project relationship.
+/// Creating a workspace with `default_project_id` must also make the project
+/// visible through `list_projects`, not just store the pointer.
+async fn link_default_project(
+    workspace_id: WorkspaceId,
+    project_id: Option<ProjectId>,
+) -> Result<(), WorkspaceManagerError> {
+    let Some(project_id) = project_id else {
+        return Ok(());
+    };
+    let ws_id = workspace_id.as_i64();
+    let pid = project_id.as_i64();
+    tokio::task::spawn_blocking(move || workspace_projects::link(ws_id, pid))
+        .await
+        .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
+        .map_err(WorkspaceManagerError::from)?;
+    Ok(())
+}
+
 pub async fn to_managed(workspace: Workspace) -> Result<ManagedWorkspace, WorkspaceManagerError> {
     validate_resource_json(&workspace.resources)?;
 
@@ -382,6 +402,7 @@ pub async fn create(
             .await
             .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
             .map_err(WorkspaceManagerError::from)?;
+        link_default_project(workspace_id, default_project_id).await?;
         return to_managed(workspace).await;
     }
 
@@ -398,6 +419,7 @@ pub async fn create(
 
     if let Some(existing) = existing_identical {
         // Workspace already exists with same name, path, and status - return it
+        link_default_project(existing.workspace_id, default_project_id).await?;
         return to_managed(existing.clone()).await;
     }
 
@@ -422,6 +444,7 @@ pub async fn create(
         .await
         .map_err(|e| WorkspaceManagerError::Internal(e.into()))?
         .map_err(WorkspaceManagerError::from)?;
+    link_default_project(workspace_id, default_project_id).await?;
     // Return the workspace we just created
     to_managed(workspace).await
 }
@@ -479,9 +502,13 @@ pub async fn update(
                     ))
                 })?;
 
-                // Validate that the project exists and belongs to this workspace
+                // Validate that the project exists and is linked to this workspace
+                let ws_raw = id.as_i64();
                 let project_exists = tokio::task::spawn_blocking(move || {
-                    crate::user_data_db::projects::exists(project_id.as_i64())
+                    crate::user_data_db::projects::exists_and_belongs_to(
+                        project_id.as_i64(),
+                        ws_raw,
+                    )
                 })
                 .await
                 .map_err(|e| WorkspaceManagerError::Internal(e.into()))??;
@@ -749,8 +776,32 @@ pub async fn delete(workspace_id: &str, force: bool) -> Result<(), WorkspaceMana
         // Chats
         tx.execute("DELETE FROM chats WHERE workspace_id = ?1", params![ws_id_i64])?;
 
-        // Projects (no FK cascade in schema)
-        tx.execute("DELETE FROM projects WHERE workspace_id = ?1", params![ws_id_i64])?;
+        // Projects: shared projects must survive deletion of one of their
+        // workspaces. Move ownership to another linked workspace first, then
+        // drop this workspace's relationships and its now-orphaned projects.
+        tx.execute(
+            "UPDATE projects
+             SET workspace_id = (
+                 SELECT wp.workspace_id
+                 FROM workspace_projects wp
+                 WHERE wp.project_id = projects.project_id AND wp.workspace_id <> ?1
+                 LIMIT 1
+             )
+             WHERE workspace_id = ?1
+               AND EXISTS (
+                   SELECT 1 FROM workspace_projects wp
+                   WHERE wp.project_id = projects.project_id AND wp.workspace_id <> ?1
+               )",
+            params![ws_id_i64],
+        )?;
+        tx.execute(
+            "DELETE FROM workspace_projects WHERE workspace_id = ?1",
+            params![ws_id_i64],
+        )?;
+        tx.execute(
+            "DELETE FROM projects WHERE workspace_id = ?1",
+            params![ws_id_i64],
+        )?;
 
         // Terminal sessions (no FK)
         tx.execute("DELETE FROM terminal_sessions WHERE workspace_id = ?1", params![ws_id_i64])?;
@@ -1123,15 +1174,17 @@ pub fn register_project(
     // Validate project path
     let canonical_path = canonical_path(&request.path)?;
 
-    // If the path is already registered, reuse the existing project instead of
-    // failing. This allows workspaces to reference a project that was
-    // registered elsewhere (path is globally unique).
+    // If the path is already registered globally, reuse the existing project
+    // row and attach it to this workspace. `projects.workspace_id` only records
+    // the owning workspace; membership is tracked in `workspace_projects`.
     if let Some(existing) =
         projects::find_by_path(&canonical_path).map_err(WorkspaceManagerError::from)?
     {
+        workspace_projects::link(workspace_id.as_i64(), existing.project_id)
+            .map_err(WorkspaceManagerError::from)?;
         return Ok(Project {
             project_id: format_id(existing.project_id, IdType::Project),
-            workspace_id: format_id(existing.workspace_id, IdType::Workspace),
+            workspace_id: format_id(workspace_id.as_i64(), IdType::Workspace),
             name: existing.name,
             path: normalized_path(&existing.path),
             description: existing.description,
@@ -1164,6 +1217,8 @@ pub fn register_project(
     };
 
     let created = projects::create(db_project).map_err(WorkspaceManagerError::from)?;
+    workspace_projects::link(workspace_id.as_i64(), created.project_id)
+        .map_err(WorkspaceManagerError::from)?;
 
     // Register the project path as a lock-managed root (sync). Lock manager
     // initialization is deferred to the async API layer.
@@ -1174,7 +1229,7 @@ pub fn register_project(
     // Convert to Project type
     Ok(Project {
         project_id: format_id(created.project_id, IdType::Project),
-        workspace_id: format_id(created.workspace_id, IdType::Workspace),
+        workspace_id: format_id(workspace_id.as_i64(), IdType::Workspace),
         name: created.name,
         path: created.path,
         description: created.description,
@@ -1199,27 +1254,43 @@ pub fn remove_project(workspace_id: &str, project_id: &str) -> Result<(), Worksp
     })?;
 
     // Check workspace exists
-    let _ws = workspaces::get(workspace_id)
+    let workspace = workspaces::get(workspace_id)
         .map_err(WorkspaceManagerError::from)?
         .ok_or_else(|| WorkspaceManagerError::NotFound(workspace_id.to_string()))?;
 
     // Check project exists
-    let project = projects::get(project_id_i64)
-        .map_err(WorkspaceManagerError::from)?
-        .ok_or_else(|| WorkspaceManagerError::NotFound(project_id.to_string()))?;
+    if !projects::exists(project_id_i64).map_err(WorkspaceManagerError::from)? {
+        return Err(WorkspaceManagerError::NotFound(project_id.to_string()));
+    }
 
-    // Verify project belongs to workspace
-    if project.workspace_id != workspace_id.as_i64() {
+    // Verify the workspace↔project relationship exists
+    if !workspace_projects::contains(workspace_id.as_i64(), project_id_i64)
+        .map_err(WorkspaceManagerError::from)?
+    {
         return Err(WorkspaceManagerError::Validation(
             "Project does not belong to this workspace".to_string(),
         ));
     }
 
-    // Delete project from database
-    projects::delete(project_id_i64).map_err(WorkspaceManagerError::from)?;
+    // Clear the workspace default before removing the project.
+    if workspace.default_project_id.map(|id| id.as_i64()) == Some(project_id_i64) {
+        let mut updated = workspace;
+        updated.default_project_id = None;
+        updated.updated_at = now();
+        workspaces::update(updated).map_err(WorkspaceManagerError::from)?;
+    }
 
-    // Unregister the project path from lock-managed roots.
-    ergatai_lock::unregister_project_roots(project_id);
+    workspace_projects::unlink(workspace_id.as_i64(), project_id_i64)
+        .map_err(WorkspaceManagerError::from)?;
+
+    // Only delete the global project row (and its lock roots) when no other
+    // workspace still manages it.
+    if workspace_projects::count_for_project(project_id_i64).map_err(WorkspaceManagerError::from)?
+        == 0
+    {
+        projects::delete(project_id_i64).map_err(WorkspaceManagerError::from)?;
+        ergatai_lock::unregister_project_roots(project_id);
+    }
 
     Ok(())
 }
@@ -1248,8 +1319,10 @@ pub fn update_project(
         .map_err(WorkspaceManagerError::from)?
         .ok_or_else(|| WorkspaceManagerError::NotFound(project_id.to_string()))?;
 
-    // Verify project belongs to workspace
-    if project.workspace_id != workspace_id.as_i64() {
+    // Verify the workspace↔project relationship exists
+    if !workspace_projects::contains(workspace_id.as_i64(), project_id_i64)
+        .map_err(WorkspaceManagerError::from)?
+    {
         return Err(WorkspaceManagerError::Validation(
             "Project does not belong to this workspace".to_string(),
         ));
@@ -1267,6 +1340,19 @@ pub fn update_project(
 
     if let Some(path) = request.path {
         let canonical_path = canonical_path(&path)?;
+        // Project paths are globally unique; reject renaming onto another
+        // project's path.
+        if let Some(existing) =
+            projects::find_by_path(&canonical_path).map_err(WorkspaceManagerError::from)?
+        {
+            if existing.project_id != project.project_id {
+                return Err(WorkspaceManagerError::Conflict(format!(
+                    "Path '{}' is already registered as project {}",
+                    canonical_path,
+                    format_id(existing.project_id, IdType::Project)
+                )));
+            }
+        }
         let pid = project.project_id.to_string();
         // Remove any previous root for this project before registering the new one.
         ergatai_lock::unregister_project_roots(&pid);
@@ -1307,7 +1393,7 @@ pub fn update_project(
     // Convert to Project type
     Ok(Project {
         project_id: format_id(project.project_id, IdType::Project),
-        workspace_id: format_id(project.workspace_id, IdType::Workspace),
+        workspace_id: format_id(workspace_id.as_i64(), IdType::Workspace),
         name: project.name,
         path: normalized_path(&project.path),
         description: project.description,

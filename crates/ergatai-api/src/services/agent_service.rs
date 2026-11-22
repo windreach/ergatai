@@ -94,6 +94,18 @@ pub async fn get_agent_config_options(
     Ok(backend().config_options(agent_id).await?)
 }
 
+/// Read the live model selected in the agent's ACP config options, if any.
+pub async fn get_agent_current_model(agent_id: &str) -> Option<String> {
+    get_agent_config_options(agent_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|options| {
+            crate::services::agent::acp::extract_models_from_config_options(&options)
+        })
+        .and_then(|detected| detected.current)
+}
+
 /// Get token usage statistics for an agent as `(input_tokens, output_tokens)`.
 pub async fn get_agent_usage(agent_id: &str) -> anyhow::Result<Option<(usize, usize)>> {
     Ok(backend().usage(agent_id).await?)
@@ -256,6 +268,47 @@ pub async fn resolve_to_runtime_id(agent_id: &str) -> Option<String> {
 /// (`spawn_lock`) so concurrent sends cannot both observe "no agent" and
 /// create duplicates. Direct callers should hold an equivalent lock when
 /// invoking this in a concurrent context.
+/// Resume through the unified launch service so the provider environment and
+/// durable conversation model are restored consistently with explicit resume.
+async fn resume_via_launch_service(
+    _runtime: &ergatai_runtime::AgentRuntime,
+    suspended_id: &str,
+    conversation_id: &str,
+) -> Option<String> {
+    let Ok(conversation_id) = ConversationId::decode(conversation_id) else {
+        tracing::warn!(
+            suspended_id = %suspended_id,
+            conversation_id = %conversation_id,
+            "Cannot resume through launch service: invalid conversation ID"
+        );
+        return None;
+    };
+    let request = crate::services::agent_launch::EnsureAgentRequest {
+        conversation_id: Some(conversation_id),
+        profile: None,
+        workspace_id: None,
+        work_dir: None,
+        provider_connection_id: None,
+        model: crate::services::agent_launch::ModelInput::None,
+        mode: crate::services::agent_launch::LaunchMode::ResumeOnly,
+        env: Default::default(),
+        allow_native_default: false,
+    };
+    let service = crate::context::get_app_context().agent_launch.clone();
+    match service.ensure(request).await {
+        Ok(result) => Some(result.agent_id),
+        Err(error) => {
+            tracing::warn!(
+                suspended_id = %suspended_id,
+                conversation_id = %conversation_id,
+                error = %error,
+                "Unified launch service failed to resume suspended agent"
+            );
+            None
+        }
+    }
+}
+
 pub async fn try_auto_resume_suspended_agent(
     runtime: &ergatai_runtime::AgentRuntime,
     target: &str,
@@ -270,29 +323,17 @@ pub async fn try_auto_resume_suspended_agent(
             "Found suspended agent by ID, attempting resume"
         );
 
-        match runtime.resume_agent(&suspended.id).await {
-            Ok(new_agent_id) => {
+        match resume_via_launch_service(runtime, &suspended.id, &suspended.conversation_id).await {
+            Some(new_agent_id) => {
                 tracing::info!(
                     suspended_id = %suspended.id,
                     new_agent_id = %new_agent_id,
                     "Successfully resumed suspended agent by ID"
                 );
-                if !suspended.conversation_id.is_empty() {
-                    crate::api::agent_sdk::apply_model_override(
-                        &new_agent_id,
-                        &suspended.conversation_id,
-                    )
-                    .await;
-                }
-                // Restore runtime selected model if present.
-                if let Some(model) = get_agent_runtime_selected_model(&new_agent_id).await {
-                    let _ = set_agent(&new_agent_id, &model).await;
-                }
                 return Some(new_agent_id);
             }
-            Err(e) => {
+            None => {
                 tracing::warn!(
-                    error = %e,
                     suspended_id = %suspended.id,
                     "Failed to resume suspended agent by ID"
                 );
@@ -313,24 +354,18 @@ pub async fn try_auto_resume_suspended_agent(
                 "Found suspended agent by conversation_id, attempting resume"
             );
 
-            match runtime.resume_agent(&suspended.id).await {
-                Ok(new_agent_id) => {
+            match resume_via_launch_service(runtime, &suspended.id, conversation_id).await {
+                Some(new_agent_id) => {
                     tracing::info!(
                         suspended_id = %suspended.id,
                         new_agent_id = %new_agent_id,
                         conversation_id = %conversation_id,
                         "Successfully resumed suspended agent by conversation_id"
                     );
-                    crate::api::agent_sdk::apply_model_override(&new_agent_id, conversation_id)
-                        .await;
-                    if let Some(model) = get_agent_runtime_selected_model(&new_agent_id).await {
-                        let _ = set_agent(&new_agent_id, &model).await;
-                    }
                     return Some(new_agent_id);
                 }
-                Err(e) => {
+                None => {
                     tracing::warn!(
-                        error = %e,
                         suspended_id = %suspended.id,
                         conversation_id = %conversation_id,
                         "Failed to resume suspended agent by conversation_id"
@@ -952,6 +987,165 @@ pub async fn execute_agent_command(
 /// Prefers agent SDK switching when available (e.g. OpenCode HTTP session model API),
 /// then ACP `session/set_model`, then falls back to the `/model` slash command.
 pub async fn set_agent(agent_id: &str, model: &str) -> anyhow::Result<String> {
+    set_agent_with_context(agent_id, model, None, "user_selected").await
+}
+
+/// Split a Codex model reference into its base model and optional effort.
+///
+/// The UI stores `model/effort` (for example `gpt-5.3-codex/high`), while
+/// codex-acp's `session/set_model` requires `model[effort]`. Accept both
+/// spellings and leave the effort unset for a bare model.
+fn split_codex_model(model: &str) -> (String, Option<String>) {
+    let trimmed = model.trim();
+
+    if let Some(open) = trimmed.rfind('[') {
+        if trimmed.ends_with(']') && open > 0 {
+            let effort = &trimmed[open + 1..trimmed.len() - 1];
+            if !effort.is_empty() {
+                return (trimmed[..open].to_string(), Some(effort.to_string()));
+            }
+        }
+    }
+
+    if let Some((base, effort)) = trimmed.rsplit_once('/') {
+        if !base.is_empty() && !effort.is_empty() {
+            return (base.to_string(), Some(effort.to_string()));
+        }
+    }
+
+    (trimmed.to_string(), None)
+}
+
+/// Resolve a requested Codex model against the live `model` config option.
+///
+/// Exact matches win so provider-qualified model IDs that contain `/` are not
+/// mistaken for a model/effort pair. `None` means the requested base model is
+/// not offered by the running agent.
+fn resolve_codex_model<'a>(
+    requested: &str,
+    candidates: &[&'a agent_client_protocol::schema::v1::SessionConfigSelectOption],
+) -> Option<(String, Option<String>)> {
+    if candidates
+        .iter()
+        .any(|option| &*option.value.0 == requested)
+    {
+        return Some((requested.to_string(), None));
+    }
+
+    let (base, effort) = split_codex_model(requested);
+    if candidates.iter().any(|option| &*option.value.0 == base) {
+        Some((base, effort))
+    } else {
+        None
+    }
+}
+
+/// Apply a model through ACP, preserving the legacy fallback order.
+async fn apply_acp_model(
+    backend: &dyn ergatai_runtime::AcpBackendInterface,
+    agent_id: &str,
+    model: &str,
+) -> anyhow::Result<()> {
+    match backend.set_session_model(agent_id, model).await {
+        Ok(()) => Ok(()),
+        Err(e1) => {
+            tracing::debug!(
+                agent_id = %agent_id,
+                error = %e1,
+                "ACP set_session_model unavailable, trying session config option"
+            );
+            backend
+                .set_session_config_option(agent_id, "model", model)
+                .await
+                .map_err(|e2| anyhow::anyhow!("ACP model switching unavailable: {}", e2))
+        }
+    }
+}
+
+/// Apply a Codex model using the adapter's required `model[effort]` spelling.
+///
+/// `session/set_model` is authoritative when an effort is present. Older
+/// adapters only expose the `model` config option, so a failure there falls
+/// back to setting the base model (and `reasoning_effort` when available).
+async fn apply_codex_model(
+    backend: &dyn ergatai_runtime::AcpBackendInterface,
+    agent_id: &str,
+    base: &str,
+    effort: Option<&str>,
+) -> anyhow::Result<()> {
+    let primary = match effort {
+        Some(effort) => {
+            backend
+                .set_session_model(agent_id, &format!("{base}[{effort}]"))
+                .await
+        }
+        None => {
+            backend
+                .set_session_config_option(agent_id, "model", base)
+                .await
+        }
+    };
+
+    match primary {
+        Ok(()) => Ok(()),
+        Err(primary_error) => {
+            if effort.is_none() {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    error = %primary_error,
+                    "ACP model switching unavailable"
+                );
+                return Err(anyhow::anyhow!(
+                    "ACP model switching unavailable: {}",
+                    primary_error
+                ));
+            }
+
+            tracing::debug!(
+                agent_id = %agent_id,
+                error = %primary_error,
+                "Codex set_session_model unavailable, trying session config option"
+            );
+            backend
+                .set_session_config_option(agent_id, "model", base)
+                .await
+                .map_err(|error| {
+                    tracing::warn!(
+                        agent_id = %agent_id,
+                        error = %error,
+                        "ACP model switching unavailable"
+                    );
+                    anyhow::anyhow!("ACP model switching unavailable: {}", error)
+                })?;
+
+            if let Some(effort) = effort {
+                if let Err(error) = backend
+                    .set_session_config_option(agent_id, "reasoning_effort", effort)
+                    .await
+                {
+                    tracing::debug!(
+                        agent_id = %agent_id,
+                        effort = %effort,
+                        error = %error,
+                        "Codex reasoning_effort option unavailable"
+                    );
+                }
+            }
+
+            Ok(())
+        }
+    }
+}
+
+/// Apply a model and persist both the runtime row and (when known) the
+/// conversation key. Persistence is awaited so callers cannot observe a
+/// successful switch before the durable row exists.
+pub async fn set_agent_with_context(
+    agent_id: &str,
+    model: &str,
+    conversation_id: Option<ConversationId>,
+    source: &str,
+) -> anyhow::Result<String> {
     let model_trimmed = model.trim();
     if model_trimmed.is_empty() {
         return Err(anyhow::anyhow!("model must not be empty"));
@@ -980,19 +1174,22 @@ pub async fn set_agent(agent_id: &str, model: &str) -> anyhow::Result<String> {
     // ACP agent. Agents such as OpenCode expose provider-qualified IDs (e.g.
     // `opencode-go/iceman-contributor-free`) in their `model` config option,
     // while callers may pass the bare model name.
+    //
+    // Codex needs one extra step: the UI stores `model/effort` but codex-acp's
+    // `session/set_model` only accepts `model[effort]`. Resolve the base model
+    // against the live options and keep the effort for the apply step.
     let requested_model = model_trimmed.to_string();
-    let model_to_apply = if let Ok(Some(options)) = backend.config_options(agent_id).await {
+    let mut model_to_apply = requested_model.clone();
+    let mut codex_target: Option<(String, Option<String>)> = None;
+
+    if let Ok(Some(options)) = backend.config_options(agent_id).await {
         if let Some(model_option) = options.iter().find(|o| &*o.id.0 == "model") {
-            let select_options = match &model_option.kind {
-                agent_client_protocol::schema::v1::SessionConfigKind::Select(select) => {
-                    Some(&select.options)
-                }
-                _ => None,
-            };
             let mut candidates: Vec<&agent_client_protocol::schema::v1::SessionConfigSelectOption> =
                 Vec::new();
-            if let Some(select_options) = select_options {
-                match select_options {
+            if let agent_client_protocol::schema::v1::SessionConfigKind::Select(select) =
+                &model_option.kind
+            {
+                match &select.options {
                     agent_client_protocol::schema::v1::SessionConfigSelectOptions::Ungrouped(
                         opts,
                     ) => {
@@ -1009,15 +1206,42 @@ pub async fn set_agent(agent_id: &str, model: &str) -> anyhow::Result<String> {
                 }
             }
 
-            // Exact match first.
-            if candidates
+            if agent_kind == crate::services::agent::AgentKind::Codex {
+                match resolve_codex_model(&requested_model, &candidates) {
+                    Some((base, effort)) => {
+                        model_to_apply = match effort.as_deref() {
+                            Some(effort) => format!("{}/{}", base, effort),
+                            None => base.clone(),
+                        };
+                        codex_target = Some((base, effort));
+                    }
+                    None => {
+                        let available = candidates
+                            .iter()
+                            .map(|option| option.value.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let available = if available.is_empty() {
+                            "the agent did not report any models".to_string()
+                        } else {
+                            available
+                        };
+                        return Err(anyhow::anyhow!(
+                            "Model '{}' is not available for Codex. Available models: {}",
+                            requested_model,
+                            available
+                        ));
+                    }
+                }
+            } else if candidates
                 .iter()
                 .any(|v| &*v.value.0 == requested_model.as_str())
             {
-                requested_model.clone()
+                // Exact match first.
+                model_to_apply = requested_model.clone();
             } else {
                 // Suffix / name match for bare IDs.
-                candidates
+                model_to_apply = candidates
                     .iter()
                     .find_map(|v| {
                         let value = v.value.0.clone();
@@ -1030,14 +1254,10 @@ pub async fn set_agent(agent_id: &str, model: &str) -> anyhow::Result<String> {
                             None
                         }
                     })
-                    .unwrap_or(requested_model.clone())
+                    .unwrap_or_else(|| requested_model.clone());
             }
-        } else {
-            requested_model.clone()
         }
-    } else {
-        requested_model.clone()
-    };
+    }
 
     let result = if agent_kind == crate::services::agent::AgentKind::OpenCode {
         // OpenCode ACP does not support `session/set_model`; use config option directly.
@@ -1055,51 +1275,73 @@ pub async fn set_agent(agent_id: &str, model: &str) -> anyhow::Result<String> {
                 Err(anyhow::anyhow!("ACP model switching unavailable: {}", e2))
             }
         }
+    } else if let Some((base, effort)) = codex_target.as_ref() {
+        apply_codex_model(backend.as_ref(), agent_id, base, effort.as_deref())
+            .await
+            .map(|_| String::new())
     } else {
-        match backend.set_session_model(agent_id, &model_to_apply).await {
-            Ok(()) => Ok(String::new()),
-            Err(e1) => {
-                tracing::debug!(
-                    agent_id = %agent_id,
-                    error = %e1,
-                    "ACP set_session_model unavailable, trying session config option"
-                );
-                match backend
-                    .set_session_config_option(agent_id, "model", &model_to_apply)
-                    .await
-                {
-                    Ok(()) => Ok(String::new()),
-                    Err(e2) => {
-                        tracing::warn!(
-                            agent_id = %agent_id,
-                            error = %e2,
-                            "ACP model switching unavailable"
-                        );
-                        Err(anyhow::anyhow!("ACP model switching unavailable: {}", e2))
-                    }
-                }
-            }
-        }
+        apply_acp_model(backend.as_ref(), agent_id, &model_to_apply)
+            .await
+            .map(|_| String::new())
     };
 
-    // Persist runtime selected model (best effort).
+    // Persist runtime selected model synchronously. Callers must not observe a
+    // successful switch before the durable row (including its conversation
+    // key) exists.
     if result.is_ok() {
         let agent_id_owned = agent_id.to_string();
         let model_owned = model_to_apply.clone();
-        tokio::spawn(async move {
-            let runtime = crate::context::get_app_context().agent_runtime.clone();
-            let profile_name = runtime
-                .get_agent(&agent_id_owned)
-                .await
-                .and_then(|i| i.profile.clone());
-            crate::services::agent_service::set_agent_runtime_selected_model(
+        let source_owned = source.to_string();
+        let profile_name = crate::context::get_app_context()
+            .agent_runtime
+            .get_agent(agent_id)
+            .await
+            .and_then(|info| info.profile.clone());
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Err(error) = crate::user_data_db::set_agent_runtime_model_full(
                 &agent_id_owned,
                 profile_name.as_deref(),
-                &model_owned,
-                "user_selected",
-            )
-            .await;
-        });
+                conversation_id,
+                Some(&model_owned),
+                None,
+                &source_owned,
+            ) {
+                tracing::warn!(
+                    agent_id = %agent_id_owned,
+                    error = %error,
+                    "Failed to persist runtime model selection"
+                );
+            }
+
+            if let Some(conversation_id) = conversation_id {
+                // Preserve the provider binding: switching a model must not
+                // silently drop the credentials the conversation launched with.
+                let existing =
+                    crate::user_data_db::conversation_launch_settings::get(conversation_id)
+                        .ok()
+                        .flatten();
+                let provider_connection_id = existing
+                    .as_ref()
+                    .and_then(|row| row.provider_connection_id.as_deref());
+                let source = crate::services::agent_launch::ModelSource::parse(&source_owned)
+                    .unwrap_or(crate::services::agent_launch::ModelSource::ConversationUser);
+                let selection = crate::services::agent_launch::ModelSelection::new(model_owned);
+                if let Err(error) = crate::services::agent_launch::settings::save(
+                    conversation_id,
+                    profile_name.as_deref(),
+                    &selection,
+                    source,
+                    provider_connection_id,
+                ) {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        error = %error,
+                        "Failed to persist conversation model selection"
+                    );
+                }
+            }
+        })
+        .await;
     }
 
     result
@@ -1633,6 +1875,42 @@ pub async fn set_agent_runtime_selected_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_codex_model_accepts_both_ui_spellings() {
+        assert_eq!(
+            split_codex_model("gpt-5.3-codex/high"),
+            ("gpt-5.3-codex".to_string(), Some("high".to_string()))
+        );
+        assert_eq!(
+            split_codex_model("gpt-5.3-codex[xhigh]"),
+            ("gpt-5.3-codex".to_string(), Some("xhigh".to_string()))
+        );
+        assert_eq!(
+            split_codex_model("gpt-5.3-codex"),
+            ("gpt-5.3-codex".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn resolve_codex_model_prefers_an_exact_provider_id() {
+        use agent_client_protocol::schema::v1::SessionConfigSelectOption;
+
+        let provider_model = SessionConfigSelectOption::new("openai/gpt-5", "openai/gpt-5");
+        let plain_model = SessionConfigSelectOption::new("gpt-5.3-codex", "gpt-5.3-codex");
+        let candidates = vec![&provider_model, &plain_model];
+
+        // A model ID containing `/` must not be split when it is an exact option.
+        assert_eq!(
+            resolve_codex_model("openai/gpt-5", &candidates),
+            Some(("openai/gpt-5".to_string(), None))
+        );
+        assert_eq!(
+            resolve_codex_model("gpt-5.3-codex/high", &candidates),
+            Some(("gpt-5.3-codex".to_string(), Some("high".to_string())))
+        );
+        assert_eq!(resolve_codex_model("missing/high", &candidates), None);
+    }
 
     #[test]
     fn test_dispatch_lock_creation() {

@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => {
     },
     client: {
       changes: {
-        mergeChatBranch: { mutate: vi.fn() },
+        syncWorktreeToBase: { mutate: vi.fn() },
       },
     },
   }
@@ -72,12 +72,13 @@ describe("AutoMergeManager", () => {
       config: {},
     })
     mocks.utils.ergatai.getChatAgents.fetch.mockResolvedValue({
+      agents: [{ id: "agent_1" }],
       all_idle: true,
     })
     mocks.utils.chats.get.fetch.mockResolvedValue({
       conversations: [{ id: "conv_1" }],
     })
-    mocks.utils.client.changes.mergeChatBranch.mutate.mockResolvedValue({})
+    mocks.utils.client.changes.syncWorktreeToBase.mutate.mockResolvedValue({})
     mocks.isStreaming.mockReturnValue(false)
   })
 
@@ -104,7 +105,7 @@ describe("AutoMergeManager", () => {
     expect(mocks.utils.ergatai.getChatAgents.fetch).not.toHaveBeenCalled()
     expect(mocks.utils.chats.get.fetch).not.toHaveBeenCalled()
     expect(
-      mocks.utils.client.changes.mergeChatBranch.mutate,
+      mocks.utils.client.changes.syncWorktreeToBase.mutate,
     ).not.toHaveBeenCalled()
   })
 
@@ -123,7 +124,7 @@ describe("AutoMergeManager", () => {
 
     await waitFor(() => {
       expect(
-        mocks.utils.client.changes.mergeChatBranch.mutate,
+        mocks.utils.client.changes.syncWorktreeToBase.mutate,
       ).toHaveBeenCalledTimes(2)
     })
 

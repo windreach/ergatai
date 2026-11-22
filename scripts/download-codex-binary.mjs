@@ -17,7 +17,8 @@ import { fileURLToPath } from "node:url"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT_DIR = path.join(__dirname, "..")
-const BIN_DIR = path.join(ROOT_DIR, "resources", "bin")
+// electron-builder reads extraResources from frontend/resources/bin.
+const BIN_DIR = path.join(ROOT_DIR, "frontend", "resources", "bin")
 
 const RELEASE_REPO = "openai/codex"
 const RELEASE_TAG_PREFIX = "rust-v"

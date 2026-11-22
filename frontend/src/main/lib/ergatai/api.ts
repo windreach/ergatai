@@ -64,8 +64,11 @@ let cachedToken: string | null = null
 /**
  * Get the user data directory for Ergatai.
  * Matches the backend's `ergatai_runtime::dirs::user_data_dir()` logic.
+ *
+ * Also used when spawning the backend so both processes resolve the same
+ * `.api-token`, SQLite database, and NATS store.
  */
-function getUserDataDir(): string {
+export function getErgataiUserDataDir(): string {
   // Check environment variable first (matches backend)
   const envDir = process.env.ERGATAI_USER_DATA_DIR
   if (envDir) {
@@ -104,7 +107,7 @@ function readOrGenerateToken(): string | null {
     return null
   }
 
-  const tokenPath = path.join(getUserDataDir(), ".api-token")
+  const tokenPath = path.join(getErgataiUserDataDir(), ".api-token")
 
   try {
     const token = fs.readFileSync(tokenPath, "utf-8").trim()

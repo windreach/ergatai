@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { useEffect, useCallback, useMemo, useRef, useState } from "react"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
@@ -41,6 +42,7 @@ import { trpc } from "@/lib/trpc"
 import type { TerminalInstance } from "./types"
 import { isSharedTerminalScope } from "./utils"
 import { killTerminalSession } from "./providers"
+import { useActiveAgentTerminal, AgentTerminalPane, AgentTerminalTab } from "./agent-terminal-view"
 import {
   createPanelLinkScopeKey,
   panelLinkCommandAtomFamily,
@@ -60,6 +62,8 @@ interface TerminalSidebarProps {
   workspaceId: string
   tabId?: string
   initialCommands?: string[]
+  /** Conversation whose agent terminal tasks should be available */
+  conversationId?: string | null
   /** Mobile fullscreen mode - skip ResizableSidebar wrapper */
   isMobileFullscreen?: boolean
   /** Callback when closing in mobile mode */
@@ -126,6 +130,7 @@ export function TerminalSidebar({
   workspaceId,
   tabId,
   initialCommands,
+  conversationId,
   isMobileFullscreen = false,
   onClose,
 }: TerminalSidebarProps) {
@@ -181,6 +186,9 @@ export function TerminalSidebar({
     [terminals, activeTerminalId],
   )
 
+  // Agent terminal tasks are read-only and live in the shared terminal store.
+  const agentTerminal = useActiveAgentTerminal(scopeKey, conversationId)
+
   useEffect(() => {
     dispatchPanelLink({
       type: "sync-panel",
@@ -229,6 +237,7 @@ export function TerminalSidebar({
   const createTerminal = useCallback(() => {
     const currentScopeKey = scopeKeyRef.current
     const currentTerminals = terminalsRef.current
+    agentTerminal.clear()
 
     const id = generateTerminalId()
     const paneId = generatePaneId(currentScopeKey, id)
@@ -251,18 +260,19 @@ export function TerminalSidebar({
       ...prev,
       [currentScopeKey]: id,
     }))
-  }, [setAllTerminals, setAllActiveIds])
+  }, [setAllTerminals, setAllActiveIds, agentTerminal.clear])
 
   // Select a terminal - stable callback
   const selectTerminal = useCallback(
     (id: string) => {
       const currentScopeKey = scopeKeyRef.current
+      agentTerminal.clear()
       setAllActiveIds((prev) => ({
         ...prev,
         [currentScopeKey]: id,
       }))
     },
-    [setAllActiveIds],
+    [setAllActiveIds, agentTerminal.clear],
   )
 
   // Close a terminal - stable callback
@@ -407,14 +417,15 @@ export function TerminalSidebar({
       // Sidebar closed - reset state
       wasOpenRef.current = false
       setCanRenderTerminal(false)
+      agentTerminal.clear()
     }
-  }, [isOpen])
+  }, [isOpen, agentTerminal.clear])
 
   // When the sidebar opens, restore any existing shared terminal sessions
   // (local mode) or auto-create a first terminal, so the panel is never
   // left showing "No terminal open".
   useEffect(() => {
-    if (!isOpen || terminals.length > 0) return
+    if (!isOpen || terminals.length > 0 || agentTerminal.activeId) return
 
     let cancelled = false
 
@@ -454,7 +465,7 @@ export function TerminalSidebar({
     return () => {
       cancelled = true
     }
-  }, [isOpen, terminals.length, scopeKey, trpcUtils, createTerminal, setAllTerminals, setAllActiveIds])
+  }, [isOpen, terminals.length, scopeKey, trpcUtils, createTerminal, setAllTerminals, setAllActiveIds, agentTerminal.activeId])
 
   // Note: Cmd+J keyboard shortcut is handled in active-chat.tsx
   // to ensure it works regardless of terminal display mode or focus state.
@@ -464,6 +475,38 @@ export function TerminalSidebar({
     setIsOpen(false) // Close the sidebar atom first
     onClose?.() // Then call the onClose callback
   }, [setIsOpen, onClose])
+
+  // Shared terminal body for both the desktop sidebar and the mobile
+  // fullscreen layout. Agent tasks are read-only xterm views.
+  const terminalBody = agentTerminal.activeTask ? (
+    <AgentTerminalPane
+      task={agentTerminal.activeTask}
+      onClose={agentTerminal.clear}
+      showHeader={false}
+    />
+  ) : activeTerminal && canRenderTerminal ? (
+    <motion.div
+      key={activeTerminal.paneId}
+      className="h-full"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0 }}
+    >
+      <Terminal
+        paneId={activeTerminal.paneId}
+        cwd={cwd}
+        workspaceId={workspaceId}
+        scopeKey={scopeKey}
+        tabId={tabId}
+        initialCommands={initialCommands}
+        initialCwd={cwd}
+      />
+    </motion.div>
+  ) : (
+    <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+      {!canRenderTerminal ? "" : "No terminal open"}
+    </div>
+  )
 
   // Mobile fullscreen layout
   if (isMobileFullscreen) {
@@ -496,6 +539,12 @@ export function TerminalSidebar({
 
           {/* Terminal Tabs - directly after back button, inherits drag from parent */}
           <div className="flex items-center gap-1 flex-1 min-w-0">
+            {agentTerminal.activeTask && (
+              <AgentTerminalTab
+                task={agentTerminal.activeTask}
+                onClose={agentTerminal.clear}
+              />
+            )}
             {terminals.length > 0 && (
               <TerminalTabs
                 terminals={terminals}
@@ -519,29 +568,7 @@ export function TerminalSidebar({
           className="flex-1 min-h-0 min-w-0 overflow-hidden"
           style={{ backgroundColor: terminalBg }}
         >
-          {activeTerminal && canRenderTerminal ? (
-            <motion.div
-              key={activeTerminal.paneId}
-              className="h-full"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: 0 }}
-            >
-              <Terminal
-                paneId={activeTerminal.paneId}
-                cwd={cwd}
-                workspaceId={workspaceId}
-                scopeKey={scopeKey}
-                tabId={tabId}
-                initialCommands={initialCommands}
-                initialCwd={cwd}
-              />
-            </motion.div>
-          ) : (
-            <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-              {!canRenderTerminal ? "" : "No terminal open"}
-            </div>
-          )}
+          {terminalBody}
         </div>
       </div>
     )
@@ -586,6 +613,13 @@ export function TerminalSidebar({
             <TerminalModeSwitcher mode={displayMode} onModeChange={setDisplayMode} />
           </div>
 
+          {agentTerminal.activeTask && (
+            <AgentTerminalTab
+              task={agentTerminal.activeTask}
+              onClose={agentTerminal.clear}
+            />
+          )}
+
           {/* New terminal button - shown when there are no tabs */}
           {terminals.length === 0 && (
             <Tooltip>
@@ -627,29 +661,7 @@ export function TerminalSidebar({
           className="flex-1 min-h-0 min-w-0 overflow-hidden"
           style={{ backgroundColor: terminalBg }}
         >
-          {activeTerminal && canRenderTerminal ? (
-            <motion.div
-              key={activeTerminal.paneId}
-              className="h-full"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: 0 }}
-            >
-              <Terminal
-                paneId={activeTerminal.paneId}
-                cwd={cwd}
-                workspaceId={workspaceId}
-                scopeKey={scopeKey}
-                tabId={tabId}
-                initialCommands={initialCommands}
-                initialCwd={cwd}
-              />
-            </motion.div>
-          ) : (
-            <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-              {!canRenderTerminal ? "" : "No terminal open"}
-            </div>
-          )}
+          {terminalBody}
         </div>
       </div>
     </ResizableSidebar>
@@ -667,6 +679,7 @@ interface TerminalBottomPanelContentProps {
   workspaceId: string
   tabId?: string
   initialCommands?: string[]
+  conversationId?: string | null
   onClose: () => void
 }
 
@@ -677,6 +690,7 @@ export function TerminalBottomPanelContent({
   workspaceId,
   tabId,
   initialCommands,
+  conversationId,
   onClose,
 }: TerminalBottomPanelContentProps) {
   const [allTerminals, setAllTerminals] = useAtom(terminalsAtom)
@@ -713,6 +727,8 @@ export function TerminalBottomPanelContent({
     [terminals, activeTerminalId],
   )
 
+  const agentTerminal = useActiveAgentTerminal(scopeKey, conversationId)
+
   const scopeKeyRef = useRef(scopeKey)
   // react-doctor-disable-next-line no-ref-current-in-render
   scopeKeyRef.current = scopeKey
@@ -726,6 +742,7 @@ export function TerminalBottomPanelContent({
   const createTerminal = useCallback(() => {
     const currentScopeKey = scopeKeyRef.current
     const currentTerminals = terminalsRef.current
+    agentTerminal.clear()
     const id = generateTerminalId()
     const paneId = generatePaneId(currentScopeKey, id)
     const name = getNextTerminalName(currentTerminals)
@@ -735,13 +752,14 @@ export function TerminalBottomPanelContent({
       [currentScopeKey]: [...(prev[currentScopeKey] || []), newTerminal],
     }))
     setAllActiveIds((prev) => ({ ...prev, [currentScopeKey]: id }))
-  }, [setAllTerminals, setAllActiveIds])
+  }, [setAllTerminals, setAllActiveIds, agentTerminal.clear])
 
   const selectTerminal = useCallback(
     (id: string) => {
+      agentTerminal.clear()
       setAllActiveIds((prev) => ({ ...prev, [scopeKeyRef.current]: id }))
     },
-    [setAllActiveIds],
+    [setAllActiveIds, agentTerminal.clear],
   )
 
   const closeTerminal = useCallback(
@@ -827,7 +845,7 @@ export function TerminalBottomPanelContent({
 
   // Auto-create first terminal or discover shared terminals
   useEffect(() => {
-    if (terminals.length > 0) return
+    if (terminals.length > 0 || agentTerminal.activeId) return
 
     if (isSharedTerminalScope(scopeKey)) {
       trpcUtils.terminal.listSessionsByScopeKey
@@ -855,7 +873,7 @@ export function TerminalBottomPanelContent({
     } else {
       createTerminal()
     }
-  }, [terminals.length, scopeKey, createTerminal, trpcUtils, setAllTerminals, setAllActiveIds])
+  }, [terminals.length, scopeKey, createTerminal, trpcUtils, setAllTerminals, setAllActiveIds, agentTerminal.activeId])
 
   return (
     <div className="flex flex-col h-full min-w-0 overflow-hidden">
@@ -886,6 +904,31 @@ export function TerminalBottomPanelContent({
           <TerminalModeSwitcher mode={displayMode} onModeChange={setDisplayMode} />
         </div>
 
+        {agentTerminal.activeTask && (
+          <AgentTerminalTab
+            task={agentTerminal.activeTask}
+            onClose={agentTerminal.clear}
+          />
+        )}
+
+        {/* New terminal button - shown when there are no tabs */}
+        {terminals.length === 0 && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={createTerminal}
+                className="h-6 w-6 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] rounded-md flex-shrink-0"
+                aria-label={i18n.t("New terminal")}
+              >
+                <PlusIcon className="h-3.5 w-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">{i18n.t("New terminal")}</TooltipContent>
+          </Tooltip>
+        )}
+
         {/* Terminal Tabs */}
         {terminals.length > 0 && (
           <TerminalTabs
@@ -909,7 +952,13 @@ export function TerminalBottomPanelContent({
         className="flex-1 min-h-0 min-w-0 overflow-hidden"
         style={{ backgroundColor: terminalBg }}
       >
-        {activeTerminal ? (
+        {agentTerminal.activeTask ? (
+          <AgentTerminalPane
+            task={agentTerminal.activeTask}
+            onClose={agentTerminal.clear}
+            showHeader={false}
+          />
+        ) : activeTerminal ? (
           <motion.div
             key={activeTerminal.paneId}
             className="h-full"

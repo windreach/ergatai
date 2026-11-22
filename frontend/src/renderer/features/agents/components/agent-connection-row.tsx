@@ -2,7 +2,7 @@ import i18n from "@/lib/i18n"
 
 import { Badge } from "../../../components/ui/badge"
 import { Button } from "../../../components/ui/button"
-import { RotateCcw, Trash2 } from "lucide-react"
+import { Copy, RotateCcw, Trash2 } from "lucide-react"
 
 export type ProviderProtocol = "anthropic" | "openai_compatible" | "opencode"
 
@@ -30,17 +30,28 @@ const PROTOCOL_LABELS: Record<ProviderProtocol, string> = {
 
 interface AgentConnectionRowProps {
   connection: ProviderConnection
-  isSettingDefault: boolean
-  isDeleting: boolean
-  onSetDefault: (id: string) => void
-  onEdit: (connection: ProviderConnection) => void
-  onDelete: (connection: ProviderConnection) => void
+  /** Render an informational row without edit/delete actions. */
+  readOnly?: boolean
+  /** Highlight the inherited connection that launches actually use. */
+  inheritedActive?: boolean
+  isSettingDefault?: boolean
+  isDeleting?: boolean
+  /** Copy an inherited connection into this agent so it becomes editable. */
+  onCopyToAgent?: (connection: ProviderConnection) => void
+  isCopying?: boolean
+  onSetDefault?: (id: string) => void
+  onEdit?: (connection: ProviderConnection) => void
+  onDelete?: (connection: ProviderConnection) => void
 }
 
 export function AgentConnectionRow({
   connection,
-  isSettingDefault,
-  isDeleting,
+  readOnly = false,
+  inheritedActive = false,
+  isSettingDefault = false,
+  isDeleting = false,
+  onCopyToAgent,
+  isCopying = false,
   onSetDefault,
   onEdit,
   onDelete,
@@ -58,6 +69,16 @@ export function AgentConnectionRow({
           {connection.isDefault && (
             <Badge variant="secondary" className="text-[10px]">
               Default
+            </Badge>
+          )}
+          {readOnly && (
+            <Badge variant="outline" className="text-[10px]">
+              {i18n.t("Inherited")}
+            </Badge>
+          )}
+          {readOnly && inheritedActive && (
+            <Badge variant="default" className="text-[10px]">
+              {i18n.t("In use")}
             </Badge>
           )}
           {connection.apiKeyHint ? (
@@ -84,44 +105,67 @@ export function AgentConnectionRow({
           {summary}
         </p>
       </div>
-      <div className="flex flex-shrink-0 items-center gap-1">
-        {!connection.isDefault && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2 text-xs"
-            disabled={isSettingDefault}
-            onClick={() => onSetDefault(connection.id)}
-          >
-            <RotateCcw className="mr-1 h-3 w-3" />
-            Default
-          </Button>
-        )}
+      {readOnly && onCopyToAgent && (
         <Button
           type="button"
-          variant="ghost"
+          variant="outline"
           size="sm"
-          className="h-7 px-2 text-xs"
-          onClick={() => onEdit(connection)}
+          className="h-7 flex-shrink-0 px-2 text-xs"
+          disabled={isCopying}
+          onClick={() => onCopyToAgent(connection)}
         >
-          Edit
+          <Copy className="mr-1 h-3 w-3" />
+          {i18n.t("Copy to this agent")}
         </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          disabled={isDeleting}
-          onClick={() => {
-            if (window.confirm(i18n.t("Delete {{name}}?", { name: connection.name }))) {
-              onDelete(connection)
-            }
-          }}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
-      </div>
+      )}
+      {!readOnly && (
+        <div className="flex flex-shrink-0 items-center gap-1">
+          {!connection.isDefault && typeof onSetDefault === "function" && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              disabled={isSettingDefault}
+              onClick={() => onSetDefault(connection.id)}
+            >
+              <RotateCcw className="mr-1 h-3 w-3" />
+              Default
+            </Button>
+          )}
+          {typeof onEdit === "function" && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => onEdit(connection)}
+            >
+              Edit
+            </Button>
+          )}
+          {typeof onDelete === "function" && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              disabled={isDeleting}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    i18n.t("Delete {{name}}?", { name: connection.name }),
+                  )
+                ) {
+                  onDelete(connection)
+                }
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

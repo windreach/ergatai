@@ -227,14 +227,11 @@ impl PermissionHandler for InteractivePermissionHandler {
 
         // Bash / shell (Execute) is never auto-approved in Auto mode — it always
         // goes through ask, even when all paths are inside the workspace.
+        // Search (glob/grep) is read-only, so it is auto-approved in Auto mode.
         let force_ask = match mode {
             PermissionMode::FullAccess => false,
-            PermissionMode::Auto => {
-                outside
-                    || kind == ToolKind::Execute
-                    || kind == ToolKind::Search
-                    || kind == ToolKind::Fetch
-            }
+            PermissionMode::AutoBash => outside || kind == ToolKind::Fetch,
+            PermissionMode::Auto => outside || kind == ToolKind::Execute || kind == ToolKind::Fetch,
             PermissionMode::Ask => outside || !is_auto_approve_kind(&kind),
         };
 
@@ -249,8 +246,10 @@ impl PermissionHandler for InteractivePermissionHandler {
                 }
                 return select_allow_option(request);
             }
-            // Auto or Ask auto path (inside project, non-execute).
-            if matches!(kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move) {
+            // Auto / AutoBash / Ask auto path. Pre-lock write targets for
+            // edit-like operations and for Bash (Execute) when it is being
+            // auto-approved, so file locks still apply.
+            if matches!(kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move | ToolKind::Execute) {
                 if let Err(reason) =
                     try_pre_lock_files(agent_id, session_id, &kind, &locations, raw_input).await
                 {

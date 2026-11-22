@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { useEffect, useRef, useState } from "react"
 // react-doctor-disable-next-line no-flush-sync
@@ -134,7 +135,7 @@ export function UpdateBanner() {
 
   const handleOpenChangelog = () => {
     // Open changelog URL
-    window.desktopApi?.openExternal("https://github.com/windreach/ergatai-ui/releases")
+    window.desktopApi?.openExternal("https://github.com/windreach/ergatai/releases")
     // Dismiss the banner
     if (isMocking) {
       setMockStatus("dismissed")

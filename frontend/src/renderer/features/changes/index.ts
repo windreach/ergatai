@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 export { ChangesView } from "./changes-view";
 export { ChangesPanel } from "./changes-panel";
 export { getStatusIndicator } from "./utils/status";

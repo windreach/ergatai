@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { useAtomValue, useSetAtom } from "jotai"
 import { useCallback, useEffect } from "react"
 import { conversationFilesAtom, conversationToChatMapAtom, type ConversationFileChange } from "../atoms"

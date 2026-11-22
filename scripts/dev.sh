@@ -165,6 +165,9 @@ fi
 # missing NVIDIA VA-API support).
 export ELECTRON_DISABLE_GPU=1
 
+# Refresh the desktop entry / dock icon used by the dev Electron runtime.
+node "$ROOT_DIR/scripts/patch-electron-dev.mjs" || true
+
 echo "── Starting frontend (Electron dev) ──"
 cd "$FRONTEND_DIR"
 setsid bun run dev:frontend >> "$FRONTEND_LOG" 2>&1 &

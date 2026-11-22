@@ -1,4 +1,5 @@
 "use client"
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { memo, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react"
@@ -620,23 +621,42 @@ export const ChatInputArea = memo(function ChatInputArea({
   provider === "opencode" ? "opencode" :
   "claude-code"
 const availableModels = useAvailableModels(agentId, profileHint)
-  const queryClient = trpc.useContext()
-  const { data: runtimeAgentsForModelSwitch } = trpc.ergatai.listAgents.useQuery(undefined, {
-    enabled: !!agentId,
-    refetchOnWindowFocus: false,
-  })
-  const isAgentKnownNotAliveForModelSwitch = useMemo(
-    () =>
-      !!agentId &&
-      runtimeAgentsForModelSwitch !== undefined &&
-      !(runtimeAgentsForModelSwitch ?? []).some((a) => a.agent_id === agentId && a.is_alive),
-    [agentId, runtimeAgentsForModelSwitch],
+  // Durable conversation selection is the backend's source of truth. It is a
+  // display fallback behind the live ACP model and ahead of localStorage.
+  const { data: conversationLaunchSettings } = trpc.ergatai.getConversationLaunchSettings.useQuery(
+    { conversationId },
+    {
+      enabled: !!conversationId,
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
+    },
   )
+  const backendSelectedModel = useMemo(() => {
+    const raw = conversationLaunchSettings?.model?.trim()
+    if (!raw) return undefined
+    return availableModels.models.find(
+      (model) =>
+        model.id === raw ||
+        raw.endsWith(`/${model.id}`) ||
+        model.id.endsWith(`/${raw}`),
+    )
+  }, [conversationLaunchSettings?.model, availableModels.models])
+  const queryClient = trpc.useContext()
   const setAgentModelMutation = trpc.ergatai.setAgentModel.useMutation({
-    onSuccess: () => {
+    onSuccess: (data) => {
+      // The backend persists the selection even when the agent is suspended
+      // and returns `{ recorded: true }`. There is no need for a client-side
+      // liveness gate; clearing the optimistic state here keeps the selector
+      // from showing a permanent pending value.
+      if ((data as { recorded?: boolean } | undefined)?.recorded) {
+        setPendingModelId(null)
+      }
       void queryClient.ergatai.listAgents.invalidate()
       void queryClient.ergatai.getAgentProfileModels.invalidate()
       if (conversationId) {
+        void queryClient.ergatai.getConversationLaunchSettings.invalidate({
+          conversationId,
+        })
         getRuntimeSessionStore().resetContextUsage(conversationId)
       }
     },
@@ -724,12 +744,14 @@ const availableModels = useAvailableModels(agentId, profileHint)
         : undefined) ||
       // The live agent model is the source of truth for what is actually running.
       availableModels.models.find((model) => model.id === availableModels.currentModelId) ||
+      backendSelectedModel ||
       availableModels.models.find((model) => model.id === selectedConversationModelId) ||
       availableModels.models.find((model) => model.id === lastSelectedModelId) ||
       availableModels.models[0],
     [
       availableModels.models,
       availableModels.currentModelId,
+      backendSelectedModel,
       pendingModelId,
       selectedConversationModelId,
       lastSelectedModelId,
@@ -1813,7 +1835,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
 	                            setPendingModelId(model.id)
 	                            setSelectedConversationModelId(model.id)
 	                            setLastSelectedModelId(model.id)
-	                            if (agentId && !isAgentKnownNotAliveForModelSwitch) {
+	                            if (agentId) {
 	                              setAgentModelMutation.mutate({ agentId, model: model.id, conversationId })
 	                            }
 	                          },
@@ -1845,14 +1867,27 @@ const availableModels = useAvailableModels(agentId, profileHint)
 	                            setSelectedConversationCodexThinking(nextThinking)
 	                            setLastSelectedCodexModelId(model.id)
 	                            setLastSelectedCodexThinking(nextThinking)
-	                            if (agentId && !isAgentKnownNotAliveForModelSwitch) {
-	                              setAgentModelMutation.mutate({ agentId, model: model.id, conversationId })
+	                            if (agentId) {
+	                              // Codex resolves reasoning effort together with
+	                              // the model; keep the UI's `model/effort` form.
+	                              setAgentModelMutation.mutate({
+	                                agentId,
+	                                model: `${model.id}/${nextThinking}`,
+	                                conversationId,
+	                              })
 	                            }
 	                          },
 	                          selectedThinking: selectedCodexThinking,
 	                          onSelectThinking: (thinking) => {
 	                            setSelectedConversationCodexThinking(thinking)
 	                            setLastSelectedCodexThinking(thinking)
+	                            if (agentId) {
+	                              setAgentModelMutation.mutate({
+	                                agentId,
+	                                model: `${selectedCodexModel.id}/${thinking}`,
+	                                conversationId,
+	                              })
+	                            }
 	                          },
 	                          isConnected: false,
 	                        }}

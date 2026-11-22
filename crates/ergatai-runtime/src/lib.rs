@@ -68,6 +68,7 @@ pub mod backends;
 
 // Output publisher trait
 pub mod interrupt_event_publisher;
+pub mod launch;
 pub mod output_publisher;
 
 // Runtime facade

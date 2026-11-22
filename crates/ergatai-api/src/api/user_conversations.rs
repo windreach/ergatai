@@ -1236,6 +1236,47 @@ pub async fn get_initial_prompt(
     }
 }
 
+/// GET /api/v1/conversations/{id}/launch-settings
+///
+/// Returns the durable model/provider selection used by spawn/resume. `null`
+/// means the conversation has no explicit setting yet and the backend will
+/// resolve a provider/profile/native default.
+#[utoipa::path(
+    get,
+    path = "/api/v1/conversations/{id}/launch-settings",
+    tag = "Conversations",
+    params(("id" = String, Path, description = "Conversation ID")),
+    responses(
+        (status = 200, description = "Durable launch settings or null", body = Option<crate::user_data_db::ConversationLaunchSettings>),
+        (status = 404, description = "Conversation not found", body = crate::api::ApiError),
+        (status = 500, description = "Internal server error", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_conversation_launch_settings(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    let conversation_id =
+        match crate::http_error::parse_typed_id::<ConversationId>(&id, "Conversation") {
+            Ok(id) => id,
+            Err((status, json)) => return (status, json).into_response(),
+        };
+
+    match tokio::task::spawn_blocking(move || {
+        crate::user_data_db::conversation_launch_settings::get(conversation_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(settings))) => (StatusCode::OK, Json(settings)).into_response(),
+        Ok(Ok(None)) => (StatusCode::OK, Json(serde_json::Value::Null)).into_response(),
+        Ok(Err(error)) => {
+            crate::http_error::internal(error, "get_conversation_launch_settings").into_response()
+        }
+        Err(error) => crate::http_error::internal(error, "get_conversation_launch_settings_join")
+            .into_response(),
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/conversations/{id}/file-changes",

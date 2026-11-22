@@ -1,0 +1,7 @@
+[advisories]
+# rmcp 2.x is required by agent-client-protocol-rmcp (upstream still on rmcp 3.4).
+# Remove these ignores once upstream supports rmcp >= 3.9.
+ignore = [
+    "RUSTSEC-2026-0462",
+    "RUSTSEC-2026-0457",
+]

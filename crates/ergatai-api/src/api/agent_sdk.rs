@@ -1,47 +1,31 @@
 use axum::extract::{Path, Query};
 use axum::Json;
-use lru::LruCache;
+use ergatai_error::ConversationId;
 use serde::Deserialize;
-use std::num::NonZeroUsize;
-use std::sync::LazyLock;
-use std::sync::Mutex;
 
-/// Maximum number of conversation model overrides to keep in memory.
-/// Oldest entries are evicted when this limit is reached (LRU policy).
-const CONVERSATION_MODEL_CACHE_SIZE: usize = 1000;
+use crate::services::agent_launch::{settings, ModelSelection, ModelSource};
 
-fn conversation_model_store() -> &'static Mutex<LruCache<String, String>> {
-    static STORE: LazyLock<Mutex<LruCache<String, String>>> = LazyLock::new(|| {
-        Mutex::new(LruCache::new(
-            NonZeroUsize::new(CONVERSATION_MODEL_CACHE_SIZE).unwrap(),
-        ))
-    });
-    &STORE
-}
-
-pub fn set_conversation_model_override(conv: &str, model: &str) {
-    if let Ok(mut g) = conversation_model_store().lock() {
-        g.put(conv.to_string(), model.to_string());
-    }
-}
-
-pub fn get_conversation_model_override(conv: &str) -> Option<String> {
-    // LruCache::get requires &mut self to update access order
-    conversation_model_store().lock().ok()?.get(conv).cloned()
-}
-
-pub async fn apply_model_override(agent_id: &str, conversation_id: &str) {
-    if let Some(model) = get_conversation_model_override(conversation_id) {
-        let body = SwitchModelRequest {
-            model,
-            session_id: None,
-            conversation_id: None,
-        };
-        let result = switch_model(Path(agent_id.to_string()), Json(body)).await;
-        // Log if the switch returned an error in the JSON response
-        if let Some(error) = result.0.get("error") {
-            tracing::warn!(%agent_id, %conversation_id, %error, "Failed to apply model override");
-        }
+/// Persist an explicit user selection to the durable conversation settings.
+/// This is the source of truth for later spawn/resume, independent of the
+/// legacy in-memory override.
+fn persist_conversation_selection(conversation_id: &str, profile_name: Option<&str>, model: &str) {
+    let Ok(conversation_id) = ConversationId::decode(conversation_id) else {
+        return;
+    };
+    let selection = ModelSelection::new(model);
+    if let Err(error) = settings::save(
+        conversation_id,
+        profile_name,
+        &selection,
+        ModelSource::ConversationUser,
+        None,
+    ) {
+        tracing::warn!(
+            conversation_id = %conversation_id,
+            model = %model,
+            error = %error,
+            "Failed to persist conversation model selection"
+        );
     }
 }
 
@@ -94,7 +78,12 @@ pub async fn switch_model(
     if agent_info.is_none() {
         if let Some(conv) = body.conversation_id.as_deref() {
             if !body.model.trim().is_empty() {
-                set_conversation_model_override(conv, body.model.trim());
+                let model = body.model.trim().to_string();
+                let conv_owned = conv.to_string();
+                let _ = tokio::task::spawn_blocking(move || {
+                    persist_conversation_selection(&conv_owned, None, &model)
+                })
+                .await;
                 return Json(serde_json::json!({
                     "ok": true,
                     "recorded": true,
@@ -126,7 +115,18 @@ pub async fn switch_model(
 
     // Runtime model switching is performed in-process by the running ACP agent.
     // SDK-based switching is intentionally not used for runtime mutation.
-    let result = match crate::services::agent_service::set_agent(&agent_id, &body.model).await {
+    let conversation_id = body
+        .conversation_id
+        .as_deref()
+        .and_then(|value| ConversationId::decode(value).ok());
+    let result = match crate::services::agent_service::set_agent_with_context(
+        &agent_id,
+        &body.model,
+        conversation_id,
+        "user",
+    )
+    .await
+    {
         Ok(_) => serde_json::json!({
             "ok": true,
             "via": "acp",
@@ -164,10 +164,17 @@ pub async fn switch_model(
     }
 
     // Persist the selected model for this conversation so a later auto-resume
-    // can re-apply it to the restored agent.
+    // can re-apply it to the restored agent. The DB row is authoritative; the
+    // LRU remains only for the legacy resume path until Phase 2 removes it.
     if result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         if let Some(conv) = body.conversation_id.as_deref() {
-            set_conversation_model_override(conv, body.model.trim());
+            let model = body.model.trim().to_string();
+            let conv_owned = conv.to_string();
+            let profile = profile_name.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                persist_conversation_selection(&conv_owned, profile.as_deref(), &model)
+            })
+            .await;
         }
     }
 

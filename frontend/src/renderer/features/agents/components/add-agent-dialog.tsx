@@ -2,16 +2,19 @@ import i18n from "@/lib/i18n"
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { useAtomValue } from "jotai"
 import {
   Check as CheckIcon,
   ChevronDown,
   CircleAlert,
+  Loader2,
   Upload,
 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { trpc } from "@/lib/trpc"
 import {
   Dialog,
   DialogContent,
@@ -28,13 +31,15 @@ import {
 import { cn } from "@/lib/utils"
 import {
   CORE_AGENT_OPTIONS,
+  resolveAgentRuntimeId,
   type CoreAgentId,
   type CoreAgentOption,
   type AgentRegistration,
 } from "../lib/agent-contract-api"
 import { agentContractApi } from "../lib/agent-contract-api"
+import { registeredAgentsAtom } from "../atoms"
 import { getCoreAgentIcon } from "./core-agent-selector"
-import { AgentConnectionsSection } from "./agent-connections-section"
+import { RuntimeProviderSelector } from "./runtime-provider-selector"
 
 interface AddAgentDialogProps {
   open: boolean
@@ -59,6 +64,14 @@ export function AddAgentDialog({
     useState<CoreAgentId>("claude-code")
   const [popoverOpen, setPopoverOpen] = useState(false)
   const [agentOptions, setAgentOptions] = useState<CoreAgentOption[]>(CORE_AGENT_OPTIONS)
+  const [selectedProviderConnectionId, setSelectedProviderConnectionId] =
+    useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const registeredAgents = useAtomValue(registeredAgentsAtom)
+  const resolveIconId = (agentId: CoreAgentId) =>
+    resolveAgentRuntimeId(registeredAgents, agentId) ?? agentId
+  const utils = trpc.useUtils()
+  const copyProviderMutation = trpc.ergatai.copyProviderConnection.useMutation()
 
   // Fetch agent options from backend when dialog opens
   useEffect(() => {
@@ -88,7 +101,18 @@ export function AddAgentDialog({
     setSelectedAgentId("claude-code")
     // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setPopoverOpen(false)
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
+    setSelectedProviderConnectionId(null)
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
+    setIsSubmitting(false)
   }, [open])
+
+  // A provider connection belongs to one runtime; selecting another runtime
+  // invalidates the previous choice.
+  useEffect(() => {
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
+    setSelectedProviderConnectionId(null)
+  }, [selectedAgentId])
 
   // react-doctor-disable-next-line no-effect-chain
   useEffect(() => {
@@ -105,7 +129,10 @@ export function AddAgentDialog({
     agentOptions.find((agent) => agent.id === selectedAgentId) ??
     agentOptions[0] ??
     CORE_AGENT_OPTIONS[0]
-  const SelectedIcon = getCoreAgentIcon(selectedAgentId)
+  const SelectedIcon = getCoreAgentIcon(
+    selectedAgentId,
+    resolveIconId(selectedAgentId),
+  )
   const previewName = agentName.trim() || selectedAgent.name
 
   const handleAvatarChange = useCallback(
@@ -138,6 +165,7 @@ export function AddAgentDialog({
   const handleSubmit = useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault()
+      if (isSubmitting) return
 
       // 使用 fullCommand 进行验证和提交
       const commandToSubmit = fullCommand.trim() || startupCommand.trim()
@@ -147,6 +175,7 @@ export function AddAgentDialog({
       }
 
       const name = agentName.trim() || selectedAgent.name
+      setIsSubmitting(true)
 
       try {
         // The backend owns persistent profile IDs; the UI only keeps a local view.
@@ -158,8 +187,28 @@ export function AddAgentDialog({
           avatarUrl || undefined,
         )
 
+        // Copy a selected provider into the new profile. This leaves the
+        // runtime's own connections untouched.
+        if (selectedProviderConnectionId) {
+          try {
+            await copyProviderMutation.mutateAsync({
+              id: selectedProviderConnectionId,
+              agentId: name,
+            })
+            void utils.ergatai.listProviderConnections.invalidate()
+          } catch (copyError) {
+            toast.error("Agent created, but copying the provider failed", {
+              description:
+                copyError instanceof Error
+                  ? copyError.message
+                  : "You can add a provider later from Manage Agents.",
+            })
+          }
+        }
+
         const newAgent: AgentRegistration = {
           id: registered.id,
+          profileName: name,
           name,
           runtimeId: selectedAgent.id,
           startupCommand: commandToSubmit,
@@ -173,9 +222,23 @@ export function AddAgentDialog({
         toast.error("Agent registration failed", {
           description: err instanceof Error ? err.message : "Please try again",
         })
+      } finally {
+        setIsSubmitting(false)
       }
     },
-    [onCreateAgent, onOpenChange, selectedAgent, fullCommand, startupCommand, agentName, avatarUrl],
+    [
+      agentName,
+      avatarUrl,
+      copyProviderMutation,
+      fullCommand,
+      isSubmitting,
+      onCreateAgent,
+      onOpenChange,
+      selectedAgent,
+      selectedProviderConnectionId,
+      startupCommand,
+      utils.ergatai.listProviderConnections,
+    ],
   )
 
   return (
@@ -325,7 +388,10 @@ export function AddAgentDialog({
                   </PopoverTrigger>
                   <PopoverContent align="start" className="w-80 p-1">
                     {agentOptions.map((agent) => {
-                      const Icon = getCoreAgentIcon(agent.id)
+                      const Icon = getCoreAgentIcon(
+                        agent.id,
+                        resolveIconId(agent.id),
+                      )
                       const defaultCommand = agent.defaultCommand ?? ""
                       const isSelected = agent.id === selectedAgentId
 
@@ -362,11 +428,13 @@ export function AddAgentDialog({
               </div>
             </div>
 
-            {/* Right column: connections owned by this agent */}
+            {/* Right column: initial provider choice for the new agent */}
             <div className="rounded-xl border border-border/60 p-3 md:min-h-0 md:overflow-y-auto">
-              <AgentConnectionsSection
-                agentId={selectedAgentId}
-                agentDisplayName={selectedAgent.name}
+              <RuntimeProviderSelector
+                runtimeAgentId={selectedAgentId}
+                runtimeDisplayName={selectedAgent.name}
+                selectedConnectionId={selectedProviderConnectionId}
+                onSelect={setSelectedProviderConnectionId}
               />
             </div>
           </div>
@@ -398,13 +466,18 @@ export function AddAgentDialog({
             variant="outline"
             type="button"
             onClick={() => onOpenChange(false)}
+            disabled={isSubmitting}
           >
             Cancel
           </Button>
           <Button
             type="submit"
             form="create-agent-form"
+            disabled={isSubmitting}
           >
+            {isSubmitting ? (
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+            ) : null}
             Create agent
           </Button>
         </DialogFooter>

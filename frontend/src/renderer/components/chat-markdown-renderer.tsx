@@ -1,3 +1,4 @@
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import i18n from "@/lib/i18n"
 import { cn } from "../lib/utils"
 import { memo, useState, useCallback, useEffect, useMemo, type ComponentPropsWithoutRef, type ReactNode, type JSX } from "react"

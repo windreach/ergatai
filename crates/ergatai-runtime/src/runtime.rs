@@ -1000,6 +1000,19 @@ impl AgentRuntime {
     /// - Failed to launch new agent
     /// - Agent does not become ready within 5 seconds
     pub async fn resume_agent(&self, suspended_id: &str) -> ErgataiResult<String> {
+        self.resume_agent_with_overrides(suspended_id, None).await
+    }
+
+    /// Resume a suspended agent with caller-supplied launch overrides.
+    ///
+    /// The high-level launch service re-resolves provider credentials, transport,
+    /// and work directory before calling this method. The suspend store itself
+    /// never contains secrets.
+    pub async fn resume_agent_with_overrides(
+        &self,
+        suspended_id: &str,
+        overrides: Option<crate::launch::ResumeOverrides>,
+    ) -> ErgataiResult<String> {
         // H3 FIX: Validate suspended record exists BEFORE acquiring per-agent lock
         // to prevent memory leak from creating locks for non-existent agents
         let suspended_exists = self.suspend_store.load_suspended(suspended_id)?.is_some();
@@ -1040,6 +1053,17 @@ impl AgentRuntime {
                 ))
             })?;
 
+        // The high-level service re-resolves provider credentials and other
+        // launch context before calling us. Merge those non-persisted overrides
+        // into the saved environment instead of trusting the suspend record for
+        // secrets.
+        let crate::launch::ResumeOverrides {
+            env: override_env,
+            transport: override_transport,
+            work_dir: override_work_dir,
+        } = overrides.unwrap_or_default();
+        environment.extend(override_env);
+
         // Carry the suspended ACP session into the new runtime process. The
         // backend uses this hint to attempt `session/load`; if the adapter no
         // longer owns that session it falls back to a new session.
@@ -1050,10 +1074,11 @@ impl AgentRuntime {
             );
         }
 
-        // 3. Construct WorkspaceSpec with saved metadata
+        // 3. Construct WorkspaceSpec with saved metadata plus caller overrides
         let workspace_spec = crate::types::WorkspaceSpec {
             id: suspended.workspace_id.clone(),
-            work_dir: std::path::PathBuf::from(&suspended.work_dir),
+            work_dir: override_work_dir
+                .unwrap_or_else(|| std::path::PathBuf::from(&suspended.work_dir)),
             env: environment,
             resources: crate::types::ResourceLimits::default(),
             capture_thoughts: false,
@@ -1116,7 +1141,7 @@ impl AgentRuntime {
                 None, // chat_id (the durable conversation binding is restored below)
                 Some(&suspended.conversation_id),
                 Some(&suspended.profile_name),
-                None,                // transport (default stdio)
+                override_transport.as_deref(),
                 Some(&suspended.id), // reuse agent id for stable identity
             )
             .await?;
