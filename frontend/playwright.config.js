@@ -1,7 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
-  testDir: './playwright-tests',
+  testDir: './e2e-tests',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
@@ -15,7 +15,7 @@ export default defineConfig({
   projects: [
     {
       name: 'electron',
-      testMatch: /.*\.spec\.ts/,
+      testMatch: /.*\.test\.ts/,
     },
   ],
 });
