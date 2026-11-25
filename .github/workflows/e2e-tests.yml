@@ -43,9 +43,9 @@ jobs:
     - name: Start backend
       run: |
         cargo build --release -p ergatai-api --bin ergatai-server
-        cargo run -p ergatai-api --bin ergatai-server -- --port 3000 &
+        ./target/release/ergatai-server --port 3000 &
         # 等待后端就绪
-        timeout=60
+        timeout=120
         while ! curl -s http://localhost:3000/health > /dev/null; do
           sleep 1
           timeout=$((timeout - 1))
