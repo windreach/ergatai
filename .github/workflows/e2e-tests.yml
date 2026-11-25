@@ -16,7 +16,7 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Install system dependencies
-      run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config xvfb dbus-x11
 
     - name: Install nats-server
       run: |
@@ -61,7 +61,7 @@ jobs:
         # 默认就是 headless 模式，无需额外配置
         CI: true
       run: |
-        bunx playwright test e2e-tests/tests/ipc/ \
+        xvfb-run -a bunx playwright test e2e-tests/tests/ipc/ \
           --reporter=html,line \
           --output=test-results
 
