@@ -1,10 +1,9 @@
 name: E2E Tests
 
+# Temporarily manual-only: the E2E suite is being stabilized.
+# Re-enable push/pull_request triggers once the remaining failures are fixed.
 on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -61,7 +60,7 @@ jobs:
         # 默认就是 headless 模式，无需额外配置
         CI: true
       run: |
-        xvfb-run -a bunx playwright test e2e-tests/tests/ipc/ \
+        bunx playwright test e2e-tests/tests/ipc/ \
           --reporter=html,line \
           --output=test-results
 

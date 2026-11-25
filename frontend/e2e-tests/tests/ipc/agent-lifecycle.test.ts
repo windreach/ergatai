@@ -27,7 +27,7 @@ describe('E2E: Agent 生命周期', () => {
   afterAll(async () => {
     // 清理测试创建的 agent 文件
     const userAgentsDir = path.join(os.homedir(), '.claude', 'agents')
-    for (const name of ['test-agent', 'list-test-agent', 'delete-test-agent', 'agent-1', 'agent-2', 'agent-3']) {
+    for (const name of ['test-agent', 'test-list-agent', 'test-delete-agent', 'test-agent-1', 'test-agent-2', 'test-agent-3']) {
       await fs.unlink(path.join(userAgentsDir, `${name}.md`)).catch(() => {})
     }
     await electron.close()
@@ -36,7 +36,7 @@ describe('E2E: Agent 生命周期', () => {
   beforeEach(async () => {
     // 清理测试创建的 agent 文件
     const userAgentsDir = path.join(os.homedir(), '.claude', 'agents')
-    for (const name of ['test-agent', 'list-test-agent', 'delete-test-agent', 'agent-1', 'agent-2', 'agent-3']) {
+    for (const name of ['test-agent', 'test-list-agent', 'test-delete-agent', 'test-agent-1', 'test-agent-2', 'test-agent-3']) {
       await fs.unlink(path.join(userAgentsDir, `${name}.md`)).catch(() => {})
     }
   })
@@ -60,7 +60,7 @@ describe('E2E: Agent 生命周期', () => {
     test('创建的 agent 应该出现在 agent 列表中', async () => {
       await page.evaluate(async () => {
         await (window as any).trpc.test.agents.create.mutate({
-          name: 'list-test-agent',
+          name: 'test-list-agent',
           description: 'List test',
           prompt: 'Test prompt',
           source: 'user',
@@ -72,7 +72,7 @@ describe('E2E: Agent 生命周期', () => {
       })
 
       const names = agents.map((a: any) => a.name)
-      expect(names).toContain('list-test-agent')
+      expect(names).toContain('test-list-agent')
     })
   })
 
@@ -80,7 +80,7 @@ describe('E2E: Agent 生命周期', () => {
     test('应该能够删除 agent', async () => {
       await page.evaluate(async () => {
         await (window as any).trpc.test.agents.create.mutate({
-          name: 'delete-test-agent',
+          name: 'test-delete-agent',
           description: 'Delete test',
           prompt: 'Test prompt',
           source: 'user',
@@ -88,14 +88,14 @@ describe('E2E: Agent 生命周期', () => {
       })
 
       // 验证文件存在
-      const agentPath = path.join(os.homedir(), '.claude', 'agents', 'delete-test-agent.md')
+      const agentPath = path.join(os.homedir(), '.claude', 'agents', 'test-delete-agent.md')
       let exists = await fs.access(agentPath).then(() => true).catch(() => false)
       expect(exists).toBe(true)
 
       // 删除 agent (需要 source 字段)
       await page.evaluate(async () => {
         await (window as any).trpc.test.agents.delete.mutate({
-          name: 'delete-test-agent',
+          name: 'test-delete-agent',
           source: 'user',
         })
       })
@@ -109,7 +109,7 @@ describe('E2E: Agent 生命周期', () => {
         return await (window as any).trpc.test.agents.list.query()
       })
       const names = agents.map((a: any) => a.name)
-      expect(names).not.toContain('delete-test-agent')
+      expect(names).not.toContain('test-delete-agent')
     })
   })
 
@@ -117,19 +117,19 @@ describe('E2E: Agent 生命周期', () => {
     test('应该能够创建多个 agent', async () => {
       await page.evaluate(async () => {
         await (window as any).trpc.test.agents.create.mutate({
-          name: 'agent-1',
+          name: 'test-agent-1',
           description: 'Agent 1',
           prompt: 'Prompt 1',
           source: 'user',
         })
         await (window as any).trpc.test.agents.create.mutate({
-          name: 'agent-2',
+          name: 'test-agent-2',
           description: 'Agent 2',
           prompt: 'Prompt 2',
           source: 'user',
         })
         await (window as any).trpc.test.agents.create.mutate({
-          name: 'agent-3',
+          name: 'test-agent-3',
           description: 'Agent 3',
           prompt: 'Prompt 3',
           source: 'user',
@@ -141,9 +141,9 @@ describe('E2E: Agent 生命周期', () => {
       })
 
       const names = agents.map((a: any) => a.name)
-      expect(names).toContain('agent-1')
-      expect(names).toContain('agent-2')
-      expect(names).toContain('agent-3')
+      expect(names).toContain('test-agent-1')
+      expect(names).toContain('test-agent-2')
+      expect(names).toContain('test-agent-3')
     })
   })
 })

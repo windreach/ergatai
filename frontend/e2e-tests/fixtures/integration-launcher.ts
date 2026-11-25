@@ -122,7 +122,12 @@ export async function launchIntegrationElectron(): Promise<{
   page: Page
   backendProcess: ChildProcess | null
 }> {
-  const display = await ensureXvfb()
+  const useXvfb = process.env.USE_XVFB === 'true'
+  const useHeadless = process.env.USE_HEADLESS !== 'false'
+  let display = process.env.DISPLAY
+  if (useXvfb) {
+    display = await ensureXvfb()
+  }
   await startBackend()
 
   // __dirname is e2e-tests/fixtures, app is at frontend/
@@ -131,11 +136,17 @@ export async function launchIntegrationElectron(): Promise<{
   console.log('🚀 启动 Electron (连接真实后端)...')
 
   const electronApp = await electron.launch({
-    args: [appPath, '--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu'],
+    args: [
+      appPath,
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-gpu',
+      ...(useHeadless ? ['--headless=new'] : []),
+    ],
     cwd: appPath,
     env: {
       ...process.env,
-      DISPLAY: display,
+      ...(display ? { DISPLAY: display } : {}),
       ERGATAI_API_URL,
       ERGATAI_API_TOKEN: TEST_API_TOKEN,
       NODE_ENV: 'test',

@@ -220,6 +220,7 @@ impl PermissionHandler for InteractivePermissionHandler {
         let raw_input = request.tool_call.fields.raw_input.as_ref();
 
         let mode = get_permission_mode();
+        let autonomous = crate::permission_service::is_agent_autonomous(agent_id);
 
         // Determine whether this request touches anything outside the workspace
         // project root. This drives the path-aware ask/auto policy below.
@@ -228,11 +229,21 @@ impl PermissionHandler for InteractivePermissionHandler {
         // Bash / shell (Execute) is never auto-approved in Auto mode — it always
         // goes through ask, even when all paths are inside the workspace.
         // Search (glob/grep) is read-only, so it is auto-approved in Auto mode.
-        let force_ask = match mode {
-            PermissionMode::FullAccess => false,
-            PermissionMode::AutoBash => outside || kind == ToolKind::Fetch,
-            PermissionMode::Auto => outside || kind == ToolKind::Execute || kind == ToolKind::Fetch,
-            PermissionMode::Ask => outside || !is_auto_approve_kind(&kind),
+        //
+        // Autonomous DAG agents have no interactive user to answer the prompt,
+        // so any in-workspace operation is approved automatically; file-lock
+        // checks for write/edit/execute still apply in the auto path below.
+        let force_ask = if autonomous {
+            outside
+        } else {
+            match mode {
+                PermissionMode::FullAccess => false,
+                PermissionMode::AutoBash => outside || kind == ToolKind::Fetch,
+                PermissionMode::Auto => {
+                    outside || kind == ToolKind::Execute || kind == ToolKind::Fetch
+                }
+                PermissionMode::Ask => outside || !is_auto_approve_kind(&kind),
+            }
         };
 
         if !force_ask {
@@ -887,6 +898,49 @@ mod tests {
         let decision1 = PermissionDecision::select("option-1".to_string());
         let decision2 = decision1.clone();
         assert_eq!(decision1.option_id, decision2.option_id);
+    }
+
+    #[tokio::test]
+    async fn test_autonomous_agent_auto_approves_execute() {
+        use agent_client_protocol::schema::v1::{
+            PermissionOption, PermissionOptionKind, ToolCallId, ToolCallUpdate,
+            ToolCallUpdateFields,
+        };
+
+        let agent_id = "agent-autonomous-permission-test";
+        crate::permission_service::mark_agent_autonomous(agent_id);
+
+        let mut fields = ToolCallUpdateFields::default();
+        fields.kind = Some(ToolKind::Execute);
+        fields.raw_input = Some(serde_json::json!({
+            "command": "find . -maxdepth 1",
+            "cwd": "/tmp"
+        }));
+        let tool_call = ToolCallUpdate::new(ToolCallId::from("test-tool-call"), fields);
+        let request = RequestPermissionRequest::new(
+            "test-session",
+            tool_call,
+            vec![
+                PermissionOption::new(
+                    "reject".to_string(),
+                    "Reject".to_string(),
+                    PermissionOptionKind::RejectOnce,
+                ),
+                PermissionOption::new(
+                    "allow".to_string(),
+                    "Allow".to_string(),
+                    PermissionOptionKind::AllowOnce,
+                ),
+            ],
+        );
+
+        let decision = InteractivePermissionHandler::new()
+            .evaluate(agent_id, "session-1", &request)
+            .await;
+
+        crate::permission_service::unmark_agent_autonomous(agent_id);
+
+        assert_eq!(decision.option_id, Some("allow".to_string()));
     }
 
     #[test]

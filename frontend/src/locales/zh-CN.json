@@ -343,7 +343,7 @@
     "fullAccessWarning": "Full Access 会自动批准所有操作并绕过文件锁检查——这个模式可以完全访问电脑。确定要开启吗？",
     "askDescription": "风险操作前询问",
     "autoDescription": "自动批准操作",
-    "autoBashDescription": "自动批准操作（含 Bash），同时保留文件锁"
+    "autoBashDescription": "自动同意 Bash。Bash 操作可能变更文件，导致修改被覆盖"
   },
   "API endpoint URL": "API 端点 URL",
   "API key": "API 密钥",

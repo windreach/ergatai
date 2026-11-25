@@ -29,13 +29,45 @@
 
 ---
 
+## 演示
+
+<div align="center">
+<img src="demo/videos/showdemo.gif" alt="Ergatai 演示" width="900">
+</div>
+
 ## 截图
 
-<!-- TODO: 替换为真实截图 -->
-![桌面 UI](docs/screenshots/desktop.png)
-![Agent 协作](docs/screenshots/collaboration.png)
-![DAG 编排](docs/screenshots/dag.png)
-![终端面板](docs/screenshots/terminals.png)
+<table>
+<tr>
+<td width="33%" valign="top">
+
+### 🖥️ 桌面工作区
+
+主工作区：agent 对话、文件树与终端面板。
+
+<img src="demo/pictures/desktop-UI.png" alt="桌面 UI" width="100%">
+
+</td>
+<td width="33%" valign="top">
+
+### 🔍 差异审阅
+
+agent 修改落盘前的并排 diff 审阅。
+
+<img src="demo/pictures/diff-UI.png" alt="差异 UI" width="100%">
+
+</td>
+<td width="33%" valign="top">
+
+### ⚙️ 管理 agent 与工作区
+
+agent、工作区与权限管理面板。
+
+<img src="demo/pictures/manage-UI.png" alt="管理 UI" width="100%">
+
+</td>
+</tr>
+</table>
 
 ---
 
@@ -69,7 +101,7 @@ ACP，`opencode acp` 则原生支持 ACP，登录与订阅仍在本机复用。�
 MCP 工具按 Agent 会话注入：优先使用 HTTP `/mcp/{agent}`；不支持 HTTP MCP 的 Agent 走 MCP-over-ACP，
 再退回 `mcp-stdio-adapter`。
 
-Agent 启动、Prompt/输出、消息、权限与 DAG 的时序数据流见 [`docs/architecture.md`](./docs/architecture.md)。
+Agent 启动、Prompt/输出、消息、权限与 DAG 的时序数据流见 [`docs/architecture.zh-CN.md`](./docs/architecture.zh-CN.md)。
 
 ```mermaid
 flowchart LR
@@ -113,6 +145,19 @@ flowchart LR
 | API | `crates/ergatai-api` | REST + MCP + SSE + 指标、权限代理 |
 | 应用 | `frontend/` | Electron 主进程（tRPC/IPC + HTTP/SSE）+ React 渲染层 |
 
+## 下载与构建
+
+预编译的便携包发布在 [GitHub Releases](https://github.com/windreach/ergatai/releases) 页面（tag `v*`），
+每个 release 包含 `ergatai-portable-*.zip`（Linux / macOS / Windows）与 `SHA256SUMS.txt`。
+
+本地构建：
+
+- 便携包：`./scripts/bundle.sh` → `frontend/release/ergatai-portable-*.zip`
+- 打包应用：`./scripts/package.sh --platform linux|mac|win|all`
+- 手动：`cargo build --workspace` + `cd frontend && bun install && bun run build`
+
+<sub>目前仅 Linux 经过实测；Windows 与 macOS 由 CI 构建，但尚未验证。</sub>
+
 ## 快速开始
 
 ### 前置条件
@@ -120,6 +165,12 @@ flowchart LR
 - Rust **1.88+**（见 `Cargo.toml` 中的 `rust-version`）
 - Node.js **20+**（桌面前端）
 - `cargo`、`bun`（不支持 npm，详见 `frontend/package.json` 的 overrides）
+- `nats-server` **2.10+** —— 后端会将其作为子进程拉起（并非静态链接）。请安装并确保在 `PATH` 上，或通过 `ERGATAI_NATS_BINARY` 指向二进制。Debian/Ubuntu 的包会安装到 `/usr/sbin/nats-server`，常不在普通用户的 `PATH` 上：
+  ```bash
+  sudo apt-get install nats-server
+  # 若之后找不到 nats-server：
+  export ERGATAI_NATS_BINARY=/usr/sbin/nats-server
+  ```
 
 ### 构建与运行
 
@@ -191,7 +242,7 @@ cargo run -p ergatai-api -- --tls-cert cert.pem --tls-key key.pem
 - **防御性超时** — 在 `node_timeout_secs` 的 50% 警告、80% 升级、100% 失败。
 - **源码无密钥** — 认证全部通过环境变量（`ERGATAI_API_TOKEN`）或 CLI 标志。
 
-完整数据流图、防御性控制与 NATS Subject 命名见 [`docs/architecture.md`](./docs/architecture.md)。
+完整数据流图、防御性控制与 NATS Subject 命名见 [`docs/architecture.zh-CN.md`](./docs/architecture.zh-CN.md)。
 ## 测试
 
 ```bash
@@ -232,6 +283,43 @@ cd frontend && bun run ts:check
 | `--tls-cert` / `--tls-key` | — | PEM TLS 证书 + 密钥 |
 | `--sse-keep-alive` | `15` | SSE 保活间隔 |
 
+## 常见问题
+
+<details>
+<summary><b>Q1：Ergatai 能否完全阻止 agent 并发修改覆盖？</b></summary>
+
+能 —— 只要权限模式设置为 `ask` 或 `auto`，项目就能完全控制。原因是 agent 通过原生编辑工具（即非 bash）修改文件时，会经过 ACP 权限闸门，Ergatai 会在申请阶段打上文件锁，从而使并发修改串行化，只有第一个持有锁的 agent 能成功。直接通过 bash 进行的修改会绕过该闸门，因此更难防御。
+
+</details>
+
+<details>
+<summary><b>Q2：项目是否会采用 git worktree 隔离？</b></summary>
+
+会。不同 chat 运行在不同的 worktree 上，但一个 worktree 通常会运行多个 agent。项目的权限模型会控制 worktree 内的并发修改，防止 agent 互相覆盖。
+
+</details>
+
+<details>
+<summary><b>Q3：我可以免费使用这个项目吗？</b></summary>
+
+可以。项目当前采用 Apache 2.0 开源协议。
+
+</details>
+
+<details>
+<summary><b>Q4：当前项目稳定吗？</b></summary>
+
+并不稳定，项目还存在许多缺陷。
+
+</details>
+
+<details>
+<summary><b>Q5：项目支持 Windows 和 macOS 吗？</b></summary>
+
+其他平台未经实测，无法确定运行情况。
+
+</details>
+
 ## 贡献
 
 欢迎贡献。提交 PR 前：
@@ -240,7 +328,7 @@ cd frontend && bun run ts:check
 2. 运行 `cd frontend && bun run check`
 3. 为新行为添加测试（新模块目标覆盖率 ≥ 80%）
 4. 提交信息遵循约定式提交（`feat:`、`fix:`、`refactor:` …）
-5. 底层实现与不变量见 `CLAUDE.md`（面向编码 Agent 的仓库说明）及 [`docs/architecture.md`](./docs/architecture.md)。
+5. 底层实现与不变量见 `CLAUDE.md`（面向编码 Agent 的仓库说明）及 [`docs/architecture.zh-CN.md`](./docs/architecture.zh-CN.md)。
 
 ## 许可证
 

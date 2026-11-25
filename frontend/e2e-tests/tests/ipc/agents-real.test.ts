@@ -36,7 +36,7 @@ describe('IPC: Agents Router (Real)', () => {
       for (const agent of agents) {
         expect(typeof agent.name).toBe('string')
         expect(typeof agent.source).toBe('string')
-        expect(['user', 'project', 'plugin']).toContain(agent.source)
+        expect(['user', 'project', 'plugin', 'backend']).toContain(agent.source)
         expect(typeof agent.path).toBe('string')
       }
     })

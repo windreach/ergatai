@@ -1,7 +1,7 @@
 {
   "language": {
-    "storedPreference": null,
-    "navigatorLanguage": "en-US",
+    "storedPreference": "\"en\"",
+    "navigatorLanguage": "zh-CN",
     "documentLanguage": "en"
   },
   "buttons": [
@@ -36,7 +36,7 @@
       "aria": "Minimize",
       "title": null,
       "text": "",
-      "x": 1280,
+      "x": 1029,
       "y": 0,
       "w": 40,
       "h": 32
@@ -45,7 +45,7 @@
       "aria": "Maximize",
       "title": null,
       "text": "",
-      "x": 1320,
+      "x": 1069,
       "y": 0,
       "w": 40,
       "h": 32
@@ -54,88 +54,16 @@
       "aria": "Close",
       "title": null,
       "text": "",
-      "x": 1360,
+      "x": 1109,
       "y": 0,
       "w": 40,
       "h": 32
     },
     {
-      "aria": null,
-      "title": null,
-      "text": "Ergatai",
-      "x": 8,
-      "y": 72,
-      "w": 82,
-      "h": 24
-    },
-    {
-      "aria": null,
-      "title": null,
-      "text": "New Workspace",
-      "x": 8,
-      "y": 140,
-      "w": 208,
-      "h": 28
-    },
-    {
-      "aria": null,
-      "title": null,
-      "text": "Manage Agents",
-      "x": 8,
-      "y": 176,
-      "w": 208,
-      "h": 28
-    },
-    {
-      "aria": null,
-      "title": null,
-      "text": "Workspaces",
-      "x": 8,
-      "y": 216,
-      "w": 208,
-      "h": 28
-    },
-    {
-      "aria": null,
-      "title": null,
-      "text": "Default Workspace chats",
-      "x": 8,
-      "y": 250,
-      "w": 178,
-      "h": 36
-    },
-    {
-      "aria": "Manage workspace Default Workspace",
-      "title": null,
-      "text": "",
-      "x": 190,
-      "y": 258,
-      "w": 22,
-      "h": 22
-    },
-    {
-      "aria": null,
-      "title": null,
-      "text": "Archived Workspaces",
-      "x": 8,
-      "y": 286,
-      "w": 208,
-      "h": 28
-    },
-    {
-      "aria": "Settings",
+      "aria": "Open chats pane",
       "title": null,
       "text": "",
       "x": 8,
-      "y": 864,
-      "w": 28,
-      "h": 28
-    },
-    {
-      "aria": "Close sidebar",
-      "title": null,
-      "text": "",
-      "x": 391,
       "y": 40,
       "w": 24,
       "h": 24
@@ -143,180 +71,72 @@
     {
       "aria": null,
       "title": null,
-      "text": "New Chat",
-      "x": 232,
-      "y": 140,
-      "w": 183,
-      "h": 28
-    },
-    {
-      "aria": "Manage chat Claude Code",
-      "title": null,
       "text": "",
-      "x": 393,
-      "y": 206,
-      "w": 17,
-      "h": 17
-    },
-    {
-      "aria": "Manage chat 你好",
-      "title": null,
-      "text": "",
-      "x": 393,
-      "y": 254,
-      "w": 17,
-      "h": 17
-    },
-    {
-      "aria": "Manage chat test long message wrapping",
-      "title": null,
-      "text": "",
-      "x": 393,
-      "y": 302,
-      "w": 17,
-      "h": 17
-    },
-    {
-      "aria": "Manage chat test streaming output",
-      "title": null,
-      "text": "",
-      "x": 393,
-      "y": 350,
-      "w": 17,
-      "h": 17
-    },
-    {
-      "aria": "Manage chat test tool call display",
-      "title": null,
-      "text": "",
-      "x": 393,
-      "y": 398,
-      "w": 17,
-      "h": 17
-    },
-    {
-      "aria": "Manage chat 你输出一个计划测试一下文本我看看效果",
-      "title": null,
-      "text": "",
-      "x": 393,
-      "y": 446,
-      "w": 17,
-      "h": 17
-    },
-    {
-      "aria": "Manage chat test long message wrapping",
-      "title": null,
-      "text": "",
-      "x": 393,
-      "y": 494,
-      "w": 17,
-      "h": 17
-    },
-    {
-      "aria": "Manage chat test card response",
-      "title": null,
-      "text": "",
-      "x": 393,
-      "y": 542,
-      "w": 17,
-      "h": 17
-    },
-    {
-      "aria": "Manage chat test conversation rendering",
-      "title": null,
-      "text": "",
-      "x": 393,
-      "y": 590,
-      "w": 17,
-      "h": 17
-    },
-    {
-      "aria": "Manage chat test terminal rendering",
-      "title": null,
-      "text": "",
-      "x": 393,
-      "y": 638,
-      "w": 17,
-      "h": 17
-    },
-    {
-      "aria": "Manage chat test plan",
-      "title": null,
-      "text": "",
-      "x": 393,
-      "y": 686,
-      "w": 17,
-      "h": 17
-    },
-    {
-      "aria": "Manage chat 你好",
-      "title": null,
-      "text": "",
-      "x": 393,
-      "y": 734,
-      "w": 17,
-      "h": 17
-    },
-    {
-      "aria": "Manage chat 11",
-      "title": null,
-      "text": "",
-      "x": 393,
-      "y": 782,
-      "w": 17,
-      "h": 17
-    },
-    {
-      "aria": "Manage chat 11",
-      "title": null,
-      "text": "",
-      "x": 393,
-      "y": 830,
-      "w": 17,
-      "h": 17
-    },
-    {
-      "aria": "Claude Code",
-      "title": "Claude Code",
-      "text": "Claude Code",
-      "x": 581,
-      "y": 498,
-      "w": 136,
-      "h": 28
+      "x": 40,
+      "y": 40,
+      "w": 180,
+      "h": 24
     },
     {
       "aria": null,
-      "title": "qwen3.7-plus ",
-      "text": "qwen3.7-plus",
-      "x": 719,
-      "y": 498,
-      "w": 117,
-      "h": 28
+      "title": "Switch branch",
+      "text": "main",
+      "x": 235,
+      "y": 110,
+      "w": 26,
+      "h": 16
     },
     {
-      "aria": "Auto",
-      "title": "Auto",
-      "text": "Auto",
-      "x": 838,
-      "y": 498,
-      "w": 87,
-      "h": 28
+      "aria": "ExpandIcon",
+      "title": null,
+      "text": "",
+      "x": 851,
+      "y": 189,
+      "w": 24,
+      "h": 24
     },
     {
-      "aria": "Worktree mode",
-      "title": "Worktree mode",
-      "text": "Worktree mode",
-      "x": 988,
-      "y": 498,
-      "w": 151,
-      "h": 28
+      "aria": "Copy",
+      "title": null,
+      "text": "",
+      "x": 235,
+      "y": 569,
+      "w": 26,
+      "h": 26
+    },
+    {
+      "aria": "More",
+      "title": null,
+      "text": "",
+      "x": 853,
+      "y": 571,
+      "w": 22,
+      "h": 22
     },
     {
       "aria": null,
+      "title": "opencode-go/Beam Free ",
+      "text": "opencode-go/Beam Free",
+      "x": 228,
+      "y": 855,
+      "w": 189,
+      "h": 28
+    },
+    {
+      "aria": "AutoBash",
+      "title": "AutoBash",
+      "text": "AutoBash",
+      "x": 418,
+      "y": 855,
+      "w": 119,
+      "h": 28
+    },
+    {
+      "aria": "Attach",
       "title": null,
       "text": "",
-      "x": 1141,
-      "y": 498,
+      "x": 820,
+      "y": 855,
       "w": 28,
       "h": 28
     },
@@ -324,83 +144,65 @@
       "aria": "Send message",
       "title": null,
       "text": "",
-      "x": 1175,
-      "y": 498,
+      "x": 854,
+      "y": 855,
       "w": 28,
       "h": 28
     },
     {
-      "aria": null,
-      "title": null,
-      "text": "Branch main",
-      "x": 577,
-      "y": 543,
-      "w": 137,
-      "h": 28
-    },
-    {
-      "aria": null,
+      "aria": "Open details",
       "title": "Detail",
       "text": "",
-      "x": 1365,
+      "x": 1114,
       "y": 40,
       "w": 32,
       "h": 32
     },
     {
-      "aria": null,
+      "aria": "Files",
       "title": "Files",
       "text": "",
-      "x": 1365,
+      "x": 1114,
       "y": 76,
       "w": 32,
       "h": 32
     },
     {
-      "aria": null,
+      "aria": "Git",
       "title": "Git",
       "text": "",
-      "x": 1365,
+      "x": 1114,
       "y": 112,
       "w": 32,
       "h": 32
     },
     {
-      "aria": null,
-      "title": "Side Chat",
+      "aria": "Changes",
+      "title": "Changes",
       "text": "",
-      "x": 1365,
+      "x": 1114,
       "y": 148,
       "w": 32,
       "h": 32
     },
     {
-      "aria": null,
-      "title": "Changes",
-      "text": "",
-      "x": 1365,
-      "y": 184,
-      "w": 32,
-      "h": 32
-    },
-    {
-      "aria": null,
+      "aria": "Terminal",
       "title": "Terminal",
       "text": "",
-      "x": 1365,
-      "y": 220,
+      "x": 1114,
+      "y": 184,
       "w": 32,
       "h": 32
     }
   ],
   "editables": [
     {
-      "placeholder": "Plan, / command, @ context, $ skill, # ref",
-      "text": "",
-      "x": 581,
-      "y": 446,
-      "w": 622,
-      "h": 44
+      "placeholder": null,
+      "text": "try chatting with Claude CodePlease use ergatai mc",
+      "x": 228,
+      "y": 799,
+      "w": 654,
+      "h": 48
     }
   ]
 }

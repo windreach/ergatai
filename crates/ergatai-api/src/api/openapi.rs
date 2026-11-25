@@ -91,6 +91,8 @@ use utoipa::OpenApi;
         crate::api::collaboration_sessions::delete_collaboration_session,
         crate::api::collaboration_sessions::get_collaboration_session_status,
         crate::api::collaboration_sessions::get_collaboration_session_progress,
+        crate::api::collaboration_sessions::get_collaboration_session_dag_visualization,
+        crate::api::collaboration_sessions::get_global_dag_visualization,
         crate::api::collaboration_sessions::submit_collaboration_session_interaction,
         crate::api::collaboration_sessions::list_session_conversations,
         crate::api::collaboration_sessions::get_session_conversation,

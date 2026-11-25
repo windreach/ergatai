@@ -29,6 +29,59 @@ use tracing::info;
 
 use super::task_coordinator::{AgentAssignment, TaskCoordinator, TaskPlan};
 
+/// Placement-agnostic spawner for DAG task agents.
+///
+/// `ergatai-collab` owns DAG execution, but provider-connection resolution and
+/// model selection live in the upper `ergatai-api` layer. The API installs an
+/// implementation at startup (see `AgentLaunchService`) so DAG-spawned agents
+/// go through the same high-level launch policy as chat agents: profile command,
+/// provider environment, and default model.
+#[async_trait::async_trait]
+pub trait DagAgentSpawner: Send + Sync {
+    /// Launch a new agent process for a DAG task and return its runtime agent ID.
+    ///
+    /// The caller remains responsible for injecting the task instruction,
+    /// assigning the task ID, and tracking completion.
+    async fn spawn_agent_for_task(
+        &self,
+        agent_name: &str,
+        work_dir: &Path,
+    ) -> ErgataiResult<String>;
+}
+
+static DAG_AGENT_SPAWNER: OnceLock<std::sync::RwLock<Option<Arc<dyn DagAgentSpawner>>>> =
+    OnceLock::new();
+
+fn dag_agent_spawner_slot() -> &'static std::sync::RwLock<Option<Arc<dyn DagAgentSpawner>>> {
+    DAG_AGENT_SPAWNER.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// Install (or replace) the high-level DAG agent spawner.
+///
+/// Called once by the API bootstrap. When no spawner is installed, DAG tasks
+/// fall back to the local mechanical launch path.
+pub fn set_dag_agent_spawner(spawner: Arc<dyn DagAgentSpawner>) {
+    match dag_agent_spawner_slot().write() {
+        Ok(mut slot) => *slot = Some(spawner),
+        Err(poisoned) => *poisoned.into_inner() = Some(spawner),
+    }
+}
+
+/// Remove the installed spawner (tests / maintenance).
+pub fn clear_dag_agent_spawner() {
+    match dag_agent_spawner_slot().write() {
+        Ok(mut slot) => *slot = None,
+        Err(poisoned) => *poisoned.into_inner() = None,
+    }
+}
+
+fn current_dag_agent_spawner() -> Option<Arc<dyn DagAgentSpawner>> {
+    match dag_agent_spawner_slot().read() {
+        Ok(slot) => slot.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
 /// Agent session status
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AgentSessionStatus {
@@ -410,28 +463,53 @@ impl AgentLauncher {
                 "✅ Reusing existing registered agent — delivering task via inject_message"
             );
 
-            // Inject the instruction as a message to the existing agent
+            // Bind the logical DAG task agent ID to the reused runtime agent so
+            // the idle watchdog can resolve it (same key as a fresh spawn).
             if let Err(e) = runtime
-                .inject_message(&runtime_agent_id, &instruction)
+                .set_task_id(&runtime_agent_id, agent_id.to_string())
                 .await
             {
-                tracing::error!(
+                tracing::warn!(
                     agent = %agent_id,
                     runtime_agent_id = %runtime_agent_id,
                     error = %e,
-                    "Failed to inject message into existing agent"
+                    "Failed to set task_id on reused agent — DAG idle tracking may be broken"
                 );
-                return Err(ErgataiError::AgentSpawnFailed(format!(
-                    "Failed to inject message into existing agent '{}': {}",
-                    agent_id, e
-                )));
             }
 
             // Spawn a lightweight watcher that only polls for result file (no process exit monitoring
             // since the process is shared/reused, not owned by this DAG).
             if let Some(ref node_id_val) = node_id {
-                self.spawn_result_file_watcher(&agent_id, &runtime_agent_id, node_id_val)
-                    .await;
+                self.spawn_result_file_watcher(
+                    &agent_id,
+                    &runtime_agent_id,
+                    node_id_val,
+                    &assignment.agent_name,
+                    &result_file,
+                )
+                .await;
+            }
+
+            // Deliver the instruction asynchronously: `inject_message` waits for
+            // the whole ACP turn and must not block the DAG task consumer.
+            {
+                let runtime_for_inject = runtime.clone();
+                let runtime_agent_id_for_inject = runtime_agent_id.clone();
+                let agent_id_for_inject = agent_id.clone();
+                let instruction_owned = instruction.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = runtime_for_inject
+                        .inject_message(&runtime_agent_id_for_inject, &instruction_owned)
+                        .await
+                    {
+                        tracing::error!(
+                            agent = %agent_id_for_inject,
+                            runtime_agent_id = %runtime_agent_id_for_inject,
+                            error = %e,
+                            "Failed to inject instruction into reused DAG agent"
+                        );
+                    }
+                });
             }
 
             Some(runtime_agent_id)
@@ -442,6 +520,8 @@ impl AgentLauncher {
                 &work_dir,
                 &assignment.agent_name,
                 &instruction,
+                &result_file,
+                &plan.task_id,
                 node_id,
             )
             .await?;
@@ -524,20 +604,18 @@ impl AgentLauncher {
         agent_id: &str,
         _runtime_agent_id: &str,
         node_id: &str,
+        agent_name: &str,
+        result_file: &Path,
     ) {
         let agent_id_monitor = agent_id.to_string();
         let node_id_monitor = node_id.to_string();
         let running_agents = self.running_agents.clone();
 
-        // Capture agent_name and result file path
-        let (agent_name_monitor, result_file_for_watcher) = {
-            let agents = self.running_agents.lock().await;
-            let a = agents.get(agent_id);
-            (
-                a.map(|a| a.agent_name.clone()).unwrap_or_default(),
-                a.map(|a| a.result_file.clone()),
-            )
-        };
+        // Capture agent_name and result file path from the caller: the
+        // RunningAgent record is inserted only after launch_agent returns, so
+        // reading it here would always observe None and never complete the node.
+        let agent_name_monitor = agent_name.to_string();
+        let result_file_for_watcher = Some(result_file.to_path_buf());
 
         tracing::info!(
             agent = %agent_id,
@@ -639,10 +717,7 @@ impl AgentLauncher {
             }
 
             // Determine success/failure: result file exists → Completed, else → Failed
-            let result_file_path = {
-                let agents = running_agents.lock().await;
-                agents.get(&agent_id_monitor).map(|a| a.result_file.clone())
-            };
+            let result_file_path = result_file_for_watcher.clone();
 
             let result_file_exists = match &result_file_path {
                 Some(path) => tokio::fs::try_exists(path).await.unwrap_or(false),
@@ -901,20 +976,24 @@ identifiers, configuration values, etc.).
     ///
     /// Steps:
     /// 1. Get global AgentRuntime singleton (fixes lifetime bug)
-    /// 2. Create workspace spec with work_dir and backend config
-    /// 3. Launch agent via runtime (creates workspace + starts process)
-    /// 4. Inject instruction via runtime (backend injection or MCP fallback)
+    /// 2. Launch via the API-installed spawner (profile + provider env + model),
+    ///    falling back to the local mechanical launcher
+    /// 3. Inject instruction via runtime (backend injection or MCP fallback)
+    /// 4. Assign the DAG task ID for completion tracking
     /// 5. Spawn a background watcher that monitors agent exit and
     ///    publishes NATS events so DagScheduler picks up completion/failure.
     ///
     /// If `node_id` is Some, the agent is part of a DAG — completion/failure
     /// automatically triggers `DagScheduler::on_node_completed/failed`.
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_agent_session(
         &self,
         agent_id: &str,
         work_dir: &Path,
         agent_name: &str,
         instruction: &str,
+        result_file: &Path,
+        task_id: &str,
         node_id: Option<String>,
     ) -> ErgataiResult<()> {
         tracing::info!(
@@ -927,87 +1006,14 @@ identifiers, configuration values, etc.).
         // 1. Get global AgentRuntime singleton (fixes lifetime bug)
         let runtime = get_agent_runtime();
 
-        // 2. Allocate a workspace ID. The mechanical launcher owns the
-        //    WorkspaceSpec construction.
-        let workspace_id = format_id(generate(), IdType::Workspace);
-
-        // 3. Build the agent launch command.
-        //    Default: `claude` (Claude Code CLI). Users can override by setting
-        //    ERGATAI_AGENT_CMD env var.
-        let base_command =
-            std::env::var("ERGATAI_AGENT_CMD").unwrap_or_else(|_| "claude".to_string());
-
-        // Validate agent command — reject obvious injection patterns
-        if base_command.is_empty() {
-            return Err(ergatai_error::ErgataiError::AgentSpawnFailed(
-                "ERGATAI_AGENT_CMD is empty".to_string(),
-            ));
-        }
-        if base_command.contains('\n') || base_command.contains('\r') {
-            return Err(ergatai_error::ErgataiError::AgentSpawnFailed(
-                "ERGATAI_AGENT_CMD contains newline characters".to_string(),
-            ));
-        }
-        // SECURITY: Reject shell metacharacters that could enable command injection
-        // when interpolated into `sh -c` via runtime.launch_agent().
-        // Allowed: alphanumeric, dashes, underscores, dots, slashes (for paths),
-        // colons (for env var prefixes like RUST_LOG=debug).
-        const SHELL_META: &str = ";|&$`(){}<>!\\ \t\"'";
-        if base_command.chars().any(|c| SHELL_META.contains(c)) {
-            return Err(ergatai_error::ErgataiError::AgentSpawnFailed(format!(
-                "ERGATAI_AGENT_CMD contains shell metacharacters ({:?}). \
-                 Only alphanumeric, dashes, underscores, dots, slashes, and colons are allowed.",
-                base_command
-            )));
-        }
-
-        // 3b. MCP config is injected automatically by `AgentRuntime::launch_agent_scoped`
-        //     (in ergatai-runtime). It writes a per-agent `.ergatai-mcp-*.json` to the
-        //     work_dir and appends `--mcp-config <path>` to the command, with the
-        //     Authorization header matching the server's configured token. No need
-        //     to do anything here — just pass `base_command` through.
-        //
-        //     DAG-dispatched agents must run fully autonomously — no interactive
-        //     permission prompts. Append `--yes` (auto-approve) so the agent can
-        //     use tools without prompting.
-        let agent_command = format!("{} --yes", base_command);
-
-        // 4. Launch agent through the shared mechanical launcher. The
-        //    instruction is injected after startup so the launch path stays
-        //    identical to every other caller (no pre-model prompt side channel).
-        let plan = LaunchPlan {
-            workspace_id: workspace_id.clone(),
-            work_dir: work_dir.to_path_buf(),
-            env: std::collections::HashMap::new(),
-            resources: Default::default(),
-            capture_thoughts: false,
-            command: agent_command,
-            chat_id: None,
-            conversation_id: None,
-            profile_name: Some(agent_name.to_string()),
-            transport: None,
-            reuse_agent_id: None,
-        };
-        let runtime_agent_id = RuntimeAgentLauncher::new(&runtime)
-            .launch(plan)
-            .await
-            .map_err(|e| {
-                ergatai_error::ErgataiError::AgentSpawnFailed(format!(
-                    "Failed to launch agent '{}': {}",
-                    agent_id, e
-                ))
-            })?;
-        runtime
-            .inject_message(&runtime_agent_id, instruction)
-            .await
-            .map_err(|e| {
-                ergatai_error::ErgataiError::AgentSpawnFailed(format!(
-                    "Failed to inject instruction into agent '{}': {}",
-                    agent_id, e
-                ))
-            })?;
-
-        // 5. Set task_id for DAG tracking
+        // 2. Launch the agent process through the best available policy:
+        //    the API-installed high-level spawner (profile command + provider
+        //    environment + default model), or the local mechanical fallback.
+        let runtime_agent_id = self
+            .launch_agent_with_policy(agent_id, work_dir, agent_name)
+            .await?;
+        // 3. Bind the logical task agent ID before sending the prompt, so the
+        //    idle watchdog can resolve the runtime agent while it is working.
         if let Err(e) = runtime
             .set_task_id(&runtime_agent_id, agent_id.to_string())
             .await
@@ -1018,6 +1024,29 @@ identifiers, configuration values, etc.).
                 error = %e,
                 "Failed to set task_id on runtime — DAG completion tracking may be broken"
             );
+        }
+
+        // 4. Send the instruction asynchronously. `inject_message` waits for the
+        //    entire ACP turn to finish; awaiting it here would block the
+        //    scheduler and prevent sibling root nodes from starting in parallel.
+        {
+            let runtime_for_inject = runtime.clone();
+            let runtime_agent_id_for_inject = runtime_agent_id.clone();
+            let agent_id_for_inject = agent_id.to_string();
+            let instruction_owned = instruction.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = runtime_for_inject
+                    .inject_message(&runtime_agent_id_for_inject, &instruction_owned)
+                    .await
+                {
+                    tracing::error!(
+                        agent = %agent_id_for_inject,
+                        runtime_agent_id = %runtime_agent_id_for_inject,
+                        error = %e,
+                        "Failed to inject instruction into DAG agent"
+                    );
+                }
+            });
         }
 
         tracing::info!(
@@ -1065,15 +1094,11 @@ identifiers, configuration values, etc.).
             let runtime_monitor = runtime.clone();
             let runtime_agent_id_monitor = runtime_agent_id.clone();
 
-            // Capture result file path and task_id BEFORE spawning — the watcher needs them
-            let (result_file_for_watcher, task_id_for_audit) = {
-                let agents = self.running_agents.lock().await;
-                let agent_info = agents.get(agent_id);
-                (
-                    agent_info.map(|a| a.result_file.clone()),
-                    agent_info.map(|a| a.task_id.clone()).unwrap_or_default(),
-                )
-            };
+            // The RunningAgent record is created by the caller after this
+            // function returns, so use the paths passed in rather than reading
+            // the registry here.
+            let result_file_for_watcher = Some(result_file.to_path_buf());
+            let task_id_for_audit = task_id.to_string();
 
             tracing::info!(
                 agent = %agent_id,
@@ -1357,6 +1382,91 @@ identifiers, configuration values, etc.).
         Ok(())
     }
 
+    /// Select the launch policy: API-installed high-level spawner when
+    /// available, otherwise the local mechanical launcher.
+    ///
+    /// `ERGATAI_AGENT_CMD` explicitly forces the local path (tests/special setups).
+    async fn launch_agent_with_policy(
+        &self,
+        agent_id: &str,
+        work_dir: &Path,
+        agent_name: &str,
+    ) -> ErgataiResult<String> {
+        if std::env::var_os("ERGATAI_AGENT_CMD").is_none() {
+            if let Some(spawner) = current_dag_agent_spawner() {
+                return spawner.spawn_agent_for_task(agent_name, work_dir).await;
+            }
+        }
+        self.launch_agent_process(agent_id, work_dir, agent_name)
+            .await
+    }
+
+    /// Local mechanical launch path used when no API-installed spawner is
+    /// available (standalone/tests) or an explicit `ERGATAI_AGENT_CMD` override
+    /// is set.
+    ///
+    /// Resolves the profile command/transport and starts the process via
+    /// `LaunchPlan`/`AgentLauncher`. Provider environment and model selection
+    /// are the responsibility of the high-level API spawner.
+    async fn launch_agent_process(
+        &self,
+        agent_id: &str,
+        work_dir: &Path,
+        agent_name: &str,
+    ) -> ErgataiResult<String> {
+        let runtime = get_agent_runtime();
+        let workspace_id = format_id(generate(), IdType::Workspace);
+
+        // Resolve the agent launch command.
+        // `ERGATAI_AGENT_CMD` remains an explicit override for tests/special setups.
+        let (base_command, transport) = match std::env::var("ERGATAI_AGENT_CMD") {
+            Ok(cmd) => (cmd, None),
+            Err(_) => ergatai_runtime::launch::resolve_profile_launch(agent_name).await?,
+        };
+
+        // The ACP backend parses the command into program + args, so only reject
+        // empty/multiline values here.
+        if base_command.trim().is_empty() {
+            return Err(ErgataiError::AgentSpawnFailed(format!(
+                "Agent command for '{}' is empty",
+                agent_name
+            )));
+        }
+        if base_command.contains('\n') || base_command.contains('\r') {
+            return Err(ErgataiError::AgentSpawnFailed(
+                "Agent command contains newline characters".to_string(),
+            ));
+        }
+
+        // MCP config is injected automatically by `AgentRuntime::launch_agent_scoped`.
+        // Do NOT append CLI flags such as `--yes`: ACP adapters reject unknown
+        // options, and autonomous permission handling is done by the runtime's
+        // ACP permission handler, not by the agent CLI.
+        let plan = LaunchPlan {
+            workspace_id,
+            work_dir: work_dir.to_path_buf(),
+            env: std::collections::HashMap::new(),
+            resources: Default::default(),
+            capture_thoughts: false,
+            command: base_command,
+            chat_id: None,
+            conversation_id: None,
+            profile_name: Some(agent_name.to_string()),
+            transport,
+            reuse_agent_id: None,
+        };
+
+        RuntimeAgentLauncher::new(&runtime)
+            .launch(plan)
+            .await
+            .map_err(|e| {
+                ErgataiError::AgentSpawnFailed(format!(
+                    "Failed to launch agent '{}': {}",
+                    agent_id, e
+                ))
+            })
+    }
+
     /// Get status of all running agents
     pub async fn get_all_status(&self) -> Vec<RunningAgent> {
         self.running_agents.lock().await.values().cloned().collect()
@@ -1399,6 +1509,7 @@ identifiers, configuration values, etc.).
                 .map(|info| info.agent_id.clone());
 
             if let Some(runtime_id) = runtime_agent_id {
+                ergatai_runtime::permission_service::unmark_agent_autonomous(&runtime_id);
                 if let Err(e) = runtime.stop_agent(&runtime_id).await {
                     tracing::debug!(
                         agent_id = %agent_id,
@@ -1469,6 +1580,7 @@ identifiers, configuration values, etc.).
                 .map(|info| info.agent_id.clone());
 
             if let Some(runtime_id) = runtime_agent_id {
+                ergatai_runtime::permission_service::unmark_agent_autonomous(&runtime_id);
                 if let Err(e) = runtime.stop_agent(&runtime_id).await {
                     tracing::debug!(
                         agent_id = %agent_id,
@@ -1628,6 +1740,39 @@ mod tests {
     fn test_parse_agent_id_invalid() {
         // No separator → None
         assert_eq!(AgentLauncher::parse_agent_id("noseparator"), None);
+    }
+
+    struct MockDagAgentSpawner;
+
+    #[async_trait::async_trait]
+    impl DagAgentSpawner for MockDagAgentSpawner {
+        async fn spawn_agent_for_task(
+            &self,
+            agent_name: &str,
+            _work_dir: &Path,
+        ) -> ErgataiResult<String> {
+            Ok(format!("mock-agent-{agent_name}"))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dag_agent_spawner_hook_is_used() {
+        if std::env::var_os("ERGATAI_AGENT_CMD").is_some() {
+            // Explicit override intentionally forces the local launch path.
+            return;
+        }
+
+        clear_dag_agent_spawner();
+        set_dag_agent_spawner(Arc::new(MockDagAgentSpawner));
+
+        let launcher = AgentLauncher::new(std::env::temp_dir());
+        let agent_id = launcher
+            .launch_agent_with_policy("task-x|opencode", Path::new("/tmp"), "opencode")
+            .await
+            .unwrap();
+
+        clear_dag_agent_spawner();
+        assert_eq!(agent_id, "mock-agent-opencode");
     }
 
     #[test]

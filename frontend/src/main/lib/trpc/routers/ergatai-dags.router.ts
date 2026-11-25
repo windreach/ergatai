@@ -38,6 +38,26 @@ export const dagsRouter = router({
 
 
 
+  // ── DAG Visualization (global active DAG) ─────────────────────────────────
+
+  /** Get visualization for the currently active global DAG */
+  getDagVisualization: publicProcedure.query(async () => {
+    return ergataiFetch("/api/v1/dag-visualization")
+  }),
+
+  // ── DAG Visualization (session-scoped) ─────────────────────────────────────
+
+  /** Get DAG visualization for the collaboration session bound to a chat */
+  getDagVisualizationByChat: publicProcedure
+    .input(z.object({ chatId: z.string() }))
+    .query(async ({ input }) => {
+      const sessions = await ergataiFetch<Array<{ collaboration_session_id: string }>>(
+        `/api/v1/collaboration-sessions?chat_id=${encodeURIComponent(input.chatId)}`,
+      )
+      if (!sessions || sessions.length === 0) return null
+      return ergataiFetch(`/api/v1/collaboration-sessions/${encodeURIComponent(sessions[0].collaboration_session_id)}/dag-visualization`)
+    }),
+
   // ── DAG Submission & Validation Endpoints (migrated to Collaboration Sessions) ──
 
   /** Submit a DAG definition for orchestration (now creates collaboration session) */

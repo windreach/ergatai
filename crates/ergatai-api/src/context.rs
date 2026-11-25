@@ -71,6 +71,7 @@ impl AppContext {
         let agent_launch = Arc::new(crate::services::agent_launch::AgentLaunchService::new(
             agent_runtime.clone(),
         ));
+        install_dag_agent_spawner(&agent_launch);
         Self {
             agent_runtime,
             agent_launch,
@@ -103,6 +104,7 @@ impl AppContext {
         let agent_launch = Arc::new(crate::services::agent_launch::AgentLaunchService::new(
             agent_runtime.clone(),
         ));
+        install_dag_agent_spawner(&agent_launch);
         Self {
             agent_runtime,
             agent_launch,
@@ -112,6 +114,18 @@ impl AppContext {
             accumulator_registry: Arc::new(OutputAccumulatorRegistry::new()),
         }
     }
+}
+
+/// Install the high-level agent launch service as the DAG task spawner.
+///
+/// `ergatai-collab` executes DAGs but cannot depend on this crate; the trait
+/// hook lets DAG agents use the same profile/provider/model policy as chat
+/// agents instead of a local, reduced launch path.
+fn install_dag_agent_spawner(
+    agent_launch: &Arc<crate::services::agent_launch::AgentLaunchService>,
+) {
+    let spawner: Arc<dyn ergatai_core::cross_agent::DagAgentSpawner> = agent_launch.clone();
+    ergatai_core::cross_agent::set_dag_agent_spawner(spawner);
 }
 
 /// Global `AppContext` instance (transitional).

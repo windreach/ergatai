@@ -1,10 +1,12 @@
 //! Integration tests for MCP stdio-HTTP adapter
 
+use serial_test::serial;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
 /// Test that the adapter binary exists and runs
 #[test]
+#[serial]
 fn test_adapter_binary_exists() {
     let output = Command::new("cargo")
         .args(["build", "--bin", "mcp-stdio-adapter"])
@@ -17,6 +19,7 @@ fn test_adapter_binary_exists() {
 
 /// Test adapter help message
 #[test]
+#[serial]
 fn test_adapter_help() {
     let output = Command::new("cargo")
         .args(["run", "--bin", "mcp-stdio-adapter", "--", "--help"])
@@ -32,6 +35,7 @@ fn test_adapter_help() {
 
 /// Test adapter with invalid JSON input
 #[test]
+#[serial]
 fn test_adapter_invalid_json() {
     let mut child = Command::new("cargo")
         .args([
@@ -70,6 +74,7 @@ fn test_adapter_invalid_json() {
 
 /// Test adapter with valid JSON-RPC request (will fail to connect, but should handle gracefully)
 #[test]
+#[serial]
 fn test_adapter_valid_json_no_server() {
     let mut child = Command::new("cargo")
         .args([
@@ -114,6 +119,7 @@ fn test_adapter_valid_json_no_server() {
 
 /// Test adapter with multiple requests
 #[test]
+#[serial]
 fn test_adapter_multiple_requests() {
     let mut child = Command::new("cargo")
         .args([

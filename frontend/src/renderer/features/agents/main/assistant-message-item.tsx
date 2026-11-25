@@ -17,11 +17,12 @@ import { CollapseIcon, ExpandIcon } from "../../../components/ui/icons"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { ChatMarkdownRenderer } from "../../../components/chat-markdown-renderer"
 import { cn } from "../../../lib/utils"
-import { selectedWorkspaceAtom, showMessageJsonAtom } from "../atoms"
+import { selectedWorkspaceAtom, showMessageJsonAtom, registeredAgentsAtom } from "../atoms"
 import type { Message, MessagePart } from "../stores/message-store"
 import type { ThinkingToolPart } from "../ui/agent-thinking-tool"
 import type { PlanToolPart } from "../ui/agent-plan-tool"
 import { GroupAgentMessageHeader } from "../collaboration/group-agent-message-header"
+import { trpc } from "../../../lib/trpc"
 import { useGroupChat } from "../collaboration/group-chat-context"
 import { MessageJsonDisplay } from "../ui/message-json-display"
 import { AgentAskUserQuestionTool } from "../ui/agent-ask-user-question-tool"
@@ -36,6 +37,10 @@ import { AgentPlanFileTool } from "../ui/agent-plan-file-tool"
 import { getToolFilePath, getToolErrorText, isPlanFile } from "../ui/agent-tool-utils"
 import { messageTypeVariantClass } from "../lib/message-type-styles"
 import type { CoreAgentId } from "../lib/agent-contract-api"
+import {
+  getCoreAgentDisplayName,
+  resolveCoreAgentId,
+} from "../lib/agent-contract-api"
 import { ChatErrorCard } from "../ui/chat-error-card"
 import { chatErrorFromPart, normalizeChatError } from "../../../../shared/chat-error"
 import {
@@ -65,7 +70,6 @@ import { GitActivityBadges } from "../ui/git-activity-badges"
 import { ForkContext } from "./fork-context"
 import { SuppressErrorCardsContext } from "./suppress-error-cards-context"
 import { MemoizedTextPart } from "./memoized-text-part"
-import { InterAgentRepliesDisclosure } from "./inter-agent-replies-disclosure"
 import {
   getSendMessageArgs,
   isErgataiSendMessagePart,
@@ -451,7 +455,6 @@ export interface AssistantMessageItemProps {
   chatId: string
   sandboxSetupStatus?: "cloning" | "ready" | "error"
   agentIdentity?: { id: string; name: string }
-  showInterAgentReplies?: boolean
 }
 
 // P1: The message store now guarantees immutable message snapshots (atoms
@@ -471,10 +474,15 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
   chatId,
   sandboxSetupStatus = "ready",
   agentIdentity,
-  showInterAgentReplies = false,
 }: AssistantMessageItemProps) {
   const showMessageJson = useAtomValue(showMessageJsonAtom)
   const selectedWorkspace = useAtomValue(selectedWorkspaceAtom)
+  const registeredAgents = useAtomValue(registeredAgentsAtom)
+  const isPersistedChat = chatId.startsWith("chat_")
+  const { data: agentBindings } = trpc.ergatai.getAgentBindings.useQuery(
+    { chatId },
+    { enabled: isPersistedChat },
+  )
   // Stable prefix for React keys. The real message id is still used for
   // actions and atom subscriptions, but it changes when a runtime projection
   // is replaced by its persisted copy. Keying parts by turn id keeps the
@@ -1052,6 +1060,84 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
 
   if (!message) return null
 
+  // External-agent replies (role "respagent") are rendered as a standalone
+  // agent-style message (header + text + copy) instead of the full assistant
+  // rendering, so they interleave in sequence order without reflowing the
+  // host message that issued the request.
+  if ((message.role as string) === "respagent") {
+    const metadata = (message.metadata ?? {}) as Record<string, unknown>
+    const resolvedAgentId =
+      (metadata.fromAgentId as string | undefined) ??
+      (metadata.senderAgentId as string | undefined)
+
+    // Resolve display name + core agent id from the chat's agent bindings
+    // (typed id -> profile name), mirroring AgentMessageItem's resolution.
+    const binding = resolvedAgentId
+      ? agentBindings?.find((b) => b.agentId === resolvedAgentId)
+      : undefined
+    const profileName = binding?.agentCommand || binding?.agentName
+    const rawName =
+      binding?.agentName ||
+      (metadata.fromAgentName as string | undefined) ||
+      (metadata.senderAgentName as string | undefined) ||
+      (metadata.agentName as string | undefined) ||
+      resolvedAgentId ||
+      "Agent"
+    const finalSenderName = getCoreAgentDisplayName(rawName) || rawName
+
+    const textContent = (message.parts ?? [])
+      .filter((p: MessagePart) => p.type === "text" && typeof p.text === "string")
+      .map((p: MessagePart) => p.text as string)
+      .join("\n")
+      .trim()
+
+    let senderCoreAgentId: CoreAgentId | null = null
+    if (profileName) {
+      senderCoreAgentId = resolveCoreAgentId(profileName)
+    }
+    if (!senderCoreAgentId) {
+      const registered = resolvedAgentId
+        ? registeredAgents.find((a) => a.id === resolvedAgentId)
+        : undefined
+      if (registered?.runtimeId) {
+        senderCoreAgentId = registered.runtimeId
+      }
+    }
+    if (!senderCoreAgentId) {
+      senderCoreAgentId = resolveCoreAgentId(rawName)
+    }
+    return (
+      <div
+        data-agent-message-id={message.id}
+        className="group/message w-full mb-4"
+      >
+        {finalSenderName && (
+          <GroupAgentMessageHeader
+            agentId={senderCoreAgentId ?? undefined}
+            agentName={finalSenderName}
+          />
+        )}
+        <div className="flex flex-col gap-1.5">
+          {textContent && (
+            <MemoizedTextPart
+              text={textContent}
+              messageId={message.id}
+              partIndex={0}
+              isStreaming={false}
+            />
+          )}
+        </div>
+        {textContent && (
+          <div className="flex justify-between items-center h-6 px-2 mt-1">
+            <div className="flex items-center gap-0.5">
+              <CopyButton text={textContent} />
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div
       data-testid="agent-message"
@@ -1170,16 +1256,6 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
         )}
 
       </div>
-
-      {showInterAgentReplies && (
-        <div className="px-2">
-          <InterAgentRepliesDisclosure
-            message={message}
-            chatId={chatId}
-            hostConversationId={conversationId}
-          />
-        </div>
-      )}
 
       {hasTextContent && (!isStreaming || !isLastMessage) && (
         <div className="flex justify-between items-center h-6 px-2 mt-1">

@@ -12,6 +12,7 @@
 //! lets `ergatai-collab` reuse the mechanics without depending on the API crate.
 
 pub mod context;
+pub mod dag;
 pub mod model;
 pub mod service;
 pub mod settings;

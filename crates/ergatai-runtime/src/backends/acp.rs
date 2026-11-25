@@ -214,6 +214,8 @@ struct SessionCreatePhase<'a> {
     claude_code_mcp_meta: Option<serde_json::Map<String, serde_json::Value>>,
     /// Timeout hint for adapters that understand `_meta.mcpStartupAwaitTimeoutMs`.
     mcp_startup_await_ms: Option<u64>,
+    /// Suppresses history-replay notifications from `session/load`.
+    replay_suppression_mode: Arc<std::sync::atomic::AtomicBool>,
     /// Output: session_id (filled on success)
     session_id: Arc<tokio::sync::Mutex<Option<String>>>,
     /// Output: config_options (filled on success)
@@ -241,12 +243,28 @@ impl StartupPhaseExecutor for SessionCreatePhase<'_> {
                 load_request.meta = Some(meta.clone());
             }
 
-            match self
+            // Adapters replay the entire transcript as `session/update`
+            // notifications before returning from `session/load`. Suppress
+            // those history updates so the out-of-turn chunk buffer does not
+            // persist them again (which duplicated messages already stored in
+            // the conversation database). Non-history notifications such as
+            // available commands and mode/config updates still flow through.
+            self.replay_suppression_mode
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+
+            let load_result = self
                 .connection
                 .send_request(load_request)
                 .block_task()
-                .await
-            {
+                .await;
+
+            // Give late replay notifications a moment to drain under
+            // suppression before restoring normal output handling.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            self.replay_suppression_mode
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+
+            match load_result {
                 Ok(load_resp) => {
                     info!(session_id = %saved_sid, "Loaded existing ACP session");
                     // Extract config_options from response, or use empty Vec if not provided
@@ -383,6 +401,32 @@ pub struct SubagentStateUpdateEvent {
     /// Optional metadata
     #[serde(default)]
     pub meta: Option<serde_json::Value>,
+}
+
+/// Whether a session notification is a replayed history update from
+/// `session/load` rather than live lifecycle/config state.
+///
+/// These updates must not be republished or persisted during startup replay:
+/// the same history is already stored in the conversation database, and the
+/// out-of-turn chunk buffer would otherwise duplicate it.
+fn is_replay_history_notification(notification: &ExtendedSessionNotification) -> bool {
+    use agent_client_protocol::schema::v1::SessionUpdate;
+
+    match notification {
+        // Whitelist live session state that must still reach the frontend
+        // after a load; everything else is transcript replay.
+        ExtendedSessionNotification::Standard(notification) => !matches!(
+            &notification.update,
+            SessionUpdate::AvailableCommandsUpdate(_)
+                | SessionUpdate::CurrentModeUpdate(_)
+                | SessionUpdate::ConfigOptionUpdate(_)
+                | SessionUpdate::UsageUpdate(_)
+        ),
+        ExtendedSessionNotification::AuthStatusUpdate { .. } => false,
+        // Extension updates, subagent events and any future session-update
+        // variants are treated as replay artifacts during startup load.
+        _ => true,
+    }
 }
 
 impl JsonRpcMessage for ExtendedSessionNotification {
@@ -1484,6 +1528,30 @@ fn detect_acp_adapter_kind(command: &str) -> &'static str {
     } else {
         "unknown"
     }
+}
+
+/// Compare two agent launch commands while ignoring the installation path.
+///
+/// Managed adapters live under versioned release directories
+/// (`.local/share/ergatai/adapters/managed/releases/<timestamp>/...`), so the
+/// exact command string changes after every adapter upgrade even though it is
+/// still the same agent. Comparing the executable basename plus arguments keeps
+/// `session/load` viable across upgrades while still rejecting a genuine
+/// profile switch (e.g. `claude-agent-acp` -> `codex-acp`).
+fn same_agent_executable(saved: &str, current: &str) -> bool {
+    fn normalize(command: &str) -> String {
+        let mut parts = command.split_whitespace();
+        let program = parts.next().unwrap_or_default();
+        let basename = program.rsplit(['/', '\\']).next().unwrap_or(program);
+        let args: Vec<&str> = parts.collect();
+        if args.is_empty() {
+            basename.to_string()
+        } else {
+            format!("{} {}", basename, args.join(" "))
+        }
+    }
+
+    normalize(saved) == normalize(current)
 }
 
 /// Mirror of `ergatai_api::services::initial_prompt_turns::convert_prompt_tokens`
@@ -4667,6 +4735,12 @@ pub struct PausedTask {
 struct AcpAgentEntry {
     /// Channel to send commands to the connection task.
     command_tx: mpsc::Sender<AcpCommand>,
+    /// This agent's own ACP connection handle (one per spawned process, never
+    /// shared between agents). Used to send `session/cancel` notifications
+    /// out-of-band: the command loop is blocked while a prompt is in flight, so
+    /// routing Cancel through `command_tx` would defer it until after the
+    /// prompt completes (making Stop ineffective).
+    connection: Option<ConnectionTo<Agent>>,
     /// Output buffer for captured agent responses.
     output: Arc<OutputBuffer>,
     /// Thought buffer for captured agent thoughts (if capture_thoughts enabled).
@@ -5503,10 +5577,21 @@ impl AcpBackend {
     /// The agent will return a response with `stop_reason = "cancelled"`.
     pub async fn cancel_prompt(&self, agent_id: &str) -> ErgataiResult<()> {
         self.reap_dead();
-        let command_tx = {
+        // Prefer sending the notification directly over the cloned connection.
+        // The command loop is blocked awaiting the in-flight prompt response, so
+        // a Cancel command routed through `command_tx` would only be processed
+        // after the prompt completes — too late to interrupt it.
+        let (connection, session_id, command_tx) = {
             let agents = self.agents.read();
             match agents.get(agent_id) {
-                Some(entry) => entry.command_tx.clone(),
+                Some(entry) => {
+                    let session_id = entry.session_id.read().clone();
+                    (
+                        entry.connection.clone(),
+                        session_id,
+                        entry.command_tx.clone(),
+                    )
+                }
                 None => {
                     return Err(ErgataiError::NotFound(format!(
                         "Agent not found: {agent_id}"
@@ -5515,6 +5600,19 @@ impl AcpBackend {
             }
         };
 
+        if let (Some(connection), Some(session_id)) = (connection, session_id) {
+            connection
+                .send_notification(agent_client_protocol::schema::v1::CancelNotification::new(
+                    session_id,
+                ))
+                .map_err(|error| {
+                    ErgataiError::internal(format!("Failed to send session/cancel: {error}"))
+                })?;
+            info!(agent_id = %agent_id, "Sent session/cancel notification (out-of-band)");
+            return Ok(());
+        }
+
+        // Fallback for entries without a direct connection (e.g. test mocks).
         let (response_tx, response_rx) = oneshot::channel();
         command_tx
             .send(AcpCommand::Cancel { response_tx })
@@ -6432,6 +6530,8 @@ impl AcpBackendInterface for AcpBackend {
         let capture_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let capture_tx: Arc<tokio::sync::Mutex<Option<mpsc::Sender<serde_json::Value>>>> =
             Arc::new(tokio::sync::Mutex::new(None));
+        // Suppresses history-replay notifications during startup session/load.
+        let replay_suppression_mode = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         // Oneshot for the connection task to report the session_id back.
         let (session_tx, session_rx) =
@@ -6441,10 +6541,20 @@ impl AcpBackendInterface for AcpBackend {
         // Set after session/new or session/load completes.
         let shared_session_id: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
 
+        // Per-agent ACP connection handle (NOT shared across agents). Each
+        // start_agent call spawns its own process and transport; this slot only
+        // lets that agent's connection task publish a clone of its own handle so
+        // cancel_prompt can send session/cancel directly while the command loop
+        // is blocked awaiting an in-flight prompt.
+        let agent_connection: Arc<RwLock<Option<ConnectionTo<Agent>>>> =
+            Arc::new(RwLock::new(None));
+        let task_agent_connection = agent_connection.clone();
+
         // Clone shared state for the connection task.
         let task_command_tx = command_tx.clone();
         let task_capture_mode = capture_mode.clone();
         let task_capture_tx = capture_tx.clone();
+        let task_replay_suppression_mode = replay_suppression_mode.clone();
         let task_output = output.clone();
         let task_thoughts = thoughts.clone();
         let task_recent_thinking = recent_thinking.clone();
@@ -6499,22 +6609,26 @@ impl AcpBackendInterface for AcpBackend {
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
 
-        // Look up a previously saved session for this agent (for session/load recovery).
+        // Look up a previously saved session for this conversation (for
+        // session/load recovery). The conversation is the durable identity:
+        // `agent_id` is regenerated on every launch, so keying the session
+        // store by agent ID can never hit after a restart.
         let resume_session_id = handle.metadata.get("resume_session_id").cloned();
         let saved_session_id: Option<String> = if let Some(session_id) = resume_session_id {
             info!(
                 agent_id = %agent_id,
+                conversation_id = %task_conversation_id,
                 session_id = %session_id,
                 "Found resume session hint, will attempt session/load"
             );
             Some(session_id)
         } else {
-            self.session_store
-                .as_ref()
-                .and_then(|store| match store.load_session(&agent_id) {
-                    Ok(Some(record)) if record.command == command => {
+            self.session_store.as_ref().and_then(|store| {
+                match store.load_session(&task_conversation_id) {
+                    Ok(Some(record)) if same_agent_executable(&record.command, command) => {
                         info!(
                             agent_id = %agent_id,
+                            conversation_id = %task_conversation_id,
                             session_id = %record.session_id,
                             "Found saved ACP session, will attempt session/load"
                         );
@@ -6523,9 +6637,10 @@ impl AcpBackendInterface for AcpBackend {
                     Ok(Some(record)) => {
                         info!(
                             agent_id = %agent_id,
+                            conversation_id = %task_conversation_id,
                             old_command = %record.command,
                             new_command = %command,
-                            "Saved session command mismatch, creating new session"
+                            "Saved session agent command mismatch, creating new session"
                         );
                         None
                     }
@@ -6534,7 +6649,8 @@ impl AcpBackendInterface for AcpBackend {
                         warn!(error = %e, "Failed to load saved session, creating new");
                         None
                     }
-                })
+                }
+            })
         };
 
         // Clone for the connection task — session_store is shared via Arc.
@@ -6543,8 +6659,9 @@ impl AcpBackendInterface for AcpBackend {
         let task_command_for_save = command.to_string();
         let task_cwd_for_save = cwd.clone();
         // Separate clone for session save inside the connect_with closure.
-        // We can't capture `task_agent_id` itself because it's needed after the closure exits.
-        let task_agent_id_for_save = task_agent_id.clone();
+        // We can't capture `task_conversation_id` itself because it is also
+        // used by the notification handlers after the closure exits.
+        let task_conversation_id_for_save = task_conversation_id.clone();
         let connection_agent_id = task_agent_id.clone();
         let connection_conversation_id = task_conversation_id.clone();
 
@@ -6769,6 +6886,21 @@ impl AcpBackendInterface for AcpBackend {
                                         let _ = tx.try_send(v);
                                     }
                                 }
+                                return Ok(());
+                            }
+
+                            // Startup session/load replays old history as live
+                            // notifications. Drop only the history updates;
+                            // keep config/lifecycle notifications (available
+                            // commands, modes, usage, session info) flowing.
+                            if task_replay_suppression_mode
+                                .load(std::sync::atomic::Ordering::SeqCst)
+                                && is_replay_history_notification(&notification)
+                            {
+                                tracing::debug!(
+                                    agent_id = %notify_agent_id,
+                                    "Suppressed session/load history replay notification"
+                                );
                                 return Ok(());
                             }
 
@@ -7200,6 +7332,10 @@ impl AcpBackendInterface for AcpBackend {
                     agent_client_protocol::on_receive_request!(),
                 )
                 .connect_with(transport, |connection: ConnectionTo<Agent>| async move {
+                    // Publish this agent's own handle so out-of-band cancellation
+                    // does not have to wait behind the prompt occupying the loop.
+                    *task_agent_connection.write() = Some(connection.clone());
+
                     // Step 1: Initialize the ACP connection (with retry and timeout).
                     let init_response_arc = Arc::new(tokio::sync::Mutex::new(None));
                     let init_phase = AcpInitializePhase {
@@ -7404,6 +7540,7 @@ impl AcpBackendInterface for AcpBackend {
                         user_mcp_declarations: user_mcp_declarations.clone(),
                         claude_code_mcp_meta: claude_code_mcp_meta.clone(),
                         mcp_startup_await_ms,
+                        replay_suppression_mode: replay_suppression_mode.clone(),
                         session_id: session_id_arc.clone(),
                         config_options: task_config_options.clone(),
                     };
@@ -7434,10 +7571,12 @@ impl AcpBackendInterface for AcpBackend {
                     // Publish session_id for the permission handler closure.
                     *task_shared_session_id.write() = Some(session_id.to_string());
 
-                    // Persist the session_id so we can attempt session/load on next start.
+                    // Persist the session_id so we can attempt session/load on
+                    // next start. Key by conversation, not by the ephemeral
+                    // agent ID (a new agent ID is generated per launch).
                     if let Some(store) = &task_session_store {
                         if let Err(e) = store.save_session(
-                            &task_agent_id_for_save,
+                            &task_conversation_id_for_save,
                             &session_id.to_string(),
                             &task_command_for_save,
                             &task_cwd_for_save.to_string_lossy(),
@@ -8786,6 +8925,7 @@ impl AcpBackendInterface for AcpBackend {
         // Build the agent entry.
         let entry = AcpAgentEntry {
             command_tx,
+            connection: agent_connection.read().clone(),
             output,
             thoughts,
             recent_thinking,
@@ -9056,12 +9196,11 @@ impl AcpBackendInterface for AcpBackend {
 
         self.remove_agent(&handle.agent_id);
 
-        // Remove the saved session — explicit stop means the user doesn't want to resume.
-        if let Some(store) = &self.session_store {
-            if let Err(e) = store.remove_session(&handle.agent_id) {
-                warn!(error = %e, agent_id = %handle.agent_id, "Failed to remove saved session");
-            }
-        }
+        // Keep the saved ACP session. Stopping an agent process (including a
+        // graceful runtime shutdown or an idle suspend) must not erase the
+        // conversation's ability to `session/load` after the backend restarts.
+        // The record is keyed by conversation and overwritten on the next
+        // successful session/new.
 
         // Note: PID mapping is cleaned up by the background wait task spawned in start_agent().
         info!(agent_id = %handle.agent_id, "ACP agent stopped");
@@ -9106,12 +9245,11 @@ impl AcpBackendInterface for AcpBackend {
 
         self.remove_agent(&handle.agent_id);
 
-        // Remove the saved session — explicit kill means the user doesn't want to resume.
-        if let Some(store) = &self.session_store {
-            if let Err(e) = store.remove_session(&handle.agent_id) {
-                warn!(error = %e, agent_id = %handle.agent_id, "Failed to remove saved session");
-            }
-        }
+        // Keep the saved ACP session. `kill_agent` is also used by
+        // `suspend_agent`, and the suspended record is the only resume hint for
+        // an in-process suspend; preserving the session-store row additionally
+        // lets a later hard restart fall back to `session/load` if that record
+        // is unavailable.
 
         info!(agent_id = %handle.agent_id, "ACP agent killed");
         Ok(())
@@ -9421,6 +9559,77 @@ impl AcpBackendInterface for AcpBackend {
 mod tests {
     use super::*;
     use agent_client_protocol::schema::v1::ToolCallUpdateFields;
+
+    #[test]
+    fn test_replay_history_notification_classification() {
+        let history: agent_client_protocol::schema::v1::SessionNotification =
+            serde_json::from_value(serde_json::json!({
+                "sessionId": "session-1",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "replayed"}
+                }
+            }))
+            .expect("deserialize agent_message_chunk");
+        assert!(is_replay_history_notification(
+            &ExtendedSessionNotification::Standard(Box::new(history))
+        ));
+
+        let commands: agent_client_protocol::schema::v1::SessionNotification =
+            serde_json::from_value(serde_json::json!({
+                "sessionId": "session-1",
+                "update": {
+                    "sessionUpdate": "available_commands_update",
+                    "availableCommands": []
+                }
+            }))
+            .expect("deserialize available_commands_update");
+        assert!(!is_replay_history_notification(
+            &ExtendedSessionNotification::Standard(Box::new(commands))
+        ));
+
+        let session_info: agent_client_protocol::schema::v1::SessionNotification =
+            serde_json::from_value(serde_json::json!({
+                "sessionId": "session-1",
+                "update": {
+                    "sessionUpdate": "session_info_update",
+                    "title": "replayed title"
+                }
+            }))
+            .expect("deserialize session_info_update");
+        assert!(is_replay_history_notification(
+            &ExtendedSessionNotification::Standard(Box::new(session_info))
+        ));
+
+        assert!(is_replay_history_notification(
+            &ExtendedSessionNotification::ExtensionUpdate {
+                kind: "file_change_report".to_string(),
+                payload: serde_json::json!({}),
+            }
+        ));
+        assert!(!is_replay_history_notification(
+            &ExtendedSessionNotification::AuthStatusUpdate {
+                auth_status: serde_json::json!({}),
+            }
+        ));
+    }
+
+    #[test]
+    fn test_same_agent_executable_ignores_release_path() {
+        assert!(same_agent_executable(
+            "/home/u/.local/share/ergatai/adapters/managed/releases/20261122-044331/node_modules/.bin/claude-agent-acp",
+            "/home/u/.local/share/ergatai/adapters/managed/releases/20261125-063722/node_modules/.bin/claude-agent-acp",
+        ));
+        assert!(same_agent_executable(
+            "/usr/local/bin/opencode acp",
+            "opencode acp",
+        ));
+        assert!(!same_agent_executable(
+            "/home/u/.local/share/ergatai/adapters/managed/releases/1/node_modules/.bin/claude-agent-acp",
+            "/home/u/.local/share/ergatai/adapters/managed/releases/2/node_modules/.bin/codex-acp",
+        ));
+        assert!(!same_agent_executable("opencode acp", "opencode serve"));
+    }
 
     #[test]
     fn test_extract_error_text_from_output_shapes() {
@@ -9873,6 +10082,7 @@ mod tests {
         let (command_tx, _) = mpsc::channel(1);
         let entry = AcpAgentEntry {
             command_tx,
+            connection: None,
             output: Arc::new(OutputBuffer::new(100)),
             thoughts: Arc::new(OutputBuffer::new(100)),
             tool_calls: Arc::new(ToolCallTracker::new(1000)),

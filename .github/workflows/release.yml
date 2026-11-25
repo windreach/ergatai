@@ -6,10 +6,14 @@ on:
       - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -32,3 +36,35 @@ jobs:
         with:
           name: ergatai-${{ matrix.os }}
           path: frontend/release/ergatai-portable-*.zip
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    # `workflow_dispatch` may run from a branch; a GitHub Release requires a tag.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -name 'ergatai-portable-*.zip' -exec cp {} release-assets/ \;
+          cd release-assets
+          sha256sum ergatai-portable-*.zip > SHA256SUMS.txt
+          ls -lh
+
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/ergatai-portable-*.zip
+            release-assets/SHA256SUMS.txt
+          generate_release_notes: true
+          draft: false
+          prerelease: false

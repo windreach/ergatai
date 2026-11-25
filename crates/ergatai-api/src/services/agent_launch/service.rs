@@ -220,7 +220,7 @@ impl AgentLaunchService {
             conversation_id: None,
             model: applied.clone(),
             provider_connection_id: None,
-            model_source: applied.as_ref().map(|m| m.source).or_else(|| {
+            model_source: applied.as_ref().map(|m| m.source).or({
                 if request.allow_native_default {
                     Some(ModelSource::NativeDefault)
                 } else {

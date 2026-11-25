@@ -27,13 +27,45 @@ agent vendors.</sub>
 
 ---
 
+## Demo
+
+<div align="center">
+<img src="demo/videos/showdemo.gif" alt="Ergatai demo" width="900">
+</div>
+
 ## Screenshots
 
-<!-- TODO: replace placeholders with real screenshots -->
-![Desktop UI](docs/screenshots/desktop.png)
-![Agent collaboration](docs/screenshots/collaboration.png)
-![DAG orchestration](docs/screenshots/dag.png)
-![Terminal panes](docs/screenshots/terminals.png)
+<table>
+<tr>
+<td width="33%" valign="top">
+
+### 🖥️ Desktop workspace
+
+Main workspace with agent chats, file tree, and terminal panes.
+
+<img src="demo/pictures/desktop-UI.png" alt="Desktop UI" width="100%">
+
+</td>
+<td width="33%" valign="top">
+
+### 🔍 Diff review
+
+Side-by-side diff review of agent edits before they land.
+
+<img src="demo/pictures/diff-UI.png" alt="Diff UI" width="100%">
+
+</td>
+<td width="33%" valign="top">
+
+### ⚙️ Manage agents & workspaces
+
+Agent, workspace, and permission management panel.
+
+<img src="demo/pictures/manage-UI.png" alt="Manage UI" width="100%">
+
+</td>
+</tr>
+</table>
 
 ## Why
 
@@ -117,6 +149,19 @@ flowchart LR
 | API | `crates/ergatai-api` | REST + MCP + SSE + metrics, permission broker |
 | App | `frontend/` | Electron main (tRPC/IPC + HTTP/SSE) + React renderer |
 
+## Download & build
+
+Prebuilt portable bundles are published on the [GitHub Releases](https://github.com/windreach/ergatai/releases) page
+(tagged `v*`); each release ships `ergatai-portable-*.zip` (Linux / macOS / Windows) plus `SHA256SUMS.txt`.
+
+Build locally:
+
+- Portable bundle: `./scripts/bundle.sh` → `frontend/release/ergatai-portable-*.zip`
+- Packaged app: `./scripts/package.sh --platform linux|mac|win|all`
+- Manual: `cargo build --workspace` + `cd frontend && bun install && bun run build`
+
+<sub>Only Linux has been actually tested; Windows and macOS builds are produced by CI but have not been verified.</sub>
+
 ## Quick start
 
 ### Prerequisites
@@ -124,6 +169,15 @@ flowchart LR
 - Rust **1.88+** (`rust-version` in `Cargo.toml`)
 - Node.js **20+** (for the desktop frontend)
 - `cargo`, `bun` (npm is not supported — see `frontend/package.json` overrides)
+- `nats-server` **2.10+** — the backend spawns it as a child process (it is not
+  statically linked). Install it and make sure it is on `PATH`, or point
+  `ERGATAI_NATS_BINARY` at the binary. On Debian/Ubuntu the package installs to
+  `/usr/sbin/nats-server`, which is often not on a normal user's `PATH`:
+  ```bash
+  sudo apt-get install nats-server
+  # if `nats-server` is not found afterwards:
+  export ERGATAI_NATS_BINARY=/usr/sbin/nats-server
+  ```
 
 ### Build & run
 
@@ -225,6 +279,7 @@ cd frontend && bun run ts:check
 | `ERGATAI_API_TOKEN` | — | API auth token |
 | `ERGATAI_SSE_KEEP_ALIVE` | `15` | SSE keep-alive interval (seconds) |
 | `ERGATAI_BACKPRESSURE_THRESHOLD` | `1000` | NATS pending-message ceiling |
+| `ERGATAI_NATS_BINARY` | — | Override path to the `nats-server` binary (useful when it is installed in a directory not on `PATH`, e.g. `/usr/sbin/nats-server` on Debian/Ubuntu) |
 
 Server flags (`ergatai-api`):
 
@@ -236,6 +291,43 @@ Server flags (`ergatai-api`):
 | `--api-token` | — | Auth token (overrides env) |
 | `--tls-cert` / `--tls-key` | — | PEM TLS certificate + key |
 | `--sse-keep-alive` | `15` | SSE keep-alive interval |
+
+## FAQ
+
+<details>
+<summary><b>Q1: Can Ergatai completely prevent agents from overwriting each other's concurrent edits?</b></summary>
+
+Yes — as long as the permission mode is set to `ask` or `auto`, Ergatai has full control. The reason is that agents modifying files through their native edit tools (i.e., not via bash) go through the ACP permission gate, where Ergatai attaches a file lock at request time, so concurrent edits are serialized and only the first lock holder succeeds. Edits performed directly through bash bypass this gate and are therefore harder to defend against.
+
+</details>
+
+<details>
+<summary><b>Q2: Does the project use git worktree isolation?</b></summary>
+
+Yes. Different chats run on separate worktrees, but a single worktree typically hosts multiple agents. The project's permission model controls concurrent modifications within a worktree to prevent agents from overwriting each other.
+
+</details>
+
+<details>
+<summary><b>Q3: Can I use this project for free?</b></summary>
+
+Yes. The project is open source under the Apache License 2.0.
+
+</details>
+
+<details>
+<summary><b>Q4: Is the project stable?</b></summary>
+
+Not yet. The project still has many rough edges and known defects; use with caution.
+
+</details>
+
+<details>
+<summary><b>Q5: Does the project support Windows and macOS?</b></summary>
+
+Other platforms have not been tested in practice, so runtime behavior on them cannot be guaranteed.
+
+</details>
 
 ## Contributing
 

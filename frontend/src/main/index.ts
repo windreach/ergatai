@@ -86,6 +86,19 @@ console.log(
 
 // Increase V8 old-space limit for renderer/main processes to reduce OOM frequency
 // under heavy multi-chat workloads. Must be set before app readiness/window creation.
+// Optional remote debugging endpoint for attaching external tooling (e.g. Playwright)
+// to an already-running instance. Enabled by env var, or by default in dev mode so
+// demo/automation scripts can take over the running app instead of launching a
+// new process. Set ERGATAI_DEBUG_PORT=0 to disable.
+const debugPort =
+  process.env.ERGATAI_DEBUG_PORT ||
+  process.env.ERGATAI_REMOTE_DEBUGGING_PORT ||
+  (IS_DEV ? "9222" : undefined)
+if (debugPort && debugPort !== "0" && debugPort.toLowerCase() !== "false") {
+  app.commandLine.appendSwitch("remote-debugging-port", String(debugPort))
+  console.log(`[Debug] remote debugging enabled on port ${debugPort}`)
+}
+
 app.commandLine.appendSwitch("js-flags", "--max-old-space-size=8192")
 
 // Software rendering by default for maximum compatibility (no dev/prod split).

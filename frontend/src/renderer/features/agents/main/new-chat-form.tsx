@@ -5,7 +5,7 @@ import { useVirtualizer } from "@tanstack/react-virtual"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { buildCodexUiModels } from "../lib/codex-ui-models"
 import { TEXT_FILE_EXTENSIONS } from "../lib/text-file-extensions"
-import { AlignJustify, Folder, GitBranch, GitCompare, MessageSquare, PanelRight, Plus, TerminalSquare } from "lucide-react"
+import { AlignJustify, Folder, GitCompare, MessageSquare, PanelRight, Plus, TerminalSquare } from "lucide-react"
 import { useCallback, useEffect, useMemo, memo, useRef, useState, startTransition } from "react"
 import { Button } from "../../../components/ui/button"
 import {
@@ -2756,15 +2756,6 @@ export const NewChatForm = memo(function NewChatForm({
               className="h-8 w-8 rounded-md flex items-center justify-center transition-colors text-muted-foreground/40 cursor-not-allowed"
             >
               <Folder className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              title={i18n.t('Git')}
-              aria-label={i18n.t('Git')}
-              disabled
-              className="h-8 w-8 rounded-md flex items-center justify-center transition-colors text-muted-foreground/40 cursor-not-allowed"
-            >
-              <GitBranch className="h-4 w-4" />
             </button>
             <button
               type="button"

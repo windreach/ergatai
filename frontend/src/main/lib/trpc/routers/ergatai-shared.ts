@@ -550,6 +550,7 @@ export type SystemConfig = {
 
 export const AgentInfoSchema = z.object({
   agent_id: z.string(),
+  conversation_id: z.string().nullable().optional(),
   stable_id: z.string().nullable(),
   agent_uuid: z.string(),
   workspace_id: z.string(),

@@ -154,6 +154,16 @@ describe('IPC: MCP Config Router', () => {
 
   describe('claude.setMcpBearerToken', () => {
     test('应该成功设置 Bearer Token', async () => {
+      // 先注册一个全局 MCP 服务器
+      await page.evaluate(async () => {
+        await (window as any).trpc.mcp.addMcpServer.mutate({
+          name: 'token-test-server',
+          command: 'test-command',
+          args: [],
+          transport: 'stdio',
+        })
+      })
+
       const tokenConfig = {
         name: 'token-test-server',
         token: 'test-token-12345',

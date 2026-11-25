@@ -6,22 +6,13 @@ import { toast } from "sonner"
 import { trpc } from "../../lib/trpc"
 import { cn } from "../../lib/utils"
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "../../components/ui/alert-dialog"
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../../components/ui/dropdown-menu"
+import { WorkspaceDeleteDialog } from "./workspace-delete-dialog"
 import type { ErgataiWorkspace } from "../../../main/lib/trpc/routers/ergatai"
 
 type ArchivedWorkspaceListProps = {
@@ -154,38 +145,21 @@ const ArchivedWorkspaceItem = memo(({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{i18n.t('Delete archived workspace?')}</AlertDialogTitle>
-            <AlertDialogDescription>
-              This permanently removes the archived workspace record and its project
-              registrations. It does not delete project directories or worktree files
-              from disk. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-
-          {activeAgents > 0 && (
-            <div className="mx-5 mb-4 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs text-foreground">
-              <p className="font-medium">Warning: {activeAgents} active agent(s) will be stopped</p>
-              <p className="mt-1 text-muted-foreground">
-                Deleting this workspace will automatically stop all running agents. Any unsaved progress will be lost.
-              </p>
-            </div>
-          )}
-
-          <AlertDialogFooter>
-            <AlertDialogCancel>{i18n.t('Cancel')}</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={deleteMutation.isPending}
-              onClick={handleDelete}
-            >
-              {deleteMutation.isPending ? "Deleting..." : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <WorkspaceDeleteDialog
+        open={deleteDialogOpen}
+        onOpenChange={setDeleteDialogOpen}
+        title={i18n.t('Delete archived workspace?')}
+        description={
+          <>
+            This permanently removes the archived workspace record and its project
+            registrations. It does not delete project directories or worktree files
+            from disk. This action cannot be undone.
+          </>
+        }
+        activeAgents={activeAgents}
+        isPending={deleteMutation.isPending}
+        onConfirm={handleDelete}
+      />
     </div>
   )
 })

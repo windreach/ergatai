@@ -5,12 +5,9 @@ import { atomFamily } from "jotai/utils"
 import { atomWithWindowStorage } from "../../lib/window-storage"
 import type { TerminalInstance } from "./types"
 
-// Storage atom for persisting per-chat terminal sidebar state - window-scoped
-const terminalSidebarOpenStorageAtom = atomWithWindowStorage<Record<string, boolean>>(
-  "terminal-sidebar-open-by-chat",
-  {},
-  { getOnInit: true },
-)
+// Runtime atom for per-chat terminal sidebar state (not persisted, so re-entering
+// the chat page does not auto-expand / "remember" expand state)
+const terminalSidebarOpenStorageAtom = atom<Record<string, boolean>>({})
 
 // Per-chat terminal sidebar open state (like diffSidebarOpenAtomFamily)
 export const terminalSidebarOpenAtomFamily = atomFamily((chatId: string) =>

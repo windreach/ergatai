@@ -7,6 +7,7 @@
 use anyhow::{anyhow, Result};
 use keyring::Entry;
 use std::collections::HashMap;
+use tracing::warn;
 
 use crate::user_data_db::provider_connections::{
     self, ProviderConnection, ProviderConnectionUpsert,
@@ -286,6 +287,87 @@ pub fn env_for_connection(connection: &ProviderConnection) -> Result<HashMap<Str
     }
 
     Ok(env)
+}
+
+/// Resolve the provider connection owned by a profile into the values its fresh
+/// process needs: provider environment (for protocols Ergatai can configure via
+/// env) and the default model.
+///
+/// Auto-spawned agents must start with the same model the user selected for the
+/// agent (the default provider connection), just like a chat created from the
+/// new-chat form. Without this, agents such as OpenCode fall back to their own
+/// config (`"model"` in opencode.json) and can silently run a different model.
+///
+/// Resolution is best-effort: a missing or unreadable connection must not stop
+/// the agent from starting with its native configuration.
+pub async fn resolve_spawn_settings(
+    profile_name: &str,
+) -> (HashMap<String, String>, Option<String>) {
+    // Inherit provider connections from a profile that shares the same command
+    // when the requested profile has none of its own. This keeps agent profiles
+    // that are thin wrappers (e.g. "agentcode" over "opencode acp") usable
+    // without duplicating provider configuration.
+    let profile_name_owned = profile_name.to_string();
+    let candidate_profiles = {
+        let mut candidates = vec![profile_name_owned.clone()];
+        if let Ok(Some(profile)) =
+            crate::services::profile_service::get_profile_by_name(&profile_name_owned).await
+        {
+            if let Ok(all) = crate::services::profile_service::list_profiles().await {
+                for other in all {
+                    if other.name != profile_name_owned && other.command == profile.command {
+                        candidates.push(other.name);
+                    }
+                }
+            }
+        }
+        candidates
+    };
+    let result = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let mut connection = None;
+        for candidate in &candidate_profiles {
+            if let Some(found) =
+                resolve(None, Some(candidate)).map_err(|error| error.to_string())?
+            {
+                connection = Some(found);
+                break;
+            }
+        }
+        let Some(connection) = connection else {
+            return Ok((HashMap::new(), None));
+        };
+        // OpenCode custom providers live in opencode.json; `OPENCODE_URL` is
+        // Ergatai's server URL for the OpenCode SDK, not a provider override, so
+        // injecting this connection's env would be wrong. The selected model is
+        // still applied at runtime below.
+        let env = if connection.protocol == "opencode" {
+            HashMap::new()
+        } else {
+            env_for_connection(&connection).map_err(|error| error.to_string())?
+        };
+        Ok((env, connection.default_model))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(settings)) => settings,
+        Ok(Err(error)) => {
+            warn!(
+                profile = profile_name,
+                error = %error,
+                "Could not resolve provider connection for spawn"
+            );
+            (HashMap::new(), None)
+        }
+        Err(error) => {
+            warn!(
+                profile = profile_name,
+                error = %error,
+                "Provider connection lookup failed for spawn"
+            );
+            (HashMap::new(), None)
+        }
+    }
 }
 
 #[cfg(test)]

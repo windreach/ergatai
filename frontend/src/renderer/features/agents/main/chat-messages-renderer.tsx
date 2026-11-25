@@ -78,8 +78,10 @@ export const ChatMessagesRenderer = memo(function ChatMessagesRenderer({
   const setContainerRef = useCallback(
     (node: HTMLDivElement | null) => {
       if (typeof containerRef === "function") {
-        containerRef(node)
-      } else if (containerRef) {
+        // Forward the ref cleanup so callback refs can release resources.
+        return containerRef(node)
+      }
+      if (containerRef) {
         containerRef.current = node
       }
     },

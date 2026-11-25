@@ -10,6 +10,7 @@ import { PlanWidget } from "../sections/plan-widget"
 import { GoalWidget } from "../sections/goal-widget"
 import { TerminalWidget } from "../sections/terminal-widget"
 import { ChangesWidget } from "../sections/changes-widget"
+import { DagWidget } from "../sections/dag-widget"
 // import { McpWidget } from "../sections/mcp-widget" // 暂时隐藏 MCP widget
 import type { ParsedDiffFile } from "../types"
 import type { AgentMode } from "../../agents"
@@ -209,6 +210,9 @@ export function WidgetsPanel({
           //       <McpWidget chatId={chatId} worktreePath={worktreePath} />
           //     </WidgetCard>
           //   )
+
+          case "dag":
+            return <DagWidget key="dag" chatId={chatId} className="" />
 
           default:
             return null

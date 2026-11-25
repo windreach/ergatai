@@ -12,11 +12,24 @@ use super::super::params::GetDagStatusParams;
 pub(crate) async fn handle(
     params: Parameters<GetDagStatusParams>,
 ) -> Result<CallToolResult, ErrorData> {
-    let dag_id = &params.0.dag_id;
+    let dag_id = params.0.dag_id.trim();
 
     info!("Getting DAG status");
 
-    let info = crate::services::dag_service::get_dag_status(Some(dag_id)).await;
+    // Agents often pass an empty string or a placeholder (e.g. "dag-1").
+    // These must not shadow the single active DAG: otherwise `get_dag_status`
+    // reports `no_dag` while `submit_orchestration` rejects with
+    // "A DAG is already running".
+    let info = if dag_id.is_empty() {
+        crate::services::dag_service::get_dag_status(None).await
+    } else {
+        let requested = crate::services::dag_service::get_dag_status(Some(dag_id)).await;
+        if !requested.running && requested.is_complete.is_none() {
+            crate::services::dag_service::get_dag_status(None).await
+        } else {
+            requested
+        }
+    };
 
     // Check if this is a completed status loaded from disk
     let is_from_disk = info.progress_detail.is_some() && !info.running;

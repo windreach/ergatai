@@ -1021,19 +1021,19 @@ fn split_codex_model(model: &str) -> (String, Option<String>) {
 /// Exact matches win so provider-qualified model IDs that contain `/` are not
 /// mistaken for a model/effort pair. `None` means the requested base model is
 /// not offered by the running agent.
-fn resolve_codex_model<'a>(
+fn resolve_codex_model(
     requested: &str,
-    candidates: &[&'a agent_client_protocol::schema::v1::SessionConfigSelectOption],
+    candidates: &[&agent_client_protocol::schema::v1::SessionConfigSelectOption],
 ) -> Option<(String, Option<String>)> {
     if candidates
         .iter()
-        .any(|option| &*option.value.0 == requested)
+        .any(|option| *option.value.0 == *requested)
     {
         return Some((requested.to_string(), None));
     }
 
     let (base, effort) = split_codex_model(requested);
-    if candidates.iter().any(|option| &*option.value.0 == base) {
+    if candidates.iter().any(|option| *option.value.0 == base) {
         Some((base, effort))
     } else {
         None

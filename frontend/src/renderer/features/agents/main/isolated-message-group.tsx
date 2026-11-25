@@ -164,7 +164,6 @@ function renderUserMessageContent(
     return (
       <AgentMessageItem
         message={userMsg as unknown as UIMessage}
-        chatId={chatId}
         isMobile={isMobile}
         displaySenderName={displaySenderName}
         senderCoreAgentId={senderCoreAgentId ?? undefined}

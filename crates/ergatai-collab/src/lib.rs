@@ -10,7 +10,10 @@ pub mod task_coordinator;
 pub mod task_scheduler; // Agent-to-agent message routing via NATS
 pub mod timeout_tier; // Three-stage node timeout escalation (warn → escalate → fail)
 
-pub use agent_launcher::{AgentLauncher, AgentSessionStatus, RunningAgent};
+pub use agent_launcher::{
+    clear_dag_agent_spawner, set_dag_agent_spawner, AgentLauncher, AgentSessionStatus,
+    DagAgentSpawner, RunningAgent,
+};
 pub use collaboration::{CollaborationSession, CommunicationCheck, MeshPolicy};
 pub use dag_scheduler::{
     clear_dag_scheduler, clear_dag_scheduler_by_id, clear_session_dag_scheduler, get_dag_scheduler,

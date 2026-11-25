@@ -11,10 +11,101 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use ergatai_error::ErgataiResult;
+use ergatai_error::{ErgataiError, ErgataiResult};
 
 use crate::runtime::AgentRuntime;
 use crate::types::{ResourceLimits, WorkspaceSpec};
+
+/// Resolve a profile name into the command and transport used to launch it.
+///
+/// This is the shared entry point for every launch path that references an
+/// agent by profile name (DAG task dispatch, suspended-agent resume, ...).
+/// Keeping profile lookup and transport probing here avoids each subsystem
+/// re-implementing them (and accidentally diverging, e.g. hard-coding a CLI).
+pub async fn resolve_profile_launch(profile_name: &str) -> ErgataiResult<(String, Option<String>)> {
+    let registry =
+        crate::profile_registry::ProfileRegistry::new(crate::dirs::profile_registry_db_path())?;
+    resolve_profile_launch_with(&registry, profile_name).await
+}
+
+/// Same as [`resolve_profile_launch`], but against an explicit registry.
+///
+/// Split out so tests and callers that already hold a registry (or a custom DB
+/// path) can reuse the resolution rules.
+pub async fn resolve_profile_launch_with(
+    registry: &crate::profile_registry::ProfileRegistry,
+    profile_name: &str,
+) -> ErgataiResult<(String, Option<String>)> {
+    let profile = registry.get_by_name(profile_name).await?.ok_or_else(|| {
+        ErgataiError::AgentSpawnFailed(format!(
+            "Agent profile '{}' is not registered",
+            profile_name
+        ))
+    })?;
+
+    if profile.command.trim().is_empty() {
+        return Err(ErgataiError::AgentSpawnFailed(format!(
+            "Agent profile '{}' has an empty command",
+            profile_name
+        )));
+    }
+
+    // Probe/cache transport only when the profile has no explicit value.
+    // The runtime then defaults to stdio if probing cannot determine one.
+    let transport = match profile.transport {
+        Some(transport) => Some(transport),
+        None => registry.resolve_transport(profile_name).await,
+    };
+
+    Ok((profile.command, transport))
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use crate::profile_registry::{AgentRegistration, ProfileRegistry};
+
+    use super::resolve_profile_launch_with;
+
+    fn registry() -> (TempDir, ProfileRegistry) {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = ProfileRegistry::new(dir.path().join("profiles.db")).unwrap();
+        (dir, registry)
+    }
+
+    #[tokio::test]
+    async fn resolves_command_and_transport_from_profile() {
+        let (_dir, registry) = registry();
+        registry
+            .register(AgentRegistration::with_id_and_transport(
+                "agent_launch_test".to_string(),
+                "launch-test-profile".to_string(),
+                "opencode acp".to_string(),
+                "acp".to_string(),
+                None,
+                Some("stdio".to_string()),
+            ))
+            .await
+            .unwrap();
+
+        let (command, transport) = resolve_profile_launch_with(&registry, "launch-test-profile")
+            .await
+            .unwrap();
+
+        assert_eq!(command, "opencode acp");
+        assert_eq!(transport.as_deref(), Some("stdio"));
+    }
+
+    #[tokio::test]
+    async fn missing_profile_is_reported() {
+        let (_dir, registry) = registry();
+        let error = resolve_profile_launch_with(&registry, "does-not-exist")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not registered"), "{error}");
+    }
+}
 
 /// A fully resolved plan for starting a new agent process.
 ///

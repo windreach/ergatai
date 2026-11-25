@@ -6,7 +6,7 @@ import type { UIMessage } from "@ai-sdk/react"
 import { GroupAgentMessageHeader } from "../collaboration/group-agent-message-header"
 import { MemoizedTextPart } from "./memoized-text-part"
 import { CopyButton } from "../ui/message-action-buttons"
-import { InterAgentRepliesDisclosure } from "./inter-agent-replies-disclosure"
+
 import {
   getCoreAgentDisplayName,
   type CoreAgentId,
@@ -14,7 +14,6 @@ import {
 
 interface AgentMessageItemProps {
   message: UIMessage<unknown>
-  chatId: string
   isMobile: boolean
   displaySenderName?: string
   senderCoreAgentId?: CoreAgentId
@@ -60,7 +59,6 @@ function unwrapAgentMessage(value: string): string {
 
 export const AgentMessageItem = memo(function AgentMessageItem({
   message,
-  chatId,
   isMobile: _isMobile,
   displaySenderName,
   senderCoreAgentId,
@@ -106,9 +104,6 @@ export const AgentMessageItem = memo(function AgentMessageItem({
   const showAgentSenderHeader =
     (message.role as string) === "agent" && Boolean(agentSenderName)
 
-  // Check if this is a persisted chat (has chat_ prefix) — needed for InterAgentRepliesDisclosure
-  const isPersistedChat = chatId.startsWith("chat_")
-
   // Use provided displaySenderName or fall back to metadata
   const finalSenderName =
     displaySenderName ?? (getCoreAgentDisplayName(agentSenderName) ?? agentSenderName)
@@ -143,11 +138,6 @@ export const AgentMessageItem = memo(function AgentMessageItem({
               text={textContent}
             />
           </div>
-        </div>
-      )}
-      {isPersistedChat && (
-        <div className="px-2">
-          <InterAgentRepliesDisclosure message={message} chatId={chatId} />
         </div>
       )}
     </div>

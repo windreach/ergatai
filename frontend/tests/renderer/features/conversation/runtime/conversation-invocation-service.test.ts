@@ -21,6 +21,12 @@ vi.mock("@/lib/trpc", () => ({
       subscribeConversationRuntime: {
         subscribe: vi.fn(),
       },
+      cancelPrompt: {
+        mutate: vi.fn(),
+      },
+      listAgents: {
+        query: vi.fn(async () => []),
+      },
     },
   },
 }))
@@ -33,6 +39,7 @@ import {
   getConversationInvocationService,
   resetConversationInvocationService,
 } from "@/features/conversation/runtime/conversation-invocation-service"
+import { trpcClient } from "@/lib/trpc"
 import { resetRuntimeSessionStore } from "@/features/conversation/runtime/runtime-session-store"
 import { resetTurnOrchestrator } from "@/features/conversation/runtime/turn-orchestrator"
 
@@ -65,16 +72,6 @@ vi.mock("@/features/conversation/runtime/runtime-adapter", () => ({
   getAdapterRegistry: vi.fn(() => ({
     get: vi.fn(),
   })),
-}))
-
-vi.mock("@/renderer/lib/trpc", () => ({
-  trpcClient: {
-    ergatai: {
-      cancelPrompt: {
-        mutate: vi.fn(),
-      },
-    },
-  },
 }))
 
 vi.mock("@/features/agents/stores/streaming-status-store", () => ({
@@ -174,6 +171,22 @@ describe("ConversationInvocationService", () => {
 
       // Should not throw
       await expect(service.stop(input)).resolves.not.toThrow()
+    })
+
+    it("resolves the runtime agent by conversation when no agentId is provided", async () => {
+      const listAgents = vi.mocked(trpcClient.ergatai.listAgents.query)
+      const cancelPrompt = vi.mocked(trpcClient.ergatai.cancelPrompt.mutate)
+      listAgents.mockResolvedValueOnce([
+        { agent_id: "agent_runtime_1", conversation_id: "conv-1" },
+        { agent_id: "agent_runtime_2", conversation_id: "conv-2" },
+      ] as never)
+
+      const service = getConversationInvocationService()
+      await service.stop({ conversationId: "conv-1" })
+
+      expect(listAgents).toHaveBeenCalled()
+      expect(cancelPrompt).toHaveBeenCalledWith({ agentId: "agent_runtime_1" })
+      expect(cancelPrompt).not.toHaveBeenCalledWith({ agentId: "agent_runtime_2" })
     })
   })
 

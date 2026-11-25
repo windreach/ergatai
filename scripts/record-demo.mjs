@@ -14,17 +14,23 @@
  *
  * Options:
  *   --probe             Launch, print clickable buttons/editables, do not record.
- *   --text <text>       Prompt to type. Default: "try chatting with Claude Code".
+ *   --text <text>       Prompt to type. Default: "Send a message to OpenCode using ergatai mcp sending content: hello".
  *   --agent <name>      Main agent to select. Default: "opencode".
  *   --side-agent <name> Agent logo on the right rail. Default: "Claude Code".
  *   --side-agent-timeout <ms> How long to wait for that logo. Default: 90000.
  *   --add-side-agent    If the logo never appears, add the agent via Details.
- *   --auto-approve      Click Approve on permission panels. Default: true.
+ *   --auto-approve      Click Approve on permission panels. Default: false.
  *   --no-auto-approve   Do not click permission panels.
  *   --hold <ms>         Keep recording after clicking the rail logo. Default: 20000.
  *   --lang <locale>     UI language: en, zh-CN, or system. Default: en.
  *   --keep-language     Keep the UI language after recording (default: restore).
  *   --no-send           Type the prompt but do not send it.
+ *   (default)          Attach to an already-running Ergatai instance via CDP.
+ *   --launch            Launch a new Electron process and record a demo video.
+ *   --attach            Attach to an already-running instance (same as default).
+ *   --video             In attach mode, record the app window to an MP4 (for editing).
+ *   --video-fps <n>     Video frame rate. Default: 30.
+ *   --cdp <url>         CDP endpoint for attach. Default: http://127.0.0.1:9222.
  *   --out <dir>         Output directory. Default: demo/videos.
  *   --name <base>       Base name for output files. Default: ergatai-demo.
  *   --width/--height    Video size. Default: 1400x900 (matches BrowserWindow).
@@ -36,6 +42,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -47,17 +54,24 @@ const repoRoot = path.resolve(__dirname, '..');
 const { values: args } = parseArgs({
   options: {
     probe: { type: 'boolean', default: false },
-    text: { type: 'string', default: 'try chatting with Claude Code' },
-    agent: { type: 'string', default: 'opencode' },
-    'side-agent': { type: 'string', default: 'Claude Code' },
+    text: { type: 'string', default: 'Send a message to OpenCode using ergatai mcp sending content: hello' },
+    agent: { type: 'string', default: 'Claude Code' },
+    'side-agent': { type: 'string', default: 'OpenCode' },
     'side-agent-timeout': { type: 'string', default: '90000' },
     'add-side-agent': { type: 'boolean', default: false },
-    'auto-approve': { type: 'boolean', default: true },
+    'open-side': { type: 'boolean', default: true },
+    'no-open-side': { type: 'boolean', default: false },
+    'auto-approve': { type: 'boolean', default: false },
     'no-auto-approve': { type: 'boolean', default: false },
     hold: { type: 'string', default: '20000' },
     lang: { type: 'string', default: 'en' },
     'keep-language': { type: 'boolean', default: false },
     'no-send': { type: 'boolean', default: false },
+    attach: { type: 'boolean', default: false },
+    launch: { type: 'boolean', default: false },
+    video: { type: 'boolean', default: false },
+    'video-fps': { type: 'string', default: '30' },
+    cdp: { type: 'string', default: 'http://127.0.0.1:9222' },
     out: { type: 'string', default: path.join('demo', 'videos') },
     name: { type: 'string', default: 'ergatai-demo' },
     width: { type: 'string', default: '1400' },
@@ -90,6 +104,9 @@ const languageEnv =
     ? { LANG: 'zh_CN.UTF-8', LANGUAGE: 'zh_CN:zh', LC_ALL: 'zh_CN.UTF-8' }
     : { LANG: 'en_US.UTF-8', LANGUAGE: 'en_US:en', LC_ALL: 'en_US.UTF-8' };
 const electronLangArg = language === 'zh-CN' ? ['--lang=zh-CN'] : language === 'en' ? ['--lang=en-US'] : [];
+const launchMode = args.launch || args.gif;
+const attachMode = args.attach || !launchMode;
+const openSideChat = args['open-side'] && !args['no-open-side'];
 const frontendDir = process.env.FRONTEND_DIR
   ? path.resolve(process.env.FRONTEND_DIR)
   : path.join(repoRoot, 'frontend');
@@ -105,10 +122,10 @@ function fail(message) {
   process.exit(1);
 }
 
-if (!fs.existsSync(electronPath)) {
+if (!attachMode && !fs.existsSync(electronPath)) {
   fail(`Electron binary not found at ${electronPath}. Run "npm install" in frontend/ or set ELECTRON_PATH.`);
 }
-if (!process.env.DISPLAY) {
+if (!attachMode && !process.env.DISPLAY) {
   fail(
     'No DISPLAY found. On a headless machine run:\n' +
       '  xvfb-run -a -s "-screen 0 1600x1000x24" node scripts/record-demo.mjs --gif',
@@ -156,6 +173,141 @@ async function launch({ record }) {
     }
     throw error;
   }
+}
+
+async function attach() {
+  const { chromium } = await import('@playwright/test');
+  log(`attaching to ${args.cdp}`);
+  const browser = await chromium.connectOverCDP(args.cdp);
+  const contexts = browser.contexts();
+  const context = contexts[0];
+  if (!context) {
+    await browser.close();
+    throw new Error(`no browser context found at ${args.cdp}`);
+  }
+  const pickPage = () => {
+    const pages = context.pages();
+    return (
+      pages.find((p) => /ergatai/i.test(p.url()) && !/devtools/i.test(p.url())) ||
+      pages.find((p) => {
+        try {
+          return /ergatai/i.test(p.url());
+        } catch {
+          return false;
+        }
+      }) ||
+      pages.find((p) => !/devtools/i.test(p.url())) ||
+      pages[0]
+    );
+  };
+  let page = pickPage();
+  if (!page) {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline && !page) {
+      page = pickPage();
+      if (!page) await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+  if (!page) {
+    await browser.close();
+    throw new Error(`no page found at ${args.cdp}; is Ergatai running with --remote-debugging-port?`);
+  }
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  log(`attached to page: ${await page.title().catch(() => '')}`);
+  return { browser, page };
+}
+
+let videoRecordingState = null;
+
+async function startVideoRecording(page) {
+  fs.mkdirSync(outDir, { recursive: true });
+  const videoPath = path.join(outDir, `${args.name}.mp4`);
+  fs.rmSync(videoPath, { force: true });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ergatai-rec-'));
+  const state = { recording: true, frames: [], dir, page, videoPath, done: null };
+  state.done = (async () => {
+    let i = 0;
+    while (state.recording) {
+      const t0 = Date.now();
+      try {
+        const file = path.join(state.dir, `frame_${String(i).padStart(6, '0')}.jpg`);
+        await state.page.screenshot({ path: file, type: 'jpeg', quality: 80 });
+        state.frames.push({ file, time: t0 });
+        i += 1;
+      } catch {
+        // page may be navigating; skip frame
+      }
+      // Capture as fast as possible; screenshot itself paces the loop.
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  })();
+  videoRecordingState = state;
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  log(`recording via screenshots (variable frame rate)`);
+  return videoPath;
+}
+
+async function stopVideoRecording() {
+  const state = videoRecordingState;
+  videoRecordingState = null;
+  if (!state) return;
+  state.recording = false;
+  if (state.done) await state.done.catch(() => {});
+
+  const fps = Number(args['video-fps'] || 30);
+  const videoPath = state.videoPath;
+  if (state.frames.length === 0) {
+    warn('no frames captured; skipping encode');
+    try { fs.rmSync(state.dir, { recursive: true, force: true }); } catch {}
+    return;
+  }
+
+  // Build a concat demuxer list with per-frame durations so playback speed
+  // matches the real capture timing (variable frame rate).
+  const listPath = path.join(state.dir, 'frames.txt');
+  const lines = [];
+  for (let i = 0; i < state.frames.length; i += 1) {
+    const f = state.frames[i];
+    const next = state.frames[i + 1];
+    const dur = next ? Math.max(0.01, (next.time - f.time) / 1000) : 1 / fps;
+    lines.push(`file '${f.file}'`);
+    lines.push(`duration ${dur.toFixed(3)}`);
+  }
+  fs.writeFileSync(listPath, lines.join('\n'));
+
+  log(`encoding ${state.frames.length} frames -> ${path.relative(repoRoot, videoPath)}`);
+  const result = spawnSync(
+    'ffmpeg',
+    [
+      '-y',
+      '-f', 'concat',
+      '-safe', '0',
+      '-i', listPath,
+      '-vsync', 'vfr',
+      '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-pix_fmt', 'yuv420p',
+      videoPath,
+    ],
+    { stdio: 'inherit' },
+  );
+  if (result.error) warn(`ffmpeg failed: ${result.error.message}`);
+  if (result.status !== 0) warn(`ffmpeg exited with ${result.status}`);
+
+  try { fs.rmSync(state.dir, { recursive: true, force: true }); } catch {}
+}
+
+async function acquire({ record }) {
+  if (attachMode) {
+    const { browser, page } = await attach();
+    return { app: null, browser, page, video: null };
+  }
+  const app = await launch({ record });
+  const page = await getPage(app);
+  const video = record ? page.video() : null;
+  if (record && !video) warn('Playwright did not return a video handle.');
+  return { app, browser: null, page, video };
 }
 
 async function getPage(app) {
@@ -313,9 +465,12 @@ async function findAgentTrigger(page) {
   const count = await buttons.count();
   let best = null;
   let bestX = Infinity;
+  const modeLabels = new Set(['Ask', 'Auto', 'AutoBash', 'Full Access']);
   for (let i = 0; i < count; i += 1) {
     const button = buttons.nth(i);
     if (!(await button.isVisible().catch(() => false))) continue;
+    const label = await button.getAttribute('aria-label').catch(() => null);
+    if (label && modeLabels.has(label)) continue;
     const box = await button.boundingBox().catch(() => null);
     if (!box) continue;
     if (box.x < bestX) {
@@ -371,8 +526,8 @@ function startAutoApprover(page) {
 async function selectAgent(page, agent) {
   const trigger = await findAgentTrigger(page);
   if (!trigger) {
-    warn('could not find the agent selector');
-    return false;
+    log(`agent selector not available in this UI; skipping (target "${agent}")`);
+    return true;
   }
   log(`agent selector: ${await trigger.getAttribute('aria-label')}`);
   await trigger.click();
@@ -394,6 +549,42 @@ async function selectAgent(page, agent) {
   await option.first().click();
   await page.waitForTimeout(700);
   log(`selected agent "${agent}"`);
+  return true;
+}
+
+async function setPermissionMode(page, targetLabel = 'AutoBash') {
+  const modeLabels = ['Ask', 'Auto', 'AutoBash', 'Full Access'];
+  let trigger = null;
+  for (const label of modeLabels) {
+    const loc = page.getByRole('button', { name: new RegExp(`^${label}$`) }).first();
+    if (await loc.count()) {
+      trigger = loc;
+      break;
+    }
+  }
+  if (!trigger) {
+    trigger = page.locator('button:has(svg.lucide-shield)').first();
+  }
+  if (!trigger || (await trigger.count()) === 0) {
+    warn('permission mode selector not found');
+    return false;
+  }
+  const current = await trigger.getAttribute('aria-label').catch(() => null);
+  if (current === targetLabel) {
+    log(`permission mode already ${targetLabel}`);
+    return true;
+  }
+  await trigger.click();
+  await page.waitForTimeout(300);
+  const option = page.getByRole('button', { name: new RegExp(`^${targetLabel}\\b`) }).last();
+  if (!(await option.isVisible().catch(() => false))) {
+    warn(`permission mode option "${targetLabel}" not visible`);
+    await page.keyboard.press('Escape').catch(() => {});
+    return false;
+  }
+  await option.click();
+  await page.waitForTimeout(300);
+  log(`permission mode set to ${targetLabel}`);
   return true;
 }
 
@@ -543,11 +734,10 @@ function convertToGif(videoPath, gifPath) {
 // Probe mode: launch, inspect the UI, print selectors, never click anything.
 // ---------------------------------------------------------------------------
 if (args.probe) {
-  const app = await launch({ record: false });
-  let page;
+  const { app, browser, page: initialPage } = await acquire({ record: false });
+  let page = initialPage;
   let languageState = null;
   try {
-    page = await getPage(app);
     languageState = await applyLanguage(page, language);
     await goToNewChat(page);
     await page.waitForTimeout(2_500);
@@ -556,7 +746,8 @@ if (args.probe) {
     await dumpProbe(page);
   } finally {
     if (page) await restoreLanguage(page, languageState);
-    await app.close();
+    if (app) await app.close();
+    if (browser) await browser.close();
   }
   process.exit(0);
 }
@@ -564,20 +755,42 @@ if (args.probe) {
 // ---------------------------------------------------------------------------
 // Record mode
 // ---------------------------------------------------------------------------
-const app = await launch({ record: true });
+let app = null;
+let browser = null;
 let video = null;
 let failed = false;
 let page = null;
+let recordedVideoPath = null;
 let languageState = null;
 let stopAutoApprove = () => {};
 
+let manualStopResolve = null;
+const manualStopPromise = new Promise((resolve) => {
+  manualStopResolve = resolve;
+});
+let manualStopRequested = false;
+process.on('SIGINT', () => {
+  if (manualStopRequested) return;
+  manualStopRequested = true;
+  console.log('\n[demo] Ctrl+C received, finalizing recording...');
+  if (manualStopResolve) manualStopResolve();
+});
+process.on('SIGTERM', () => {
+  if (manualStopResolve) manualStopResolve();
+});
+
 try {
-  page = await getPage(app);
-  video = page.video();
-  if (!video) warn('Playwright did not return a video handle.');
+  const acquired = await acquire({ record: true });
+  app = acquired.app;
+  browser = acquired.browser;
+  page = acquired.page;
+  video = acquired.video;
+  if (attachMode && args.video) {
+    recordedVideoPath = await startVideoRecording(page);
+  }
   languageState = await applyLanguage(page, language);
   await goToNewChat(page);
-  await forceContentSize(app);
+  if (app) await forceContentSize(app);
   await page.waitForTimeout(800);
 
   const editor = findEditor(page);
@@ -591,12 +804,9 @@ try {
   await editor.click();
   await page.waitForTimeout(500);
 
-  // 2. Select the main agent (shows the dropdown for the recording).
-  const selected = await selectAgent(page, args.agent);
-  if (!selected) {
-    warn(`continuing without changing agent to "${args.agent}"`);
-  }
-
+  // 2. No agent selection at start; only adjust permission mode to AutoBash.
+  log(`main agent: ${args.agent}; side agent: ${args['side-agent']}`);
+  await setPermissionMode(page, 'AutoBash');
   // 3. Type the prompt with a visible typing rhythm.
   log(`typing: ${args.text}`);
   await typeIntoEditor(page, editor, args.text, 35);
@@ -657,10 +867,18 @@ try {
       await page.waitForTimeout(700);
       log(`clicking rail agent "${railButton.title}" at x=${railButton.x}`);
       await railButton.locator.click();
-      const opened = await waitForSideChat(page, true, 10_000);
-      if (!opened) warn('side chat did not open after clicking the rail logo');
-      log(`holding for ${Number(args.hold)}ms while the side agent runs...`);
-      await page.waitForTimeout(Number(args.hold));
+      if (openSideChat) {
+        const opened = await waitForSideChat(page, true, 10_000);
+        if (!opened) warn('side chat did not open after clicking the rail logo');
+      } else {
+        log('not opening side chat (--no-open-side)');
+      }
+      if (attachMode && args.video) {
+        log('recording... press Ctrl+C in terminal to stop and save');
+      } else {
+        log(`holding for ${Number(args.hold)}ms while the side agent runs...`);
+        await page.waitForTimeout(Number(args.hold));
+      }
     } else {
       failed = true;
       warn(`no right-rail button titled "${args['side-agent']}" found.`);
@@ -669,8 +887,17 @@ try {
         .locator('button[title]')
         .evaluateAll((els) => els.filter((el) => el.getBoundingClientRect().width > 0).map((el) => el.getAttribute('title')));
       warn(`visible button titles: ${JSON.stringify([...new Set(titles)])}`);
-      await page.waitForTimeout(keepOpenMs);
+      if (!(attachMode && args.video)) {
+        await page.waitForTimeout(keepOpenMs);
+      } else {
+        log('recording... press Ctrl+C in terminal to stop and save');
+      }
     }
+  }
+
+  if (attachMode && args.video) {
+    log('Recording in progress. Press Ctrl+C in terminal to stop and save the video.');
+    await manualStopPromise;
   }
 
   await page.waitForTimeout(300);
@@ -678,15 +905,26 @@ try {
   failed = true;
   console.error('[demo] flow failed:', error);
   try {
-    if (!page) page = await app.firstWindow();
-    await dumpProbe(page);
+    if (!page && app) page = await app.firstWindow();
+    if (page) await dumpProbe(page);
   } catch {
     // ignore probe failure
   }
 } finally {
   stopAutoApprove();
+  await stopVideoRecording().catch(() => {});
   if (page) await restoreLanguage(page, languageState);
-  await app.close();
+  if (app) await app.close().catch(() => {});
+  if (browser) await browser.close().catch(() => {});
+}
+
+if (attachMode) {
+  if (recordedVideoPath) {
+    log(`video: ${path.relative(repoRoot, recordedVideoPath)}`);
+  } else {
+    log('attach mode: UI operations finished (no video recorded).');
+  }
+  process.exit(failed ? 1 : 0);
 }
 
 if (!video) {

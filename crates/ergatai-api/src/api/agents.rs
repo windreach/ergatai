@@ -313,6 +313,8 @@ pub struct SpawnAgentResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AgentInfoResponse {
     pub agent_id: String,
+    /// Stable conversation routing identity bound to this runtime agent, if any.
+    pub conversation_id: Option<String>,
     /// Human-readable identifier (e.g., "agent-1"). User-facing display name.
     pub workspace_id: String,
     /// Working directory of the agent
@@ -412,6 +414,7 @@ pub async fn list_agents(State(_state): State<AppState>) -> impl IntoResponse {
 
             AgentInfoResponse {
                 agent_id: a.agent_id,
+                conversation_id: a.conversation_id,
                 workspace_id: a.workspace_id,
                 work_dir: a.work_dir,
                 state: a.state,
@@ -5169,6 +5172,7 @@ mod tests {
     fn test_agent_info_response_serialization() {
         let resp = AgentInfoResponse {
             agent_id: "a-1".to_string(),
+            conversation_id: None,
             workspace_id: "ws-1".to_string(),
             work_dir: "/workspace/ws-1".to_string(),
             state: "running".to_string(),
@@ -5244,6 +5248,7 @@ mod tests {
     fn test_agent_info_response_with_all_optional_fields() {
         let resp = AgentInfoResponse {
             agent_id: "a-1".to_string(),
+            conversation_id: None,
             workspace_id: "ws-1".to_string(),
             work_dir: "/workspace".to_string(),
             state: "running".to_string(),
@@ -5277,6 +5282,7 @@ mod tests {
     fn test_agent_info_response_with_null_optional_fields() {
         let resp = AgentInfoResponse {
             agent_id: "a-1".to_string(),
+            conversation_id: None,
             workspace_id: "ws-1".to_string(),
             work_dir: "/workspace".to_string(),
             state: "terminated".to_string(),

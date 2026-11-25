@@ -164,14 +164,14 @@ class ConversationInvocationServiceImpl implements ConversationInvocationService
     try {
       const sessionStore = getRuntimeSessionStore()
 
-      // Check if already stopped or not started
+      // Even when the session is idle/ready (or missing), we must still notify
+      // the backend to cancel, because a backend-driven turn may be running
+      // without a local session status of "streaming".
       const session = sessionStore.getSession(conversationId)
-      if (!session || session.status === "idle" || session.status === "ready") {
-        // Already stopped or not started - nothing to do
-        return
-      }
 
-      // Get adapter for this conversation
+      // Get adapter for this conversation. Always ask the adapter to stop: the
+      // local stream may still be live even when the session status has not
+      // been observed as "streaming" yet (race with the first turn).
       const adapter = getAdapterRegistry().get(conversationId)
       if (adapter) {
         try {
@@ -185,12 +185,33 @@ class ConversationInvocationServiceImpl implements ConversationInvocationService
 
       // Clear current turn ID AFTER adapter.stop() completes
       // This ensures the adapter can read turnId during cleanup if needed
-      sessionStore.setCurrentTurnId(conversationId, null)
+      if (session) {
+        sessionStore.setCurrentTurnId(conversationId, null)
+      }
 
       // Call backend cancel API to stop agent processing
       // This is the unified entry point - transport layer should NOT call this
       // Support both single agentId (backward compat) and multiple agentIds (group chat)
-      const agentsToCancel = agentIds ?? (agentId ? [agentId] : [])
+      let agentsToCancel = agentIds ?? (agentId ? [agentId] : [])
+
+      // The backend no longer exposes a conversation-level cancel endpoint; all
+      // agent control endpoints are agent-scoped. Resolve the running agents for
+      // this conversation from the agent registry (agent-level endpoint). The
+      // registry is authoritative, so a stale UI-cached agent id cannot block
+      // cancellation of the actually-running process.
+      try {
+        const allAgents = await trpcClient.ergatai.listAgents.query()
+        const resolved = (allAgents ?? [])
+          .filter(
+            (a: { conversation_id?: string | null; is_alive?: boolean }) =>
+              a.conversation_id === conversationId && a.is_alive !== false,
+          )
+          .map((a: { agent_id: string }) => a.agent_id)
+        if (resolved.length > 0) agentsToCancel = resolved
+      } catch (error) {
+        console.warn("[ConversationInvocationService] Failed to resolve agents by conversation:", error)
+      }
+
       if (agentsToCancel.length > 0) {
         // Set up timeout to prevent hanging
         let timeoutId: NodeJS.Timeout | undefined
@@ -228,7 +249,8 @@ class ConversationInvocationServiceImpl implements ConversationInvocationService
       // Update streaming status (legacy compatibility)
       useStreamingStatusStore.getState().setStatus(conversationId, "ready")
 
-      // Update session state
+      // Update session state (ensure session exists first so setStatus doesn't no-op)
+      sessionStore.ensureSession(conversationId)
       sessionStore.setStatus(conversationId, "ready")
       sessionStore.setStreamingMessageId(conversationId, null)
     } finally {

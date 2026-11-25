@@ -29,7 +29,9 @@ pub struct SessionRecord {
 /// SQLite-backed session store.
 ///
 /// One row per conversation session. Rows are inserted/updated when a session
-/// is created or loaded, and removed when the conversation is explicitly stopped.
+/// is created or loaded, and are intentionally kept across agent stop, suspend
+/// and backend shutdown so the conversation can `session/load` on restart.
+/// They are removed only when a conversation is explicitly deleted/reset.
 pub struct SessionStore {
     db_path: String,
 }
@@ -165,8 +167,9 @@ impl SessionStore {
 
     /// Remove the saved session for the given conversation.
     ///
-    /// Called when an agent is explicitly stopped (so we don't try to resume
-    /// a deliberately terminated session on next start).
+    /// Intended for explicit conversation deletion/reset. Normal agent stop,
+    /// suspend and backend shutdown deliberately preserve the row so the next
+    /// launch can restore context.
     pub fn remove_session(&self, conversation_id: &str) -> ErgataiResult<()> {
         let conn = self.conn()?;
         conn.execute(

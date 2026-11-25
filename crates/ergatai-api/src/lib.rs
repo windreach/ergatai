@@ -789,6 +789,14 @@ pub fn build_rest_app(state: AppState) -> Router {
             "/api/v1/collaboration-sessions/{collaboration_session_id}/conversations/{conversation_id}",
             get(api::collaboration_sessions::get_session_conversation),
         )
+        .route(
+            "/api/v1/collaboration-sessions/{collaboration_session_id}/dag-visualization",
+            get(api::collaboration_sessions::get_collaboration_session_dag_visualization),
+        )
+        .route(
+            "/api/v1/dag-visualization",
+            get(api::collaboration_sessions::get_global_dag_visualization),
+        )
         .with_state(state.clone())
         // Auth middleware (exempts /health, /ready, /metrics)
         // Added FIRST (innermost) so it executes AFTER method_validation but BEFORE router.

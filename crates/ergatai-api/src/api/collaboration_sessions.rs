@@ -25,6 +25,7 @@ use crate::services::collaboration_session_dag::{
     activate_plan_revision, cancel_session_execution, submit_session_interaction,
     CollaborationSessionDagError,
 };
+use crate::services::dag_service;
 
 #[derive(Debug, Deserialize)]
 pub struct EventQuery {
@@ -769,6 +770,44 @@ pub async fn get_collaboration_session_progress(
     });
 
     (StatusCode::OK, Json(progress)).into_response()
+}
+
+/// GET /api/v1/collaboration-sessions/{collaboration_session_id}/dag-visualization
+#[utoipa::path(
+    get,
+    path = "/api/v1/collaboration-sessions/{collaboration_session_id}/dag-visualization",
+    tag = "Collaboration Sessions",
+    params(("collaboration_session_id" = String, Path, description = "Collaboration session ID")),
+    responses(
+        (status = 200, description = "Session DAG visualization", body = serde_json::Value),
+        (status = 404, description = "Session not found", body = crate::api::ApiError),
+    )
+)]
+pub async fn get_collaboration_session_dag_visualization(
+    Path(collaboration_session_id): Path<String>,
+) -> Response {
+    match crate::services::collaboration_session::get_session(&collaboration_session_id) {
+        Ok(_) => {}
+        Err(e) => return response_from_error(e, "get collaboration session for dag visualization"),
+    }
+
+    let viz = dag_service::get_session_dag_visualization(&collaboration_session_id).await;
+    (StatusCode::OK, Json(viz)).into_response()
+}
+
+/// GET /api/v1/dag-visualization
+/// Global active DAG visualization (legacy, at most one active DAG).
+#[utoipa::path(
+    get,
+    path = "/api/v1/dag-visualization",
+    tag = "DAG",
+    responses(
+        (status = 200, description = "Global DAG visualization", body = serde_json::Value),
+    )
+)]
+pub async fn get_global_dag_visualization() -> Response {
+    let viz = dag_service::get_dag_visualization(None).await;
+    (StatusCode::OK, Json(viz)).into_response()
 }
 
 /// GET /api/v1/collaboration-sessions/{session_id}/conversations

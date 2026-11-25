@@ -126,6 +126,7 @@ class SimpleAcpAgent:
         result = {
             "protocolVersion": 1,
             "capabilities": {
+                "loadSession": True,
                 "tools": {},
                 "prompts": {},
                 "resources": {}
@@ -202,6 +203,19 @@ class SimpleAcpAgent:
         ]
 
         result = {"sessions": sessions}
+        self.send_response(id, result)
+
+    def handle_session_load(self, id: Any, params: Dict):
+        """处理 session/load 请求（加载已有会话并重放历史）"""
+        self.session_id = params.get("sessionId", self.session_id)
+        self.log(f"会话加载 (session/load): {self.session_id}")
+
+        self.send_replay_messages(2)
+
+        result = {
+            "sessionId": self.session_id,
+            "configOptions": [self.model_config_option()],
+        }
         self.send_response(id, result)
 
     def handle_session_resume(self, id: Any, params: Dict):
@@ -524,6 +538,8 @@ class SimpleAcpAgent:
             self.handle_session_new(id, params)
         elif method == "session/list":
             self.handle_session_list(id, params)
+        elif method == "session/load":
+            self.handle_session_load(id, params)
         elif method == "session/resume":
             self.handle_session_resume(id, params)
         elif method == "session/prompt":

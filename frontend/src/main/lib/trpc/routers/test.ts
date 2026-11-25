@@ -936,6 +936,14 @@ ${input.prompt}
         messageType: z.enum(['request', 'response', 'broadcast']).optional(),
       }))
       .mutation(({ input }) => {
+        // Validate agent existence and non-empty message
+        if (!testErgataiAgentStore.get(input.agentId)) {
+          throw new Error(`Agent not found: ${input.agentId}`)
+        }
+        if (!input.message.trim()) {
+          throw new Error('Message cannot be empty')
+        }
+
         // Enhanced mock - track messages per conversation
         const messageId = uniqueId('msg')
         const conversationId = input.conversationId || uniqueId('conv')

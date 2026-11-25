@@ -26,6 +26,7 @@ futures.workspace = true
 futures-util.workspace = true
 anyhow.workspace = true
 libc.workspace = true
+async-trait.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

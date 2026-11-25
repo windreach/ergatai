@@ -19,11 +19,11 @@ use crate::services::collaboration_session::{
 use crate::user_data_db;
 use ergatai_core::cross_agent::CollaborationExecutionScope;
 use ergatai_core::cross_agent::{
-    get_dag_scheduler, get_dag_scheduler_by_id, list_dag_schedulers, set_dag_scheduler,
-    try_set_session_dag_scheduler, DagScheduler,
+    get_dag_scheduler, get_dag_scheduler_by_id, get_session_dag_scheduler, list_dag_schedulers,
+    set_dag_scheduler, try_set_session_dag_scheduler, DagScheduler,
 };
 use ergatai_core::orchestration::{parse_dag_auto, DagContext, TaskGraph, TaskStatus};
-use ergatai_error::ChatId;
+use ergatai_error::{ChatId, ProjectId, WorkspaceId};
 
 // ── 领域类型 ──────────────────────────────────────────────────────────
 
@@ -203,6 +203,10 @@ pub async fn submit_dag(req: DagSubmitRequest) -> Result<DagSubmitResponse> {
         }
     }
 
+    // 0. 继承 chat 的当前工作路径（与聊天 agent 的 cwd 机制对齐）
+    let project_root = resolve_dag_project_root(&req)
+        .unwrap_or_else(|| PathBuf::from(crate::get_app_state().default_cwd.clone()));
+
     // 2. 解析 YAML
     let graph = parse_dag_auto(&req.definition, req.parameters)
         .map_err(|e| anyhow::anyhow!("Failed to parse DAG definition: {}", e))?;
@@ -282,7 +286,6 @@ pub async fn submit_dag(req: DagSubmitRequest) -> Result<DagSubmitResponse> {
     }
 
     // 6. 创建调度器
-    let project_root = PathBuf::from(crate::get_app_state().default_cwd.clone());
     let scheduler = if let Some(ref session_id) = session_id {
         // 设置 collaboration scope
         let scope = CollaborationExecutionScope::new(
@@ -519,6 +522,19 @@ pub async fn get_dag_visualization(dag_id: Option<&str>) -> DagVisualizationResu
         nodes: visualization_nodes,
         edges,
     }
+}
+
+/// 按协作会话获取 DAG 可视化数据。
+pub async fn get_session_dag_visualization(session_id: &str) -> DagVisualizationResult {
+    let scheduler = get_session_dag_scheduler(Some(session_id));
+    let Some(scheduler) = scheduler else {
+        return DagVisualizationResult {
+            dag_id: String::new(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        };
+    };
+    get_dag_visualization(Some(scheduler.dag_id())).await
 }
 
 /// 获取 DAG 指标。
@@ -963,6 +979,51 @@ async fn compute_progress_detail(scheduler: &DagScheduler) -> DagProgressDetail 
         total,
         percent,
     }
+}
+
+/// 继承 chat 的当前工作路径作为 DAG 项目根目录。
+///
+/// 优先级：chat.worktree_path > chat 所属 workspace.work_dir > None（由调用方回退）。
+fn resolve_dag_project_root(req: &DagSubmitRequest) -> Option<PathBuf> {
+    if let Some(project_id_str) = &req.project_id {
+        if let Ok(project_id) = ProjectId::decode(project_id_str) {
+            if let Ok(Some(project)) = crate::user_data_db::projects::get(project_id.as_i64()) {
+                if !project.path.trim().is_empty() {
+                    return Some(PathBuf::from(project.path));
+                }
+            }
+        }
+    }
+
+    if let Some(workspace_id_str) = &req.workspace_id {
+        if let Ok(workspace_id) = WorkspaceId::decode(workspace_id_str) {
+            if let Ok(Some(workspace)) = crate::user_data_db::workspaces::get(workspace_id) {
+                if !workspace.work_dir.trim().is_empty() {
+                    return Some(PathBuf::from(workspace.work_dir));
+                }
+            }
+        }
+    }
+
+    if let Some(chat_id_str) = &req.chat_id {
+        if let Ok(chat_id) = ChatId::decode(chat_id_str) {
+            if let Ok(Some(chat)) = crate::user_data_db::chats::get(chat_id) {
+                if let Some(worktree_path) = &chat.worktree_path {
+                    if !worktree_path.trim().is_empty() {
+                        return Some(PathBuf::from(worktree_path));
+                    }
+                }
+                if let Ok(Some(workspace)) = crate::user_data_db::workspaces::get(chat.workspace_id)
+                {
+                    if !workspace.work_dir.trim().is_empty() {
+                        return Some(PathBuf::from(workspace.work_dir));
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]

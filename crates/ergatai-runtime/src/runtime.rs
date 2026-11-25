@@ -1084,53 +1084,31 @@ impl AgentRuntime {
             capture_thoughts: false,
         };
 
-        // 4. Resolve profile_name to actual command via ProfileRegistry
-        // Query the profile registry to get the configured command for this profile.
-        // Falls back to using profile_name as command if profile not found (backward compat).
-        let command = match crate::profile_registry::ProfileRegistry::new(
-            crate::dirs::profile_registry_db_path(),
-        ) {
-            Ok(registry) => match registry.list_with_status() {
-                Ok(profiles) => {
-                    match profiles
-                        .into_iter()
-                        .find(|p| p.name == suspended.profile_name)
-                    {
-                        Some(profile) => {
-                            info!(
-                                profile_name = %suspended.profile_name,
-                                profile_command = %profile.command,
-                                "Resolved profile to command for resume"
-                            );
-                            profile.command
-                        }
-                        None => {
-                            warn!(
-                                profile_name = %suspended.profile_name,
-                                "Profile not found in registry, using profile_name as command"
-                            );
-                            suspended.profile_name.clone()
-                        }
-                    }
+        // 4. Resolve profile_name to the actual command + transport via the
+        //    shared launch abstraction.
+        //    Falls back to using profile_name as command if profile not found
+        //    (backward compat for raw-command profiles).
+        let (command, profile_transport) =
+            match crate::launch::resolve_profile_launch(&suspended.profile_name).await {
+                Ok(resolved) => {
+                    info!(
+                        profile_name = %suspended.profile_name,
+                        profile_command = %resolved.0,
+                        transport = ?resolved.1,
+                        "Resolved profile to command for resume"
+                    );
+                    resolved
                 }
                 Err(e) => {
                     warn!(
                         profile_name = %suspended.profile_name,
                         error = %e,
-                        "Failed to list profiles, using profile_name as command"
+                        "Failed to resolve profile, using profile_name as command"
                     );
-                    suspended.profile_name.clone()
+                    (suspended.profile_name.clone(), None)
                 }
-            },
-            Err(e) => {
-                warn!(
-                    profile_name = %suspended.profile_name,
-                    error = %e,
-                    "Failed to open profile registry, using profile_name as command"
-                );
-                suspended.profile_name.clone()
-            }
-        };
+            };
+        let transport = override_transport.or(profile_transport);
 
         // 5. Launch new agent process
         let new_agent_id = self
@@ -1141,7 +1119,7 @@ impl AgentRuntime {
                 None, // chat_id (the durable conversation binding is restored below)
                 Some(&suspended.conversation_id),
                 Some(&suspended.profile_name),
-                override_transport.as_deref(),
+                transport.as_deref(),
                 Some(&suspended.id), // reuse agent id for stable identity
             )
             .await?;
@@ -1268,6 +1246,11 @@ impl AgentRuntime {
             .get_mut(agent_id)
             .ok_or_else(|| ErgataiError::internal(format!("Agent {} not found", agent_id)))?;
         info.task_id = Some(task_id);
+        drop(guard);
+        // DAG task workers run without an interactive user; auto-approve their
+        // in-workspace permission requests instead of waiting for a decision
+        // that never comes (the interactive queue would block the agent turn).
+        crate::permission_service::mark_agent_autonomous(agent_id);
         Ok(())
     }
 

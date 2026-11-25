@@ -124,9 +124,33 @@ impl SuspendStore {
             ))
         })?;
 
-        // Enable WAL mode for better concurrent read performance
-        conn.execute_batch("PRAGMA journal_mode=WAL;")
-            .map_err(|e| ErgataiError::internal(format!("Failed to set WAL mode: {}", e)))?;
+        // Enable WAL mode for better concurrent read performance.
+        // Setting the journal mode requires an exclusive lock and may transiently
+        // fail with "database is locked" when several processes/tests open the
+        // store at the same time. Retry briefly; if it stays locked, assume
+        // another connection is (or has just) configured it and continue.
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+        for attempt in 0..10 {
+            match conn.execute_batch("PRAGMA journal_mode=WAL;") {
+                Ok(_) => break,
+                Err(e) if e.to_string().contains("locked") && attempt < 9 => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) if e.to_string().contains("locked") => {
+                    warn!(
+                        "Failed to set WAL mode (database locked); continuing with current mode: {}",
+                        e
+                    );
+                    break;
+                }
+                Err(e) => {
+                    return Err(ErgataiError::internal(format!(
+                        "Failed to set WAL mode: {}",
+                        e
+                    )));
+                }
+            }
+        }
 
         let store = Self {
             conn: std::sync::Mutex::new(conn),

@@ -343,7 +343,7 @@
     "autoDescription": "Auto-approve operations",
     "fullAccessDescription": "This has full access to the computer",
     "fullAccessWarning": "Full Access automatically approves all operations and bypasses file lock checks—this mode has full access to the computer. Are you sure you want to enable it?",
-    "autoBashDescription": "Auto-approve operations including Bash, while keeping file locks"
+    "autoBashDescription": "Automatically approves Bash. Bash may change files, which can overwrite your edits"
   },
   "API endpoint URL": "API endpoint URL",
   "API key": "API key",

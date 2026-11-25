@@ -1,8 +1,5 @@
 # Architecture and Data Flow
 
-This document describes the actual runtime topology and key data flows of the current codebase, written for human readers. Working conventions and invariants for coding agents live in
-[`CLAUDE.md`](../CLAUDE.md).
-
 ## 1. Process Model
 
 | Process | Started by | Responsibilities |

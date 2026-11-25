@@ -23,6 +23,7 @@ const VIEW_TITLES: Record<DetailsSidebarTab, string> = {
   details: "Details",
   files: "Files",
   git: "Git",
+  dag: "DAG",
 }
 
 interface DetailsSidebarHeaderProps {

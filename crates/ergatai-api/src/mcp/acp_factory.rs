@@ -137,6 +137,16 @@ impl ErgataiAcpMcpService {
                 "send_message",
                 r#"Send a message to another online agent. Persists via NATS JetStream.
 
+WHEN TO USE:
+- The user explicitly asks you to message/contact another agent
+- You need to delegate work to another agent or respond to a received agent message
+- Responding to a received agent request (message_type="response")
+
+WHEN NOT TO USE (CRITICAL):
+- Answering a direct question from the user — reply in your own response instead
+- The user did not explicitly ask to contact another agent
+- Relaying/forwarding the user's text to another agent just because it mentions that agent
+
 PARAMETERS:
 - target_conversation_id (PREFERRED when known): valid "conv_..." ID; routes directly and never auto-spawns a duplicate
 - target_agent_id: recipient's agent_name / profile name from list_agents (or a runtime agent id)

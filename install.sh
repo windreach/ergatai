@@ -6,15 +6,12 @@
 #   curl -sSL ... | bash -s -- v0.1.0 /usr/local/bin
 #
 # What this does:
-#   1. Downloads TWO binaries from GitHub Releases:
-#        - `ergatai`        (CLI) — user-facing tool for managing workspaces/agents,
-#                                  wraps rmux commands via the API server
-#        - `ergatai-server` (server) — HTTP/MCP server that manages rmux-daemon,
-#                                  nats-server, and exposes the MCP API to agents
-#   2. Installs them to the target directory (default: /usr/local/bin)
-#   3. Creates symlink: `ega` -> `ergatai` (short alias)
-#   4. Grants CAP_SYS_ADMIN to `ergatai-server` only — REQUIRED for kernel-level
-#      file locking via fanotify. The CLI does not need any special capabilities.
+#   1. Downloads the portable bundle (one zip per platform/arch) from GitHub
+#      Releases. The bundle contains ergatai-server + nats-server + the desktop app.
+#   2. Extracts ergatai-server and nats-server into the target directory
+#      (default: /usr/local/bin).
+#   3. Grants CAP_SYS_ADMIN to `ergatai-server` only — REQUIRED for kernel-level
+#      file locking via fanotify.
 #
 # Architecture:
 #   ┌────────────────────┐        ┌────────────────────┐
@@ -36,7 +33,6 @@ set -euo pipefail
 VERSION="${1:-latest}"
 INSTALL_DIR="${2:-/usr/local/bin}"
 REPO="windreach/Ergatai"
-CLI_NAME="ergatai"
 SERVER_NAME="ergatai-server"
 
 # ── Preflight checks ────────────────────────────────────────────────────────
@@ -48,7 +44,7 @@ if [[ "$(uname -s)" != "Linux" ]]; then
     exit 1
 fi
 
-for cmd in curl getcap setcap; do
+for cmd in curl unzip getcap setcap; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "❌ Required command not found: $cmd"
         case "$cmd" in
@@ -89,34 +85,44 @@ echo "   Arch:      $ARCH"
 echo "   Install:   $INSTALL_DIR/"
 echo ""
 echo "   Binaries to install:"
-echo "     • $CLI_NAME      (CLI — manages workspaces/agents, wraps rmux)"
-echo "     • ega            (symlink → $CLI_NAME, short alias)"
 echo "     • $SERVER_NAME  (server — MCP/HTTP API, needs CAP_SYS_ADMIN)"
+echo "     • nats-server   (JetStream bus, pre-bundled)"
 echo ""
 
 # ── Download ────────────────────────────────────────────────────────────────
 
-TMP_CLI=$(mktemp)
-TMP_SERVER=$(mktemp)
-trap 'rm -f "$TMP_CLI" "$TMP_SERVER"' EXIT
+# ── Download portable bundle ────────────────────────────────────────────────
 
-for binary in "$CLI_NAME" "$SERVER_NAME"; do
-    DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${binary}-${ARCH}"
-    TMP_FILE=$(mktemp)
-    echo "⬇️  Downloading $binary from $DOWNLOAD_URL"
-    if ! curl -fL -o "$TMP_FILE" "$DOWNLOAD_URL"; then
-        echo "❌ Download failed for $binary. Check:"
-        echo "   - Version exists: https://github.com/${REPO}/releases"
-        echo "   - Network connection"
-        exit 1
-    fi
-    chmod +x "$TMP_FILE"
-    if [[ "$binary" == "$CLI_NAME" ]]; then
-        mv "$TMP_FILE" "$TMP_CLI"
-    else
-        mv "$TMP_FILE" "$TMP_SERVER"
-    fi
-done
+BUNDLE_NAME="ergatai-portable-linux-${ARCH}.zip"
+DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${BUNDLE_NAME}"
+
+TMP_BUNDLE=$(mktemp)
+TMP_EXTRACT=$(mktemp -d)
+trap 'rm -f "$TMP_BUNDLE"; rm -rf "$TMP_EXTRACT"' EXIT
+
+echo "⬇️  Downloading $BUNDLE_NAME from $DOWNLOAD_URL"
+if ! curl -fL -o "$TMP_BUNDLE" "$DOWNLOAD_URL"; then
+    echo "❌ Download failed for $BUNDLE_NAME. Check:"
+    echo "   - Version exists: https://github.com/${REPO}/releases"
+    echo "   - Network connection"
+    exit 1
+fi
+
+echo "📦 Extracting bundle"
+unzip -q "$TMP_BUNDLE" -d "$TMP_EXTRACT"
+
+# The zip contains a single top-level directory; find the binaries inside.
+BUNDLE_ROOT=$(find "$TMP_EXTRACT" -type d -name 'ergatai-portable-*' | head -n 1)
+if [[ -z "$BUNDLE_ROOT" ]]; then
+    BUNDLE_ROOT="$TMP_EXTRACT"
+fi
+
+SERVER_SRC="$BUNDLE_ROOT/bin/ergatai-server"
+NATS_SRC="$BUNDLE_ROOT/bin/nats-server"
+if [[ ! -f "$SERVER_SRC" ]]; then
+    echo "❌ ergatai-server not found in bundle" >&2
+    exit 1
+fi
 
 # ── Install ─────────────────────────────────────────────────────────────────
 
@@ -126,27 +132,51 @@ install_binary() {
     local src="$1"
     local name="$2"
     if [[ -w "$INSTALL_DIR" ]]; then
-        mv "$src" "$INSTALL_DIR/$name"
+        install -m 0755 "$src" "$INSTALL_DIR/$name"
     else
-        sudo mv "$src" "$INSTALL_DIR/$name"
+        sudo install -m 0755 "$src" "$INSTALL_DIR/$name"
     fi
 }
 
-install_binary "$TMP_CLI" "$CLI_NAME"
-install_binary "$TMP_SERVER" "$SERVER_NAME"
+install_binary "$SERVER_SRC" "$SERVER_NAME"
+echo "   ✓ $SERVER_NAME  (server)"
 
-# Create symlink: ega -> ergatai
-CLI_TARGET="$INSTALL_DIR/$CLI_NAME"
-EGA_TARGET="$INSTALL_DIR/ega"
-if [[ -w "$INSTALL_DIR" ]]; then
-    ln -sf "$CLI_TARGET" "$EGA_TARGET"
+if [[ -f "$NATS_SRC" ]]; then
+    install_binary "$NATS_SRC" "nats-server"
+    echo "   ✓ nats-server   (pre-bundled)"
 else
-    sudo ln -sf "$CLI_TARGET" "$EGA_TARGET"
+    echo "   ⚠️  nats-server not bundled; will be downloaded separately below"
 fi
 
-echo "   ✓ $CLI_NAME     (CLI)"
-echo "   ✓ ega           (symlink → $CLI_NAME)"
-echo "   ✓ $SERVER_NAME  (server)"
+# ── Pre-download nats-server (sibling of ergatai-server) ────────────────────
+
+NATS_VERSION="2.10.27"
+NATS_ASSET_ARCH="$ARCH"
+case "$ARCH" in
+    x86_64) NATS_ASSET_ARCH="amd64" ;;
+    aarch64) NATS_ASSET_ARCH="arm64" ;;
+esac
+NATS_URL="https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-linux-${NATS_ASSET_ARCH}.tar.gz"
+TMP_NATS_DIR=$(mktemp -d)
+echo ""
+echo "⬇️  Pre-downloading nats-server v${NATS_VERSION} from $NATS_URL"
+if curl -fL -o "$TMP_NATS_DIR/nats.tar.gz" "$NATS_URL"; then
+    tar -xzf "$TMP_NATS_DIR/nats.tar.gz" -C "$TMP_NATS_DIR"
+    NATS_BIN_PATH=$(find "$TMP_NATS_DIR" -type f -name nats-server | head -n 1)
+    if [[ -n "$NATS_BIN_PATH" ]]; then
+        if [[ -w "$INSTALL_DIR" ]]; then
+            install -m 0755 "$NATS_BIN_PATH" "$INSTALL_DIR/nats-server"
+        else
+            sudo install -m 0755 "$NATS_BIN_PATH" "$INSTALL_DIR/nats-server"
+        fi
+        echo "   ✓ nats-server (pre-downloaded next to $SERVER_NAME)"
+    else
+        echo "   ⚠️  nats-server not found inside archive; runtime will require a manual install"
+    fi
+else
+    echo "   ⚠️  Failed to download nats-server; runtime will require a manual install"
+fi
+rm -rf "$TMP_NATS_DIR"
 
 # ── Grant CAP_SYS_ADMIN to SERVER only (REQUIRED for kernel-level file locking) ─
 
@@ -170,15 +200,6 @@ fi
 
 echo "🔍 Verifying installation..."
 echo ""
-echo "   CLI ($CLI_NAME):"
-echo "     Path:         $INSTALL_DIR/$CLI_NAME"
-if command -v "$CLI_NAME" &>/dev/null; then
-    echo "     Version:      $("$CLI_NAME" --version 2>/dev/null || echo '<unknown>')"
-else
-    echo "     Version:      (not in PATH — re-open shell or source ~/.bashrc)"
-fi
-
-echo ""
 echo "   Server ($SERVER_NAME):"
 echo "     Path:         $SERVER_TARGET"
 INSTALLED_CAPS=$(getcap "$SERVER_TARGET")
@@ -193,10 +214,7 @@ if [[ "$INSTALLED_CAPS" == *"cap_sys_admin"* ]]; then
     echo "   Start the server:"
     echo "     $SERVER_NAME --port 3000"
     echo ""
-    echo "   Manage workspaces/agents (in another terminal):"
-    echo "     $CLI_NAME workspace list"
-    echo "     $CLI_NAME agent list"
-    echo "     $CLI_NAME agent spawn --workspace <id> --command <cmd>"
+    echo "   The desktop app (bundled in the same release zip) connects to it."
     echo ""
     echo "   📖 Documentation: https://github.com/${REPO}#readme"
 else

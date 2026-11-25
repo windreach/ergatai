@@ -48,6 +48,9 @@ impl DagScheduler {
 
         let handle = tokio::spawn(async move {
             let idle_timeout = std::time::Duration::from_secs(timeout_secs);
+            // Tracks when the agent was first observed missing from the runtime,
+            // so a failed spawn still hits the timeout instead of waiting forever.
+            let mut missing_since: Option<std::time::Instant> = None;
             tracing::info!(
                 node_id = %node_id_clone,
                 dag_id = %scheduler.dag_id,
@@ -80,76 +83,106 @@ impl DagScheduler {
                 };
 
                 // Query the agent's structured activity age via the global runtime.
+                // If the agent never registers (e.g. its spawn fails), fall back to
+                // measuring time since it was first observed missing — otherwise the
+                // node would wait forever and block every subsequent DAG submission.
                 let runtime = ergatai_runtime::get_agent_runtime();
-                let age = match runtime.agent_last_activity_age(&agent_id).await {
-                    Some(age) => age,
-                    None => {
-                        // Agent not registered yet (e.g., still starting up).
-                        // Don't fail — wait for it to appear.
-                        tracing::debug!(
-                            node_id = %node_id_clone,
-                            agent_id = %agent_id,
-                            "per-node idle watcher: agent not found in runtime, waiting"
-                        );
-                        continue;
+                // The graph stores the profile name, but the runtime registry is
+                // keyed by the concrete runtime agent ID. DAG-launched agents bind
+                // `<node_id>|<profile>` as their task_id, so resolve that first.
+                let task_agent_id = format!("{}|{}", node_id_clone, agent_id);
+                let runtime_agent_id = match runtime.resolve_agent_id(&task_agent_id).await {
+                    Some(id) => Some(id),
+                    None => runtime.resolve_agent_id(&agent_id).await,
+                };
+                let activity_age = match runtime_agent_id.as_deref() {
+                    Some(runtime_agent_id) => {
+                        runtime.agent_last_activity_age(runtime_agent_id).await
                     }
+                    None => None,
                 };
 
-                if age > idle_timeout {
-                    tracing::info!(
-                        node_id = %node_id_clone,
-                        agent_id = %agent_id,
-                        idle_secs = age.as_secs(),
-                        timeout_secs = timeout_secs,
-                        "per-node idle watcher: no structured agent activity — marking node Failed"
-                    );
-                    // Record the timeout reason in metadata but do NOT set
-                    // node.status = Failed here. on_node_failed must handle the
-                    // status transition so it can: (a) check retry budget,
-                    // (b) call mark_completed to release the agent slot,
-                    // (c) call skip_downstream to propagate failure to dependents,
-                    // and (d) call finalize_if_terminal.
-                    {
-                        let mut graph = scheduler.graph.lock().await;
-                        if let Some(node) = graph.find_node_mut(&node_id_clone) {
-                            node.metadata.insert(
-                                "timeout_error".to_string(),
+                let timed_out = match activity_age {
+                    Some(age) => {
+                        missing_since = None;
+                        (age > idle_timeout).then(|| {
+                            (
+                                age,
                                 format!(
-                                    "agent idle timeout: no structured activity for {}s (limit {}s)",
+                                    "no structured activity for {}s (limit {}s)",
                                     age.as_secs(),
                                     timeout_secs
                                 ),
+                            )
+                        })
+                    }
+                    None => {
+                        let missing_for = missing_since.get_or_insert_with(std::time::Instant::now);
+                        let elapsed = missing_for.elapsed();
+                        if elapsed > idle_timeout {
+                            Some((
+                                elapsed,
+                                format!(
+                                    "agent '{}' never registered in runtime within {}s (limit {}s)",
+                                    agent_id,
+                                    elapsed.as_secs(),
+                                    timeout_secs
+                                ),
+                            ))
+                        } else {
+                            tracing::debug!(
+                                node_id = %node_id_clone,
+                                agent_id = %agent_id,
+                                missing_secs = elapsed.as_secs(),
+                                "per-node idle watcher: agent not found in runtime, waiting"
                             );
+                            None
                         }
                     }
+                };
 
-                    // Remove self from watcher map before triggering failure,
-                    // so on_node_failed → cancel_timeout_watcher is a no-op
-                    // rather than aborting our own task mid-execution.
-                    {
-                        let mut w = watchers.lock().await;
-                        w.remove(&node_id_clone);
-                    }
+                let Some((idle_secs, reason)) = timed_out else {
+                    continue;
+                };
 
-                    if let Err(e) = scheduler
-                        .on_node_failed(
-                            &node_id_clone,
-                            &format!(
-                                "Agent idle timeout: no structured activity for {}s (limit {}s)",
-                                age.as_secs(),
-                                timeout_secs
-                            ),
-                        )
-                        .await
-                    {
-                        tracing::error!(
-                            node_id = %node_id_clone,
-                            error = %e,
-                            "Failed to handle idle timeout for node"
-                        );
+                tracing::info!(
+                    node_id = %node_id_clone,
+                    agent_id = %agent_id,
+                    idle_secs = idle_secs.as_secs(),
+                    timeout_secs = timeout_secs,
+                    reason = %reason,
+                    "per-node idle watcher: node timed out — marking node Failed"
+                );
+                // Record the timeout reason in metadata but do NOT set
+                // node.status = Failed here. on_node_failed must handle the
+                // status transition so it can: (a) check retry budget,
+                // (b) call mark_completed to release the agent slot,
+                // (c) call skip_downstream to propagate failure to dependents,
+                // and (d) call finalize_if_terminal.
+                {
+                    let mut graph = scheduler.graph.lock().await;
+                    if let Some(node) = graph.find_node_mut(&node_id_clone) {
+                        node.metadata
+                            .insert("timeout_error".to_string(), reason.clone());
                     }
-                    break;
                 }
+
+                // Remove self from watcher map before triggering failure,
+                // so on_node_failed → cancel_timeout_watcher is a no-op
+                // rather than aborting our own task mid-execution.
+                {
+                    let mut w = watchers.lock().await;
+                    w.remove(&node_id_clone);
+                }
+
+                if let Err(e) = scheduler.on_node_failed(&node_id_clone, &reason).await {
+                    tracing::error!(
+                        node_id = %node_id_clone,
+                        error = %e,
+                        "Failed to handle idle timeout for node"
+                    );
+                }
+                break;
             }
         });
 
@@ -556,6 +589,42 @@ mod tests {
         assert!(
             result.is_ok(),
             "timeout watcher should have exited cleanly within 3s of DAG finalization"
+        );
+    }
+
+    /// A node whose agent never registers must still time out instead of waiting
+    /// forever (regression: a failed agent spawn left the DAG stuck in running).
+    #[tokio::test]
+    async fn timeout_watcher_fails_node_when_agent_never_registers() {
+        let mut graph = TaskGraph::new(vec![TaskNode::new(
+            "missing-agent-node",
+            "__ergatai_missing_test_agent__",
+            "never spawns",
+        )]);
+        graph.nodes[0].status = TaskStatus::Running;
+        graph.nodes[0].timeout = Some(1);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let scheduler = DagScheduler::new(temp_dir.path().to_path_buf(), graph);
+
+        scheduler.spawn_timeout_watcher("missing-agent-node", 1);
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                {
+                    let g = scheduler.graph.lock().await;
+                    if g.find_node("missing-agent-node").unwrap().status == TaskStatus::Failed {
+                        return;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "watcher should fail the node within 5s when the agent never registers"
         );
     }
 

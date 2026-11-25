@@ -18,7 +18,7 @@ export type MessageRole = "user" | "assistant" | "system" | "agent" | "respagent
  * - "user": human input, starts new group
  * - "agent": agent-initiated request to other agents, starts new group
  * - "assistant": host agent's own response, appends to current group
- * - "respagent": external agent's response, appends to current group (rendered by InterAgentRepliesDisclosure)
+ * - "respagent": external agent's response, rendered as its own standalone message
  * - "system": system events, appends to current group
  */
 export const MessageRolePolicy = {
@@ -34,7 +34,7 @@ export const MessageRolePolicy = {
   /**
    * Roles that append to the current conversation group.
    * assistant: host agent responses
-   * respagent: external agent responses (rendered separately by InterAgentRepliesDisclosure)
+   * respagent: external agent responses (rendered as standalone messages)
    * system: system events and notifications
    */
   appendsToGroup(role: MessageRole): boolean {
@@ -147,7 +147,7 @@ export const messageIdsPerChatAtom = atomFamily((_conversationId: string) =>
   atom<string[]>([])
 )
 
-const messageRolesPerChatAtom = atomFamily((_conversationId: string) =>
+export const messageRolesPerChatAtom = atomFamily((_conversationId: string) =>
   atom<Map<string, MessageRole>>(new Map())
 )
 
@@ -485,7 +485,7 @@ function buildMessageGroups(ids: string[], roles: Map<string, MessageRole>): Mes
     if (MessageRolePolicy.startsNewGroup(role)) {
       if (currentGroup) groups.push(currentGroup)
       currentGroup = { userMsgId: id, assistantMsgIds: [] }
-    } else if (currentGroup && role === "assistant") {
+    } else if (currentGroup && (role === "assistant" || role === "respagent")) {
       currentGroup.assistantMsgIds.push(id)
     }
   }
@@ -1021,8 +1021,9 @@ export const syncMessagesWithStatusAtom = atom(
     }
 
     // Build new IDs list and roles map
-    // Filter out side_copy messages - they are rendered by InterAgentRepliesDisclosure
-    // and should not appear in the main chat message list (avoid duplicate rendering)
+    // Filter out side_copy messages - they are synced from the host conversation's
+    // runtime stream (useHostReplySync) and should not appear in the main chat
+    // message list (avoid duplicate rendering)
     const newIds = messages
       .filter((m) => {
         // Projection kind is stored either as a dedicated DB/API field or in

@@ -585,12 +585,9 @@ export const agentsPreviewSidebarWidthAtom = atomWithStorage<number>(
   { getOnInit: true },
 )
 
-// Preview sidebar open state - window-scoped
-export const agentsPreviewSidebarOpenAtom = atomWithWindowStorage<boolean>(
-  "agents-preview-sidebar-open",
-  true,
-  { getOnInit: true },
-)
+// Preview sidebar open state - runtime only (not persisted, so re-entering
+// the chat page does not auto-expand / "remember" expand state)
+export const agentsPreviewSidebarOpenAtom = atom<boolean>(false)
 
 // Diff sidebar (right) width (global - same width for all chats)
 export const agentsDiffSidebarWidthAtom = atomWithStorage<number>(
@@ -627,12 +624,9 @@ export const diffViewDisplayModeAtom = atomWithStorage<DiffViewDisplayMode>(
   { getOnInit: true },
 )
 
-// Diff sidebar open state storage - window-scoped, stores per chatId
-const diffSidebarOpenStorageAtom = atomWithWindowStorage<Record<string, boolean>>(
-  "agents:diffSidebarOpen",
-  {},
-  { getOnInit: true },
-)
+// Diff sidebar open state storage - runtime only (not persisted, so re-entering
+// the chat page does not auto-expand / "remember" expand state)
+const diffSidebarOpenStorageAtom = atom<Record<string, boolean>>({})
 
 // Runtime open state - not persisted, used for dialog/fullscreen modes
 const diffSidebarOpenRuntimeAtom = atom<Record<string, boolean>>({})
@@ -671,13 +665,8 @@ export const diffSidebarOpenAtomFamily = atomFamily((chatId: string) =>
 )
 
 
-// Legacy global atom - kept for backwards compatibility, maps to empty string key
-// TODO: Remove after migration
-export const agentsDiffSidebarOpenAtom = atomWithWindowStorage<boolean>(
-  "agents-diff-sidebar-open",
-  false,
-  { getOnInit: true },
-)
+// Legacy global atom - runtime only (not persisted)
+export const agentsDiffSidebarOpenAtom = atom<boolean>(false)
 
 // Focused file path in diff sidebar (for scroll-to-file feature)
 // Set by AgentEditTool on click, consumed by AgentDiffView
@@ -1137,13 +1126,9 @@ export const agentsPlanSidebarWidthAtom = atomWithStorage<number>(
   { getOnInit: true },
 )
 
-// Plan sidebar open state storage - stores per conversationId (persisted)
-// Uses window-scoped storage so each window can have independent plan sidebar states
-const planSidebarOpenStorageAtom = atomWithWindowStorage<Record<string, boolean>>(
-  "agents:planSidebarOpen",
-  {},
-  { getOnInit: true },
-)
+// Plan sidebar open state storage - runtime only (not persisted, so re-entering
+// the chat page does not auto-expand / "remember" expand state)
+const planSidebarOpenStorageAtom = atom<Record<string, boolean>>({})
 
 // atomFamily to get/set plan sidebar open state per conversationId
 export const planSidebarOpenAtomFamily = atomFamily((conversationId: string) =>

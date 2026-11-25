@@ -97,7 +97,7 @@ export function useMainChatInvocation({
   conversation: ChatConversation & { messages?: RawMessage[] }
   chatId: string
   resolverAgentId?: string | null
-  /** Agent ID used only for backend cancel on stop; defaults to resolverAgentId */
+  /** Real runtime Agent ID used for backend cancel on stop. */
   stopAgentId?: string | null
   isActive?: boolean
   /** Durable messages from the chat snapshot, separate from local streaming. */
@@ -544,16 +544,20 @@ export function useMainChatInvocation({
 
   // Wrap stop handler to use new service
   // Phase 16: Only call invocation.stop(), which delegates to adapter
-  // Phase 18: Also passes resolverAgentId to call backend cancel API
+  // Phase 18: Forward only a real runtime Agent ID to the backend cancel API
   // Don't call existingChat.stop() directly to avoid double-stop
   const handleStop = useCallback(async () => {
     // Use new service to stop (delegates to adapter.stop() + calls backend cancel API)
+    // Only forward a real runtime agent id for per-agent cancel. Falling back
+    // to resolverAgentId (which is often the provider/command string) sends a
+    // non-cancellable id to cancelPrompt and masks the real failure. When no
+    // runtime agent id is known, rely on the conversation-level cancel instead.
     await invocation.stop({
       conversationId: runtimeConversationId,
       chatId,
-      agentId: stopAgentId ?? resolverAgentId,
+      agentId: stopAgentId ?? null,
     })
-  }, [invocation, runtimeConversationId, chatId, resolverAgentId, stopAgentId])
+  }, [invocation, runtimeConversationId, chatId, stopAgentId])
 
   // Return combined API
   return useMemo(

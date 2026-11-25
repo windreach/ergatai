@@ -155,11 +155,6 @@ function renderDisclosure(
   )
 }
 
-function getTriggerButton() {
-  // The disclosure trigger is the only button rendered by the component.
-  return screen.getByRole("button", { name: /opencode/ })
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -186,9 +181,6 @@ describe("InterAgentRepliesDisclosure MCP reply rendering", () => {
   it("renders only the MCP-delivered respagent reply from the host conversation", async () => {
     queryMock.mockImplementation(() => Promise.resolve([makeReplyMessage()]))
     renderDisclosure()
-
-    await waitFor(() => expect(getTriggerButton()).toBeTruthy())
-    fireEvent.click(getTriggerButton())
 
     await waitFor(() => expect(screen.getByText("B 的回复第一版")).toBeTruthy())
   })
@@ -219,8 +211,6 @@ describe("InterAgentRepliesDisclosure MCP reply rendering", () => {
 
     renderDisclosure(makePersistedMessageParts())
 
-    await waitFor(() => expect(getTriggerButton()).toBeTruthy())
-    fireEvent.click(getTriggerButton())
     await waitFor(() => expect(screen.getByText("B 的回复第一版")).toBeTruthy())
 
     expect(queryMock).toHaveBeenCalledWith(
@@ -269,8 +259,6 @@ return result;`,
 
     renderDisclosure(parts)
 
-    await waitFor(() => expect(getTriggerButton()).toBeTruthy())
-    fireEvent.click(getTriggerButton())
     await waitFor(() => expect(screen.getByText("B 的回复第一版")).toBeTruthy())
   })
 
@@ -294,8 +282,6 @@ return result;`,
       />,
     )
 
-    await waitFor(() => expect(getTriggerButton()).toBeTruthy())
-    fireEvent.click(getTriggerButton())
     await waitFor(() => expect(screen.getByText("B 的回复第一版")).toBeTruthy())
   })
 
@@ -323,8 +309,8 @@ return result;`,
       />,
     )
 
-    await waitFor(() => expect(getTriggerButton()).toBeTruthy())
-    expect(screen.getAllByRole("button", { name: /opencode/ })).toHaveLength(1)
+    await waitFor(() => expect(screen.getByText("B 的回复第一版")).toBeTruthy())
+    expect(screen.getAllByText("B 的回复第一版")).toHaveLength(1)
   })
 
   it("correlates persisted stdout results to the matching reply only", async () => {
@@ -369,9 +355,6 @@ return result;`,
 
     renderDisclosure(makePersistedMessageParts())
 
-    await waitFor(() => expect(getTriggerButton()).toBeTruthy())
-    fireEvent.click(getTriggerButton())
-
     await waitFor(() => expect(screen.getByText("匹配的回复")).toBeTruthy())
     expect(screen.queryByText("无关的回复")).toBeNull()
   })
@@ -385,7 +368,7 @@ return result;`,
       />,
     )
 
-    await waitFor(() => expect(getTriggerButton()).toBeTruthy())
+    await waitFor(() => expect(screen.getByText("B 的回复第一版")).toBeTruthy())
     expect(queryMock).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: HOST_CONVERSATION_ID }),
     )

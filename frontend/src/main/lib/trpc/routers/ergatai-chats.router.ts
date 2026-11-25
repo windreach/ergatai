@@ -315,7 +315,6 @@ export const chatsRouter = router({
     }),
 
 
-
   /** Stream agent output through the main process to avoid browser CORS */
   subscribeAgentStream: publicProcedure
     .input(

@@ -38,6 +38,9 @@ npm-debug.log*
 # Claude binary (downloaded at build time)
 resources/bin/
 
+# nats-server pre-downloaded by ergatai-binary build script
+crates/ergatai-binary/resources/
+
 # Development docs (local-only)
 docs/dev/
 
@@ -107,6 +110,7 @@ frontend/.codebase-memory/
 
 # Playwright test artifacts
 test-results/.last-run.json
+frontend/playwright-report/
 user_data.db
 
 # Local-only build scripts (machine-specific swap/cgroup setup)
@@ -130,3 +134,10 @@ frontend/UI_COMPONENT_TESTS.md
 /blob-report/
 /playwright/.cache/
 /playwright/.auth/
+
+# Runtime logs (development only)
+/logs/
+
+# Python bytecode
+__pycache__/
+*.pyc

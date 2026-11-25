@@ -567,17 +567,9 @@ const handleStop = useCallback(async () => {
         console.warn("[ActiveChat] Failed to stop local stream:", error)
       }
 
-      // Fallback: ensure the backend agent that actually served this
-      // conversation is cancelled even if the binding-based id resolution
-      // missed it (e.g. multiple agents per chat, stale/empty bindings).
-      const fallbackAgentId = conversationRuntimeAgentStorage.get(conversationId)
-      if (fallbackAgentId) {
-        try {
-          await trpcClient.ergatai.cancelPrompt.mutate({ agentId: fallbackAgentId })
-        } catch (error) {
-          console.warn("[ActiveChat] Failed to cancel backend agent via fallback:", error)
-        }
-      }
+      // Backend cancellation is owned by ConversationInvocationService.stop(),
+      // which resolves the live runtime agent(s) for this conversation from the
+      // agent registry. Do not duplicate cancelPrompt calls here.
     } finally {
       stopInProgressRef.current = false
     }
@@ -633,7 +625,7 @@ useKeyboardStop({
     isActive,
     isStreaming,
     conversationId,
-    stop: chatInvocation.stop,
+    stop: handleStop,
     displayQuestions,
     handleQuestionsSkip,
   })

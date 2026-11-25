@@ -3,13 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { ChatMarkdownRenderer } from "../../../components/chat-markdown-renderer"
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "../../../components/ui/collapsible"
-import { ChevronDown } from "lucide-react"
-import { cn } from "../../../lib/utils"
+import { GroupAgentMessageHeader } from "../collaboration/group-agent-message-header"
+import { CopyButton } from "../ui/message-action-buttons"
 import { trpc, trpcClient } from "../../../lib/trpc"
 import {
   useConversationMessages,
@@ -462,27 +457,26 @@ function ReplyCard({
 }) {
   if (replies.length === 0) return null
 
+  const combinedText = replies.map((reply) => reply.text).join("\n\n")
+
   return (
-    <Collapsible className="mt-2 w-fit max-w-full">
-      <CollapsibleTrigger className="group flex w-fit max-w-full items-center gap-1 rounded-md bg-muted/60 px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted">
-        <span className="min-w-0 truncate font-medium">{agentName}</span>
-        <ChevronDown
-          className={cn(
-            "h-3.5 w-3.5 shrink-0 transition-transform duration-200",
-            "group-data-[state=open]:rotate-180",
-          )}
-        />
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="mt-1 min-w-64 max-w-full space-y-3 rounded-lg border border-border/70 bg-muted/20 px-3 py-3">
-          {replies.map((reply) => (
-            <div key={reply.id} className="space-y-1">
-              <ChatMarkdownRenderer content={reply.text} size="sm" />
-            </div>
-          ))}
+    <div className="group/message w-full mb-4">
+      <GroupAgentMessageHeader agentName={agentName} />
+      <div className="flex flex-col gap-1.5">
+        {replies.map((reply) => (
+          <div key={reply.id} className="space-y-1">
+            <ChatMarkdownRenderer content={reply.text} size="sm" />
+          </div>
+        ))}
+      </div>
+      {combinedText && (
+        <div className="flex justify-between items-center h-6 px-2 mt-1">
+          <div className="flex items-center gap-0.5">
+            <CopyButton text={combinedText} />
+          </div>
         </div>
-      </CollapsibleContent>
-    </Collapsible>
+      )}
+    </div>
   )
 }
 

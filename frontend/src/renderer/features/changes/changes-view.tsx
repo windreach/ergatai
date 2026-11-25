@@ -861,30 +861,6 @@ export function ChangesView({
 		}
 	}, [filteredFiles, highlightedFiles]);
 
-	if (!worktreePath) {
-	return (
-			<div className="flex-1 flex items-center justify-center text-muted-foreground text-sm p-4">
-				No worktree path available
-			</div>
-		);
-	}
-
-	if (isLoading) {
-	return (
-			<div className="flex-1 flex items-center justify-center text-muted-foreground text-sm p-4">
-				Loading changes...
-			</div>
-		);
-	}
-
-	if (!status) {
-		return (
-			<div className="flex-1 flex items-center justify-center text-muted-foreground text-sm p-4">
-				Unable to load changes
-			</div>
-		);
-	}
-
 	// Handle single file discard confirmation
 	const handleConfirmDiscard = () => {
 		if (!discardFile || !worktreePath) return;
@@ -962,6 +938,30 @@ export function ChangesView({
 			setDiffSidebarOpen(false);
 		}
 	}, [worktreePath, setFileViewerPath, diffDisplayMode, setDiffSidebarOpen]);
+
+	if (!worktreePath) {
+		return (
+			<div className="flex-1 flex items-center justify-center text-muted-foreground text-sm p-4">
+				No worktree path available
+			</div>
+		);
+	}
+
+	if (isLoading) {
+		return (
+			<div className="flex-1 flex items-center justify-center text-muted-foreground text-sm p-4">
+				Loading changes...
+			</div>
+		);
+	}
+
+	if (!status) {
+		return (
+			<div className="flex-1 flex items-center justify-center text-muted-foreground text-sm p-4">
+				Unable to load changes
+			</div>
+		);
+	}
 
 	return (
 			<>

@@ -192,6 +192,58 @@ async fn test_acp_invalid_command() {
 }
 
 #[tokio::test]
+async fn test_acp_session_load_after_restart_uses_conversation_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ergatai_runtime::SessionStore::open(dir.path().join("sessions.db")).unwrap();
+    let backend = AcpBackend::new().with_session_store(store);
+    backend.initialize().await.unwrap();
+
+    let mut workspace = create_test_workspace(&backend, "ws-test-session-load").await;
+    workspace.metadata.insert(
+        "conversation_id".to_string(),
+        "conv_test_restart".to_string(),
+    );
+
+    let command = mock_agent_command();
+    let first = backend
+        .start_agent(&workspace, &command, None)
+        .await
+        .expect("first start_agent should succeed");
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let first_session_id = first
+        .metadata
+        .get("session_id")
+        .cloned()
+        .expect("first agent should expose its ACP session id");
+
+    // Simulate a backend restart: the agent process dies, but the saved
+    // session must survive so the next launch can `session/load` it.
+    backend.kill_agent(&first).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let second = backend
+        .start_agent(&workspace, &command, None)
+        .await
+        .expect("second start_agent should succeed");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let second_session_id = second
+        .metadata
+        .get("session_id")
+        .cloned()
+        .expect("second agent should expose its ACP session id");
+
+    assert_eq!(
+        first_session_id, second_session_id,
+        "the relaunched agent should load the saved ACP session instead of creating a new one"
+    );
+
+    backend.kill_agent(&second).await.unwrap();
+}
+
+#[tokio::test]
 async fn test_acp_resume_session_capture() {
     let backend = AcpBackend::new();
     backend.initialize().await.unwrap();

@@ -2,16 +2,15 @@
 import { atom } from "jotai"
 import { atomWithStorage } from "jotai/utils"
 import { atomFamily } from "jotai/utils"
-import { atomWithWindowStorage } from "../../../lib/window-storage"
 import type { LucideIcon } from "lucide-react"
-import { FileText, Terminal, FileDiff, ListTodo, Users } from "lucide-react"
+import { FileText, Terminal, FileDiff, ListTodo, Users, Workflow } from "lucide-react"
 // import { OriginalMCPIcon } from "../../../components/ui/icons" // 暂时隐藏 MCP widget
 
 // ============================================================================
 // Widget System Types & Registry
 // ============================================================================
 
-export type WidgetId = "agents" | "todo" | "plan" | "terminal" | "diff" | "mcp"
+export type WidgetId = "agents" | "todo" | "plan" | "terminal" | "diff" | "dag" | "mcp"
 
 export interface WidgetConfig {
   id: WidgetId
@@ -27,6 +26,7 @@ export const WIDGET_REGISTRY: WidgetConfig[] = [
   { id: "terminal", label: "Terminal", icon: Terminal, canExpand: true, defaultVisible: true },
   { id: "plan", label: "Plan", icon: FileText, canExpand: true, defaultVisible: false },
   { id: "diff", label: "Changes", icon: FileDiff, canExpand: true, defaultVisible: false },
+  { id: "dag", label: "DAG", icon: Workflow, canExpand: true, defaultVisible: true },
   // 暂时隐藏 MCP widget：当前 discovery 只扫描静态配置文件 + registry，
   // 不包含运行时注入的 MCP（如 Ergatai MCP Tools），展示不完整。
   // { id: "mcp", label: "MCP Servers", icon: OriginalMCPIcon as unknown as LucideIcon, canExpand: false, defaultVisible: false },
@@ -102,24 +102,18 @@ export const unifiedSidebarEnabledAtom = atomWithStorage<boolean>(
   { getOnInit: true },
 )
 
-// Details sidebar open state (per-window, persisted)
-export const detailsSidebarOpenAtom = atomWithWindowStorage<boolean>(
-  "overview:sidebarOpen",
-  false,
-  { getOnInit: true },
-)
+// Details sidebar open state (runtime only — not persisted, so re-entering
+// the chat page does not auto-expand the right panel / "remember" expand state)
+export const detailsSidebarOpenAtom = atom<boolean>(false)
 
 // Details sidebar active tab (per-window, persisted).
 // Note: the side chat used to be a tab here; it now lives in its own
 // independent SideChatSidebar. A stale persisted "chat" value is treated
 // as "details" by the sidebar.
-export type DetailsSidebarTab = "details" | "files" | "git"
+export type DetailsSidebarTab = "details" | "files" | "git" | "dag"
 
-export const detailsSidebarTabAtom = atomWithWindowStorage<DetailsSidebarTab>(
-  "overview:sidebarTab",
-  "details",
-  { getOnInit: true },
-)
+// Runtime only: do not remember the last opened details tab across reloads
+export const detailsSidebarTabAtom = atom<DetailsSidebarTab>("details")
 
 // Side chat sidebar open state (per-window, session-only) - independent
 // sidebar coexisting with the details sidebar.
@@ -178,9 +172,8 @@ export const planContentCacheAtomFamily = atomFamily((chatId: string) =>
 // File Tree Expanded Paths (per worktree, persisted across reloads)
 // ============================================================================
 
-const fileTreeExpandedStorageAtom = atomWithStorage<
-  Record<string, string[]>
->("overview:fileTreeExpanded", {}, undefined, { getOnInit: true })
+// Runtime only: do not remember file-tree expand state across reloads
+const fileTreeExpandedStorageAtom = atom<Record<string, string[]>>({})
 
 /** null sentinel: first mount for this worktree (no user action yet → auto-expand roots) */
 export const fileTreeExpandedAtomFamily = atomFamily((worktreePath: string) =>

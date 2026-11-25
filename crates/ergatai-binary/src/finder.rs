@@ -105,8 +105,21 @@ impl BinaryLocator {
             return Ok(path);
         }
 
+        // 5. Standard system directories (fallback for distros that put
+        //    binaries in sbin directories not present in a normal user's
+        //    PATH, e.g. Debian's /usr/sbin for nats-server).
+        if let Some(path) = self.find_in_standard_dirs() {
+            tracing::warn!(
+                name = self.name,
+                path = %path.display(),
+                "using {} from standard system directory (not on PATH)",
+                self.name
+            );
+            return Ok(path);
+        }
+
         Err(ErgataiError::internal(format!(
-            "{} binary not found. Set {} or install {}",
+            "{} binary not found. Set {} or install {} (searched PATH and standard system directories such as /usr/sbin)",
             self.name,
             self.env_override.unwrap_or("(unset)"),
             self.name
@@ -234,6 +247,32 @@ impl BinaryLocator {
         for dir in std::env::split_paths(&path_var) {
             let candidate = dir.join(binary_file_name(self.name));
             if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    /// Search well-known system directories that may not be on a normal
+    /// user's PATH (notably the `sbin` directories used by Debian/Ubuntu
+    /// packages such as `nats-server`).
+    fn find_in_standard_dirs(&self) -> Option<PathBuf> {
+        let binary_name = binary_file_name(self.name);
+        let dirs: &[&str] = if cfg!(target_os = "windows") {
+            &[]
+        } else {
+            &[
+                "/usr/local/sbin",
+                "/usr/local/bin",
+                "/usr/sbin",
+                "/usr/bin",
+                "/sbin",
+                "/bin",
+            ]
+        };
+        for dir in dirs {
+            let candidate = PathBuf::from(dir).join(&binary_name);
+            if candidate.is_file() && is_executable(&candidate) {
                 return Some(candidate);
             }
         }

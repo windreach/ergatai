@@ -662,11 +662,9 @@ pub async fn activate_plan_revision(
         Some(detail.session.chat_id.clone()),
         revision.id.clone(),
     );
-    let scheduler = DagScheduler::new(
-        PathBuf::from(crate::get_app_state().default_cwd.clone()),
-        graph,
-    )
-    .with_collaboration_scope(scope);
+    let project_root = resolve_session_project_root(&detail.session)
+        .unwrap_or_else(|| PathBuf::from(crate::get_app_state().default_cwd.clone()));
+    let scheduler = DagScheduler::new(project_root, graph).with_collaboration_scope(scope);
 
     // Atomic check-and-set to prevent TOCTOU race: two concurrent activations
     // could both pass the early check above, then the second would silently
@@ -890,11 +888,9 @@ pub async fn replace_session_plan_revision(
         Some(detail.session.chat_id.clone()),
         revision.id.clone(),
     );
-    let scheduler = DagScheduler::new(
-        PathBuf::from(crate::get_app_state().default_cwd.clone()),
-        graph,
-    )
-    .with_collaboration_scope(scope);
+    let project_root = resolve_session_project_root(&detail.session)
+        .unwrap_or_else(|| PathBuf::from(crate::get_app_state().default_cwd.clone()));
+    let scheduler = DagScheduler::new(project_root, graph).with_collaboration_scope(scope);
 
     // Atomic check-and-set to prevent TOCTOU race between clear and set
     if try_set_session_dag_scheduler(scheduler.clone()).is_err() {
@@ -1009,6 +1005,32 @@ pub async fn cancel_session_execution(
     stop_session_event_listener(session_id);
 
     Ok(cancel_session(session_id, reason)?)
+}
+
+fn resolve_session_project_root(
+    session: &crate::services::collaboration_session::CollaborationSession,
+) -> Option<PathBuf> {
+    // 1. 优先 chat 的当前 worktree 路径
+    if let Ok(chat_id) = ergatai_error::ChatId::decode(&session.chat_id) {
+        if let Ok(Some(chat)) = crate::user_data_db::chats::get(chat_id) {
+            if let Some(worktree_path) = &chat.worktree_path {
+                if !worktree_path.trim().is_empty() {
+                    return Some(PathBuf::from(worktree_path));
+                }
+            }
+        }
+    }
+
+    // 2. 回退到所属 workspace 的 work_dir
+    if let Ok(workspace_id) = ergatai_error::WorkspaceId::decode(&session.workspace_id) {
+        if let Ok(Some(workspace)) = crate::user_data_db::workspaces::get(workspace_id) {
+            if !workspace.work_dir.trim().is_empty() {
+                return Some(PathBuf::from(workspace.work_dir));
+            }
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]

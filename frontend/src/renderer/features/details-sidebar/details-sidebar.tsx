@@ -15,6 +15,7 @@ import {
   createPanelLinkScopeKey,
 } from "@/features/panel-link"
 import { FilesTab, type FilesTabHandle } from "./sections/files-tab"
+import { DagWidget } from "./sections/dag-widget"
 import type { ParsedDiffFile } from "./types"
 import { fileViewerOpenAtomFamily, type AgentMode } from "../agents"
 import { DetailsSidebarHeader } from "./components/details-sidebar-header"
@@ -131,7 +132,7 @@ export function DetailsSidebar({
   // removed tabs ("chat", "task-board") fall back to the Details page.
   const [storedTab] = useAtom(detailsSidebarTabAtom)
   const activeTab =
-    storedTab === "details" || storedTab === "files" || storedTab === "git"
+    storedTab === "details" || storedTab === "files" || storedTab === "git" || storedTab === "dag"
       ? storedTab
       : "details"
   const panelLinkScopeKey = createPanelLinkScopeKey({ chatId })
@@ -285,6 +286,14 @@ export function DetailsSidebar({
               />
             </>
           ) : null}
+        </div>
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col overflow-hidden",
+            activeTab !== "dag" && "hidden",
+          )}
+        >
+          <DagWidget chatId={chatId} />
         </div>
       </div>
     </ResizableSidebar>

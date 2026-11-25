@@ -5,7 +5,7 @@ import { useState, useMemo, useEffect } from "react"
 import { Button } from "../../../components/ui/button"
 import { ResizableSidebar } from "../../../components/ui/resizable-sidebar"
 import { IconCloseSidebarRight } from "../../../components/ui/icons"
-import { PanelRight, GitCompare, TerminalSquare, Folder, GitBranch } from "lucide-react"
+import { PanelRight, GitCompare, TerminalSquare, Folder, Workflow } from "lucide-react"
 import { DiffCenterPeekDialog } from "../../changes"
 import { DiffFullPageView } from "../../changes"
 import { DetailsSidebar } from "../../details-sidebar"
@@ -629,30 +629,6 @@ export function ChatViewSidebars(props: any) {
               <Folder className="h-4 w-4" />
             </button>
             )}
-            {worktreePath && (
-            <button
-              type="button"
-              title={i18n.t('Git')}
-              aria-label={i18n.t('Git')}
-              onClick={() => {
-                if (isDetailsSidebarOpen && detailsSidebarTab === "git") setIsDetailsSidebarOpen(false)
-                else {
-                  setDetailsSidebarTab("git")
-                  setIsDetailsSidebarOpen(true)
-                  setIsSideChatSidebarOpen(false)
-                  setIsTerminalSidebarOpen(false)
-                  setIsDiffSidebarOpen(false)
-                }
-              }}
-              className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
-                isDetailsSidebarOpen && detailsSidebarTab === "git"
-                  ? "bg-foreground/10 text-foreground"
-                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
-              }`}
-            >
-              <GitBranch className="h-4 w-4" />
-            </button>
-            )}
             <button
               type="button"
               title={i18n.t('Changes')}
@@ -694,6 +670,28 @@ export function ChatViewSidebars(props: any) {
               }`}
             >
               <TerminalSquare className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title={i18n.t('DAG')}
+              aria-label={i18n.t('DAG')}
+              onClick={() => {
+                if (isDetailsSidebarOpen && detailsSidebarTab === "dag") setIsDetailsSidebarOpen(false)
+                else {
+                  setDetailsSidebarTab("dag")
+                  setIsDetailsSidebarOpen(true)
+                  setIsSideChatSidebarOpen(false)
+                  setIsTerminalSidebarOpen(false)
+                  setIsDiffSidebarOpen(false)
+                }
+              }}
+              className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
+                isDetailsSidebarOpen && detailsSidebarTab === "dag"
+                  ? "bg-foreground/10 text-foreground"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              <Workflow className="h-4 w-4" />
             </button>
             {/* Dynamic agent logos - at the end of rail */}
             {sideAgents.map((binding) => {

@@ -126,7 +126,7 @@ export function buildMergedMsgGroups(
   // Build a quick id→message lookup (only for the IDs we care about).
   const byId = new Map<string, Message>()
   for (const m of messages) {
-    if (m.role !== "assistant") continue
+    if (m.role !== "assistant" && m.role !== "respagent") continue
     byId.set(m.id, m)
   }
 
@@ -176,6 +176,25 @@ export function buildMergedMsgGroups(
     }
 
     const parts = msg.parts ?? []
+    const isRespagent = msg.role === "respagent"
+
+    // A respagent reply must never be merged into the preceding assistant
+    // turn (it is a distinct message from an external agent). Flush any pending
+    // buffer first, then render it as its own standalone group.
+    if (isRespagent) {
+      flush()
+      groups.push({
+        key: uniqueGroupKey(getGroupKey(msg), usedKeys),
+        id,
+        merged: false,
+        ids: [id],
+        parts,
+        metadata: msg.metadata,
+        conversationId: (msg as { conversationId?: string }).conversationId,
+        lastId: id,
+      })
+      continue
+    }
 
     if (!hasVisibleText(parts)) {
       // Tool / reasoning only — wait for the message that carries the answer.
@@ -313,7 +332,6 @@ const AssistantMessageGroupItem = memo(function AssistantMessageGroupItem({
       chatId={chatId}
       isMobile={isMobile}
       sandboxSetupStatus={sandboxSetupStatus}
-      showInterAgentReplies={true}
     />
   )
 }, areAssistantMessageGroupItemPropsEqual)

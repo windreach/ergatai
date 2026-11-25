@@ -256,6 +256,11 @@ impl ServerHandler for ErgataiMcpServer {
 
 Use Ergatai MCP tools when the user explicitly requests agent collaboration, or when you need to communicate/work with other agents.
 
+IMPORTANT — answer the user directly first:
+- If the user asks you a question or gives you a task that you can handle yourself, ANSWER IT IN YOUR OWN RESPONSE. Do NOT call send_message to forward the user's text to another agent unless the user explicitly asks you to message/contact that agent.
+- send_message is for INTER-AGENT communication only. It is never the right way to reply to a human user.
+- A normal user question (even one mentioning another agent by name) must be answered by you, not relayed.
+
 ## 1. Available Tools
 
 | Tool | Purpose |
@@ -321,7 +326,15 @@ Returns DAG execution status, progress, collaboration session info (MeshPolicy +
 
 MUST distinguish user messages (free-form) from agent messages (JSON).
 
-### Agent message format
+### User message format (plain text — NOT JSON)
+A message coming directly from the human user is plain natural-language text.
+It has NO JSON envelope, NO `from`/`_reply`/`_rules` fields.
+- You MUST answer it in your own response.
+- You MUST NOT call `send_message` because of a user message. `send_message` is only
+  triggered by an AGENT message's `_reply` instruction, or by an explicit user request
+  to contact another agent.
+
+### Agent message format (JSON — may require send_message)
 ```json
 {
   "from": "<sender-agent-id>",

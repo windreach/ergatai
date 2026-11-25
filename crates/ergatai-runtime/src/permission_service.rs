@@ -5,8 +5,8 @@
 //! subscribers in real time, and resolves decisions from the API layer.
 
 use serde::Serialize;
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock, RwLock as StdRwLock};
 use tokio::sync::{broadcast, oneshot, RwLock};
 
 use ergatai_error::id::{format as format_id, generate, IdType};
@@ -311,6 +311,41 @@ pub fn set_permission_mode(mode: PermissionMode) {
         PermissionMode::FullAccess => 3,
     };
     PERMISSION_MODE.store(value, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Runtime agents launched for autonomous DAG tasks.
+///
+/// These bypass the interactive pending-decision queue (which would otherwise
+/// wait for a user who is not watching) while still going through file-lock
+/// checks for write/edit operations.
+static AUTONOMOUS_AGENTS: OnceLock<StdRwLock<HashSet<String>>> = OnceLock::new();
+
+fn autonomous_agents() -> &'static StdRwLock<HashSet<String>> {
+    AUTONOMOUS_AGENTS.get_or_init(|| StdRwLock::new(HashSet::new()))
+}
+
+/// Mark a runtime agent as autonomous (DAG task worker).
+pub fn mark_agent_autonomous(agent_id: &str) {
+    let mut guard = autonomous_agents()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.insert(agent_id.to_string());
+}
+
+/// Clear the autonomous flag for a runtime agent.
+pub fn unmark_agent_autonomous(agent_id: &str) {
+    let mut guard = autonomous_agents()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.remove(agent_id);
+}
+
+/// Whether a runtime agent was launched for an autonomous DAG task.
+pub fn is_agent_autonomous(agent_id: &str) -> bool {
+    autonomous_agents()
+        .read()
+        .map(|guard| guard.contains(agent_id))
+        .unwrap_or(false)
 }
 
 /// Current Unix epoch milliseconds.

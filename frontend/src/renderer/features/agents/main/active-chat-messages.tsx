@@ -10,6 +10,7 @@ import { ChatMessagesRenderer } from "./chat-messages-renderer"
 // import { selectedSubagentSessionIdAtomFamily } from "../lib/subagent-message-store"
 // import { SubagentConversationView } from "../ui/subagent-conversation-view"
 import { useConversationHistoryImport } from "../hooks/use-conversation-history-import"
+import { useHostReplySync } from "../hooks/use-host-reply-sync"
 // import { ImplicitCollaborationTaskCards } from "../collaboration/implicit-collaboration-task-cards"
 // import { CollaborationSessionEventCards } from "../collaboration/collaboration-session-event-cards"
 import type { ImplicitCollaborationTask } from "../collaboration/implicit-collaboration"
@@ -80,27 +81,48 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
     containerRef: chatContainerRef,
   })
 
+  // Sync external-agent replies into the main chat store as native messages,
+  // so they render in correct sequence order without a separate async bridge.
+  useHostReplySync(conversationId)
+
   const setContainerRef = useCallback((el: HTMLDivElement | null) => {
     chatContainerRef.current = el
     const observerRef = chatContainerObserverRef
-    if (observerRef?.current) {
-      observerRef.current.disconnect()
+
+    // React 19 calls a ref callback with null on detach (and also supports the
+    // returned cleanup below on newer renderers). Release the previous
+    // observer either way so keeping the chat mounted cannot leak it.
+    observerRef?.current?.disconnect()
+    if (observerRef) {
       observerRef.current = null
     }
-    if (el && observerRef) {
-      const parent = el.parentElement
-      const observer = new ResizeObserver((entries) => {
-        const { height, width } = entries[0]?.contentRect ?? {
-          height: 0,
-          width: 0,
-        }
-        el.style.setProperty("--chat-container-height", `${height}px`)
-        el.style.setProperty("--chat-container-width", `${width}px`)
-        parent?.style.setProperty("--chat-container-height", `${height}px`)
-        parent?.style.setProperty("--chat-container-width", `${width}px`)
-      })
-      observer.observe(el)
-      observerRef.current = observer
+
+    if (!el || !observerRef) {
+      return
+    }
+
+    const parent = el.parentElement
+    const observer = new ResizeObserver((entries) => {
+      const { height, width } = entries[0]?.contentRect ?? {
+        height: 0,
+        width: 0,
+      }
+      el.style.setProperty("--chat-container-height", `${height}px`)
+      el.style.setProperty("--chat-container-width", `${width}px`)
+      parent?.style.setProperty("--chat-container-height", `${height}px`)
+      parent?.style.setProperty("--chat-container-width", `${width}px`)
+    })
+    observer.observe(el)
+    observerRef.current = observer
+
+    return () => {
+      observer.disconnect()
+      if (observerRef.current === observer) {
+        observerRef.current = null
+      }
+      if (chatContainerRef.current === el) {
+        chatContainerRef.current = null
+      }
     }
   }, [chatContainerRef, chatContainerObserverRef])
 
