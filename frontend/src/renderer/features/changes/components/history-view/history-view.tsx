@@ -1,5 +1,4 @@
 // Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
-import i18n from "@/lib/i18n"
 import { memo, useMemo, useCallback, useEffect } from "react";
 import { trpc } from "../../../../lib/trpc";
 import { formatRelativeDate } from "../../utils/date";
@@ -155,7 +154,7 @@ export const HistoryView = memo(function HistoryView({
 					commit={commit}
 					isSelected={selectedCommitHash === commit.hash}
 					isUnpushed={index < (pushCount || 0)}
-					onClick={() => handleCommitClick(commit)}
+					onSelect={handleCommitClick}
 				/>
 			))}
 		</div>
@@ -166,12 +165,12 @@ const HistoryCommitItem = memo(function HistoryCommitItem({
 	commit,
 	isSelected,
 	isUnpushed,
-	onClick,
+	onSelect,
 }: {
 	commit: CommitInfo;
 	isSelected: boolean;
 	isUnpushed?: boolean;
-	onClick: () => void;
+	onSelect: (commit: CommitInfo) => void;
 }) {
 	const timeAgo = useMemo(
 		() => formatRelativeDate(new Date(commit.date)),
@@ -188,12 +187,12 @@ const HistoryCommitItem = memo(function HistoryCommitItem({
 	const handleOpenOnRemote = useCallback(() => {
 		const owner = selectedWorkspace?.gitOwner;
 		const repo = selectedWorkspace?.gitRepo;
-		if (!owner || !repo) {
+		if (!owner || !repo || !/^[A-Za-z0-9._-]+$/.test(owner) || !/^[A-Za-z0-9._-]+$/.test(repo) || !/^[A-Fa-f0-9]{7,40}$/.test(commit.hash)) {
 			toast.error("Could not determine remote repository");
 			return;
 		}
-		window.desktopApi.openExternal(
-			`https://github.com/${owner}/${repo}/commit/${commit.hash}`,
+		window.desktopApi?.openExternal(
+			`https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commit/${commit.hash}`,
 		);
 	}, [commit.hash, selectedWorkspace?.gitOwner, selectedWorkspace?.gitRepo]);
 
@@ -214,7 +213,7 @@ const HistoryCommitItem = memo(function HistoryCommitItem({
 						"hover:bg-muted/50 border-b border-border/30 last:border-b-0",
 						isSelected && "bg-muted",
 					)}
-					onClick={onClick}
+					onClick={() => onSelect(commit)}
 				>
 					<div className="flex-1 min-w-0">
 						<div className="text-xs font-medium truncate flex items-center gap-1.5">

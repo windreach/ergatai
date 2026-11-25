@@ -128,7 +128,8 @@ export function isEditToolOutput(output: unknown): output is EditToolOutput {
   return (
     typeof output === "object" &&
     output !== null &&
-    ("content" in output || "structuredPatch" in output)
+    ("structuredPatch" in output ||
+      ("content" in output && ("oldString" in output || "newString" in output || "replacements" in output)))
   )
 }
 

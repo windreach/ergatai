@@ -1,5 +1,4 @@
 // Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
-import i18n from "@/lib/i18n"
 import { Component, type ReactNode } from "react"
 import { AlertCircle } from "lucide-react"
 import { Button } from "./button"

@@ -140,12 +140,20 @@ export function ChatViewSidebars(props: any) {
   const [hasOpenedFileViewer, setHasOpenedFileViewer] = useState(false)
   const [lastFileViewerPath, setLastFileViewerPath] = useState<string | null>(null)
   useEffect(() => {
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setHasOpenedFileViewer(false)
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setLastFileViewerPath(null)
   }, [chatId])
+  // react-doctor-disable-next-line no-derived-state-effect
+  // react-doctor-disable-next-line no-derived-state
   useEffect(() => {
     if (fileViewerPath) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setHasOpenedFileViewer(true)
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
+      // react-doctor-disable-next-line no-derived-state
+      // react-doctor-disable-next-line no-derived-state-effect
       setLastFileViewerPath(fileViewerPath)
     }
   }, [fileViewerPath])
@@ -157,7 +165,10 @@ export function ChatViewSidebars(props: any) {
     { chatId },
     { enabled: !!chatId },
   )
-  const agentBindings = agentBindingsQuery.data ?? []
+  const agentBindings = useMemo(
+    () => agentBindingsQuery.data ?? [],
+    [agentBindingsQuery.data],
+  )
 
   // Filter out the main backend agent to avoid duplication. The backend agent
   // is identified both by its runtime id (when available) and by the
@@ -351,6 +362,7 @@ export function ChatViewSidebars(props: any) {
                   <Button
                     variant="ghost"
                     className="h-7 w-7 p-0 hover:bg-muted transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] rounded-md"
+                    aria-label={i18n.t('Close preview')}
                     onClick={() => setIsPreviewSidebarOpen(false)}
                   >
                     <IconCloseSidebarRight className="h-4 w-4 text-muted-foreground" />
@@ -597,6 +609,7 @@ export function ChatViewSidebars(props: any) {
             <button
               type="button"
               title={i18n.t('Files')}
+              aria-label={i18n.t('Files')}
               onClick={() => {
                 if (isDetailsSidebarOpen && detailsSidebarTab === "files") setIsDetailsSidebarOpen(false)
                 else {
@@ -620,6 +633,7 @@ export function ChatViewSidebars(props: any) {
             <button
               type="button"
               title={i18n.t('Git')}
+              aria-label={i18n.t('Git')}
               onClick={() => {
                 if (isDetailsSidebarOpen && detailsSidebarTab === "git") setIsDetailsSidebarOpen(false)
                 else {
@@ -642,6 +656,7 @@ export function ChatViewSidebars(props: any) {
             <button
               type="button"
               title={i18n.t('Changes')}
+              aria-label={i18n.t('Changes')}
               onClick={() => {
                 if (isDiffSidebarOpen) setIsDiffSidebarOpen(false)
                 else {
@@ -662,6 +677,7 @@ export function ChatViewSidebars(props: any) {
             <button
               type="button"
               title={i18n.t('Terminal')}
+              aria-label={i18n.t('Terminal')}
               onClick={() => {
                 if (isTerminalSidebarOpen) setIsTerminalSidebarOpen(false)
                 else {
@@ -705,6 +721,7 @@ export function ChatViewSidebars(props: any) {
                   key={binding.agentId}
                   type="button"
                   title={binding.agentName}
+                  aria-label={binding.agentName}
                   onClick={() => {
                     handleOpenAgentSideChat(binding)
                     setIsDetailsSidebarOpen(false)

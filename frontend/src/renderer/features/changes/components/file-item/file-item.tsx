@@ -228,6 +228,7 @@ export function FileItem({
 									variant="ghost"
 									size="icon"
 									className="size-5 hover:bg-accent"
+									aria-label={i18n.t('Stage')}
 									onClick={(e) => {
 										e.stopPropagation();
 										onStage();
@@ -247,6 +248,7 @@ export function FileItem({
 									variant="ghost"
 									size="icon"
 									className="size-5 hover:bg-accent"
+									aria-label={i18n.t('Unstage')}
 									onClick={(e) => {
 										e.stopPropagation();
 										onUnstage();

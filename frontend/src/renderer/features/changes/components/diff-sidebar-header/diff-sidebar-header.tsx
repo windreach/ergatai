@@ -24,7 +24,7 @@ import {
 } from "../../../../components/ui/tooltip";
 import { IconCloseSidebarRight, IconFetch, IconForcePush, IconSpinner, IconReview, ExternalLinkIcon } from "../../../../components/ui/icons";
 import { DiffViewModeSwitcher } from "./diff-view-mode-switcher";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { HiArrowPath, HiChevronDown } from "react-icons/hi2";
 import { LuGitBranch } from "react-icons/lu";
 import {
@@ -258,14 +258,27 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 		}
 	};
 
-	const handleMergeFromDefault = (useRebase = false) => {
+	const handleMergeFromDefault = useCallback((useRebase = false) => {
 		mergeFromDefaultMutation.mutate({ worktreePath, useRebase });
-	};
+	}, [worktreePath, mergeFromDefaultMutation]);
+	const handleMergeFromDefaultMerge = useCallback(
+		() => handleMergeFromDefault(false),
+		[handleMergeFromDefault],
+	);
+	const handleMergeFromDefaultRebase = useCallback(
+		() => handleMergeFromDefault(true),
+		[handleMergeFromDefault],
+	);
+	const handleViewModeSplit = useCallback(() => {
+		onViewModeChange?.("split");
+	}, [onViewModeChange]);
+	const handleViewModeUnified = useCallback(() => {
+		onViewModeChange?.("unified");
+	}, [onViewModeChange]);
 
 	const handleOpenPR = () => {
 		if (pr?.url) {
-			// react-doctor-disable-next-line window-open-without-noopener
-			window.open(pr.url, "_blank");
+			window.open(pr.url, "_blank", "noopener,noreferrer");
 		}
 	};
 
@@ -459,6 +472,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 					size="sm"
 					className="h-6 w-6 p-0 flex-shrink-0 hover:bg-foreground/10"
 					onClick={onClose}
+					aria-label={i18n.t('Close')}
 				>
 					{displayMode === "side-peek" ? (
 						<IconCloseSidebarRight className="size-4 text-muted-foreground" />
@@ -550,6 +564,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 							<button
 								onClick={displayAction.handler}
 								disabled={displayAction.isPending || displayAction.disabled}
+								aria-label={displayAction.tooltip}
 								className={cn(
 									"inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-colors",
 									"outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/70",
@@ -596,6 +611,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 								<button
 									onClick={displayAction.handler}
 									disabled={displayAction.isPending || displayAction.disabled}
+									aria-label={displayAction.tooltip}
 									className={cn(
 										"inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-colors",
 										"outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/70",
@@ -689,7 +705,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 									<>
 										<DropdownMenuSeparator />
 										<DropdownMenuItem
-											onClick={() => handleMergeFromDefault(false)}
+											onClick={handleMergeFromDefaultMerge}
 											disabled={mergeFromDefaultMutation.isPending || behindDefault === 0}
 											className="text-xs"
 										>
@@ -709,7 +725,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 											)}
 										</DropdownMenuItem>
 										<DropdownMenuItem
-											onClick={() => handleMergeFromDefault(true)}
+											onClick={handleMergeFromDefaultRebase}
 											disabled={mergeFromDefaultMutation.isPending || behindDefault === 0}
 											className="text-xs"
 										>
@@ -821,24 +837,26 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 						<Button
 							variant={viewMode === "split" ? "secondary" : "ghost"}
 							size="sm"
-							onClick={() => onViewModeChange("split")}
+							onClick={handleViewModeSplit}
 							className={cn(
 								"h-6 w-6 p-0 rounded-r-none border-0",
 								viewMode !== "split" && "hover:bg-foreground/10"
 							)}
 							title={i18n.t('Split view')}
+							aria-label={i18n.t('Split view')}
 						>
 							<Columns2 className="size-3.5" />
 						</Button>
 						<Button
 							variant={viewMode === "unified" ? "secondary" : "ghost"}
 							size="sm"
-							onClick={() => onViewModeChange("unified")}
+							onClick={handleViewModeUnified}
 							className={cn(
 								"h-6 w-6 p-0 rounded-l-none border-0 border-l border-input",
 								viewMode !== "unified" && "hover:bg-foreground/10"
 							)}
 							title={i18n.t('Unified view')}
+							aria-label={i18n.t('Unified view')}
 						>
 							<Rows2 className="size-3.5" />
 						</Button>
@@ -852,6 +870,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 							variant="ghost"
 							size="sm"
 							className="h-6 w-6 p-0 flex-shrink-0 hover:bg-foreground/10"
+							aria-label={i18n.t('More options')}
 						>
 							<MoreHorizontal className="size-4 text-muted-foreground" />
 						</Button>
@@ -900,14 +919,14 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 									</DropdownMenuSubTrigger>
 									<DropdownMenuSubContent>
 										<DropdownMenuItem
-											onClick={() => onViewModeChange("split")}
+											onClick={handleViewModeSplit}
 											className={cn("text-xs", viewMode === "split" && "bg-muted")}
 										>
 											<Columns2 className="mr-2 size-3.5" />
 											<span>{i18n.t('Split view')}</span>
 										</DropdownMenuItem>
 										<DropdownMenuItem
-											onClick={() => onViewModeChange("unified")}
+											onClick={handleViewModeUnified}
 											className={cn("text-xs", viewMode === "unified" && "bg-muted")}
 										>
 											<Rows2 className="mr-2 size-3.5" />

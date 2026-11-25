@@ -62,7 +62,11 @@ const getStorageKey = (workspaceId: string, type: "active" | "pinned" | "expande
 
 const saveToLS = (workspaceId: string, type: "active" | "pinned" | "expanded" | "sort", value: unknown) => {
   if (typeof window === "undefined") return
-  localStorage.setItem(getStorageKey(workspaceId, type), JSON.stringify(value))
+  try {
+    localStorage.setItem(getStorageKey(workspaceId, type), JSON.stringify(value))
+  } catch {
+    // Ignore storage write errors
+  }
 }
 
 const loadFromLS = <T>(workspaceId: string, type: "active" | "pinned" | "expanded" | "sort", fallback: T): T => {

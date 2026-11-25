@@ -1,4 +1,3 @@
-import i18n from "@/lib/i18n"
 import { useEffect, useState } from "react"
 import { Loader2 } from "lucide-react"
 

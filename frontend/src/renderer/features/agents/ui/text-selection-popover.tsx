@@ -1,6 +1,6 @@
-// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
-import i18n from "@/lib/i18n"
 "use client"
+
+// Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 
 import { useEffect, useCallback, useState, useRef } from "react"
 import { createPortal } from "react-dom"

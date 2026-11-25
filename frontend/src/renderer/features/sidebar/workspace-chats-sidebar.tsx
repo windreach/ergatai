@@ -140,6 +140,23 @@ const ChatItem = memo(function ChatItem({
   totalCount: number
   agentLogos?: ChatAgentLogo[]
 }) {
+  const setChatNameRef = useCallback(
+    (el: HTMLSpanElement | null) => {
+      if (el) chatNameRefs.current.set(chat.id, el)
+    },
+    [chat.id, chatNameRefs],
+  )
+  const handleChatClick = useCallback(() => onChatClick(chat.id), [onChatClick, chat.id])
+  const handleChatKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault()
+        handleChatClick()
+      }
+    },
+    [handleChatClick],
+  )
+
   // Calculate file stats
   const stats = useMemo<FileStats | null>(() => {
     if (fileChanges.length === 0) return null
@@ -154,20 +171,13 @@ const ChatItem = memo(function ChatItem({
   }, [fileChanges])
 
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <div
+    <div
           role="button"
           data-testid={`chat-item-${chat.id}`}
           data-conversation-index={globalIndex}
-          onClick={() => onChatClick(chat.id)}
+          onClick={handleChatClick}
           tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault()
-              onChatClick(chat.id)
-            }
-          }}
+          onKeyDown={handleChatKeyDown}
           className={cn(
             "w-full text-left py-1.5 transition-colors duration-75 cursor-pointer group relative",
             "outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70",
@@ -222,9 +232,7 @@ const ChatItem = memo(function ChatItem({
             <div className="flex-1 min-w-0 flex flex-col gap-0.5">
               <div className="flex items-center gap-1">
                 <span
-                  ref={(el) => {
-                    if (el) chatNameRefs.current.set(chat.id, el)
-                  }}
+                  ref={setChatNameRef}
                   className="truncate block text-sm leading-tight flex-1"
                 >
                   <TypewriterText
@@ -284,8 +292,7 @@ const ChatItem = memo(function ChatItem({
             </div>
           </div>
         </div>
-      </ContextMenuTrigger>
-    </ContextMenu>
+
   )
 })
 
@@ -437,12 +444,16 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
       : filtered
 
     // Apply sorting (create new array to avoid mutation)
+    const toTime = (value: unknown) => {
+      const time = new Date(value as string).getTime()
+      return Number.isNaN(time) ? 0 : time
+    }
     return [...searched].sort((a, b) => {
       if (sortBy === "updatedAt") {
-        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+        return toTime(b.updatedAt) - toTime(a.updatedAt)
       }
       if (sortBy === "createdAt") {
-        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        return toTime(b.createdAt) - toTime(a.createdAt)
       }
       return (a.name || "").localeCompare(b.name || "")
     })
@@ -459,6 +470,15 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
     () => filteredChats.filter((chat) => !pinnedChatIds.includes(chat.id)),
     [filteredChats, pinnedChatIds]
   )
+
+  const handleFilterChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => setFilterQuery(e.target.value),
+    [setFilterQuery],
+  )
+
+  const handleNewChatClick = useCallback(() => {
+    onNewChatClick?.()
+  }, [onNewChatClick])
 
   // Handle chat click
   const handleChatClick = useCallback(
@@ -672,7 +692,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
             <Input
               placeholder={i18n.t('Search chats...')}
               value={filterQuery}
-              onChange={(e) => setFilterQuery(e.target.value)}
+              onChange={handleFilterChange}
               className="h-7 w-full rounded-lg text-sm bg-muted border border-input placeholder:text-muted-foreground/40"
             />
           </div>
@@ -686,7 +706,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
               <TooltipTrigger asChild>
                 <Button
                   data-testid="new-conversation-button"
-                  onClick={() => onNewChatClick?.()}
+                  onClick={handleNewChatClick}
                   disabled={!workspaceId}
                   variant="outline"
                   size="sm"

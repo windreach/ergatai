@@ -185,7 +185,11 @@ export function AgentPreview({
     [sandboxId, port],
   )
   const baseHost = useMemo(() => {
-    return new URL(previewBaseUrl).host
+    try {
+      return new URL(previewBaseUrl).host
+    } catch {
+      return ""
+    }
   }, [previewBaseUrl])
 
   const previewUrl = useMemo(() => {
@@ -395,6 +399,7 @@ export function AgentPreview({
             <Button
               variant="ghost"
               size="icon"
+              aria-label={i18n.t('Back to chat')}
               onClick={onClose}
               className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md"
             >
@@ -406,6 +411,7 @@ export function AgentPreview({
             <Button
               variant="ghost"
               size="icon"
+              aria-label={i18n.t('Reload preview')}
               onClick={handleReload}
               disabled={isRefreshing}
               className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md"
@@ -443,6 +449,7 @@ export function AgentPreview({
           <div className="flex items-center gap-1 flex-1">
             <Button
               variant="ghost"
+              aria-label={i18n.t('Reload preview')}
               onClick={handleReload}
               disabled={isRefreshing}
               className="h-7 w-7 p-0 hover:bg-muted transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] rounded-md"
@@ -475,6 +482,7 @@ export function AgentPreview({
           <div className="flex items-center justify-end gap-1 flex-1">
             <Button
               variant="ghost"
+              aria-label={i18n.t('Open in new tab')}
               className="h-7 w-7 p-0 hover:bg-muted transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] rounded-md"
               onClick={() => window.open(previewUrl, "_blank")}
             >
@@ -484,6 +492,7 @@ export function AgentPreview({
             {onClose && (
               <Button
                 variant="ghost"
+                aria-label={i18n.t('Close preview')}
                 className="h-7 w-7 p-0 hover:bg-muted transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] rounded-md"
                 onClick={onClose}
               >

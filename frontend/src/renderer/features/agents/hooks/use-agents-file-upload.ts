@@ -54,13 +54,13 @@ export function useAgentsFileUpload() {
 
   const handleAddAttachments = useCallback(async (inputFiles: File[]) => {
     setIsUploading(true)
+    try {
+      const imageFiles = inputFiles.filter((f) => f.type.startsWith("image/"))
+      const otherFiles = inputFiles.filter((f) => !f.type.startsWith("image/"))
 
-    const imageFiles = inputFiles.filter((f) => f.type.startsWith("image/"))
-    const otherFiles = inputFiles.filter((f) => !f.type.startsWith("image/"))
-
-    // Process images with base64 conversion
-    const newImages: UploadedImage[] = await Promise.all(
-      imageFiles.map(async (file) => {
+      // Process images with base64 conversion
+      const newImages: UploadedImage[] = await Promise.all(
+        imageFiles.map(async (file) => {
         const id = createLocalId("local-image")
         const filename = file.name || `screenshot-${Date.now()}.png`
         const mediaType = file.type || "image/png"
@@ -115,8 +115,9 @@ export function useAgentsFileUpload() {
 
     setImages((prev) => [...prev, ...newImages])
     setFiles((prev) => [...prev, ...newFiles])
-    // react-doctor-disable-next-line no-loading-flag-reset-outside-finally
+  } finally {
     setIsUploading(false)
+  }
   }, [])
 
   const removeImage = useCallback((id: string) => {

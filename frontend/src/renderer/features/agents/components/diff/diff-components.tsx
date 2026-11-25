@@ -891,6 +891,7 @@ export const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
             variant="ghost"
             size="sm"
             className="h-6 w-6 p-0 flex-shrink-0 hover:bg-foreground/10"
+            aria-label={i18n.t('Close diff')}
             onClick={handleCloseDiff}
           >
             <IconCloseSidebarRight className="size-4 text-muted-foreground" />

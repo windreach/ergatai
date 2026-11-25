@@ -51,6 +51,17 @@ const WorkspaceItem = memo(({
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false)
   const [editDialogOpen, setEditDialogOpen] = useState(false)
+
+  const handleDeleteOpen = useCallback((event: { preventDefault: () => void }) => {
+    event.preventDefault()
+    setDeleteDialogOpen(true)
+  }, [])
+  const handleArchiveOpen = useCallback((event: { preventDefault: () => void }) => {
+    event.preventDefault()
+    setArchiveDialogOpen(true)
+  }, [])
+
+  const handleEditOpen = useCallback(() => setEditDialogOpen(true), [])
   const utils = trpc.useUtils()
   const isSelected = selectedWorkspaceId === workspace.id
   const { data: status } = trpc.ergatai.workspaceStatus.useQuery(
@@ -96,6 +107,19 @@ const WorkspaceItem = memo(({
 
   const activeAgents = status?.activeAgentCount ?? 0
 
+  const handleSelect = useCallback(() => onWorkspaceSelect?.(workspace.id), [
+    onWorkspaceSelect,
+    workspace.id,
+  ])
+  const handleDelete = useCallback(
+    () => deleteMutation.mutate({ id: workspace.id, force: false }),
+    [deleteMutation, workspace.id],
+  )
+  const handleArchiveConfirm = useCallback(() => {
+    archiveMutation.mutate({ workspaceId: workspace.id, force: true })
+    setArchiveDialogOpen(false)
+  }, [archiveMutation, workspace.id])
+
   return (
     <div
       className={cn(
@@ -107,7 +131,7 @@ const WorkspaceItem = memo(({
     >
       <button
         type="button"
-        onClick={() => onWorkspaceSelect?.(workspace.id)}
+        onClick={handleSelect}
         className="min-w-0 flex-1 rounded-lg px-2 py-2 text-left"
       >
         <div className="flex items-center justify-between gap-2">
@@ -138,7 +162,7 @@ const WorkspaceItem = memo(({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-[180px]">
           <DropdownMenuItem
-            onSelect={() => setEditDialogOpen(true)}
+            onSelect={handleEditOpen}
           >
             <Pencil className="h-3.5 w-3.5" />
             Edit
@@ -170,10 +194,7 @@ const WorkspaceItem = memo(({
           <DropdownMenuSeparator />
           <DropdownMenuItem
             disabled={archiveMutation.isPending}
-            onSelect={(event) => {
-              event.preventDefault()
-              setArchiveDialogOpen(true)
-            }}
+            onSelect={handleArchiveOpen}
           >
             <Archive className="h-3.5 w-3.5" />
             {archiveMutation.isPending ? "Archiving..." : "Archive"}
@@ -181,10 +202,7 @@ const WorkspaceItem = memo(({
 
           <DropdownMenuSeparator />
           <DropdownMenuItem
-            onSelect={(event) => {
-              event.preventDefault()
-              setDeleteDialogOpen(true)
-            }}
+            onSelect={handleDeleteOpen}
           >
             <Trash2 className="h-3.5 w-3.5" />
             Delete
@@ -216,7 +234,7 @@ const WorkspaceItem = memo(({
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={deleteMutation.isPending}
-              onClick={() => deleteMutation.mutate({ id: workspace.id, force: true })}
+              onClick={handleDelete}
             >
               {deleteMutation.isPending ? "Deleting..." : "Delete"}
             </AlertDialogAction>
@@ -246,13 +264,7 @@ const WorkspaceItem = memo(({
             <AlertDialogCancel>{i18n.t('Cancel')}</AlertDialogCancel>
             <AlertDialogAction
               disabled={archiveMutation.isPending}
-              onClick={() => {
-                archiveMutation.mutate({
-                  workspaceId: workspace.id,
-                  force: true
-                })
-                setArchiveDialogOpen(false)
-              }}
+              onClick={handleArchiveConfirm}
             >
               {archiveMutation.isPending ? "Archiving..." : "Archive"}
             </AlertDialogAction>

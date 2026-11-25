@@ -25,14 +25,24 @@ export type MockGroupAgentTask = {
 const MOCK_CHAT_STORAGE_KEY = "mock-chat-enabled"
 
 export function isMockChatEnabled(): boolean {
-  return import.meta.env.DEV && localStorage.getItem(MOCK_CHAT_STORAGE_KEY) === "true"
+  if (typeof window === "undefined") return false
+  try {
+    return import.meta.env.DEV && localStorage.getItem(MOCK_CHAT_STORAGE_KEY) === "true"
+  } catch {
+    return false
+  }
 }
 
 export function setMockChatEnabled(enabled: boolean): void {
-  if (enabled) {
-    localStorage.setItem(MOCK_CHAT_STORAGE_KEY, "true")
-  } else {
-    localStorage.removeItem(MOCK_CHAT_STORAGE_KEY)
+  if (typeof window === "undefined") return
+  try {
+    if (enabled) {
+      localStorage.setItem(MOCK_CHAT_STORAGE_KEY, "true")
+    } else {
+      localStorage.removeItem(MOCK_CHAT_STORAGE_KEY)
+    }
+  } catch {
+    // Ignore storage errors
   }
 }
 

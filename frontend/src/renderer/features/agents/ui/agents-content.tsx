@@ -1,5 +1,4 @@
 // Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
-import i18n from "@/lib/i18n"
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -104,6 +103,7 @@ export function AgentsContent() {
     agentsPreviewSidebarOpenAtom,
   )
   const [mobileViewMode, setMobileViewMode] = useAtom(agentsMobileViewModeAtom)
+  const handleBackToChats = useCallback(() => setMobileViewMode("chats"), [setMobileViewMode])
   const [conversationsSidebarMode, setConversationsSidebarMode] = useAtom(
     agentsConversationsSidebarModeAtom,
   )
@@ -1177,7 +1177,7 @@ export function AgentsContent() {
                 <NewChatForm
                   isMobileFullscreen={true}
                   selectedWorkspaceId={selectedWorkspaceId}
-                  onBackToChats={() => setMobileViewMode("chats")}
+                  onBackToChats={handleBackToChats}
                 />
               </div>
             )}

@@ -123,7 +123,7 @@ flowchart LR
 
 - Rust **1.88+** (`rust-version` in `Cargo.toml`)
 - Node.js **20+** (for the desktop frontend)
-- `cargo`, `npm`/`bun`
+- `cargo`, `bun` (npm is not supported — see `frontend/package.json` overrides)
 
 ### Build & run
 

@@ -1,5 +1,4 @@
 // Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
-import i18n from "@/lib/i18n"
 "use client"
 
 import { Fragment, useCallback, useEffect, useRef, useState } from "react"
@@ -142,9 +141,9 @@ function SplitDivider({
         let newLeft = startRatios[index] + deltaRatio
         let newRight = combined - newLeft
 
-        // Clamp both panes to minimum
-        if (newLeft < minRatio) { newLeft = minRatio; newRight = combined - minRatio }
-        if (newRight < minRatio) { newRight = minRatio; newLeft = combined - minRatio }
+        // Clamp both panes to minimum while keeping their sum stable
+        newLeft = Math.max(minRatio, Math.min(combined - minRatio, newLeft))
+        newRight = combined - newLeft
 
         const newRatios = [...startRatios]
         newRatios[index] = newLeft

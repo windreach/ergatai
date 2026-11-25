@@ -1,5 +1,4 @@
 // Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
-import i18n from "@/lib/i18n"
 "use client"
 
 import { useEffect, useRef, useState } from "react"
@@ -65,6 +64,7 @@ export function MobileCopyLinkButton({ url }: MobileCopyLinkButtonProps) {
       variant="ghost"
       size="icon"
       onClick={handleCopy}
+      aria-label={copied ? "Copied!" : "Copy link"}
       className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md"
     >
       <div className="relative w-3.5 h-3.5">

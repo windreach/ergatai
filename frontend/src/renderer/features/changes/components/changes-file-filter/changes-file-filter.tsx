@@ -100,7 +100,7 @@ export function ChangesFileFilter({
 					/>
 					{value && (
 						<button
-						  aria-label={i18n.t('LuX')}
+						  aria-label={i18n.t('Clear search')}
 							type="button"
 							onClick={() => onChange("")}
 							className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-muted-foreground/20 transition-colors"
@@ -136,6 +136,7 @@ export function ChangesFileFilter({
 												"h-7 w-7 p-0 flex-shrink-0 rounded-md transition-colors",
 												selectedConversationId && "bg-primary/10 hover:bg-primary/20"
 											)}
+											aria-label={i18n.t('Filter by chat')}
 										>
 											<CircleFilterIcon className={cn(
 												"h-4 w-4",
@@ -171,7 +172,7 @@ export function ChangesFileFilter({
 						</span>
 					</div>
 					<button
-					  aria-label={i18n.t('LuX')}
+					  aria-label={i18n.t('Clear filter')}
 						type="button"
 						onClick={handleClearConversationFilter}
 						className="p-0.5 rounded hover:bg-foreground/10 transition-colors flex-shrink-0"

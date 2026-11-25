@@ -258,12 +258,13 @@
     }
   },
   "overrides": {
-    "source-map-support>source-map": "0.7.4",
+    "source-map-support": {
+      "source-map": "0.7.4"
+    },
     "tar": "7.5.21",
     "tmp": "0.2.7",
     "dompurify": "3.4.17",
     "postcss-selector-parser": "6.1.5",
-    "zod": "4.6.7",
     "minimatch": "11.0.1",
     "katex": "0.18.2"
   },

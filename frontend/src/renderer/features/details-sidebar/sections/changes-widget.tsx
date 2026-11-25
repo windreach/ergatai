@@ -67,6 +67,103 @@ function getFileStatus(file: ParsedDiffFile): "added" | "modified" | "deleted" |
   return "modified"
 }
 
+interface ChangesWidgetFileRowProps {
+  file: ParsedDiffFile
+  filePath: string
+  absolutePath: string | null
+  worktreePath?: string | null
+  isChecked: boolean
+  isViewed: boolean
+  diffDisplayMode: "side-peek" | "center-peek" | "full-page"
+  onFileSelect?: (filePath: string) => void
+  onExpand?: () => void
+  handleCheckboxChange: (filePath: string) => void
+  setFileViewerPath: (path: string) => void
+  setDiffSidebarOpen: (open: boolean) => void
+  openInFinderMutate: (path: string) => void
+  openInAppMutate: (args: { path: string; app: string }) => void
+  preferredEditor: string
+  editorLabel: string
+}
+
+function ChangesWidgetFileRow({
+  file,
+  filePath,
+  absolutePath,
+  isChecked,
+  isViewed,
+  diffDisplayMode,
+  onFileSelect,
+  onExpand,
+  handleCheckboxChange,
+  setFileViewerPath,
+  setDiffSidebarOpen,
+  openInFinderMutate,
+  openInAppMutate,
+  preferredEditor,
+  editorLabel,
+}: ChangesWidgetFileRowProps) {
+  const handleSelect = useCallback(() => {
+    if (onFileSelect) {
+      onFileSelect(filePath)
+    } else {
+      onExpand?.()
+    }
+  }, [onFileSelect, filePath, onExpand])
+
+  const handleCheckbox = useCallback(() => {
+    handleCheckboxChange(filePath)
+  }, [handleCheckboxChange, filePath])
+
+  const handleCopyPath = useCallback(async () => {
+    if (!absolutePath) return
+    await navigator.clipboard.writeText(absolutePath)
+  }, [absolutePath])
+
+  const handleCopyRelativePath = useCallback(async () => {
+    await navigator.clipboard.writeText(filePath)
+  }, [filePath])
+
+  const handleReveal = useCallback(() => {
+    if (!absolutePath) return
+    openInFinderMutate(absolutePath)
+  }, [absolutePath, openInFinderMutate])
+
+  const handleOpenPreview = useCallback(() => {
+    if (!absolutePath) return
+    setFileViewerPath(absolutePath)
+    if (diffDisplayMode !== "side-peek") {
+      setDiffSidebarOpen(false)
+    }
+  }, [absolutePath, setFileViewerPath, diffDisplayMode, setDiffSidebarOpen])
+
+  const handleOpenEditor = useCallback(() => {
+    if (!absolutePath) return
+    openInAppMutate({ path: absolutePath, app: preferredEditor })
+  }, [absolutePath, openInAppMutate, preferredEditor])
+
+  return (
+    <FileListItem
+      filePath={filePath}
+      fileName={getFileName(filePath)}
+      dirPath={getFileDir(filePath)}
+      status={getFileStatus(file)}
+      isChecked={isChecked}
+      isViewed={isViewed}
+      isUntracked={file.isNewFile ?? false}
+      showContextMenu={!!absolutePath}
+      onSelect={handleSelect}
+      onCheckboxChange={handleCheckbox}
+      onCopyPath={absolutePath ? handleCopyPath : undefined}
+      onCopyRelativePath={handleCopyRelativePath}
+      onRevealInFinder={absolutePath ? handleReveal : undefined}
+      onOpenInFilePreview={absolutePath ? handleOpenPreview : undefined}
+      onOpenInEditor={absolutePath ? handleOpenEditor : undefined}
+      editorLabel={editorLabel}
+    />
+  )
+}
+
 /**
  * Changes Widget for Overview Sidebar
  * Shows file list exactly like the Changes tab in diff sidebar
@@ -336,44 +433,24 @@ export const ChangesWidget = memo(function ChangesWidget({
               {displayFiles.map((file) => {
                 const filePath = getDisplayPath(file)
                 const absolutePath = worktreePath ? `${worktreePath}/${filePath}` : null
-
                 return (
-                  <FileListItem
+                  <ChangesWidgetFileRow
                     key={file.key}
+                    file={file}
                     filePath={filePath}
-                    fileName={getFileName(filePath)}
-                    dirPath={getFileDir(filePath)}
-                    status={getFileStatus(file)}
+                    absolutePath={absolutePath}
+                    worktreePath={worktreePath}
                     isChecked={selectedForCommit.has(filePath)}
                     isViewed={isFileViewed(file)}
-                    isUntracked={file.isNewFile ?? false}
-                    showContextMenu={!!worktreePath}
-                    onSelect={() => {
-                      if (onFileSelect) {
-                        onFileSelect(filePath)
-                      } else {
-                        onExpand?.()
-                      }
-                    }}
-                    onCheckboxChange={() => handleCheckboxChange(filePath)}
-                    onCopyPath={absolutePath ? async () => {
-                      await navigator.clipboard.writeText(absolutePath)
-                    } : undefined}
-                    onCopyRelativePath={async () => {
-                      await navigator.clipboard.writeText(filePath)
-                    }}
-                    onRevealInFinder={absolutePath ? () => {
-                      openInFinderMutation.mutate(absolutePath)
-                    } : undefined}
-                    onOpenInFilePreview={absolutePath ? () => {
-                      setFileViewerPath(absolutePath)
-                      if (diffDisplayMode !== "side-peek") {
-                        setDiffSidebarOpen(false)
-                      }
-                    } : undefined}
-                    onOpenInEditor={absolutePath ? () => {
-                      openInAppMutation.mutate({ path: absolutePath, app: preferredEditor })
-                    } : undefined}
+                    diffDisplayMode={diffDisplayMode}
+                    onFileSelect={onFileSelect}
+                    onExpand={onExpand}
+                    handleCheckboxChange={handleCheckboxChange}
+                    setFileViewerPath={setFileViewerPath}
+                    setDiffSidebarOpen={setDiffSidebarOpen}
+                    openInFinderMutate={openInFinderMutation.mutate as (path: string) => void}
+                    openInAppMutate={openInAppMutation.mutate as (args: { path: string; app: string }) => void}
+                    preferredEditor={preferredEditor}
                     editorLabel={editorMeta.label}
                   />
                 )

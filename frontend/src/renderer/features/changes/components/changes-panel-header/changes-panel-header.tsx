@@ -213,6 +213,7 @@ export function ChangesPanelHeader({
 								"h-6 px-2 gap-1.5 text-xs",
 								isCompact && "h-5 px-1.5 gap-1",
 							)}
+							aria-label={i18n.t('Fetch from remote')}
 						>
 							<HiArrowPath
 								className={cn(

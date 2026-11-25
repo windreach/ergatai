@@ -119,7 +119,7 @@ flowchart LR
 
 - Rust **1.88+**（见 `Cargo.toml` 中的 `rust-version`）
 - Node.js **20+**（桌面前端）
-- `cargo`、`npm`/`bun`
+- `cargo`、`bun`（不支持 npm，详见 `frontend/package.json` 的 overrides）
 
 ### 构建与运行
 

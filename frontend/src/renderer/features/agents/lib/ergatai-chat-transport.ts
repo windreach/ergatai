@@ -1021,7 +1021,6 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                 // The backend replaced a suspended runtime ID with a new live ID.
                 // Refresh durable bindings and status stores so UI controls target
                 // the current process on subsequent sends/stops.
-                this.config.agentId = promptResult.new_agent_id
                 effectiveAgentId = promptResult.new_agent_id
                 if (effectiveConversationId) {
                   conversationRuntimeAgentStorage.set(effectiveConversationId, promptResult.new_agent_id)

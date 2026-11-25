@@ -498,6 +498,7 @@ export const NewChatForm = memo(function NewChatForm({
 
   // Worktree config banner state
   const [worktreeBannerDismissed, setWorktreeBannerDismissed] = useState(() => {
+    if (typeof window === "undefined") return false
     try {
       return localStorage.getItem("worktree-banner-dismissed") === "true"
     } catch {
@@ -525,9 +526,11 @@ export const NewChatForm = memo(function NewChatForm({
 
   const _handleDismissWorktreeBanner = () => {
     setWorktreeBannerDismissed(true)
-    try {
-      localStorage.setItem("worktree-banner-dismissed", "true")
-    } catch {}
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("worktree-banner-dismissed", "true")
+      } catch {}
+    }
   }
 
   const handleConfigureWorktree = () => {
@@ -881,6 +884,9 @@ export const NewChatForm = memo(function NewChatForm({
   const [showHashDropdown, setShowHashDropdown] = useState(false)
   const [hashSearchText, setHashSearchText] = useState("")
   const [hashPosition, setHashPosition] = useState({ top: 0, left: 0 })
+
+  const handleCloseSkillDropdown = useCallback(() => setShowSkillDropdown(false), [])
+  const handleCloseHashDropdown = useCallback(() => setShowHashDropdown(false), [])
 
   const closeAllMentionTriggers = useCallback(() => {
     setShowMentionDropdown(false)
@@ -1658,14 +1664,15 @@ export const NewChatForm = memo(function NewChatForm({
         return
       }
 
-      if (ch === "#") {
-        setHashSearchText(searchText)
-        setHashPosition({ top: rect.top, left: rect.left })
-        setShowHashDropdown(true)
-        setShowMentionDropdown(false)
-        setShowSkillDropdown(false)
-        return
-      }
+      // Temporarily disabled: "#" trigger
+      // if (ch === "#") {
+      //   setHashSearchText(searchText)
+      //   setHashPosition({ top: rect.top, left: rect.left })
+      //   setShowHashDropdown(true)
+      //   setShowMentionDropdown(false)
+      //   setShowSkillDropdown(false)
+      //   return
+      // }
 
       // Allow @ in new-chat even before project validation for agents/MCP/discovery refs;
       // file results will be limited until a project is selected.
@@ -1699,7 +1706,7 @@ export const NewChatForm = memo(function NewChatForm({
     () => (
       <AgentsSkillTrigger
         isOpen={showSkillDropdown}
-        onClose={() => setShowSkillDropdown(false)}
+        onClose={handleCloseSkillDropdown}
         onSelect={handleSkillSelect}
         searchText={skillSearchText}
         position={skillPosition}
@@ -1716,7 +1723,7 @@ export const NewChatForm = memo(function NewChatForm({
     () => (
       <AgentsHashTrigger
         isOpen={showHashDropdown}
-        onClose={() => setShowHashDropdown(false)}
+        onClose={handleCloseHashDropdown}
         onSelect={handleHashSelect}
         searchText={hashSearchText}
         position={hashPosition}
@@ -1900,6 +1907,11 @@ export const NewChatForm = memo(function NewChatForm({
 
   // Focus state for ring
   const [isFocused, setIsFocused] = useState(false)
+
+  const handleEditorFocus = useCallback(() => {
+    if (document.documentElement.dataset.focusMethod === "keyboard") setIsFocused(true)
+  }, [setIsFocused])
+  const handleEditorBlur = useCallback(() => setIsFocused(false), [setIsFocused])
 
   useEffect(() => {
     const handlePointerDown = () => setIsFocused(false)
@@ -2285,10 +2297,8 @@ export const NewChatForm = memo(function NewChatForm({
                       )}
                       onPaste={handlePaste}
                       disabled={createChatMutation.isPending}
-                      onFocus={() => {
-                        if (document.documentElement.dataset.focusMethod === "keyboard") setIsFocused(true)
-                      }}
-                      onBlur={() => setIsFocused(false)}
+                      onFocus={handleEditorFocus}
+                      onBlur={handleEditorBlur}
                     />
                   </div>
                   <PromptInputActions className="w-full">
@@ -2395,6 +2405,7 @@ export const NewChatForm = memo(function NewChatForm({
                               variant="ghost"
                               size="icon"
                               className="h-7 w-7 rounded-sm outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70"
+                              aria-label={i18n.t('Attach')}
                               disabled={images.length >= 5 || files.length >= 10}
                             >
                               <AttachIcon className="h-4 w-4" />
@@ -2721,6 +2732,7 @@ export const NewChatForm = memo(function NewChatForm({
             <button
               type="button"
               title={i18n.t('Detail')}
+              aria-label={i18n.t('Detail')}
               onClick={() => {
                 if (isDetailsSidebarOpen) setIsDetailsSidebarOpen(false)
                 else {
@@ -2739,6 +2751,7 @@ export const NewChatForm = memo(function NewChatForm({
             <button
               type="button"
               title={i18n.t('Files')}
+              aria-label={i18n.t('Files')}
               disabled
               className="h-8 w-8 rounded-md flex items-center justify-center transition-colors text-muted-foreground/40 cursor-not-allowed"
             >
@@ -2747,6 +2760,7 @@ export const NewChatForm = memo(function NewChatForm({
             <button
               type="button"
               title={i18n.t('Git')}
+              aria-label={i18n.t('Git')}
               disabled
               className="h-8 w-8 rounded-md flex items-center justify-center transition-colors text-muted-foreground/40 cursor-not-allowed"
             >
@@ -2755,6 +2769,7 @@ export const NewChatForm = memo(function NewChatForm({
             <button
               type="button"
               title={i18n.t('Side Chat')}
+              aria-label={i18n.t('Side Chat')}
               disabled
               className="h-8 w-8 rounded-md flex items-center justify-center transition-colors text-muted-foreground/40 cursor-not-allowed"
             >
@@ -2763,6 +2778,7 @@ export const NewChatForm = memo(function NewChatForm({
             <button
               type="button"
               title={i18n.t('Changes')}
+              aria-label={i18n.t('Changes')}
               disabled
               className="h-8 w-8 rounded-md flex items-center justify-center transition-colors text-muted-foreground/40 cursor-not-allowed"
             >
@@ -2771,6 +2787,7 @@ export const NewChatForm = memo(function NewChatForm({
             <button
               type="button"
               title={i18n.t('Terminal')}
+              aria-label={i18n.t('Terminal')}
               onClick={() => {
                 if (isTerminalSidebarOpen) setIsTerminalSidebarOpen(false)
                 else {

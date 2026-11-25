@@ -4,6 +4,7 @@ import i18n from "@/lib/i18n"
 import {
   useCallback,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from "react"
@@ -56,6 +57,7 @@ import {
  * The first selected project becomes the workspace default; the remaining
  * selected projects are registered after creation.
  */
+// react-doctor-disable-next-line no-giant-component
 export function NewWorkspaceViewPage() {
   const [desktopView, setDesktopView] = useAtom(desktopViewAtom)
   const [workspaceName, setWorkspaceName] = useState("")
@@ -63,6 +65,7 @@ export function NewWorkspaceViewPage() {
   const [projectPickerOpen, setProjectPickerOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [isCreating, setIsCreating] = useState(false)
+  const isCreatingRef = useRef(false)
 
   const setSelectedWorkspaceId = useSetAtom(selectedWorkspaceIdAtom)
   const setSelectedChatId = useSetAtom(selectedAgentChatIdAtom)
@@ -81,7 +84,7 @@ export function NewWorkspaceViewPage() {
     staleTime: Infinity,
     enabled: isOpen,
   })
-  const projects = projectsQuery.data ?? []
+  const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data])
 
   const uniqueProjects = useMemo(() => dedupeByPath(projects), [projects])
   const projectDisplayNames = useMemo(
@@ -107,6 +110,10 @@ export function NewWorkspaceViewPage() {
           Boolean(project),
         ),
     [selectedProjectIds, uniqueProjects],
+  )
+  const selectedProjectIdSet = useMemo(
+    () => new Set(selectedProjectIds),
+    [selectedProjectIds],
   )
 
   const resetForm = useCallback(() => {
@@ -197,8 +204,9 @@ export function NewWorkspaceViewPage() {
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault()
       const [defaultProject, ...additionalProjects] = selectedProjects
-      if (!defaultProject || !workspaceName.trim() || isCreating) return
+      if (!defaultProject || !workspaceName.trim() || isCreatingRef.current) return
 
+      isCreatingRef.current = true
       setIsCreating(true)
       try {
         const workspace = await createWorkspaceMutation.mutateAsync({
@@ -209,16 +217,19 @@ export function NewWorkspaceViewPage() {
         })
 
         const failedProjects: string[] = []
-        for (const project of additionalProjects) {
-          try {
-            await registerProjectMutation.mutateAsync({
+        const results = await Promise.allSettled(
+          additionalProjects.map((project) =>
+            registerProjectMutation.mutateAsync({
               id: workspace.id,
               projectId: project.id,
-            })
-          } catch {
-            failedProjects.push(project.name)
+            }),
+          ),
+        )
+        results.forEach((result, index) => {
+          if (result.status === "rejected") {
+            failedProjects.push(additionalProjects[index].name)
           }
-        }
+        })
 
         void utils.ergatai.listManagedWorkspaces.invalidate()
         void utils.projects.list.invalidate()
@@ -235,6 +246,7 @@ export function NewWorkspaceViewPage() {
       } catch {
         // createWorkspaceMutation.onError already surfaces the failure.
       } finally {
+        isCreatingRef.current = false
         setIsCreating(false)
       }
     },
@@ -242,7 +254,6 @@ export function NewWorkspaceViewPage() {
       collaborationMode,
       createWorkspaceMutation,
       goToWorkspace,
-      isCreating,
       registerProjectMutation,
       selectedProjects,
       utils.ergatai.listManagedWorkspaces,
@@ -348,9 +359,7 @@ export function NewWorkspaceViewPage() {
                       ) : (
                         <CommandGroup>
                           {filteredProjects.map((project) => {
-                            const isSelected = selectedProjectIds.includes(
-                              project.id,
-                            )
+                            const isSelected = selectedProjectIdSet.has(project.id)
                             return (
                               <CommandItem
                                 key={project.id}

@@ -253,6 +253,9 @@ export function useAgentParticipants({
         .toLowerCase()
         .trim()
     const scopedRuntimeAgentsByIdentity = new Map<string, (typeof runtimeAgents)[number]>()
+    const runtimeBindingByAgentId = new Map(
+      (runtimeBindings ?? []).map((binding) => [binding.agentId, binding]),
+    )
     for (const agent of scopedRuntimeAgentsRaw) {
       const key = runtimeIdentityKey(agent)
       const existing = scopedRuntimeAgentsByIdentity.get(key)
@@ -260,12 +263,8 @@ export function useAgentParticipants({
         scopedRuntimeAgentsByIdentity.set(key, agent)
         continue
       }
-      const existingBinding = runtimeBindings?.find(
-        (binding) => binding.agentId === existing.id,
-      )
-      const newBinding = runtimeBindings?.find(
-        (binding) => binding.agentId === agent.id,
-      )
+      const existingBinding = runtimeBindingByAgentId.get(existing.id)
+      const newBinding = runtimeBindingByAgentId.get(agent.id)
       const existingTime =
         existingBinding?.createdAt?.getTime() ?? 0
       const newTime = newBinding?.createdAt?.getTime() ?? 0

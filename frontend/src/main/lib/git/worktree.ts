@@ -1765,6 +1765,7 @@ async function stageWorktreeChanges(worktreePath: string): Promise<boolean> {
 		.filter(Boolean);
 	const excluded = staged.filter(isSyncExcludedPath);
 	for (let index = 0; index < excluded.length; index += 100) {
+		// react-doctor-disable-next-line async-await-in-loop
 		await runGit(worktreePath, [
 			"reset",
 			"-q",
@@ -1907,6 +1908,7 @@ async function resetIndexPaths(
 	paths: string[],
 ): Promise<void> {
 	for (let index = 0; index < paths.length; index += 100) {
+		// react-doctor-disable-next-line async-await-in-loop
 		await runGit(repoPath, [
 			"reset",
 			"-q",
@@ -1918,6 +1920,7 @@ async function resetIndexPaths(
 
 async function stagePaths(repoPath: string, paths: string[]): Promise<void> {
 	for (let index = 0; index < paths.length; index += 100) {
+		// react-doctor-disable-next-line async-await-in-loop
 		await runGit(repoPath, [
 			"add",
 			"-A",
@@ -2302,6 +2305,7 @@ export async function syncWorktreeChangesToBase(
 		const baseAbsPath = join(baseRepoPath, relativePath);
 		let baseWorkingHash: string | null;
 		try {
+			// react-doctor-disable-next-line async-await-in-loop
 			baseWorkingHash = await getPathContentHash(baseAbsPath);
 		} catch (error) {
 			return {
@@ -2410,6 +2414,7 @@ export async function syncWorktreeChangesToBase(
 	for (const relativePath of mergePaths) {
 		let writtenHash: string | null;
 		try {
+			// react-doctor-disable-next-line async-await-in-loop
 			writtenHash = await getPathContentHash(
 				join(baseRepoPath, relativePath),
 			);

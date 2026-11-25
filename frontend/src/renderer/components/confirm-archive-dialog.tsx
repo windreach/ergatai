@@ -1,5 +1,4 @@
 // Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
-import i18n from "@/lib/i18n"
 // react-doctor-disable-next-line use-lazy-motion
 import { AnimatePresence, motion } from "motion/react"
 import { useEffect, useState, useRef, useCallback } from "react"

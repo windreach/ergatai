@@ -748,6 +748,7 @@ export function ConversationSelector({
               <Button
                 variant="ghost"
                 size="icon"
+                aria-label={i18n.t('Open terminal')}
                 onClick={() => onOpenTerminal()}
                 className="h-6 w-6 p-0 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md flex items-center justify-center hover:bg-foreground/10"
               >
@@ -776,6 +777,7 @@ export function ConversationSelector({
           <Button
             variant="ghost"
             size="icon"
+            aria-label={i18n.t('Open diff')}
             onClick={onOpenDiff}
             className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 flex items-center justify-center"
           >
@@ -797,6 +799,7 @@ export function ConversationSelector({
           <Button
             variant="ghost"
             size="icon"
+            aria-label={i18n.t('Open preview')}
             onClick={onOpenPreview}
             className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 flex items-center justify-center"
           >

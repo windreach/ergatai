@@ -1,4 +1,3 @@
-import i18n from "@/lib/i18n"
 "use client"
 
 import { memo } from "react"
@@ -48,8 +47,7 @@ export const GroupAgentMentionTool = memo(function GroupAgentMentionTool({
 }: GroupAgentMentionToolProps) {
   const registeredAgents = useAtomValue(registeredAgentsAtom)
   const sendArgs = getSendMessageArgs(part)
-  const targetAgentId = (sendArgs?.target_agent_id ??
-    sendArgs?.target_conversation_id) as CoreAgentId | undefined
+  const targetAgentId = sendArgs?.target_agent_id as CoreAgentId | undefined
   const message = sendArgs?.message ?? ""
   const messageType = sendArgs?.message_type ?? "request"
   const isPending = !part.output && !part.errorText

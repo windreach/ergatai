@@ -116,10 +116,12 @@ export function useTextContextSelection(): UseTextContextSelectionReturn {
 
   const clearTextContexts = useCallback(() => {
     setTextContexts([])
+    textContextsRef.current = []
   }, [])
 
   const clearDiffTextContexts = useCallback(() => {
     setDiffTextContexts([])
+    diffTextContextsRef.current = []
   }, [])
 
   // Direct state setter for restoring from draft

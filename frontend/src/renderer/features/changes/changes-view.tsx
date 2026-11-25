@@ -47,6 +47,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/too
 // Memoized file item component with context menu to prevent re-renders
 const ChangesFileItemWithContext = memo(function ChangesFileItemWithContext({
 	file,
+	category,
 	isSelected,
 	isChecked,
 	isViewed,
@@ -80,18 +81,18 @@ const ChangesFileItemWithContext = memo(function ChangesFileItemWithContext({
 	highlightedCount: number;
 	highlightedPaths: string[];
 	index: number;
-	onSelect: () => void;
-	onDoubleClick: () => void;
-	onCheckboxChange: () => void;
+	onSelect: (file: ChangedFile, category: ChangeCategory) => void;
+	onDoubleClick: (file: ChangedFile, category: ChangeCategory) => void;
+	onCheckboxChange: (filePath: string) => void;
 	onShiftClick: (index: number) => void;
-	onCopyPath: () => void;
-	onCopyRelativePath: () => void;
-	onRevealInFinder: () => void;
-	onOpenInFilePreview: () => void;
-	onOpenInEditor: () => void;
+	onCopyPath: (filePath: string) => void;
+	onCopyRelativePath: (filePath: string) => void;
+	onRevealInFinder: (filePath: string) => void;
+	onOpenInFilePreview: (filePath: string) => void;
+	onOpenInEditor: (filePath: string) => void;
 	editorLabel: string;
-	onToggleViewed: () => void;
-	onDiscard: () => void;
+	onToggleViewed: (filePath: string) => void;
+	onDiscard: (file: ChangedFile) => void;
 	onDiscardSelected: () => void;
 	onIncludeSelected: () => void;
 	onExcludeSelected: () => void;
@@ -130,14 +131,14 @@ const ChangesFileItemWithContext = memo(function ChangesFileItemWithContext({
 							e.preventDefault();
 							onShiftClick(index);
 						} else {
-							onSelect();
+							onSelect(file, category);
 						}
 					}}
-					onDoubleClick={onDoubleClick}
+					onDoubleClick={() => onDoubleClick(file, category)}
 				>
 					<Checkbox
 						checked={isChecked}
-						onCheckedChange={onCheckboxChange}
+						onCheckedChange={() => onCheckboxChange(file.path)}
 						onClick={(e) => e.stopPropagation()}
 						className="size-4 shrink-0 border-muted-foreground/50"
 					/>
@@ -210,26 +211,26 @@ const ChangesFileItemWithContext = memo(function ChangesFileItemWithContext({
 				) : (
 					<>
 						{/* Single file context menu */}
-						<ContextMenuItem onClick={onCopyPath}>
+						<ContextMenuItem onClick={() => onCopyPath(file.path)}>
 							Copy Path
 						</ContextMenuItem>
-						<ContextMenuItem onClick={onCopyRelativePath}>
+						<ContextMenuItem onClick={() => onCopyRelativePath(file.path)}>
 							Copy Relative Path
 						</ContextMenuItem>
 						<ContextMenuSeparator />
-						<ContextMenuItem onClick={onRevealInFinder}>
+						<ContextMenuItem onClick={() => onRevealInFinder(file.path)}>
 							Reveal in Finder
 						</ContextMenuItem>
 						<ContextMenuSeparator />
-						<ContextMenuItem onClick={onOpenInFilePreview}>
+						<ContextMenuItem onClick={() => onOpenInFilePreview(file.path)}>
 							Open in File Preview
 						</ContextMenuItem>
-						<ContextMenuItem onClick={onOpenInEditor}>
+						<ContextMenuItem onClick={() => onOpenInEditor(file.path)}>
 							Open in {editorLabel}
 						</ContextMenuItem>
 						<ContextMenuSeparator />
 						<ContextMenuItem
-							onClick={onToggleViewed}
+							onClick={() => onToggleViewed(file.path)}
 							className="justify-between"
 						>
 							{isViewed ? "Mark as unviewed" : "Mark as viewed"}
@@ -237,7 +238,7 @@ const ChangesFileItemWithContext = memo(function ChangesFileItemWithContext({
 						</ContextMenuItem>
 						<ContextMenuSeparator />
 						<ContextMenuItem
-							onClick={onDiscard}
+							onClick={() => onDiscard(file)}
 							className="data-[highlighted]:bg-red-500/15 data-[highlighted]:text-red-400"
 						>
 							{isUntracked ? "Delete File..." : "Discard Changes..."}
@@ -343,10 +344,10 @@ export function ChangesView({
 		refetchInterval: 10000,
 	});
 
-	const handleRefresh = () => {
+	const handleRefresh = useCallback(() => {
 		refetch();
 		refetchPRStatus();
-	};
+	}, [refetch, refetchPRStatus]);
 
 	// Handle successful commit - reset local state and notify parent
 	const handleCommitSuccess = useCallback(() => {
@@ -568,8 +569,8 @@ export function ChangesView({
 				conversationFilterPaths.some(
 					(filterPath) =>
 						file.path === filterPath ||
-						file.path.endsWith(filterPath) ||
-						filterPath.endsWith(file.path)
+						file.path.startsWith(`${filterPath}/`) ||
+						filterPath.startsWith(`${file.path}/`)
 				)
 			);
 		}
@@ -615,7 +616,12 @@ export function ChangesView({
 		setHighlightedFiles(new Set());
 	}, [chatId, dispatchPanelLink, worktreePath, selectFile, onFileSelectProp]);
 
-	const handleFileDoubleClick = (file: ChangedFile, category: ChangeCategory) => {
+	const handleFileSelectAndFocus = useCallback((file: ChangedFile, category: ChangeCategory) => {
+		handleFileSelect(file, category);
+		fileListRef.current?.focus();
+	}, [handleFileSelect]);
+
+	const handleFileDoubleClick = useCallback((file: ChangedFile, category: ChangeCategory) => {
 		if (!worktreePath) return;
 		dispatchPanelLink({
 			type: "open-panel",
@@ -632,7 +638,7 @@ export function ChangesView({
 		});
 		selectFile(worktreePath, file, category, null);
 		onFileOpenPinned?.(file, category);
-	};
+	}, [worktreePath, dispatchPanelLink, chatId, selectFile, onFileOpenPinned]);
 
 	// Toggle individual file for commit (checkbox) - doesn't affect highlighting
 	const handleCheckboxChange = useCallback((filePath: string) => {
@@ -708,16 +714,24 @@ export function ChangesView({
 	}, [highlightedFiles]);
 
 	// Copy paths of highlighted files
-	const handleCopySelectedPaths = useCallback((worktreePath: string) => {
+	const handleCopySelectedPaths = useCallback(() => {
 		const paths = highlightedPaths.map(p => `${worktreePath}/${p}`);
-		navigator.clipboard.writeText(paths.join("\n"));
-		toast.success(i18n.t("Copied {{count}} paths", { count: paths.length }));
-	}, [highlightedPaths]);
+		navigator.clipboard.writeText(paths.join("\n")).then(() => {
+			toast.success(i18n.t("Copied {{count}} paths", { count: paths.length }));
+		}).catch((error) => {
+			console.error("Failed to copy paths:", error);
+			toast.error(i18n.t("Failed to copy paths"));
+		});
+	}, [highlightedPaths, worktreePath]);
 
 	// Copy relative paths of highlighted files
 	const handleCopySelectedRelativePaths = useCallback(() => {
-		navigator.clipboard.writeText(highlightedPaths.join("\n"));
-		toast.success(i18n.t("Copied {{count}} paths", { count: highlightedPaths.length }));
+		navigator.clipboard.writeText(highlightedPaths.join("\n")).then(() => {
+			toast.success(i18n.t("Copied {{count}} paths", { count: highlightedPaths.length }));
+		}).catch((error) => {
+			console.error("Failed to copy paths:", error);
+			toast.error(i18n.t("Failed to copy paths"));
+		});
 	}, [highlightedPaths]);
 
 	// Toggle all files selection
@@ -922,32 +936,32 @@ export function ChangesView({
 	};
 
 	// Context menu handlers
-	const handleCopyPath = (filePath: string) => {
+	const handleCopyPath = useCallback((filePath: string) => {
 		const absolutePath = `${worktreePath}/${filePath}`;
 		navigator.clipboard.writeText(absolutePath);
-	};
+	}, [worktreePath]);
 
-	const handleCopyRelativePath = (filePath: string) => {
+	const handleCopyRelativePath = useCallback((filePath: string) => {
 		navigator.clipboard.writeText(filePath);
-	};
+	}, []);
 
-	const handleRevealInFinder = (filePath: string) => {
+	const handleRevealInFinder = useCallback((filePath: string) => {
 		const absolutePath = `${worktreePath}/${filePath}`;
 		openInFinderMutation.mutate(absolutePath);
-	};
+	}, [worktreePath, openInFinderMutation]);
 
-	const handleOpenInPreferredEditor = (filePath: string) => {
+	const handleOpenInPreferredEditor = useCallback((filePath: string) => {
 		const absolutePath = `${worktreePath}/${filePath}`;
 		openInAppMutation.mutate({ path: absolutePath, app: preferredEditor });
-	};
+	}, [worktreePath, openInAppMutation, preferredEditor]);
 
-	const handleOpenInFilePreview = (filePath: string) => {
+	const handleOpenInFilePreview = useCallback((filePath: string) => {
 		const absolutePath = `${worktreePath}/${filePath}`;
 		setFileViewerPath(absolutePath);
 		if (diffDisplayMode !== "side-peek") {
 			setDiffSidebarOpen(false);
 		}
-	};
+	}, [worktreePath, setFileViewerPath, diffDisplayMode, setDiffSidebarOpen]);
 
 	return (
 			<>
@@ -1042,36 +1056,22 @@ export function ChangesView({
 										highlightedCount={highlightedCount}
 										highlightedPaths={highlightedPaths}
 										index={index}
-										// react-doctor-disable-next-line no-inline-prop-on-memo-component
-										onSelect={() => {
-											handleFileSelect(file, category);
-											fileListRef.current?.focus();
-										}}
-										// react-doctor-disable-next-line no-inline-prop-on-memo-component
-										onDoubleClick={() => handleFileDoubleClick(file, category)}
-										// react-doctor-disable-next-line no-inline-prop-on-memo-component
-										onCheckboxChange={() => handleCheckboxChange(file.path)}
+										onSelect={handleFileSelectAndFocus}
+										onDoubleClick={handleFileDoubleClick}
+										onCheckboxChange={handleCheckboxChange}
 										onShiftClick={handleShiftClick}
-										// react-doctor-disable-next-line no-inline-prop-on-memo-component
-										onCopyPath={() => handleCopyPath(file.path)}
-										// react-doctor-disable-next-line no-inline-prop-on-memo-component
-										onCopyRelativePath={() => handleCopyRelativePath(file.path)}
-										// react-doctor-disable-next-line no-inline-prop-on-memo-component
-										onRevealInFinder={() => handleRevealInFinder(file.path)}
-										// react-doctor-disable-next-line no-inline-prop-on-memo-component
-										onOpenInFilePreview={() => handleOpenInFilePreview(file.path)}
-										// react-doctor-disable-next-line no-inline-prop-on-memo-component
-										onOpenInEditor={() => handleOpenInPreferredEditor(file.path)}
+										onCopyPath={handleCopyPath}
+										onCopyRelativePath={handleCopyRelativePath}
+										onRevealInFinder={handleRevealInFinder}
+										onOpenInFilePreview={handleOpenInFilePreview}
+										onOpenInEditor={handleOpenInPreferredEditor}
 										editorLabel={editorMeta.label}
-										// react-doctor-disable-next-line no-inline-prop-on-memo-component
-										onToggleViewed={() => toggleFileViewed(file.path)}
-										// react-doctor-disable-next-line no-inline-prop-on-memo-component
-										onDiscard={() => setDiscardFile(file)}
+										onToggleViewed={toggleFileViewed}
+										onDiscard={setDiscardFile}
 										onDiscardSelected={handleDiscardSelected}
 										onIncludeSelected={handleIncludeSelected}
 										onExcludeSelected={handleExcludeSelected}
-										// react-doctor-disable-next-line no-inline-prop-on-memo-component
-										onCopySelectedPaths={() => handleCopySelectedPaths(worktreePath)}
+										onCopySelectedPaths={handleCopySelectedPaths}
 										onCopySelectedRelativePaths={handleCopySelectedRelativePaths}
 									/>
 								))}

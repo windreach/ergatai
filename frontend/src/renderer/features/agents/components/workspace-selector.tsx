@@ -259,12 +259,22 @@ export function WorkspaceSelector({
 
   const handleOpenFolder = async () => {
     setOpen(false)
-    await openFolder.mutateAsync()
+    try {
+      await openFolder.mutateAsync()
+    } catch (error) {
+      toast.error(i18n.t("Failed to open folder"))
+      console.error(error)
+    }
   }
 
   const handleCloneFromGitHub = async () => {
     if (!githubUrl.trim()) return
-    await cloneFromGitHub.mutateAsync({ repoUrl: githubUrl.trim() })
+    try {
+      await cloneFromGitHub.mutateAsync({ repoUrl: githubUrl.trim() })
+    } catch (error) {
+      toast.error(i18n.t("Failed to clone repository"))
+      console.error(error)
+    }
   }
 
   const handleSelectProject = (projectId: string) => {

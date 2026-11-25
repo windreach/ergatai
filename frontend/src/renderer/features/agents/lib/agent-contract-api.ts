@@ -405,7 +405,7 @@ export const agentContractApi: AgentContractApi = {
   async listCoreAgents() {
     try {
       const response = await trpcClient.ergatai.listProfilesWithStatus.query()
-      const profiles = response.profiles || []
+      const profiles = response?.profiles || []
 
       // Only expose installed agents as selectable options
       const optionsById = new Map<CoreAgentId, CoreAgentOption>()

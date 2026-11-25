@@ -2,14 +2,13 @@
 import i18n from "@/lib/i18n"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { ChevronLeft } from "lucide-react"
-import { useCallback, useEffect, useMemo } from "react"
+import { memo, useCallback, useEffect, useMemo } from "react"
 import {
   EyeOpenFilledIcon,
   SlidersFilledIcon,
 } from "../../icons"
 import {
   agentsSettingsDialogActiveTabAtom,
-  devToolsUnlockedAtom,
   isDesktopAtom,
   type SettingsTab,
 } from "../../lib/atoms"
@@ -53,21 +52,21 @@ interface TabButtonProps {
   tab: {
     id: SettingsTab
     label: string
-    icon: React.ComponentType<{ className?: string }> | unknown
+    icon: React.ComponentType<{ className?: string }>
   }
   isActive: boolean
-  onClick: () => void
+  onSelect: (id: SettingsTab) => void
 }
 
-function TabButton({ tab, isActive, onClick }: TabButtonProps) {
+const TabButton = memo(function TabButton({ tab, isActive, onSelect }: TabButtonProps) {
   const Icon = tab.icon as React.ComponentType<{ className?: string }>
-  const isProjectTab = "projectId" in tab
+  const handleClick = useCallback(() => onSelect(tab.id), [onSelect, tab.id])
 
   return (
     <button
       type="button"
       role="tab"
-      onClick={onClick}
+      onClick={handleClick}
       aria-selected={isActive}
       className={cn(
         "inline-flex items-center whitespace-nowrap transition-colors duration-75 cursor-pointer w-full justify-start gap-2 text-left px-3 py-1.5 text-sm h-7 rounded-md",
@@ -80,17 +79,17 @@ function TabButton({ tab, isActive, onClick }: TabButtonProps) {
       <Icon
         className={cn(
           "h-4 w-4",
-          isProjectTab ? "opacity-100" : isActive ? "opacity-100" : "opacity-50"
+          isActive ? "opacity-100" : "opacity-50"
         )}
       />
       <span className="flex-1 truncate">{i18n.t(tab.label)}</span>
     </button>
   )
-}
+})
 
 export function SettingsSidebar() {
   const [activeTab, setActiveTab] = useAtom(agentsSettingsDialogActiveTabAtom)
-  const [devToolsUnlocked, _setDevToolsUnlocked] = useAtom(devToolsUnlockedAtom)
+  // devToolsUnlocked atom is not wired to any unlock gesture; debug tab is dev-only.
   const setDesktopView = useSetAtom(desktopViewAtom)
   const isDesktop = useAtomValue(isDesktopAtom)
 
@@ -99,19 +98,22 @@ export function SettingsSidebar() {
     if (!isDesktop) return
     if (typeof window === "undefined" || !window.desktopApi?.setTrafficLightVisibility) return
     window.desktopApi.setTrafficLightVisibility(false)
+    return () => {
+      window.desktopApi?.setTrafficLightVisibility?.(true)
+    }
   }, [isDesktop])
 
   // Show debug tab if in development OR if devtools are unlocked
-  const showDebugTab = isDevelopment || devToolsUnlocked
+  const showDebugTab = isDevelopment
 
   const mainTabs = useMemo(() => {
     if (showDebugTab) return [...MAIN_TABS, DEBUG_TAB]
     return MAIN_TABS
   }, [showDebugTab])
 
-  const handleTabClick = (tabId: SettingsTab) => {
+  const handleTabClick = useCallback((tabId: SettingsTab) => {
     setActiveTab(tabId)
-  }
+  }, [setActiveTab])
 
   const handleBack = useCallback(() => {
     setDesktopView(null)
@@ -131,7 +133,7 @@ export function SettingsSidebar() {
       </div>
 
       {/* Tab list */}
-      <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-muted-foreground/20 scrollbar-track-transparent px-2 pb-4 space-y-4">
+      <div role="tablist" className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-muted-foreground/20 scrollbar-track-transparent px-2 pb-4 space-y-4">
         {/* Main Tabs */}
         <div className="space-y-1">
           {mainTabs.map((tab) => (
@@ -139,7 +141,7 @@ export function SettingsSidebar() {
               key={tab.id}
               tab={tab}
               isActive={activeTab === tab.id}
-              onClick={() => handleTabClick(tab.id)}
+              onSelect={handleTabClick}
             />
           ))}
         </div>

@@ -35,9 +35,12 @@ export function useMessageSync({
   const setStreamingStatus = useStreamingStatusStore((s) => s.setStatus)
   useEffect(() => {
     setStreamingStatus(conversationId, status)
+  }, [conversationId, status, setStreamingStatus])
+
+  useEffect(() => {
     return () => {
       // Reset status when conversation changes or component unmounts
       setStreamingStatus(conversationId, "ready")
     }
-  }, [conversationId, status, setStreamingStatus])
+  }, [conversationId, setStreamingStatus])
 }

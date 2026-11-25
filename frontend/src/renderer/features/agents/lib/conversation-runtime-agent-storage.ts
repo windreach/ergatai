@@ -11,6 +11,7 @@ const STORAGE_KEY = "ergatai_conversation_runtime_agents"
 
 export const conversationRuntimeAgentStorage = {
   get(conversationId: string): string | null {
+    if (typeof window === "undefined") return null
     try {
       const stored = localStorage.getItem(STORAGE_KEY)
       if (!stored) return null
@@ -23,6 +24,7 @@ export const conversationRuntimeAgentStorage = {
 
   set(conversationId: string, agentId: string): boolean {
     if (!conversationId || !agentId) return false
+    if (typeof window === "undefined") return false
     try {
       const stored = localStorage.getItem(STORAGE_KEY)
       const map = stored ? JSON.parse(stored) : {}
@@ -36,6 +38,7 @@ export const conversationRuntimeAgentStorage = {
   },
 
   delete(conversationId: string): void {
+    if (typeof window === "undefined") return
     try {
       const stored = localStorage.getItem(STORAGE_KEY)
       if (!stored) return

@@ -1,4 +1,3 @@
-import i18n from "@/lib/i18n"
 import { useMemo, useState } from "react"
 import { AlertTriangle, Check, ChevronDown, Copy } from "lucide-react"
 

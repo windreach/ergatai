@@ -8,13 +8,40 @@ import { atomWithStorage } from "jotai/utils"
 import { isDesktopApp } from "../../../lib/utils/platform"
 
 // Track pending notifications count for badge
+const safeNumberStorage = {
+  getItem: (key: string, initialValue: number) => {
+    try {
+      const raw = localStorage.getItem(key)
+      if (raw === null) return initialValue
+      const parsed = JSON.parse(raw)
+      return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : initialValue
+    } catch {
+      return initialValue
+    }
+  },
+  setItem: (key: string, value: number) => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value))
+    } catch {
+      // ignore storage errors
+    }
+  },
+  removeItem: (key: string) => {
+    try {
+      localStorage.removeItem(key)
+    } catch {
+      // ignore storage errors
+    }
+  },
+}
+
 const pendingNotificationsAtom = atomWithStorage<number>(
   "desktop-pending-notifications",
   0,
+  safeNumberStorage,
 )
 
-// Track window focus state
-let isWindowFocused = true
+// Window focus is queried live via document.hasFocus() to avoid shared mutable state.
 
 /**
  * Generate a badge icon image for Windows taskbar overlay
@@ -67,18 +94,14 @@ export function useDesktopNotifications() {
   useEffect(() => {
     if (!isDesktopApp() || typeof window === "undefined") return
 
-    // Initialize focus state
-    isWindowFocused = document.hasFocus()
-
     const handleFocus = () => {
-      isWindowFocused = true
       // Clear badge when window gains focus
       setPendingCount(0)
       window.desktopApi?.setBadge(null)
     }
 
     const handleBlur = () => {
-      isWindowFocused = false
+      // no-op: focus state is queried live via document.hasFocus()
     }
 
     // Use both window events and Electron API
@@ -133,7 +156,7 @@ export function useDesktopNotifications() {
       if (!isDesktopApp() || typeof window === "undefined") return
 
       // Only notify if window is not focused
-      if (!isWindowFocused) {
+      if (typeof document !== "undefined" && !document.hasFocus()) {
         // Increment badge count
         setPendingCount((prev) => prev + 1)
 
@@ -151,7 +174,7 @@ export function useDesktopNotifications() {
    * Check if window is currently focused
    */
   const isAppFocused = useCallback(() => {
-    return isWindowFocused
+    return typeof document !== "undefined" ? document.hasFocus() : true
   }, [])
 
   return {

@@ -1,4 +1,3 @@
-import i18n from "@/lib/i18n"
 /**
  * Utility functions for creating file icon elements.
  * Separated from agents-file-mention.tsx to maintain Fast Refresh compatibility.

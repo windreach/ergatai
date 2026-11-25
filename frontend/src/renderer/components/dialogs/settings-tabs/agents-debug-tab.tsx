@@ -185,10 +185,16 @@ export function AgentsDebugTab() {
 
   // Initialize React Scan state from localStorage (dev only)
   useEffect(() => {
-    if (isDev && localStorage.getItem(REACT_SCAN_STORAGE_KEY) === "true") {
+    if (!isDev) return
+    try {
+      if (typeof window === "undefined" || window.localStorage?.getItem(REACT_SCAN_STORAGE_KEY) !== "true") {
+        return
+      }
       loadReactScan()
         .then(() => setReactScanEnabled(true))
         .catch(console.error)
+    } catch {
+      // Ignore localStorage access errors
     }
   }, [isDev])
 

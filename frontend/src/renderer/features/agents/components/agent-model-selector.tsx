@@ -45,6 +45,7 @@ function getRecentModelsStorageKey(agentId: AgentProviderId): string {
 }
 
 function readRecentModelKeys(agentId: AgentProviderId): string[] {
+  if (typeof window === "undefined") return []
   try {
     const raw = localStorage.getItem(getRecentModelsStorageKey(agentId))
     if (!raw) return []
@@ -58,6 +59,7 @@ function readRecentModelKeys(agentId: AgentProviderId): string[] {
 }
 
 function writeRecentModelKey(agentId: AgentProviderId, key: string) {
+  if (typeof window === "undefined") return
   try {
     const next = [key, ...readRecentModelKeys(agentId).filter((item) => item !== key)].slice(
       0,
@@ -602,9 +604,11 @@ export function AgentModelSelector({
   const handleConfirmCrossProvider = useCallback(
     (dontShowAgain: boolean) => {
       if (dontShowAgain) {
-        try {
-          localStorage.setItem(CROSS_PROVIDER_DIALOG_DISMISSED_KEY, "true")
-        } catch {}
+        if (typeof window !== "undefined") {
+          try {
+            localStorage.setItem(CROSS_PROVIDER_DIALOG_DISMISSED_KEY, "true")
+          } catch {}
+        }
       }
       setConfirmDialogOpen(false)
       if (pendingProvider && onContinueWithProvider) {
@@ -636,6 +640,7 @@ export function AgentModelSelector({
     if (!canSelectProvider(provider) && onContinueWithProvider) {
       handleOpenChange(false)
       const dismissed = (() => {
+        if (typeof window === "undefined") return false
         try { return localStorage.getItem(CROSS_PROVIDER_DIALOG_DISMISSED_KEY) === "true" } catch { return false }
       })()
       if (dismissed) {

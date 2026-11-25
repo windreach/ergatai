@@ -1,4 +1,3 @@
-import i18n from "@/lib/i18n"
 /**
  * Shared detection helpers for Ergatai MCP tool calls.
  *

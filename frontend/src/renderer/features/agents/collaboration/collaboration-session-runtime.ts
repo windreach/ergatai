@@ -135,7 +135,11 @@ export interface SubmitCollaborationInteractionInput {
 
 export function isCollaborationSessionRuntimeEnabled(): boolean {
   if (typeof window === "undefined") return false
-  return window.localStorage.getItem(COLLABORATION_SESSION_FLAG_KEY) !== "false"
+  try {
+    return window.localStorage.getItem(COLLABORATION_SESSION_FLAG_KEY) !== "false"
+  } catch {
+    return true
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -318,6 +322,18 @@ export function useCollaborationSession({
   }, [loadEvents, refreshSession])
 
   const ensureSession = useCallback(async () => {
+    // Reuse an existing session for this chat when available instead of
+    // always creating a new one.
+    const existing = await loadExistingSession()
+    if (existing) {
+      const detail = normalizeDetail(existing)
+      if (detail) {
+        setSession(detail)
+        setError(null)
+        return detail
+      }
+    }
+
     const created = await trpcClient.ergatai.createCollaborationSession.mutate({
       chatId,
       workspaceId: workspaceId || undefined,
@@ -334,6 +350,7 @@ export function useCollaborationSession({
   }, [
     chatId,
     loadEvents,
+    loadExistingSession,
     mode,
     participants,
     projectId,
@@ -418,6 +435,7 @@ export function useCollaborationSession({
         {
           onData: (rawEvent) => {
             if (!isActive) return
+            attempt = 0
             const event = normalizeEvent(rawEvent)
             if (!event) return
 

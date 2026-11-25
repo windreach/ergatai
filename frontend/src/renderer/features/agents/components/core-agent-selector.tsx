@@ -130,6 +130,9 @@ export function CoreAgentSelector({
       setSelectedAgent((current) =>
         options.find((agent) => agent.id === current.id) ?? options[0] ?? current,
       )
+    }).catch((error) => {
+      if (cancelled) return
+      console.error("Failed to list core agents:", error)
     })
 
     return () => {

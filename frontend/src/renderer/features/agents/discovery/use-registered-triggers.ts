@@ -32,7 +32,8 @@ export const BUILTIN_EDITOR_TRIGGERS: readonly EditorTriggerConfig[] = [
   { char: "$", position: "standalone", kind: "mention", types: ["skill"] },
   // Frontend-only editor affordance: "#" surfaces changed-file references
   // (git diff), which are not backend discovery items.
-  { char: "#", position: "standalone", kind: "mention", types: ["file", "folder", "issue", "pr", "task"] },
+  // Temporarily disabled: comment out the "#" trigger.
+  // { char: "#", position: "standalone", kind: "mention", types: ["file", "folder", "issue", "pr", "task"] },
 ] as const
 
 const DEFAULT_TRIGGER_TYPES: Record<string, string[]> = Object.fromEntries(

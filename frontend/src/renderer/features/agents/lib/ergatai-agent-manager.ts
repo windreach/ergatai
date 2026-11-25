@@ -220,47 +220,67 @@ async function spawnNewAgent(
  *
  * This is called by ErgataiChatTransport when it needs an agentId.
  */
+// Module-level map of in-flight agent creation promises, keyed by chatId
+// (and conversationId when provided) to dedup concurrent creations.
+const activeAgentCreationPromises = new Map<string, Promise<string>>()
+
 export async function getOrCreateActiveAgent(
   chatId: string,
   command: string = "claude",
   conversationId?: string
 ): Promise<string> {
+  const key = conversationId ? `${chatId}:${conversationId}` : chatId
+
+  // Reuse an in-flight creation for the same key.
+  const existingPromise = activeAgentCreationPromises.get(key)
+  if (existingPromise) {
+    return existingPromise
+  }
+
   // FIX #1: Create the creation promise IMMEDIATELY to lock this key BEFORE unknown async work.
   // Without this, two concurrent callers could both pass the pendingFetches.get check below,
   // both call checkExistingAgentBinding, both find no live agent, and both spawn new agents.
   const creationPromise = (async () => {
-    // Step 1: Check for existing agent binding
-    const existingAgentId = await checkExistingAgentBinding(chatId, conversationId)
-    if (existingAgentId) {
-      return existingAgentId
-    }
-
-    // Step 2: No valid binding found — spawn new agent
     try {
-      // conversationId is required for spawn — it should always be provided by the caller.
-      if (!conversationId) {
-        throw new Error(
-          "conversationId is required but was not provided. " +
-          i18n.t('This is a bug — please report it.')
-        )
+      // Step 1: Check for existing agent binding
+      const existingAgentId = await checkExistingAgentBinding(chatId, conversationId)
+      if (existingAgentId) {
+        return existingAgentId
       }
 
-      return await spawnNewAgent(conversationId, command)
-    } catch (err) {
-      log.error(i18n.t('Failed to spawn agent'), err as Error, { conversationId, command })
-      const errorMessage = err instanceof Error ? err.message : String(err)
+      // Step 2: No valid binding found — spawn new agent
+      try {
+        // conversationId is required for spawn — it should always be provided by the caller.
+        if (!conversationId) {
+          throw new Error(
+            "conversationId is required but was not provided. " +
+            i18n.t('This is a bug — please report it.')
+          )
+        }
 
-      // Provide more specific error messages
-      if (errorMessage.includes(i18n.t('Conversation not found'))) {
-        throw new Error(
-          i18n.t("Conversation not found: {{id}}. ", { id: conversationId }) +
-          i18n.t("The conversation may not have been created yet or was deleted. ") +
-          i18n.t("Please try refreshing the page or creating a new chat.")
-        )
+        return await spawnNewAgent(conversationId, command)
+      } catch (err) {
+        log.error(i18n.t('Failed to spawn agent'), err as Error, { conversationId, command })
+        const errorMessage = err instanceof Error ? err.message : String(err)
+
+        // Provide more specific error messages
+        if (errorMessage.includes(i18n.t('Conversation not found'))) {
+          throw new Error(
+            i18n.t("Conversation not found: {{id}}. ", { id: conversationId }) +
+            i18n.t("The conversation may not have been created yet or was deleted. ") +
+            i18n.t("Please try refreshing the page or creating a new chat.")
+          )
+        }
+        throw new Error(i18n.t("Failed to spawn agent: {{message}}", { message: errorMessage }))
       }
-      throw new Error(i18n.t("Failed to spawn agent: {{message}}", { message: errorMessage }))
+    } finally {
+      // Clean up map entry to avoid stale promises.
+      activeAgentCreationPromises.delete(key)
     }
   })()
+
+  // Store the promise in cache synchronously before returning.
+  activeAgentCreationPromises.set(key, creationPromise)
 
   return creationPromise
 }

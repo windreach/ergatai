@@ -122,7 +122,7 @@ export function applyAgentTerminalUpdate(
     asString(obj.output_delta) ?? asString(obj.outputDelta)
   const output = boundOutput(
     outputSnapshot !== undefined
-      ? outputSnapshot + (outputDelta ?? "")
+      ? outputSnapshot
       : `${previousTask?.output ?? ""}${outputDelta ?? ""}`,
   )
 

@@ -303,6 +303,7 @@ const ArchiveButton = memo(forwardRef<HTMLButtonElement, React.ButtonHTMLAttribu
       <button
         ref={ref}
         type="button"
+        aria-label={i18n.t('Archive')}
         className="flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-[background-color,color,transform] duration-150 ease-out active:scale-[0.97] outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70"
         {...props}
       >
@@ -781,6 +782,8 @@ export function AgentsSidebar({
   useEffect(() => {
     selectedChatIdRef.current = selectedChatId
   }, [selectedChatId])
+
+  // refs for agentChats/previousChatId/autoAdvanceTarget are declared after those values are defined
   // Lock to prevent concurrent execution of handleChatClick's async claim/release sequence
   const chatClickLockRef = useRef(false)
   const {
@@ -791,6 +794,16 @@ export function AgentsSidebar({
   } = useCollaborationMode()
   const previousChatId = useAtomValue(previousAgentChatIdAtom)
   const autoAdvanceTarget = useAtomValue(autoAdvanceTargetAtom)
+
+  const previousChatIdRef = useRef(previousChatId)
+  useEffect(() => {
+    previousChatIdRef.current = previousChatId
+  }, [previousChatId])
+
+  const autoAdvanceTargetRef = useRef(autoAdvanceTarget)
+  useEffect(() => {
+    autoAdvanceTargetRef.current = autoAdvanceTarget
+  }, [autoAdvanceTarget])
   const [selectedDraftId, setSelectedDraftId] = useAtom(selectedDraftIdAtom)
   const setShowNewChatForm = useSetAtom(showNewChatFormAtom)
   const setDesktopView = useSetAtom(desktopViewAtom)
@@ -800,6 +813,10 @@ export function AgentsSidebar({
   const isSidebarHoveredRef = useRef(false)
   const closeButtonRef = useRef<HTMLDivElement>(null)
   const [searchQuery, setSearchQuery] = useState("")
+  const handleSearchChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => setSearchQuery(e.target.value),
+    [],
+  )
   const [focusedChatIndex, setFocusedChatIndex] = useState<number>(-1) // -1 means no focus
   const hoveredChatIndexRef = useRef<number>(-1) // Track hovered chat for X hotkey - ref to avoid re-renders
 
@@ -893,7 +910,7 @@ export function AgentsSidebar({
   // Desktop: use selectedWorkspace instead of teams
   const [selectedWorkspace, setSelectedWorkspace] = useAtom(selectedWorkspaceAtom)
 
-  const { data: projects } = trpc.projects.list.useQuery(undefined, { staleTime: Infinity })
+  const { data: projects } = trpc.projects.list.useQuery(undefined, { staleTime: 5 * 60 * 1000 })
   const projectsMap = useMemo(() => {
     if (!projects) return new Map()
     return new Map(projects.map((p) => [p.id, p]))
@@ -1002,6 +1019,11 @@ export function AgentsSidebar({
       return true
     })
   }, [projectsMap, rawAgentChats])
+
+  const agentChatsRef = useRef(agentChats)
+  useEffect(() => {
+    agentChatsRef.current = agentChats
+  }, [agentChats])
 
   // Track open conversation changes for reactivity
   const [openConversationsVersion, setOpenConversationsVersion] = useState(0)
@@ -1124,12 +1146,12 @@ export function AgentsSidebar({
       utils.ergatai.listManagedWorkspaces.invalidate()
       void utils.ergatai.workspaceStatus.invalidate()
       utils.chats.listArchived.invalidate()
-      if (selectedChatId === variables.id) {
+      if (selectedChatIdRef.current === variables.id) {
         const currentIndex = agentChats?.findIndex((c) => c.id === variables.id) ?? -1
 
-        if (autoAdvanceTarget === "next") {
+        if (autoAdvanceTargetRef.current === "next") {
           // Find next workspace in list (after current index)
-          const nextChat = agentChats?.find((c, i) => i > currentIndex && c.id !== variables.id)
+          const nextChat = agentChatsRef.current?.find((c, i) => i > currentIndex && c.id !== variables.id)
           if (nextChat) {
             setSelectedChatId(nextChat.id)
             setSelectedWorkspaceId(nextChat.workspaceId ?? null)
@@ -1138,13 +1160,13 @@ export function AgentsSidebar({
             setSelectedChatId(null)
             setSelectedWorkspaceId(null)
           }
-        } else if (autoAdvanceTarget === "previous") {
+        } else if (autoAdvanceTargetRef.current === "previous") {
           // Go to previously selected workspace
-          const isPreviousAvailable = previousChatId &&
-            agentChats?.some((c) => c.id === previousChatId && c.id !== variables.id)
+          const isPreviousAvailable = previousChatIdRef.current &&
+            agentChatsRef.current?.some((c) => c.id === previousChatIdRef.current && c.id !== variables.id)
           if (isPreviousAvailable) {
-            setSelectedChatId(previousChatId)
-            const prevChat = agentChats?.find((c) => c.id === previousChatId)
+            setSelectedChatId(previousChatIdRef.current)
+            const prevChat = agentChatsRef.current?.find((c) => c.id === previousChatIdRef.current)
             setSelectedWorkspaceId(prevChat?.workspaceId ?? null)
           } else {
             setSelectedChatId(null)
@@ -1271,10 +1293,14 @@ export function AgentsSidebar({
       (pinnedChatIds !== prevPinnedRef.current && pinnedChatIds.size > 0) ||
       prevPinnedRef.current.size > 0
     ) {
-      localStorage.setItem(
-        `agent-pinned-chats-${selectedWorkspace.id}`,
-        JSON.stringify([...pinnedChatIds]),
-      )
+      try {
+        localStorage.setItem(
+          `agent-pinned-chats-${selectedWorkspace.id}`,
+          JSON.stringify([...pinnedChatIds]),
+        )
+      } catch {
+        // ignore storage errors
+      }
     }
     prevPinnedRef.current = pinnedChatIds
   }, [pinnedChatIds, selectedWorkspace?.id])
@@ -1862,8 +1888,12 @@ export function AgentsSidebar({
 
   // Copy branch name to clipboard
   const _handleCopyBranch = useCallback((branch: string) => {
-    navigator.clipboard.writeText(branch)
-    toast.success("Branch name copied", { description: branch })
+    navigator.clipboard.writeText(branch).then(() => {
+      toast.success("Branch name copied", { description: branch })
+    }).catch((error) => {
+      console.error("Failed to copy branch name:", error)
+      toast.error("Failed to copy branch name")
+    })
   }, [])
 
   // Ref callback for name elements
@@ -2174,7 +2204,7 @@ export function AgentsSidebar({
               ref={searchInputRef}
               placeholder={collaborationModeConfig.workspaceSearchPlaceholder}
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={handleSearchChange}
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
                   e.preventDefault()

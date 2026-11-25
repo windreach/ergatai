@@ -1304,9 +1304,13 @@ export const ttsPlaybackRateAtom = atom<PlaybackSpeed>(
   // Initial value from localStorage
   (() => {
     if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("tts-playback-rate")
-      if (saved && PLAYBACK_SPEEDS.includes(Number(saved) as PlaybackSpeed)) {
-        return Number(saved) as PlaybackSpeed
+      try {
+        const saved = localStorage.getItem("tts-playback-rate")
+        if (saved && PLAYBACK_SPEEDS.includes(Number(saved) as PlaybackSpeed)) {
+          return Number(saved) as PlaybackSpeed
+        }
+      } catch {
+        // Ignore storage errors
       }
     }
     return 1
@@ -1319,7 +1323,11 @@ export const setTtsPlaybackRateAtom = atom(
   (_get, set, rate: PlaybackSpeed) => {
     set(ttsPlaybackRateAtom, rate)
     if (typeof window !== "undefined") {
-      localStorage.setItem("tts-playback-rate", String(rate))
+      try {
+        localStorage.setItem("tts-playback-rate", String(rate))
+      } catch {
+        // Ignore storage errors
+      }
     }
   }
 )

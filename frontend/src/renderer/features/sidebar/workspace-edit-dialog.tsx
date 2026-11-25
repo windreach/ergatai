@@ -1,5 +1,5 @@
 import i18n from "@/lib/i18n"
-import { useState, useCallback } from "react"
+import React, { useState, useCallback } from "react"
 import { Folder, FolderPlus, X } from "lucide-react"
 import { toast } from "sonner"
 
@@ -31,6 +31,8 @@ export function WorkspaceEditDialog({
   const [name, setName] = useState(workspaceName)
   const [saving, setSaving] = useState(false)
 
+  const handleNameChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value), [])
+
   const utils = trpc.useUtils()
 
   // Fetch projects from backend API (source of truth)
@@ -51,7 +53,13 @@ export function WorkspaceEditDialog({
   }, [utils, workspaceId])
 
   const handleAddFolder = useCallback(async () => {
-    const folderPath = await pickFolderMutation.mutateAsync()
+    let folderPath: string | null = null
+    try {
+      folderPath = await pickFolderMutation.mutateAsync()
+    } catch (error) {
+      toast.error("Failed to pick folder", { description: error instanceof Error ? error.message : undefined })
+      return
+    }
     if (!folderPath) return
 
     // Cross-platform path parsing: split on both / and \
@@ -115,6 +123,8 @@ export function WorkspaceEditDialog({
     [workspaceName, onOpenChange],
   )
 
+  const handleCancel = useCallback(() => handleOpenChange(false), [handleOpenChange])
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-[420px]">
@@ -131,7 +141,7 @@ export function WorkspaceEditDialog({
             <Folder className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={handleNameChange}
               placeholder={i18n.t('Workspace name')}
               className="pl-9"
             />
@@ -177,7 +187,7 @@ export function WorkspaceEditDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={() => handleOpenChange(false)}>
+          <Button variant="ghost" onClick={handleCancel}>
             Cancel
           </Button>
           <Button onClick={handleSave} disabled={saving}>

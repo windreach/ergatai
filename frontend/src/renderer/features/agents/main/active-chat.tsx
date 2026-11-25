@@ -2263,6 +2263,7 @@ export function ChatView({
                             variant="ghost"
                             size="icon"
                             disabled
+                            aria-label={i18n.t('Attach')}
                             className="h-7 w-7 rounded-sm cursor-not-allowed"
                           >
                             <AttachIcon className="h-4 w-4" />

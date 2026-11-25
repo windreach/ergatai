@@ -50,7 +50,15 @@ export const createStatusRouter = () => {
 
 				console.log("[getStatus] Cache miss, fetching:", input.worktreePath);
 				const git = simpleGit(input.worktreePath);
-				const defaultBranch = input.defaultBranch || "main";
+				let defaultBranch = input.defaultBranch;
+				if (!defaultBranch) {
+					try {
+						const ref = await git.raw(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+						defaultBranch = ref.trim().replace(/^origin\//, "") || "main";
+					} catch {
+						defaultBranch = "main";
+					}
+				}
 
 				const status = await git.status();
 				const parsed = parseGitStatus(status);

@@ -334,12 +334,15 @@ export function toSubagentRenderMessages(
     }
 
     if (message.kind === "tool_result") {
+      // Without a toolCallId we cannot safely attribute the result; skip to
+      // avoid mutating an unrelated tool call.
+      if (!message.toolCallId) continue
       const target = [...parts]
         .reverse()
         .find(
           (part): part is Extract<SubagentRenderPart, { type: "tool-call" }> =>
             part.type === "tool-call" &&
-            (message.toolCallId ? part.toolCall.toolCallId === message.toolCallId : true),
+            part.toolCall.toolCallId === message.toolCallId,
         )
       if (target) {
         target.toolCall.state = message.state ?? "completed"

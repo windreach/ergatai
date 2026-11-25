@@ -220,6 +220,7 @@ export function MobileChatHeader({
           variant="ghost"
           size="icon"
           onClick={onCreateNew}
+          aria-label={i18n.t("Create new chat")}
           className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] rounded-md"
         >
           <Plus className="h-4 w-4" />
@@ -230,6 +231,7 @@ export function MobileChatHeader({
           <Button
             variant="ghost"
             size="icon"
+            aria-label={i18n.t('Open terminal')}
             onClick={onOpenTerminal}
             className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] rounded-md"
           >
@@ -242,6 +244,7 @@ export function MobileChatHeader({
           <Button
             variant="ghost"
             size="icon"
+            aria-label={i18n.t('Open diff')}
             onClick={onOpenDiff}
             disabled={!diffStats?.hasChanges || diffStats?.isLoading}
             className={cn(
@@ -264,6 +267,7 @@ export function MobileChatHeader({
           <Button
             variant="ghost"
             size="icon"
+            aria-label={i18n.t('Open preview')}
             onClick={onOpenPreview}
             className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] rounded-md"
           >

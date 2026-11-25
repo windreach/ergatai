@@ -461,6 +461,12 @@ export const ChatInputArea = memo(function ChatInputArea({
   const [showMentionDropdown, setShowMentionDropdown] = useState(false)
   const [browseRoot, setBrowseRoot] = useState<string | null>(null)
 
+  const handleCloseMentionDropdown = useCallback(() => {
+    setShowMentionDropdown(false)
+    setShowingFilesList(false)
+    setShowingAgentsList(false)
+  }, [])
+
   // Clear browse root when the input is emptied.
   useEffect(() => {
     if (!hasContent) setBrowseRoot(null)
@@ -477,6 +483,9 @@ export const ChatInputArea = memo(function ChatInputArea({
   const [showSkillDropdown, setShowSkillDropdown] = useState(false)
   const [skillSearchText, setSkillSearchText] = useState("")
   const [skillPosition, setSkillPosition] = useState({ top: 0, left: 0 })
+
+  const handleCloseSkillDropdown = useCallback(() => setShowSkillDropdown(false), [])
+  const handleCloseHashDropdown = useCallback(() => setShowHashDropdown(false), [])
 
   // Hash/reference trigger state (#)
   const [showHashDropdown, setShowHashDropdown] = useState(false)
@@ -579,6 +588,38 @@ export const ChatInputArea = memo(function ChatInputArea({
     setShowingAgentsList(false)
   }, [])
 
+  const handleMentionTrigger = useCallback(
+    ({ searchText, rect, triggerChar }: { searchText: string; rect: DOMRect; triggerChar?: string }) => {
+      const ch = triggerChar || "@"
+      if (ch === "$") {
+        setSkillSearchText(searchText)
+        setSkillPosition({ top: rect.top, left: rect.left })
+        setShowSkillDropdown(true)
+        setShowMentionDropdown(false)
+        setShowHashDropdown(false)
+        return
+      }
+      // Temporarily disabled: "#" trigger
+      // if (ch === "#") {
+      //   setHashSearchText(searchText)
+      //   setHashPosition({ top: rect.top, left: rect.left })
+      //   setShowHashDropdown(true)
+      //   setShowMentionDropdown(false)
+      //   setShowSkillDropdown(false)
+      //   return
+      // }
+      // Default @ mention/context trigger
+      // Open even without file-search project context so agents/MCP/discovery refs can be mentioned.
+      setMentionScope("agents")
+      setMentionSearchText(searchText)
+      setMentionPosition({ top: rect.top, left: rect.left })
+      setShowMentionDropdown(true)
+      setShowSkillDropdown(false)
+      setShowHashDropdown(false)
+    },
+    [],
+  )
+
 
 
   // Model dropdown state
@@ -670,11 +711,13 @@ const availableModels = useAvailableModels(agentId, profileHint)
   // pending override and let the runtime value drive the display.
   useEffect(() => {
     if (pendingModelId && availableModels.currentModelId === pendingModelId) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setPendingModelId(null)
     }
   }, [pendingModelId, availableModels.currentModelId])
   // A pending selection belongs to one conversation/agent only.
   useEffect(() => {
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setPendingModelId(null)
   }, [conversationId, agentId])
   // OpenCode (and Claude Code) expose selectable model lists; only truly
@@ -1258,6 +1301,10 @@ const availableModels = useAvailableModels(agentId, profileHint)
     currentDraftTextRef.current = draft
   }, [editorRef, onInputContentChange])
 
+  const handleEditorFocus = useCallback(() => {
+    if (document.documentElement.dataset.focusMethod === "keyboard") setIsFocused(true)
+  }, [])
+
   // Use ACP-surfaced model metadata as a runtime model hint when available.
   useEffect(() => {
     if (!isRuntimeModelProvider || !agentId) return
@@ -1735,33 +1782,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
                 ) : null}
                 <AgentsMentionsEditor
                   ref={editorRef}
-                  onTrigger={({ searchText, rect, triggerChar }) => {
-                    const ch = triggerChar || "@"
-                    if (ch === "$") {
-                      setSkillSearchText(searchText)
-                      setSkillPosition({ top: rect.top, left: rect.left })
-                      setShowSkillDropdown(true)
-                      setShowMentionDropdown(false)
-                      setShowHashDropdown(false)
-                      return
-                    }
-                    if (ch === "#") {
-                      setHashSearchText(searchText)
-                      setHashPosition({ top: rect.top, left: rect.left })
-                      setShowHashDropdown(true)
-                      setShowMentionDropdown(false)
-                      setShowSkillDropdown(false)
-                      return
-                    }
-                    // Default @ mention/context trigger
-                    // Open even without file-search project context so agents/MCP/discovery refs can be mentioned.
-                    setMentionScope("agents")
-                    setMentionSearchText(searchText)
-                    setMentionPosition({ top: rect.top, left: rect.left })
-                    setShowMentionDropdown(true)
-                    setShowSkillDropdown(false)
-                    setShowHashDropdown(false)
-                  }}
+                  onTrigger={handleMentionTrigger}
                   onCloseTrigger={closeAllMentionTriggers}
                   onSlashTrigger={handleSlashTrigger}
                   onCloseSlashTrigger={handleCloseSlashTrigger}
@@ -1778,9 +1799,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
                     isMobile && "min-h-[56px]",
                   )}
                   onPaste={handlePaste}
-                  onFocus={() => {
-                    if (document.documentElement.dataset.focusMethod === "keyboard") setIsFocused(true)
-                  }}
+                  onFocus={handleEditorFocus}
                   onBlur={handleEditorBlur}
                 />
               </div>
@@ -1944,6 +1963,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
                             variant="ghost"
                             size="icon"
                             className="h-7 w-7 rounded-sm outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70"
+                            aria-label={i18n.t('Attach')}
                             disabled={images.length >= 5 && files.length >= 10}
                           >
                             <AttachIcon className="h-4 w-4" />
@@ -2015,11 +2035,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
       {/* @ context mention dropdown */}
       <AgentsFileMention
         isOpen={showMentionDropdown}
-        onClose={() => {
-          setShowMentionDropdown(false)
-          setShowingFilesList(false)
-          setShowingAgentsList(false)
-        }}
+        onClose={handleCloseMentionDropdown}
         onSelect={handleMentionSelect}
         searchText={mentionSearchText}
         position={mentionPosition}
@@ -2044,7 +2060,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
       {/* $ skill/template trigger dropdown */}
       <AgentsSkillTrigger
         isOpen={showSkillDropdown}
-        onClose={() => setShowSkillDropdown(false)}
+        onClose={handleCloseSkillDropdown}
         onSelect={handleSkillSelect}
         searchText={skillSearchText}
         position={skillPosition}
@@ -2058,7 +2074,7 @@ const availableModels = useAvailableModels(agentId, profileHint)
       {/* # reference trigger dropdown */}
       <AgentsHashTrigger
         isOpen={showHashDropdown}
-        onClose={() => setShowHashDropdown(false)}
+        onClose={handleCloseHashDropdown}
         onSelect={handleHashSelect}
         searchText={hashSearchText}
         position={hashPosition}

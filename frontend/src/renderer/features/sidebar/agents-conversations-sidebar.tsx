@@ -252,6 +252,13 @@ export function AgentsConversationsSidebar({
   // Unified undo stack for Cmd+Z support
   const setUndoStack = useSetAtom(undoStackAtom)
   const [searchQuery, setSearchQuery] = useState("")
+  const handleSearchChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => setSearchQuery(e.target.value),
+    [],
+  )
+  const handleNewChatClick = useCallback(() => {
+    onNewChatClick?.()
+  }, [onNewChatClick])
   const { config: collaborationModeConfig } = useCollaborationMode()
   const [focusedChatIndex, setFocusedChatIndex] = useState<number>(-1)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -457,7 +464,7 @@ export function AgentsConversationsSidebar({
     [loadingConversations],
   )
 
-  const handleConversationClick = (conversationId: string) => {
+  const handleConversationClick = useCallback((conversationId: string) => {
     const store = useAgentConversationStore.getState()
     store.setActiveConversation(conversationId)
 
@@ -470,7 +477,7 @@ export function AgentsConversationsSidebar({
       }
       return prev
     })
-  }
+  }, [setConversationUnseenChanges])
 
   const handleArchiveConversation = useCallback(
     (conversationId: string) => {
@@ -621,6 +628,18 @@ export function AgentsConversationsSidebar({
   const handleRenameClick = useCallback((conversation?: ConversationMeta) => {
     setRenamingConversation(conversation ?? null)
     setRenameDialogOpen(true)
+  }, [])
+
+  const handleRenameDialogClose = useCallback(() => {
+    setRenameDialogOpen(false)
+    setRenamingConversation(null)
+  }, [])
+
+  const handleArchiveAgentDialogOpenChange = useCallback((open: boolean) => {
+    setArchiveAgentDialogOpen(open)
+    if (!open) {
+      setConversationToArchive(null)
+    }
   }, [])
 
   const handleRenameSave = useCallback(
@@ -812,13 +831,13 @@ export function AgentsConversationsSidebar({
   }, [selectedConversationIds, openConversationIds, allConversations, clearConversationSelection, parentChatId, setUndoStack])
 
   // Handle checkbox click
-  const handleCheckboxClick = (e: React.MouseEvent, conversationId: string) => {
+  const handleCheckboxClick = useCallback((e: React.MouseEvent, conversationId: string) => {
     e.stopPropagation()
     toggleConversationSelection(conversationId)
-  }
+  }, [toggleConversationSelection])
 
   // Handle conversation item click with shift support
-  const handleConversationItemClick = (
+  const handleConversationItemClick = useCallback((
     conversationId: string,
     e?: React.MouseEvent,
     globalIndex?: number,
@@ -876,7 +895,14 @@ export function AgentsConversationsSidebar({
 
     // Normal click - navigate to conversation
     handleConversationClick(conversationId)
-  }
+  }, [
+    filteredConversations,
+    activeConversationId,
+    selectedConversationIds,
+    toggleConversationSelection,
+    setSelectedConversationIds,
+    handleConversationClick,
+  ])
 
   // Multi-select hotkeys
   // X to toggle selection of hovered or focused chat
@@ -1398,7 +1424,7 @@ export function AgentsConversationsSidebar({
               data-testid="conversation-search-input"
               placeholder={collaborationModeConfig.conversationSearchPlaceholder}
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={handleSearchChange}
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
                   e.preventDefault()
@@ -1453,7 +1479,7 @@ export function AgentsConversationsSidebar({
               <TooltipTrigger asChild>
                 <Button
                   data-testid="new-conversation-button"
-                  onClick={() => onNewChatClick?.()}
+                  onClick={handleNewChatClick}
                   disabled={!workspaceId}
                   variant="outline"
                   size="sm"
@@ -1563,10 +1589,7 @@ export function AgentsConversationsSidebar({
       {/* Rename Dialog */}
       <AgentsRenameConversationDialog
         isOpen={renameDialogOpen}
-        onClose={() => {
-          setRenameDialogOpen(false)
-          setRenamingConversation(null)
-        }}
+        onClose={handleRenameDialogClose}
         onSave={handleRenameSave}
         currentName={renamingConversation?.name || ""}
         isLoading={renameLoading}
@@ -1575,12 +1598,7 @@ export function AgentsConversationsSidebar({
       {/* Archive Agent Confirmation Dialog */}
       <AlertDialog
         open={archiveAgentDialogOpen}
-        onOpenChange={(open) => {
-          setArchiveAgentDialogOpen(open)
-          if (!open) {
-            setConversationToArchive(null)
-          }
-        }}
+        onOpenChange={handleArchiveAgentDialogOpenChange}
       >
         <AlertDialogContent>
           <AlertDialogHeader>

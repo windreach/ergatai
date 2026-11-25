@@ -226,6 +226,7 @@ export function ChatSearchBar({ messages, className, topOffset }: ChatSearchBarP
                 inputRef.current?.focus()
               }}
               title={i18n.t('Previous match (Shift+Enter)')}
+              aria-label={i18n.t('Previous match (Shift+Enter)')}
             >
               <ChevronUp className="h-4 w-4" />
             </button>
@@ -239,6 +240,7 @@ export function ChatSearchBar({ messages, className, topOffset }: ChatSearchBarP
                 inputRef.current?.focus()
               }}
               title={i18n.t('Next match (Enter)')}
+              aria-label={i18n.t('Next match (Enter)')}
             >
               <ChevronDown className="h-4 w-4" />
             </button>
@@ -258,6 +260,7 @@ export function ChatSearchBar({ messages, className, topOffset }: ChatSearchBarP
         className="h-6 w-6 shrink-0 flex items-center justify-center rounded-md cursor-pointer text-muted-foreground hover:text-foreground hover:bg-muted active:scale-95 transition-all duration-150 ease-out"
         onClick={() => closeSearch()}
         title={i18n.t('Close (Esc)')}
+        aria-label={i18n.t('Close (Esc)')}
       >
         <X className="h-4 w-4" />
       </button>

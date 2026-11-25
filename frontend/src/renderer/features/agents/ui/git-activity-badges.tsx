@@ -197,13 +197,22 @@ export const GitActivityBadges = memo(function GitActivityBadges({
               {/* Expand/Collapse button */}
               <div className="w-6 h-6 flex items-center justify-center">
                 {/* react-doctor-disable-next-line html-no-nested-interactive */}
-                <button
+                <span
+                  role="button"
+                  tabIndex={0}
                   aria-label={i18n.t('ExpandIcon')}
                   onClick={(e) => {
                     e.stopPropagation()
                     setIsExpanded(!isExpanded)
                   }}
-                  className="p-1 rounded-md hover:bg-accent transition-[background-color,transform] duration-150 ease-out active:scale-95"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      setIsExpanded(!isExpanded)
+                    }
+                  }}
+                  className="p-1 rounded-md hover:bg-accent transition-[background-color,transform] duration-150 ease-out active:scale-95 inline-flex"
                 >
                   <div className="relative w-4 h-4">
                     <ExpandIcon
@@ -219,7 +228,7 @@ export const GitActivityBadges = memo(function GitActivityBadges({
                       )}
                     />
                   </div>
-                </button>
+                </span>
               </div>
             </div>
           </div>
@@ -285,7 +294,16 @@ export const GitActivityBadges = memo(function GitActivityBadges({
 
       {activity?.type === "pr" && (
         <button
-          onClick={() => window.desktopApi.openExternal(activity.url)}
+          onClick={() => {
+            if (!activity.url) return
+            try {
+              const parsed = new URL(activity.url)
+              if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return
+            } catch {
+              return
+            }
+            window.desktopApi?.openExternal(activity.url)
+          }}
           className={BADGE_BUTTON_CLASSES}
         >
           <GitPullRequest className="w-3.5 h-3.5 flex-shrink-0 text-emerald-500" />

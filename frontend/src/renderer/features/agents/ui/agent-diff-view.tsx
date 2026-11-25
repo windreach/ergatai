@@ -1996,6 +1996,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
               <Button
                 variant="ghost"
                 size="icon"
+                aria-label={i18n.t('Back to chat')}
                 onClick={onClose}
                 className="h-7 w-7 p-0 hover:bg-foreground/10 transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] flex-shrink-0 rounded-md"
               >
@@ -2038,6 +2039,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
                   onClick={() => setDiffMode("split")}
                   className="relative z-[2] px-1.5 flex items-center justify-center transition-colors duration-200 rounded text-muted-foreground"
                   title={i18n.t('Split view')}
+                  aria-label={i18n.t('Split view')}
                 >
                   <Columns2 className="h-3.5 w-3.5" />
                 </button>
@@ -2045,6 +2047,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
                   onClick={() => setDiffMode("unified")}
                   className="relative z-[2] px-1.5 flex items-center justify-center transition-colors duration-200 rounded text-muted-foreground"
                   title={i18n.t('Unified view')}
+                  aria-label={i18n.t('Unified view')}
                 >
                   <Rows2 className="h-3.5 w-3.5" />
                 </button>

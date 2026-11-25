@@ -1,5 +1,4 @@
 // Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
-import i18n from "@/lib/i18n"
 import { Button } from "../../../../components/ui/button";
 import {
 	Select,
@@ -138,6 +137,7 @@ export function ChangesHeader({
 							onClick={handleRefresh}
 							disabled={isManualRefresh}
 							className="size-6 p-0"
+							aria-label="Refresh changes"
 						>
 							<HiArrowPath
 								className={`size-3.5 ${isManualRefresh ? "animate-spin" : ""}`}

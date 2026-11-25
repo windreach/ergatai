@@ -756,11 +756,16 @@ class ConversationPipeline {
 
 const pipelines = new Map<string, ConversationPipeline>()
 
+function pipelineKey(conversationId: string, agentId: string | null): string {
+  return `${conversationId}::${agentId ?? ""}`
+}
+
 function getPipeline(conversationId: string, agentId: string | null): ConversationPipeline {
-  let pipeline = pipelines.get(conversationId)
+  const key = pipelineKey(conversationId, agentId)
+  let pipeline = pipelines.get(key)
   if (!pipeline) {
     pipeline = new ConversationPipeline(conversationId, agentId)
-    pipelines.set(conversationId, pipeline)
+    pipelines.set(key, pipeline)
   }
   return pipeline
 }
@@ -773,9 +778,10 @@ export function __resetConversationPipelinesForTests(): void {
 }
 
 export function reloadConversationHistory(conversationId: string): void {
-  const pipeline = pipelines.get(conversationId)
-  if (pipeline) {
-    void pipeline.reloadHistory()
+  for (const [key, pipeline] of pipelines) {
+    if (key.startsWith(`${conversationId}::`)) {
+      void pipeline.reloadHistory()
+    }
   }
 }
 

@@ -1,5 +1,5 @@
 import i18n from "@/lib/i18n"
-import { memo, useMemo, useState } from "react"
+import { memo, useMemo, useState, useCallback } from "react"
 import { ChevronDown, MoreVertical, RotateCcw, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -48,6 +48,11 @@ const ArchivedWorkspaceItem = memo(({
 }) => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const utils = trpc.useUtils()
+
+  const handleDeleteOpen = useCallback((event: { preventDefault: () => void }) => {
+    event.preventDefault()
+    setDeleteDialogOpen(true)
+  }, [])
   const isSelected = selectedWorkspaceId === workspace.id
 
   const { data: status } = trpc.ergatai.workspaceStatus.useQuery(
@@ -85,6 +90,19 @@ const ArchivedWorkspaceItem = memo(({
     }),
   })
 
+  const handleSelect = useCallback(() => onWorkspaceSelect?.(workspace.id), [
+    onWorkspaceSelect,
+    workspace.id,
+  ])
+  const handleDelete = useCallback(
+    () => deleteMutation.mutate({ id: workspace.id, force: false }),
+    [deleteMutation, workspace.id],
+  )
+  const handleRestore = useCallback(
+    () => restoreMutation.mutate({ workspaceId: workspace.id }),
+    [restoreMutation, workspace.id],
+  )
+
   return (
     <div
       className={cn(
@@ -96,7 +114,7 @@ const ArchivedWorkspaceItem = memo(({
     >
       <button
         type="button"
-        onClick={() => onWorkspaceSelect?.(workspace.id)}
+        onClick={handleSelect}
         className="min-w-0 flex-1 rounded-lg px-2 py-2 text-left"
       >
         <div className="flex items-center justify-between gap-2">
@@ -119,7 +137,7 @@ const ArchivedWorkspaceItem = memo(({
         <DropdownMenuContent align="end" className="min-w-[180px]">
           <DropdownMenuItem
             disabled={restoreMutation.isPending}
-            onSelect={() => restoreMutation.mutate({ workspaceId: workspace.id })}
+            onSelect={handleRestore}
           >
             <RotateCcw className="h-3.5 w-3.5" />
             {restoreMutation.isPending ? "Restoring..." : "Restore"}
@@ -128,10 +146,7 @@ const ArchivedWorkspaceItem = memo(({
           <DropdownMenuSeparator />
 
           <DropdownMenuItem
-            onSelect={(event) => {
-              event.preventDefault()
-              setDeleteDialogOpen(true)
-            }}
+            onSelect={handleDeleteOpen}
           >
             <Trash2 className="h-3.5 w-3.5" />
             Delete
@@ -164,7 +179,7 @@ const ArchivedWorkspaceItem = memo(({
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={deleteMutation.isPending}
-              onClick={() => deleteMutation.mutate({ id: workspace.id, force: false })}
+              onClick={handleDelete}
             >
               {deleteMutation.isPending ? "Deleting..." : "Delete"}
             </AlertDialogAction>
@@ -186,6 +201,20 @@ export const ArchivedWorkspaceList = memo(({
   selectedWorkspaceId,
 }: ArchivedWorkspaceListProps) => {
   const [isOpen, setIsOpen] = useState(false) // collapsed by default
+
+  // Stabilize callbacks so `memo` on `ArchivedWorkspaceItem` is effective
+  const handleWorkspaceSelect = useCallback(
+    (workspaceId: string) => onWorkspaceSelect?.(workspaceId),
+    [onWorkspaceSelect],
+  )
+  const handleWorkspaceRestored = useCallback(
+    (workspaceId: string) => onWorkspaceRestored?.(workspaceId),
+    [onWorkspaceRestored],
+  )
+  const handleWorkspaceDeleted = useCallback(
+    (workspaceId: string) => onWorkspaceDeleted?.(workspaceId),
+    [onWorkspaceDeleted],
+  )
 
   const { data: workspaces, isLoading } =
     trpc.ergatai.listArchivedWorkspaces.useQuery({ collaborationMode })
@@ -231,9 +260,9 @@ export const ArchivedWorkspaceList = memo(({
               key={workspace.id}
               workspace={workspace}
               selectedWorkspaceId={selectedWorkspaceId}
-              onWorkspaceSelect={onWorkspaceSelect}
-              onWorkspaceRestored={onWorkspaceRestored}
-              onWorkspaceDeleted={onWorkspaceDeleted}
+              onWorkspaceSelect={handleWorkspaceSelect}
+              onWorkspaceRestored={handleWorkspaceRestored}
+              onWorkspaceDeleted={handleWorkspaceDeleted}
             />
           ))}
         </div>

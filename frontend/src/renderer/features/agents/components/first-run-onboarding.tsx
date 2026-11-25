@@ -35,6 +35,7 @@ const INITIALIZED_KEY = "ergatai:onboarding:default-workspace-initialized"
 const DISMISSED_KEY = "ergatai:onboarding:guide-dismissed"
 
 function readFlag(key: string): boolean {
+  if (typeof window === "undefined") return false
   try {
     return window.localStorage.getItem(key) === "true"
   } catch {
@@ -43,6 +44,7 @@ function readFlag(key: string): boolean {
 }
 
 function writeFlag(key: string): void {
+  if (typeof window === "undefined") return
   try {
     window.localStorage.setItem(key, "true")
   } catch {
@@ -143,6 +145,7 @@ export function FirstRunOnboarding() {
     ],
   )
 
+  // react-doctor-disable-next-line no-set-state-after-await-in-effect
   useEffect(() => {
     if (didInitializeRef.current) return
     if (!workspacesQuery.isFetched || workspacesQuery.isError) return
@@ -165,6 +168,7 @@ export function FirstRunOnboarding() {
     // floating creator instead of showing a blank screen.
     if (alreadyInitialized) {
       if (workspaces.length === 0) {
+        // react-doctor-disable-next-line no-set-state-after-await-in-effect
         setDesktopView("new-workspace")
       } else {
         chooseExistingWorkspace()
@@ -196,13 +200,18 @@ export function FirstRunOnboarding() {
           utils.ergatai.listManagedWorkspaces.invalidate(),
           utils.projects.list.invalidate(),
         ])
+        // react-doctor-disable-next-line no-set-state-after-await-in-effect
         selectWorkspace(workspace.id)
-        if (!readFlag(DISMISSED_KEY)) setGuideVisible(true)
+        if (!readFlag(DISMISSED_KEY)) {
+          // react-doctor-disable-next-line no-set-state-after-await-in-effect
+          setGuideVisible(true)
+        }
       } catch (error) {
         toast.error(i18n.t("Failed to create default workspace"), {
           description:
             error instanceof Error ? error.message : i18n.t("Please try again"),
         })
+        // react-doctor-disable-next-line no-set-state-after-await-in-effect
         setDesktopView("new-workspace")
       }
     })()

@@ -312,7 +312,7 @@ export function AgentConnectionsSection({
                 // Show the masked key as the actual value while browsing;
                 // focus clears it so a new secret can be typed. Untouched
                 // fields always submit an empty value (keep current key).
-                type={editingId && !keyTouched ? "text" : "password"}
+                type="password"
                 value={
                   form.api_key ||
                   (editingId && !keyTouched

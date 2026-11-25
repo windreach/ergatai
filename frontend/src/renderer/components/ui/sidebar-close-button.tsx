@@ -1,4 +1,3 @@
-import i18n from "@/lib/i18n"
 import { Button } from "@/components/ui/button"
 import { Kbd } from "@/components/ui/kbd"
 import { IconDoubleChevronRight } from "@/components/ui/icons"

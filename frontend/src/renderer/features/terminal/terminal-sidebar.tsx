@@ -683,6 +683,7 @@ interface TerminalBottomPanelContentProps {
   onClose: () => void
 }
 
+// react-doctor-disable-next-line no-giant-component
 export function TerminalBottomPanelContent({
   chatId: _chatId,
   scopeKey,

@@ -1,6 +1,5 @@
 // Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
-import i18n from "@/lib/i18n"
-import { useAtomValue, useSetAtom } from "jotai"
+import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { useEffect } from "react"
 import {
   agentsSettingsDialogActiveTabAtom,
@@ -18,7 +17,7 @@ import { AgentsProjectsTab } from "../../components/dialogs/settings-tabs/agents
 const isDevelopment = import.meta.env.DEV
 
 export function SettingsContent() {
-  const activeTab = useAtomValue(agentsSettingsDialogActiveTabAtom)
+  const [activeTab, setActiveTab] = useAtom(agentsSettingsDialogActiveTabAtom)
   const devToolsUnlocked = useAtomValue(devToolsUnlockedAtom)
   const showDebugTab = isDevelopment || devToolsUnlocked
   const setDesktopView = useSetAtom(desktopViewAtom)
@@ -26,14 +25,24 @@ export function SettingsContent() {
   // Escape key closes settings
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault()
-        setDesktopView(null)
+      if (e.key !== "Escape") return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        return
       }
+      e.preventDefault()
+      setDesktopView(null)
     }
     document.addEventListener("keydown", handleKeyDown)
     return () => document.removeEventListener("keydown", handleKeyDown)
   }, [setDesktopView])
+
+  // Reset active tab if it becomes hidden
+  useEffect(() => {
+    if (activeTab === "debug" && !showDebugTab) {
+      setActiveTab("appearance")
+    }
+  }, [activeTab, showDebugTab, setActiveTab])
 
   const renderTabContent = () => {
     switch (activeTab) {

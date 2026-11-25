@@ -1,4 +1,3 @@
-import i18n from "@/lib/i18n"
 import { useEffect } from "react"
 import type { TextSelectionSource } from "../context/text-selection-context"
 import type { AgentsMentionsEditorHandle } from "../mentions"

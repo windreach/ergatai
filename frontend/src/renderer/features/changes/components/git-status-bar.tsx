@@ -1,5 +1,5 @@
 import i18n from "@/lib/i18n"
-import { memo } from "react"
+import { memo, useCallback } from "react"
 import { ArrowDown, ArrowUp, GitBranch } from "lucide-react"
 import { toast } from "sonner"
 import { trpc } from "../../../lib/trpc"
@@ -20,7 +20,7 @@ export const GitStatusBar = memo(function GitStatusBar({
 }: GitStatusBarProps) {
 	const trpcUtils = trpc.useUtils()
 	const { data: status, isLoading } = trpc.changes.getStatus.useQuery(
-		{ worktreePath, defaultBranch: "main" },
+		{ worktreePath },
 		{ enabled: !!worktreePath },
 	)
 
@@ -45,6 +45,10 @@ export const GitStatusBar = memo(function GitStatusBar({
 		onError: (error: { message: string }) =>
 			toast.error(i18n.t("Pull failed: {{message}}", { message: error.message })),
 	})
+
+	const handlePull = useCallback(() => {
+		pullMutation.mutate({ worktreePath, autoStash: true })
+	}, [pullMutation, worktreePath])
 
 	const branch = status?.branch ?? null
 	const pushCount = status?.pushCount ?? 0
@@ -88,7 +92,7 @@ export const GitStatusBar = memo(function GitStatusBar({
 			<div className="shrink-0 flex items-center gap-1">
 				<button
 					type="button"
-					onClick={() => pullMutation.mutate({ worktreePath, autoStash: true })}
+					onClick={handlePull}
 					disabled={!canPull || pullCount === 0}
 					className={cn(
 						"h-6 px-2 rounded-md flex items-center gap-1 transition-colors",

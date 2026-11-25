@@ -190,12 +190,13 @@ export function AddAgentViewPage() {
       })
     }
 
+    const allProfilesByName = new Map(
+      allProfiles.map((profile) => [profile.name, profile]),
+    )
     for (const agent of registeredAgents) {
       const profileName = getAgentProfileName(agent)
       const existing = targets.get(profileName)
-      const backendProfile = allProfiles.find(
-        (profile) => profile.name === profileName,
-      )
+      const backendProfile = allProfilesByName.get(profileName)
       const fallback = existing
         ? undefined
         : findFallback(

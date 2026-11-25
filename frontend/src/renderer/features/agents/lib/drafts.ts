@@ -350,8 +350,10 @@ function wouldExceedStorageLimit(
  * Convert blob URL to base64 data
  */
 async function blobUrlToBase64(blobUrl: string): Promise<string> {
-  // react-doctor-disable-next-line no-fetch-response-used-without-status-check
   const response = await fetch(blobUrl)
+  if (!response.ok) {
+    throw new Error(`Failed to fetch blob: ${response.status} ${response.statusText}`)
+  }
   const blob = await response.blob()
   return new Promise((resolve, reject) => {
     const reader = new FileReader()

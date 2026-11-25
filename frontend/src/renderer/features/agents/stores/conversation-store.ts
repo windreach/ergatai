@@ -65,35 +65,44 @@ let openConversationsChangeTimer: ReturnType<typeof setTimeout> | null = null
 
 const saveToLS = (chatId: string, type: "open" | "active" | "pinned" | "split" | "splitOrigin" | "splitPanes" | "splitRatios", value: unknown) => {
   if (typeof window === "undefined") return
-  localStorage.setItem(getStorageKey(chatId, type), JSON.stringify(value))
-  // Dispatch debounced event when open conversations change so sidebar can update
-  if (type === "open") {
-    if (openConversationsChangeTimer) clearTimeout(openConversationsChangeTimer)
-    openConversationsChangeTimer = setTimeout(() => {
-      window.dispatchEvent(new CustomEvent(OPEN_CONVERSATION_CHANGE_EVENT))
-      openConversationsChangeTimer = null
-    }, 50)
+  try {
+    localStorage.setItem(getStorageKey(chatId, type), JSON.stringify(value))
+    // Dispatch debounced event when open conversations change so sidebar can update
+    if (type === "open") {
+      if (openConversationsChangeTimer) clearTimeout(openConversationsChangeTimer)
+      openConversationsChangeTimer = setTimeout(() => {
+        window.dispatchEvent(new CustomEvent(OPEN_CONVERSATION_CHANGE_EVENT))
+        openConversationsChangeTimer = null
+      }, 50)
+    }
+  } catch {
+    // Ignore storage write errors
   }
 }
 
 // Find data from old numeric window IDs (e.g., "1:agent-open-conversations-xxx")
 const findNumericWindowIdValue = (legacyKey: string, targetKey: string): string | null => {
+  if (typeof window === "undefined") return null
   // Only migrate for "main" window
   if (!targetKey.startsWith("main:")) return null
 
-  for (let i = 0; i < localStorage.length; i++) {
-    const storageKey = localStorage.key(i)
-    if (!storageKey) continue
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const storageKey = localStorage.key(i)
+      if (!storageKey) continue
 
-    // Check if this key matches pattern: <number>:<legacyKey>
-    const match = storageKey.match(/^(\d+):(.+)$/)
-    if (match && match[2] === legacyKey) {
-      const value = localStorage.getItem(storageKey)
-      if (value !== null) {
-        console.log(`[ConversationStore] Migrated from numeric ID: ${storageKey} to ${targetKey}`)
-        return value
+      // Check if this key matches pattern: <number>:<legacyKey>
+      const match = storageKey.match(/^(\d+):(.+)$/)
+      if (match && match[2] === legacyKey) {
+        const value = localStorage.getItem(storageKey)
+        if (value !== null) {
+          console.log(`[ConversationStore] Migrated from numeric ID: ${storageKey} to ${targetKey}`)
+          return value
+        }
       }
     }
+  } catch {
+    return null
   }
   return null
 }

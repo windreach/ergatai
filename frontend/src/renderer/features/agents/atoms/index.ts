@@ -960,7 +960,13 @@ export const lastSelectedWorkModeAtom = atomWithStorage<WorkMode>(
 // Custom storage with migration from old string format
 const lastSelectedBranchesStorage = {
   getItem: (key: string, initialValue: Record<string, { name: string; type: "local" | "remote" }>) => {
-    const storedValue = localStorage.getItem(key)
+    if (typeof window === "undefined") return initialValue
+    let storedValue: string | null = null
+    try {
+      storedValue = localStorage.getItem(key)
+    } catch {
+      return initialValue
+    }
     if (!storedValue) return initialValue
 
     try {
@@ -980,7 +986,11 @@ const lastSelectedBranchesStorage = {
 
       // Save migrated data back to localStorage
       if (Object.keys(migrated).length > 0) {
-        localStorage.setItem(key, JSON.stringify(migrated))
+        try {
+          localStorage.setItem(key, JSON.stringify(migrated))
+        } catch {
+          // Ignore storage write errors
+        }
       }
 
       return migrated
@@ -989,10 +999,20 @@ const lastSelectedBranchesStorage = {
     }
   },
   setItem: (key: string, value: Record<string, { name: string; type: "local" | "remote" }>) => {
-    localStorage.setItem(key, JSON.stringify(value))
+    if (typeof window === "undefined") return
+    try {
+      localStorage.setItem(key, JSON.stringify(value))
+    } catch {
+      // Ignore storage write errors
+    }
   },
   removeItem: (key: string) => {
-    localStorage.removeItem(key)
+    if (typeof window === "undefined") return
+    try {
+      localStorage.removeItem(key)
+    } catch {
+      // Ignore storage write errors
+    }
   },
 }
 

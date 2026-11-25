@@ -74,6 +74,10 @@ export function cleanupGroupAgentRuntime(chatId: string) {
 export function useGroupAgentRuntimeStatuses(chatId: string) {
   const subscribe = useCallback(
     (listener: GroupAgentRuntimeListener) => {
+      if (!listeners.has(chatId) && listeners.size >= 500) {
+        const oldestKey = listeners.keys().next().value
+        if (oldestKey !== undefined) listeners.delete(oldestKey)
+      }
       const chatListeners = listeners.get(chatId) ?? new Set()
       chatListeners.add(listener)
       listeners.set(chatId, chatListeners)

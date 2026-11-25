@@ -1,5 +1,4 @@
 // Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
-import i18n from "@/lib/i18n"
 "use client"
 
 import { memo, useState, useCallback, useEffect, useMemo } from "react"
@@ -29,25 +28,14 @@ export const MessageJsonDisplay = memo(function MessageJsonDisplay({
   const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null)
   const themeId = useCodeTheme()
 
-  // Escape HTML entities to prevent XSS when using dangerouslySetInnerHTML
-  const escapeHtml = (str: string): string => {
-    return str
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;")
-  }
-
   const jsonString = useMemo(() => JSON.stringify(message, null, 2), [message])
-  const escapedString = useMemo(() => escapeHtml(jsonString), [jsonString])
 
   // Highlight JSON when expanded
   useEffect(() => {
     if (!isOpen) return
 
     let cancelled = false
-    highlightCode(escapedString, "json", themeId)
+    highlightCode(jsonString, "json", themeId)
       .then((html) => {
         if (!cancelled) setHighlightedHtml(html)
       })
@@ -56,7 +44,7 @@ export const MessageJsonDisplay = memo(function MessageJsonDisplay({
     return () => {
       cancelled = true
     }
-  }, [escapedString, themeId, isOpen])
+  }, [jsonString, themeId, isOpen])
 
   const handleCopy = useCallback(async () => {
     try {
@@ -89,6 +77,7 @@ export const MessageJsonDisplay = memo(function MessageJsonDisplay({
           }}
           className="p-1 rounded hover:bg-muted/50 transition-colors"
           title={copied ? "Copied!" : "Copy JSON"}
+          aria-label={copied ? "Copied!" : "Copy JSON"}
         >
           {copied ? (
             <Check className="h-3 w-3 text-green-500" />

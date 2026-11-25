@@ -109,6 +109,7 @@ export function AddAgentDialog({
 
   // A provider connection belongs to one runtime; selecting another runtime
   // invalidates the previous choice.
+  // react-doctor-disable-next-line no-effect-chain
   useEffect(() => {
     // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setSelectedProviderConnectionId(null)

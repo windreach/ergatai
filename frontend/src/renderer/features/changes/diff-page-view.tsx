@@ -30,7 +30,7 @@ const DiffFileRow = memo(function DiffFileRow({
 	file: ChangedFile
 	isSelected: boolean
 	isViewed: boolean
-	onSelect: () => void
+	onSelect: (file: ChangedFile) => void
 }) {
 	const fileName = file.path.split("/").pop() || file.path
 	const dirPath = file.path.includes("/")
@@ -53,7 +53,7 @@ const DiffFileRow = memo(function DiffFileRow({
 				isSelected && "bg-foreground/10 hover:bg-foreground/10",
 			)}
 			style={{ height: FILE_ROW_HEIGHT }}
-			onClick={onSelect}
+			onClick={() => onSelect(file)}
 		>
 			<span className="shrink-0 flex items-center">{getStatusIndicator(file.status)}</span>
 			<div className="flex-1 min-w-0 flex items-baseline overflow-hidden">
@@ -228,8 +228,7 @@ export function DiffPageView({
 							file={file}
 							isSelected={selectedPath === file.path}
 							isViewed={isFileViewed(file)}
-							// react-doctor-disable-next-line no-inline-prop-on-memo-component
-							onSelect={() => handleSelect(file)}
+							onSelect={handleSelect}
 						/>
 					))}
 				</div>

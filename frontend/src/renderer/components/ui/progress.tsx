@@ -1,5 +1,4 @@
 // Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
-import i18n from "@/lib/i18n"
 import * as React from "react"
 import * as ProgressPrimitive from "@radix-ui/react-progress"
 

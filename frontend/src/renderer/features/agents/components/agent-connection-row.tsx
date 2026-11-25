@@ -150,6 +150,7 @@ export function AgentConnectionRow({
               variant="ghost"
               size="icon"
               className="h-7 w-7"
+              aria-label={i18n.t('Delete')}
               disabled={isDeleting}
               onClick={() => {
                 if (

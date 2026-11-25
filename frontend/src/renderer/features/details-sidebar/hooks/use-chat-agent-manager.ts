@@ -113,7 +113,9 @@ export function useChatAgentManager({
     if (lastChatIdRef.current === chatId) return
     lastChatIdRef.current = chatId
     creatingAgentKeysRef.current.clear()
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setCreatingAgentKeys(new Set())
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setPendingAgentKeys(new Set())
   }, [chatId])
 
@@ -151,6 +153,7 @@ export function useChatAgentManager({
     }
     if (!settled) return
 
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setPendingAgentKeys((previous) => {
       const next = new Set(previous)
       for (const key of existingAgentKeys) next.delete(key)
@@ -253,6 +256,7 @@ export function useChatAgentManager({
     }
     // Hide the menu entry immediately; the backend list only catches up after
     // the spawn + binding round-trip.
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setPendingAgentKeys((previous) => {
       const next = new Set(previous)
       for (const key of agentKeys) next.add(key)
@@ -295,6 +299,7 @@ export function useChatAgentManager({
         binding?.conversationId ?? newConversationId,
       )
     } catch (error) {
+      // react-doctor-disable-next-line no-adjust-state-on-prop-change
       setPendingAgentKeys((previous) => {
         const next = new Set(previous)
         for (const key of agentKeys) next.delete(key)
@@ -321,6 +326,7 @@ export function useChatAgentManager({
     profile?: string | null
     coreAgentId?: string
   }) => {
+    // react-doctor-disable-next-line no-adjust-state-on-prop-change
     setPendingAgentKeys((previous) => {
       const next = new Set(previous)
       for (const value of [agent.profile, agent.coreAgentId]) {

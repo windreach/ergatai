@@ -31,16 +31,22 @@ export function AgentsOnboardingDialog() {
     setMounted(true)
 
     // Check localStorage on mount
-    const hasSeenOnboarding = localStorage.getItem(ONBOARDING_STORAGE_KEY)
-    if (!hasSeenOnboarding) {
-      setIsOpen(true)
-    }
+    try {
+      if (typeof window !== "undefined") {
+        const hasSeenOnboarding = localStorage.getItem(ONBOARDING_STORAGE_KEY)
+        if (!hasSeenOnboarding) {
+          setIsOpen(true)
+        }
+      }
+    } catch {}
   }, [])
 
   useEffect(() => {
     // Check if debug mode wants to reset onboarding
     if (debugMode.resetOnboarding) {
-      localStorage.removeItem(ONBOARDING_STORAGE_KEY)
+      try {
+        if (typeof window !== "undefined") localStorage.removeItem(ONBOARDING_STORAGE_KEY)
+      } catch {}
       // Reset the flag to prevent infinite loops
       setDebugMode((prev) => ({ ...prev, resetOnboarding: false }))
       setIsOpen(true)
@@ -58,7 +64,9 @@ export function AgentsOnboardingDialog() {
     if (!canInteract) return
 
     // Mark onboarding as seen
-    localStorage.setItem(ONBOARDING_STORAGE_KEY, "true")
+    try {
+      if (typeof window !== "undefined") localStorage.setItem(ONBOARDING_STORAGE_KEY, "true")
+    } catch {}
     setIsOpen(false)
   }, [])
 
@@ -132,6 +140,7 @@ export function AgentsOnboardingDialog() {
                 <button
                   type="button"
                   onClick={handleClose}
+                  aria-label={i18n.t('Close')}
                   className="absolute appearance-none outline-none select-none top-4 right-4 rounded-full cursor-pointer flex items-center justify-center ring-offset-background focus-visible:ring-ring bg-secondary h-8 w-8 text-foreground/70 hover:text-foreground focus:outline-hidden disabled:pointer-events-none active:scale-95 transition-all duration-200 ease-in-out z-[60] focus:outline-none focus-visible:outline-2 focus-visible:outline-focus focus-visible:outline-offset-2"
                 >
                   <X className="h-4 w-4" />

@@ -250,6 +250,7 @@ export function useAvailableModels(agentId?: string | null, profileHint?: string
   // immediately on chat open, while the network query refreshes in background.
   const placeholderData = useMemo(() => {
     if (!profileName) return undefined
+    if (typeof window === "undefined") return undefined
     try {
       const raw = localStorage.getItem(`ergatai:available-models:${profileName}`)
       if (!raw) return undefined
@@ -292,6 +293,7 @@ export function useAvailableModels(agentId?: string | null, profileHint?: string
   // Persist the latest result for instant hydration next time.
   useEffect(() => {
     if (!profileName || !modelData || !Array.isArray(modelData.models) || modelData.models.length === 0) return
+    if (typeof window === "undefined") return
     try {
       localStorage.setItem(`ergatai:available-models:${profileName}`, JSON.stringify(modelData))
     } catch {}

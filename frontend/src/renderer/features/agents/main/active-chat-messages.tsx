@@ -1,7 +1,6 @@
-import i18n from "@/lib/i18n"
 "use client"
 
-import { memo } from "react"
+import { memo, useCallback } from "react"
 import type { RefObject } from "react"
 import type { UIMessage } from "@ai-sdk/react"
 import { cn } from "../../../lib/utils"
@@ -81,6 +80,30 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
     containerRef: chatContainerRef,
   })
 
+  const setContainerRef = useCallback((el: HTMLDivElement | null) => {
+    chatContainerRef.current = el
+    const observerRef = chatContainerObserverRef
+    if (observerRef?.current) {
+      observerRef.current.disconnect()
+      observerRef.current = null
+    }
+    if (el && observerRef) {
+      const parent = el.parentElement
+      const observer = new ResizeObserver((entries) => {
+        const { height, width } = entries[0]?.contentRect ?? {
+          height: 0,
+          width: 0,
+        }
+        el.style.setProperty("--chat-container-height", `${height}px`)
+        el.style.setProperty("--chat-container-width", `${width}px`)
+        parent?.style.setProperty("--chat-container-height", `${height}px`)
+        parent?.style.setProperty("--chat-container-width", `${width}px`)
+      })
+      observer.observe(el)
+      observerRef.current = observer
+    }
+  }, [chatContainerRef, chatContainerObserverRef])
+
   // TODO(subagent): temporarily not consumed. Subagent conversation rendering disabled.
   // const [selectedSubagentSessionId, setSelectedSubagentSessionId] = useAtom(
   //   selectedSubagentSessionIdAtomFamily(conversationId),
@@ -112,29 +135,7 @@ export const ActiveChatMessages = memo(function ActiveChatMessages({
       sandboxSetupError={sandboxSetupError}
       onRetrySetup={onRetrySetup}
       stickyTopClass={stickyTopClass}
-      containerRef={(el) => {
-        chatContainerRef.current = el
-        const observerRef = chatContainerObserverRef
-        if (observerRef?.current) {
-          observerRef.current.disconnect()
-          observerRef.current = null
-        }
-        if (el && observerRef) {
-          const parent = el.parentElement
-          const observer = new ResizeObserver((entries) => {
-            const { height, width } = entries[0]?.contentRect ?? {
-              height: 0,
-              width: 0,
-            }
-            el.style.setProperty("--chat-container-height", `${height}px`)
-            el.style.setProperty("--chat-container-width", `${width}px`)
-            parent?.style.setProperty("--chat-container-height", `${height}px`)
-            parent?.style.setProperty("--chat-container-width", `${width}px`)
-          })
-          observer.observe(el)
-          observerRef.current = observer
-        }
-      }}
+      containerRef={setContainerRef}
       contentWrapperRef={contentWrapperRef}
       className="flex-1 overflow-y-auto w-full relative allow-text-selection outline-none"
       contentClassName={cn("px-2 mx-auto -mb-4 max-w-2xl pb-8", contentClassName)}

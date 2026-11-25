@@ -5,25 +5,30 @@ export type ExtensionMetaSnapshot = Record<string, unknown> | null
 type Listener = () => void
 
 const state = new Map<string, ExtensionMetaSnapshot>()
-const listeners = new Set<Listener>()
+const listeners = new Map<string, Set<Listener>>()
 
-function notify() {
-  for (const listener of listeners) listener()
+function notify(agentId: string) {
+  listeners.get(agentId)?.forEach((listener) => listener())
 }
 
 export function updateExtensionMeta(agentId: string, kind: string, payload: unknown): void {
   const prev = state.get(agentId) ?? {}
   state.set(agentId, { ...prev, [kind]: payload })
-  notify()
+  notify(agentId)
 }
 
 export function getExtensionMeta(agentId: string): ExtensionMetaSnapshot {
   return state.get(agentId) ?? null
 }
 
-export function subscribeExtensionMeta(listener: Listener): () => void {
-  listeners.add(listener)
-  return () => listeners.delete(listener)
+export function subscribeExtensionMeta(agentId: string, listener: Listener): () => void {
+  const set = listeners.get(agentId) ?? new Set<Listener>()
+  set.add(listener)
+  listeners.set(agentId, set)
+  return () => {
+    set.delete(listener)
+    if (set.size === 0) listeners.delete(agentId)
+  }
 }
 
 /**
@@ -73,7 +78,7 @@ function firstSuggestionText(items: unknown[]): string {
 
 export function useExtensionMeta(agentId: string | null): ExtensionMetaSnapshot {
   const subscribe = useCallback(
-    (listener: Listener) => (agentId ? subscribeExtensionMeta(listener) : () => {}),
+    (listener: Listener) => (agentId ? subscribeExtensionMeta(agentId, listener) : () => {}),
     [agentId],
   )
   const getSnapshot = useCallback(

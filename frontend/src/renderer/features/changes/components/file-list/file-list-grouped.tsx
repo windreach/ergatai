@@ -1,6 +1,5 @@
 // Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
-import i18n from "@/lib/i18n"
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import type { ChangedFile } from "../../../../../shared/changes-types";
 import { FileItem } from "../file-item";
 import { FolderRow } from "../folder-row";
@@ -140,7 +139,7 @@ export function FileListGrouped({
 	worktreePath,
 	onDiscard,
 }: FileListGroupedProps) {
-	const groups = groupFilesByFolder(files);
+	const groups = useMemo(() => groupFilesByFolder(files), [files]);
 
 	return (
 		<div className="flex flex-col overflow-hidden">

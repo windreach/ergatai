@@ -1,6 +1,5 @@
 // Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
-import i18n from "@/lib/i18n"
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import type { ChangedFile } from "../../../../../shared/changes-types";
 import { FileItem } from "../file-item";
 import { FolderRow } from "../folder-row";
@@ -195,7 +194,7 @@ export function FileListTree({
 	worktreePath,
 	onDiscard,
 }: FileListTreeProps) {
-	const tree = buildFileTree(files);
+	const tree = useMemo(() => buildFileTree(files), [files]);
 
 	return (
 		<div className="flex flex-col overflow-hidden">

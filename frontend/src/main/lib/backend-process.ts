@@ -105,6 +105,13 @@ async function probeBackend(baseUrl: string): Promise<ProbeResult> {
     const response = await fetch(`${baseUrl}/health`, {
       signal: controller.signal,
     })
+    if (!response.ok) {
+      const payload: unknown = await response.json().catch(() => null)
+      if (isErgataiHealthPayload(payload)) {
+        return payload.status === "healthy" ? "healthy" : "unhealthy"
+      }
+      return "foreign"
+    }
     const payload: unknown = await response.json().catch(() => null)
 
     if (!isErgataiHealthPayload(payload)) return "foreign"

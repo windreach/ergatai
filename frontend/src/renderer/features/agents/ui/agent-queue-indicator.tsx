@@ -150,6 +150,7 @@ export const AgentQueueIndicator = memo(function AgentQueueIndicator({
 
   // Save expanded state to localStorage (window-scoped)
   useEffect(() => {
+    if (typeof window === "undefined") return
     try {
       localStorage.setItem(getQueueExpandedKey(), String(isExpanded))
     } catch {

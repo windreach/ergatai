@@ -10,7 +10,13 @@ const DEFAULT_GROUP_AGENTS = [getCoreAgentOption("claude-code")]
 
 export function hasStoredGroupAgentIds(chatId: string | null | undefined) {
   const storageKey = getGroupAgentStorageKey(chatId)
-  return Boolean(storageKey && window.localStorage.getItem(storageKey))
+  if (!storageKey) return false
+  if (typeof window === "undefined") return false
+  try {
+    return Boolean(window.localStorage.getItem(storageKey))
+  } catch {
+    return false
+  }
 }
 
 export function getGroupAgentStorageKey(chatId: string | null | undefined) {
@@ -61,6 +67,7 @@ export function loadGroupAgents(
 ): CoreAgentOption[] {
   const storageKey = getGroupAgentStorageKey(chatId)
   if (!storageKey) return DEFAULT_GROUP_AGENTS
+  if (typeof window === "undefined") return DEFAULT_GROUP_AGENTS
 
   try {
     const rawValue = window.localStorage.getItem(storageKey)
@@ -93,6 +100,7 @@ export function saveGroupAgentIds(
 ) {
   const storageKey = getGroupAgentStorageKey(chatId)
   if (!storageKey || agentIds.length === 0) return
+  if (typeof window === "undefined") return
 
   try {
     // Convert IDs to CoreAgentOption objects for consistent storage format
@@ -109,6 +117,7 @@ export function saveGroupAgents(
 ) {
   const storageKey = getGroupAgentStorageKey(chatId)
   if (!storageKey || agents.length === 0) return
+  if (typeof window === "undefined") return
 
   try {
     window.localStorage.setItem(storageKey, JSON.stringify(agents))
