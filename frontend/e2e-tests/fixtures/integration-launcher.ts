@@ -10,7 +10,14 @@ import { spawn, ChildProcess } from 'child_process'
 const ERGATAI_PORT = 3001
 const ERGATAI_API_URL = `http://127.0.0.1:${ERGATAI_PORT}`
 // __dirname is e2e-tests/fixtures, ergatai root is 3 levels up
-const ERGATAI_BINARY = path.resolve(__dirname, '../../../target/debug/ergatai-server')
+const ERGATAI_BINARY = (() => {
+  const fs = require('fs')
+  const debugPath = path.resolve(__dirname, '../../../target/debug/ergatai-server')
+  const releasePath = path.resolve(__dirname, '../../../target/release/ergatai-server')
+  if (fs.existsSync(debugPath)) return debugPath
+  if (fs.existsSync(releasePath)) return releasePath
+  return debugPath
+})()
 
 // Test API token (UUIDv4 format, must match backend's authIdSchema)
 const TEST_API_TOKEN = '92d984bd-1138-476d-ad3c-ac4b5db9f844'
