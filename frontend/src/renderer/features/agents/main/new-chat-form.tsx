@@ -1493,7 +1493,7 @@ export const NewChatForm = memo(function NewChatForm({
       branchType:
         effectiveWorkMode === "worktree" ? selectedBranchType : undefined,
       branchMode:
-        effectiveWorkMode === "worktree" ? "existing" : undefined,
+        effectiveWorkMode === "worktree" ? "new" : undefined,
       useWorktree: effectiveWorkMode === "worktree",
       mode: agentMode,
       collaborationMode,

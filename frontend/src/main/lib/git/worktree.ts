@@ -4,9 +4,6 @@ import {
 } from "node:child_process";
 import { t } from "../i18n"
 import {
-  randomBytes
-} from "node:crypto";
-import {
   chmod,
   copyFile,
   mkdir,
@@ -32,11 +29,6 @@ import {
   simpleGit
 } from "simple-git";
 import {
-  adjectives,
-  animals,
-  uniqueNamesGenerator
-} from "unique-names-generator";
-import {
   checkGitLfsAvailable,
   getShellEnvironment
 } from "./shell-env";
@@ -50,6 +42,7 @@ import type {
   WorktreeSetupResult
 } from "./worktree-config";
 import {
+  generateChatWorktreeName,
   generateWorktreeFolderName
 } from "./worktree-naming";
 
@@ -152,86 +145,6 @@ function isEnoent(error: unknown): boolean {
 		"code" in error &&
 		(error as NodeJS.ErrnoException).code === "ENOENT"
 	);
-}
-
-function sanitizeBranchComponent(input: string): string {
-	let s = (input || "").trim();
-	if (!s) s = "base";
-
-	// Git ref format: strip consecutive dots and trailing slashes.
-	s = s.replace(/\.\.+/g, ".");
-	s = s.replace(/^\/+/, "").replace(/\/+$/, "");
-
-	// Replace characters that are invalid in ref names.
-	s = s.replace(/[ \t~^:?*\[\]\\]/g, "-");
-	s = s.replace(/@\{/g, "-");
-
-	// Per-component rules: no leading/trailing dots.
-	s = s
-		.split("/")
-		.map((part) => part.replace(/^\.+/, "").replace(/\.+$/, ""))
-		.join("/");
-
-	// Avoid .lock suffix on the final component.
-	if (s.endsWith(".lock")) {
-		s = s.slice(0, -5);
-	}
-
-	if (!s || s === "/" ) s = "base";
-	return s;
-}
-
-export function generateBranchName(baseBranch?: string, chatId?: string): string {
-	const base = sanitizeBranchComponent(baseBranch || "main");
-	// Drop the `chat_` prefix before taking the short id. Keeping it made the
-	// short id start with the constant "chat" plus only the first few timestamp
-	// digits, so every chat created in the same time window produced the same
-	// branch name (e.g. `chat/main-chat5062`).
-	const rawId = (chatId || randomBytes(4).toString("hex"))
-		.replace(/^chat_/, "")
-		.replace(/[^a-zA-Z0-9]/g, "")
-		.slice(0, 12);
-	const shortId = rawId || randomBytes(4).toString("hex").slice(0, 8);
-
-	const prefix = "chat/";
-	const maxTotal = 200;
-	let name = `${prefix}${base}-${shortId}`;
-	if (name.length > maxTotal) {
-		const allowedBase = Math.max(1, maxTotal - prefix.length - 1 - shortId.length);
-		name = `${prefix}${base.slice(0, allowedBase)}-${shortId}`;
-	}
-	return name;
-}
-
-export async function ensureUniqueBranchName(
-	mainRepoPath: string,
-	desired: string,
-): Promise<string> {
-	const git = simpleGit(mainRepoPath);
-
-	// Read the local branch list once instead of probing each candidate.
-	// `git show-ref --verify --quiet <ref>` exits with a non-zero status when
-	// the ref is missing but prints nothing; simple-git treats "no output" as
-	// success, so the old per-candidate probe resolved for BOTH existing and
-	// missing refs. That made the loop spin through 1000 git subprocesses
-	// (~50s) on every chat creation before falling through to `-1000`.
-	let existing: Set<string>;
-	try {
-		existing = new Set((await git.branchLocal()).all);
-	} catch {
-		// If we cannot list branches, let `git worktree add` surface the real
-		// error instead of failing chat creation here.
-		return desired;
-	}
-
-	if (!existing.has(desired)) return desired;
-
-	for (let counter = 2; counter <= 1000; counter++) {
-		const candidate = `${desired}-${counter}`;
-		if (!existing.has(candidate)) return candidate;
-	}
-
-	return `${desired}-${Date.now().toString(36)}`;
 }
 
 export async function createWorktree(
@@ -1020,7 +933,8 @@ export interface WorktreeResult {
 export interface CreateWorktreeForChatOptions {
 	onSetupComplete?: (result: WorktreeSetupResult) => void;
 	/**
-	 * "new" (default): derive a brand-new branch from the selected base branch.
+	 * "new" (default): create a `chat/<base>-<short-id>` branch and use the
+	 * same name for the worktree directory.
 	 * "existing": check out an already-existing branch into the worktree instead
 	 * of creating a new one (reuses a worktree that already has the branch
 	 * checked out when possible).
@@ -1032,7 +946,7 @@ export interface CreateWorktreeForChatOptions {
  * Create a git worktree for a chat (wrapper for chats.ts)
  * @param projectPath - Path to the main repository
  * @param projectSlug - Sanitized project name for worktree directory
- * @param chatId - Chat ID (used for logging)
+ * @param chatId - Chat ID (used for the generated branch/worktree name)
  * @param selectedBaseBranch - Optional branch to base the worktree off (defaults to auto-detected default branch)
  */
 export async function createWorktreeForChat(
@@ -1057,7 +971,7 @@ export async function createWorktreeForChat(
 			return { success: true, worktreePath: projectPath };
 		}
 
-		const branchMode = options?.branchMode ?? "existing";
+		const branchMode = options?.branchMode ?? "new";
 
 		// Use provided base branch or auto-detect
 		const baseBranch = selectedBaseBranch || await getDefaultBranch(projectPath);
@@ -1142,14 +1056,26 @@ export async function createWorktreeForChat(
 		}
 
 		// ------------------------------------------------------------------
-		// "new" mode (default): derive a brand-new branch from the selected base
+		// "new" mode (default): create a branch like `chat/main-5061` and use
+		// the same name for the worktree directory, so branch and worktree are
+		// easy to correlate.
 		// ------------------------------------------------------------------
-		let branch = generateBranchName(baseBranch, chatId);
-		branch = await ensureUniqueBranchName(projectPath, branch);
 		const worktreesDir = join(homedir(), ".ergatai", "worktrees");
 		const projectWorktreeDir = join(worktreesDir, projectSlug);
-		const folderName = generateWorktreeFolderName(projectWorktreeDir);
-		const worktreePath = join(projectWorktreeDir, folderName);
+
+		const localBranches = new Set((await git.branchLocal()).all);
+		const remoteBranches = new Set(
+			(await git.branch(["-r"])).all
+				.filter((b) => b.startsWith("origin/") && !b.includes("->"))
+				.map((b) => b.replace("origin/", "")),
+		);
+		const branch = generateChatWorktreeName(
+			projectWorktreeDir,
+			baseBranch,
+			chatId,
+			(name) => localBranches.has(name) || remoteBranches.has(name),
+		);
+		const worktreePath = join(projectWorktreeDir, branch);
 
 		// Determine startPoint based on branch type
 		// For local branches, use the local ref directly

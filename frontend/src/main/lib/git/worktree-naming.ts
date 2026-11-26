@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -68,5 +69,83 @@ export function generateWorktreeFolderName(parentDir: string): string {
 	}
 
 	// Absolute fallback: append timestamp
+	return `${baseName}-${Date.now().toString(36)}`;
+}
+
+/**
+ * Sanitize a base branch name so it can be embedded in a generated branch.
+ * Keeps `/` because feature branches may be namespaced, but removes characters
+ * that are invalid in Git refs.
+ */
+function sanitizeBranchComponent(input: string): string {
+	let s = (input || "").trim();
+	if (!s) s = "base";
+
+	s = s.replace(/\.\.+/g, ".");
+	s = s.replace(/^\/+/, "").replace(/\/+$/, "");
+	s = s.replace(/[ \t~^:?*\[\]\\]/g, "-");
+	s = s.replace(/@\{/g, "-");
+
+	s = s
+		.split("/")
+		.map((part) => part.replace(/^\.+/, "").replace(/\.+$/, ""))
+		.join("/");
+
+	if (s.endsWith(".lock")) {
+		s = s.slice(0, -5);
+	}
+
+	if (!s || s === "/") s = "base";
+	return s;
+}
+
+/**
+ * Generate the shared name for a chat's branch and worktree directory:
+ * `chat/<base>-<short-id>` (for example `chat/main-5061`).
+ *
+ * The same string is used as the Git branch and as the worktree path relative
+ * to the project's worktree directory, so a branch such as `chat/main-5061`
+ * lives at `<worktree-root>/<project>/chat/main-5061`.
+ *
+ * `isNameTaken` lets the caller reject names already used by local or remote
+ * branches; directory existence is checked here.
+ */
+export function generateChatWorktreeName(
+	parentDir: string,
+	baseBranch: string | undefined,
+	chatId: string | undefined,
+	isNameTaken?: (name: string) => boolean,
+): string {
+	const base = sanitizeBranchComponent(baseBranch || "main");
+	// Drop the `chat_` prefix before taking the short id so the generated name
+	// is not `chat/main-chat5061`.
+	const rawId = (chatId || randomBytes(4).toString("hex"))
+		.replace(/^chat_/, "")
+		.replace(/[^a-zA-Z0-9]/g, "")
+		.slice(0, 12);
+	const shortId = rawId || randomBytes(4).toString("hex").slice(0, 8);
+
+	const prefix = "chat/";
+	const maxTotal = 200;
+	let baseName = `${prefix}${base}-${shortId}`;
+	if (baseName.length > maxTotal) {
+		const allowedBase = Math.max(
+			1,
+			maxTotal - prefix.length - 1 - shortId.length,
+		);
+		baseName = `${prefix}${base.slice(0, allowedBase)}-${shortId}`;
+	}
+
+	const isAvailable = (name: string): boolean =>
+		!existsSync(join(parentDir, name)) &&
+		isNameTaken?.(name) !== true;
+
+	if (isAvailable(baseName)) return baseName;
+
+	for (let counter = 2; counter <= 1000; counter++) {
+		const candidate = `${baseName}-${counter}`;
+		if (isAvailable(candidate)) return candidate;
+	}
+
 	return `${baseName}-${Date.now().toString(36)}`;
 }
