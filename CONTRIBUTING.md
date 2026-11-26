@@ -84,7 +84,7 @@ By participating in this project, you agree to abide by our code of conduct: res
 
 - **Rust code style**: Follow `rustfmt` auto-formatting results
 - **Clippy warnings**: All code must pass `cargo clippy -- -D warnings`
-- **Test coverage**: New features require appropriate tests
+- **Test coverage**: New features require appropriate tests (target > 50% coverage for new modules)
 - **Documentation**: Public APIs require documentation comments (`///`)
 - **Error handling**: Use `?` operator and appropriate error types
 

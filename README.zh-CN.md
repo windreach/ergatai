@@ -326,7 +326,7 @@ cd frontend && bun run ts:check
 
 1. 运行 `cargo fmt --all` 与 `cargo clippy --workspace -- -D warnings`
 2. 运行 `cd frontend && bun run check`
-3. 为新行为添加测试（新模块目标覆盖率 ≥ 80%）
+3. 为新行为添加测试（新模块目标覆盖率 > 50%）
 4. 提交信息遵循约定式提交（`feat:`、`fix:`、`refactor:` …）
 5. 底层实现与不变量见 `CLAUDE.md`（面向编码 Agent 的仓库说明）及 [`docs/architecture.zh-CN.md`](./docs/architecture.zh-CN.md)。
 

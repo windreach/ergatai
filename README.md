@@ -335,7 +335,7 @@ Contributions welcome. Before opening a PR:
 
 1. Run `cargo fmt --all` and `cargo clippy --workspace -- -D warnings`
 2. Run `cd frontend && bun run check`
-3. Add tests for any new behavior (target ≥ 80% coverage for new modules)
+3. Add tests for any new behavior (target > 50% coverage for new modules)
 4. Keep commits conventional (`feat:`, `fix:`, `refactor:`, …)
 5. For runtime internals, see `CLAUDE.md` (agent-facing implementation notes) and [`docs/architecture.md`](./docs/architecture.md).
 
