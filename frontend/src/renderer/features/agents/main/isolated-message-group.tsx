@@ -545,6 +545,7 @@ export const IsolatedMessageGroup = memo(function IsolatedMessageGroup({
               chatId={chatId}
               isMobile={isMobile}
               sandboxSetupStatus={sandboxSetupStatus}
+              isActiveTurn={isLastGroup}
             />
           </ForkContext.Provider>
         </SuppressErrorCardsContext.Provider>

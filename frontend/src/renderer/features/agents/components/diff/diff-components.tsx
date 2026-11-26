@@ -13,6 +13,7 @@ import React, {
 // react-doctor-disable-next-line no-flush-sync
 import { flushSync } from 'react-dom'
 import { useAtom, useSetAtom, useAtomValue } from 'jotai'
+import { ChevronLeft } from 'lucide-react'
 import { toast } from 'sonner'
 import { trpc } from '../../../../lib/trpc'
 import { cn } from '../../../../lib/utils'
@@ -113,18 +114,34 @@ interface DiffSidebarContentProps {
 // Memoized commit file item for History tab
 const CommitFileItem = memo(function CommitFileItem({
   file,
+  isSelected = false,
+  onSelect,
 }: {
   file: { path: string; status: FileStatus }
+  isSelected?: boolean
+  onSelect?: (file: { path: string; status: FileStatus }) => void
 }) {
   const fileName = file.path.split('/').pop() || file.path
   const dirPath = file.path.includes('/') ? file.path.substring(0, file.path.lastIndexOf('/')) : ''
 
   return (
     <div
+      // react-doctor-disable-next-line prefer-tag-over-role
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          onSelect?.(file)
+        }
+      }}
       className={cn(
         "flex items-center gap-2 px-2 py-1 transition-colors",
-        "hover:bg-muted/80"
+        "hover:bg-muted/80",
+        isSelected && "bg-muted",
+        onSelect && "cursor-pointer",
       )}
+      onClick={() => onSelect?.(file)}
     >
       <div className="flex-1 min-w-0 flex items-center overflow-hidden">
         {dirPath && (
@@ -139,6 +156,111 @@ const CommitFileItem = memo(function CommitFileItem({
       <div className="shrink-0">
         {getStatusIndicator(file.status)}
       </div>
+    </div>
+  )
+})
+
+/**
+ * Commit metadata + changed-file list shown on the History tab. Selecting a
+ * file opens its commit diff in the pane to the right.
+ */
+const HistoryCommitFiles = memo(function HistoryCommitFiles({
+  commit,
+  files,
+  selectedFilePath,
+  onFileSelect,
+}: {
+  commit: NonNullable<SelectedCommit>
+  files: Array<{ path: string; status: FileStatus }> | undefined
+  selectedFilePath: string | null
+  onFileSelect: (file: { path: string; status: FileStatus }) => void
+}) {
+  if (!files) {
+    return (
+      <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+        Loading files...
+      </div>
+    )
+  }
+
+  if (files.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+        No files changed in this commit
+      </div>
+    )
+  }
+
+  return (
+    <>
+      {/* Commit message and description */}
+      <div className="px-3 py-2 border-b border-border/50">
+        <div className="flex items-start justify-between gap-2 mb-1">
+          <div className="text-sm font-medium text-foreground flex-1">
+            {commit.message}
+          </div>
+          <button
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(commit.hash)
+                toast.success('Copied SHA to clipboard')
+              } catch {
+                toast.error('Failed to copy SHA to clipboard')
+              }
+            }}
+            className="text-xs font-mono text-muted-foreground hover:text-foreground underline cursor-pointer shrink-0"
+          >
+            {commit.shortHash}
+          </button>
+        </div>
+        {commit.description && (
+          <div className="text-xs text-foreground/80 mb-2 whitespace-pre-wrap">
+            {commit.description}
+          </div>
+        )}
+        <div className="text-xs text-muted-foreground">
+          {commit.author} • {commit.date ? new Date(commit.date).toLocaleString() : 'Unknown date'}
+        </div>
+      </div>
+
+      <div className="px-2 py-1.5 text-xs text-muted-foreground font-medium bg-muted/30 border-b border-border/50">
+        Files in commit ({files.length})
+      </div>
+      {files.map((file) => (
+        <CommitFileItem
+          key={file.path}
+          file={file}
+          isSelected={selectedFilePath === file.path}
+          onSelect={onFileSelect}
+        />
+      ))}
+    </>
+  )
+})
+
+/** Header shown above a commit file's diff, with a way back to the file list. */
+const CommitFileDiffHeader = memo(function CommitFileDiffHeader({
+  filePath,
+  onBack,
+}: {
+  filePath: string
+  onBack: () => void
+}) {
+  return (
+    <div className="flex items-center gap-1.5 h-9 px-2 border-b border-border/50 bg-background shrink-0">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 gap-1 px-1.5 text-xs text-muted-foreground hover:text-foreground"
+        aria-label="Back to files in commit"
+        onClick={onBack}
+      >
+        <ChevronLeft className="size-3.5 shrink-0" />
+        Files
+      </Button>
+      <span className="text-xs truncate font-mono text-muted-foreground" title={filePath}>
+        {filePath}
+      </span>
     </div>
   )
 })
@@ -203,6 +325,8 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
 
   // Selected commit for History tab
   const [selectedCommit, setSelectedCommit] = useAtom(selectedCommitAtom)
+  // Commit file whose diff is open in the History tab (null = file list)
+  const [openCommitFile, setOpenCommitFile] = useState<{ hash: string; path: string } | null>(null)
 
   // When sidebar is narrow (< 500px), use vertical layout
   const isNarrow = sidebarWidth < 500
@@ -259,8 +383,10 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
   // Handle commit selection in History tab
   const handleCommitSelect = useCallback((commit: SelectedCommit) => {
     setSelectedCommit(commit)
-    // Reset file selection when changing commits
-    // The HistoryView will auto-select first file
+    // Close any open commit-file diff so a new commit starts at its file list.
+    // Keep the diff's selected file as-is: HistoryView auto-selects the first
+    // file only when none is selected, and clicking a commit file updates it.
+    setOpenCommitFile(null)
   }, [setSelectedCommit])
 
   // Handle file selection in commit (History tab)
@@ -294,12 +420,31 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
     }
   )
 
+  // Commit file whose diff the user opened. Keyed by commit hash so switching
+  // commits falls back to the file list without an extra reset effect.
+  const openCommitFilePath =
+    selectedCommit && openCommitFile?.hash === selectedCommit.hash
+      ? openCommitFile.path
+      : null
+
+  const isHistoryTab = activeTab === "history" && !!selectedCommit
+  const showCommitFileDiff = isHistoryTab && !!openCommitFilePath
+  // Whole-pane overlays are mutually exclusive: the History tab shows the
+  // commit's file list until a file is opened, then that file's diff.
+  const showHistoryFileList = isHistoryTab && !showCommitFileDiff
+
   // Use commit diff or regular diff based on selection
   // Only use commit data when in History tab, otherwise always use regular diff
-  const shouldUseCommitDiff = activeTab === "history" && selectedCommit
-  const effectiveDiff = shouldUseCommitDiff && commitFileDiff ? commitFileDiff : diffContent
+  const shouldUseCommitDiff = isHistoryTab
+  const effectiveDiff = shouldUseCommitDiff ? (commitFileDiff ?? null) : diffContent
   const effectiveParsedFiles = shouldUseCommitDiff ? null : parsedFileDiffs
   const effectivePrefetchedContents = shouldUseCommitDiff ? {} : prefetchedFileContents
+
+  const handleCommitFileOpen = useCallback((file: { path: string; status: FileStatus }) => {
+    if (!selectedCommit) return
+    handleDiffFileSelect(file, "")
+    setOpenCommitFile({ hash: selectedCommit.hash, path: file.path })
+  }, [selectedCommit, handleDiffFileSelect])
 
   if (isNarrow) {
     // Vertical layout: ChangesPanel on top, diff/file list below
@@ -337,79 +482,49 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
           {/* History view - files in commit */}
           <div className={cn(
             "absolute inset-0 overflow-y-auto",
-            activeTab === "history" && selectedCommit ? "z-10" : "z-0 invisible"
+            showHistoryFileList ? "z-10" : "z-0 invisible"
           )}>
             {selectedCommit && (
-              !commitFiles ? (
-                <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
-                  Loading files...
-                </div>
-              ) : commitFiles.length === 0 ? (
-                <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
-                  No files changed in this commit
-                </div>
-              ) : (
-                <>
-                  {/* Commit message and description */}
-                  <div className="px-3 py-2 border-b border-border/50">
-                    <div className="flex items-start justify-between gap-2 mb-1">
-                      <div className="text-sm font-medium text-foreground flex-1">
-                        {selectedCommit.message}
-                      </div>
-                      <button
-                        onClick={async () => {
-                          try {
-                            await navigator.clipboard.writeText(selectedCommit.hash)
-                            toast.success('Copied SHA to clipboard')
-                          } catch {
-                            toast.error('Failed to copy SHA to clipboard')
-                          }
-                        }}
-                        className="text-xs font-mono text-muted-foreground hover:text-foreground underline cursor-pointer shrink-0"
-                      >
-                        {selectedCommit.shortHash}
-                      </button>
-                    </div>
-                    {selectedCommit.description && (
-                      <div className="text-xs text-foreground/80 mb-2 whitespace-pre-wrap">
-                        {selectedCommit.description}
-                      </div>
-                    )}
-                    <div className="text-xs text-muted-foreground">
-                      {selectedCommit.author} • {selectedCommit.date ? new Date(selectedCommit.date).toLocaleString() : 'Unknown date'}
-                    </div>
-                  </div>
-
-                  <div className="px-2 py-1.5 text-xs text-muted-foreground font-medium bg-muted/30 border-b border-border/50">
-                    Files in commit ({commitFiles.length})
-                  </div>
-                  {commitFiles.map((file) => (
-                    <CommitFileItem
-                      key={file.path}
-                      file={file}
-                    />
-                  ))}
-                </>
-              )
+              <HistoryCommitFiles
+                commit={selectedCommit}
+                files={commitFiles}
+                selectedFilePath={selectedFilePath}
+                onFileSelect={handleCommitFileOpen}
+              />
             )}
           </div>
           {/* Diff view - always mounted to prevent expensive re-initialization */}
           <div className={cn(
-            "absolute inset-0 overflow-hidden",
-            activeTab === "history" && selectedCommit ? "z-0 invisible" : "z-10"
+            "absolute inset-0 overflow-hidden flex flex-col",
+            isHistoryTab && !showCommitFileDiff ? "z-0 invisible" : "z-10"
           )}>
-            <AgentDiffView
-              ref={diffViewRef}
-              chatId={chatId}
-              sandboxId={sandboxId ?? ""}
-              worktreePath={worktreePath || undefined}
-              repository={repository || undefined}
-              showFooter={false}
-              onCollapsedStateChange={setDiffCollapseState}
-              onSelectNextFile={handleSelectNextFile}
-              onViewedCountChange={handleViewedCountChange}
-              initialSelectedFile={initialSelectedFile}
-            />
+            {showCommitFileDiff && openCommitFilePath && (
+              <CommitFileDiffHeader
+                filePath={openCommitFilePath}
+                onBack={() => setOpenCommitFile(null)}
+              />
+            )}
+            <div className="flex-1 min-h-0">
+              <AgentDiffView
+                ref={diffViewRef}
+                chatId={chatId}
+                sandboxId={sandboxId ?? ""}
+                worktreePath={worktreePath || undefined}
+                repository={repository || undefined}
+                // In the narrow layout the diff view used to fetch the working
+                // tree diff itself. Only override it when a commit file's diff
+                // is actually being shown.
+                initialDiff={showCommitFileDiff ? effectiveDiff : undefined}
+                initialParsedFiles={showCommitFileDiff ? effectiveParsedFiles : undefined}
+                prefetchedFileContents={showCommitFileDiff ? effectivePrefetchedContents : undefined}
+                readOnly={showCommitFileDiff}
+                showFooter={false}
+                onCollapsedStateChange={setDiffCollapseState}
+                onSelectNextFile={handleSelectNextFile}
+                onViewedCountChange={handleViewedCountChange}
+                initialSelectedFile={openCommitFilePath ?? initialSelectedFile}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -464,83 +579,47 @@ const DiffSidebarContent = memo(function DiffSidebarContent({
         {/* History view - files in commit */}
         <div className={cn(
           "absolute inset-0 overflow-y-auto",
-          activeTab === "history" && selectedCommit ? "z-10" : "z-0 invisible"
+          showHistoryFileList ? "z-10" : "z-0 invisible"
         )}>
           {selectedCommit && (
-            !commitFiles ? (
-              <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
-                Loading files...
-              </div>
-            ) : commitFiles.length === 0 ? (
-              <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
-                No files changed in this commit
-              </div>
-            ) : (
-              <>
-                {/* Commit message and description */}
-                <div className="px-3 py-2 border-b border-border/50">
-                  <div className="flex items-start justify-between gap-2 mb-1">
-                    <div className="text-sm font-medium text-foreground flex-1">
-                      {selectedCommit.message}
-                    </div>
-                    <button
-                      onClick={async () => {
-                        try {
-                          await navigator.clipboard.writeText(selectedCommit.hash)
-                          toast.success('Copied SHA to clipboard')
-                        } catch {
-                          toast.error('Failed to copy SHA to clipboard')
-                        }
-                      }}
-                      className="text-xs font-mono text-muted-foreground hover:text-foreground underline cursor-pointer shrink-0"
-                    >
-                      {selectedCommit.shortHash}
-                    </button>
-                  </div>
-                  {selectedCommit.description && (
-                    <div className="text-xs text-foreground/80 mb-2 whitespace-pre-wrap">
-                      {selectedCommit.description}
-                    </div>
-                  )}
-                  <div className="text-xs text-muted-foreground">
-                    {selectedCommit.author} • {selectedCommit.date ? new Date(selectedCommit.date).toLocaleString() : 'Unknown date'}
-                  </div>
-                </div>
-
-                <div className="px-2 py-1.5 text-xs text-muted-foreground font-medium bg-muted/30 border-b border-border/50">
-                  Files in commit ({commitFiles.length})
-                </div>
-                {commitFiles.map((file) => (
-                  <CommitFileItem
-                    key={file.path}
-                    file={file}
-                  />
-                ))}
-              </>
-            )
+            <HistoryCommitFiles
+              commit={selectedCommit}
+              files={commitFiles}
+              selectedFilePath={selectedFilePath}
+              onFileSelect={handleCommitFileOpen}
+            />
           )}
         </div>
         {/* Diff view - always mounted to prevent expensive re-initialization */}
         <div className={cn(
-          "absolute inset-0 overflow-hidden",
-          activeTab === "history" && selectedCommit ? "z-0 invisible" : "z-10"
+          "absolute inset-0 overflow-hidden flex flex-col",
+          isHistoryTab && !showCommitFileDiff ? "z-0 invisible" : "z-10"
         )}>
-          <AgentDiffView
-            ref={diffViewRef}
-            chatId={chatId}
-            sandboxId={sandboxId ?? ""}
-            worktreePath={worktreePath || undefined}
-            repository={repository || undefined}
-            onStatsChange={setDiffStats}
-            initialDiff={effectiveDiff}
-            initialParsedFiles={effectiveParsedFiles}
-            prefetchedFileContents={effectivePrefetchedContents}
-            showFooter={true}
-            onCollapsedStateChange={setDiffCollapseState}
-            onSelectNextFile={handleSelectNextFile}
-            onViewedCountChange={handleViewedCountChange}
-            initialSelectedFile={initialSelectedFile}
-          />
+          {showCommitFileDiff && openCommitFilePath && (
+            <CommitFileDiffHeader
+              filePath={openCommitFilePath}
+              onBack={() => setOpenCommitFile(null)}
+            />
+          )}
+          <div className="flex-1 min-h-0">
+            <AgentDiffView
+              ref={diffViewRef}
+              chatId={chatId}
+              sandboxId={sandboxId ?? ""}
+              worktreePath={worktreePath || undefined}
+              repository={repository || undefined}
+              onStatsChange={setDiffStats}
+              initialDiff={effectiveDiff}
+              initialParsedFiles={effectiveParsedFiles}
+              prefetchedFileContents={effectivePrefetchedContents}
+              readOnly={showCommitFileDiff}
+              showFooter={true}
+              onCollapsedStateChange={setDiffCollapseState}
+              onSelectNextFile={handleSelectNextFile}
+              onViewedCountChange={handleViewedCountChange}
+              initialSelectedFile={openCommitFilePath ?? initialSelectedFile}
+            />
+          </div>
         </div>
       </div>
     </div>

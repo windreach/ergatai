@@ -28,6 +28,14 @@ interface MemoizedAssistantMessagesProps {
   chatId?: string
   isMobile: boolean
   sandboxSetupStatus: "cloning" | "ready" | "error"
+  /**
+   * Whether this group belongs to the newest user turn. Only the active turn
+   * may render live-only affordances (e.g. the planning placeholder): the
+   * conversation-level streaming status stays "streaming" for the new turn,
+   * which would otherwise make an aborted, empty assistant message from an
+   * older turn look like it is still generating.
+   */
+  isActiveTurn: boolean
 }
 
 function areMemoizedAssistantMessagesEqual(
@@ -51,6 +59,7 @@ function areMemoizedAssistantMessagesEqual(
   if (prev.chatId !== next.chatId) return false
   if (prev.isMobile !== next.isMobile) return false
   if (prev.sandboxSetupStatus !== next.sandboxSetupStatus) return false
+  if (prev.isActiveTurn !== next.isActiveTurn) return false
 
   return true
 }
@@ -241,6 +250,7 @@ interface AssistantMessageGroupItemProps {
   isLastMessage: boolean
   isStreaming: boolean
   status: string
+  isActiveTurn: boolean
 }
 
 function arePartsEqual(a: MessagePart[], b: MessagePart[]): boolean {
@@ -281,6 +291,7 @@ function areAssistantMessageGroupItemPropsEqual(
   if (prev.isLastMessage !== next.isLastMessage) return false
   if (prev.isStreaming !== next.isStreaming) return false
   if (prev.status !== next.status) return false
+  if (prev.isActiveTurn !== next.isActiveTurn) return false
 
   if (next.group.merged) {
     // Message atoms hold immutable snapshots, so unchanged parts keep their
@@ -301,6 +312,7 @@ const AssistantMessageGroupItem = memo(function AssistantMessageGroupItem({
   isLastMessage,
   isStreaming,
   status,
+  isActiveTurn,
 }: AssistantMessageGroupItemProps) {
   // Subscribe to the group's first message. Non-merged groups render this
   // message directly; merged groups use the synthetic group projection but
@@ -332,6 +344,7 @@ const AssistantMessageGroupItem = memo(function AssistantMessageGroupItem({
       chatId={chatId}
       isMobile={isMobile}
       sandboxSetupStatus={sandboxSetupStatus}
+      isActiveTurn={isActiveTurn}
     />
   )
 }, areAssistantMessageGroupItemPropsEqual)
@@ -362,6 +375,7 @@ export const MemoizedAssistantMessages = memo(function MemoizedAssistantMessages
   chatId,
   isMobile,
   sandboxSetupStatus,
+  isActiveTurn,
 }: MemoizedAssistantMessagesProps) {
   // Get streaming status from the dedicated store
   const streamingStatus = useStreamingStatusStore(
@@ -379,6 +393,12 @@ export const MemoizedAssistantMessages = memo(function MemoizedAssistantMessages
     <>
       {groups.map((group) => {
         const isLast = group.lastId === lastId
+        // Only the newest user turn can be live. The streaming status is
+        // stored per conversation, so without this guard an aborted, empty
+        // assistant message from an older turn would render its planning
+        // placeholder (and pending tools) as if it were still generating
+        // while the new turn streams.
+        const isLive = isLast && isActiveTurn
         return (
           <AssistantMessageGroupItem
             key={group.key}
@@ -388,8 +408,9 @@ export const MemoizedAssistantMessages = memo(function MemoizedAssistantMessages
             isMobile={isMobile}
             sandboxSetupStatus={sandboxSetupStatus}
             isLastMessage={isLast}
-            isStreaming={isLast ? isStreaming : false}
-            status={isLast ? streamingStatus : "ready"}
+            isStreaming={isLive ? isStreaming : false}
+            status={isLive ? streamingStatus : "ready"}
+            isActiveTurn={isActiveTurn}
           />
         )
       })}

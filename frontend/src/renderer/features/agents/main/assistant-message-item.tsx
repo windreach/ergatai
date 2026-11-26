@@ -450,6 +450,8 @@ export interface AssistantMessageItemProps {
   isLastMessage: boolean
   isStreaming: boolean
   status: string
+  /** False for assistant messages that belong to an older user turn. */
+  isActiveTurn?: boolean
   isMobile: boolean
   conversationId: string
   chatId: string
@@ -469,6 +471,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
   isLastMessage,
   isStreaming,
   status,
+  isActiveTurn = true,
   isMobile: _isMobile,
   conversationId,
   chatId,
@@ -509,6 +512,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
   )
 
   const shouldShowPlanning =
+    isActiveTurn &&
     sandboxSetupStatus === "ready" &&
     isStreaming &&
     isLastMessage &&

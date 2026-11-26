@@ -512,6 +512,8 @@ const fileDiffCardAreEqual = (
   if (prev.shikiTheme !== next.shikiTheme) return false
   // Worktree path for context menu
   if (prev.worktreePath !== next.worktreePath) return false
+  // Destructive actions (hidden for read-only historical diffs)
+  if (!!prev.onDiscardFile !== !!next.onDiscardFile) return false
   // Viewed state
   if (prev.isViewed !== next.isViewed) return false
   if (prev.showViewed !== next.showViewed) return false
@@ -1030,6 +1032,11 @@ interface AgentDiffViewProps {
   onViewedCountChange?: (count: number) => void
   /** Initial selected file path - used to filter on first render before atom updates */
   initialSelectedFile?: string | null
+  /**
+   * Render a historical diff (e.g. a commit) that the working tree cannot be
+   * reverted from. Hides destructive actions such as "Discard Changes".
+   */
+  readOnly?: boolean
 }
 
 /** Ref handle for controlling AgentDiffView from parent */
@@ -1067,6 +1074,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
       onSelectNextFile,
       onViewedCountChange,
       initialSelectedFile,
+      readOnly = false,
     },
     ref,
   ) {
@@ -2122,7 +2130,7 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
                         fileContent={fileContents[file.key]}
                         shikiTheme={shikiTheme}
                         worktreePath={worktreePath}
-                        onDiscardFile={handleDiscardFile}
+                        onDiscardFile={readOnly ? undefined : handleDiscardFile}
                         isViewed={isFileViewed(file.key, file.diffText)}
                         onToggleViewed={handleToggleViewed}
                         showViewed={!!worktreePath}

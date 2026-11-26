@@ -197,14 +197,36 @@ export const createStatusRouter = () => {
 
 				const git = simpleGit(input.worktreePath);
 
-				// Get diff for specific file comparing commit to its parent
-				const diff = await git.raw([
-					"diff",
-					`${input.commitHash}^`,
-					input.commitHash,
-					"--",
-					input.filePath,
-				]);
+				// Get diff for specific file comparing commit to its parent.
+				let diff: string;
+				try {
+					diff = await git.raw([
+						"diff",
+						`${input.commitHash}^`,
+						input.commitHash,
+						"--",
+						input.filePath,
+					]);
+				} catch (error) {
+					// Root commits have no parent. `git show` renders the file
+					// they introduce as a new-file patch, which is what the UI
+					// expects. Always prefer the parent diff above: `git show`
+					// on a merge commit only emits combined (conflict) hunks.
+					const parents = await git
+						.raw(["rev-list", "--parents", "-n", "1", input.commitHash])
+						.catch(() => "");
+					if (parents.trim().split(/\s+/).length > 1) {
+						throw error;
+					}
+					diff = await git.raw([
+						"show",
+						"--format=",
+						"--patch",
+						input.commitHash,
+						"--",
+						input.filePath,
+					]);
+				}
 
 				return diff;
 			}),
