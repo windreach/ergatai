@@ -28,7 +28,7 @@ jobs:
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y binutils libdbus-1-dev pkg-config
 
       - name: Install Node
         uses: actions/setup-node@v4
@@ -70,17 +70,16 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          max_glibc="$(
-            find frontend/release -name 'pty.node' -o -name 'node-pty.node' \
-              | while read -r file; do
-                  objdump -T "$file" 2>/dev/null \
-                    | grep -o 'GLIBC_[0-9.]*' \
-                    | sort -V \
-                    | tail -1
-                done \
-              | sort -V \
-              | tail -1
-          )"
+          set +o pipefail
+          versions=""
+          while IFS= read -r file; do
+            version="$(objdump -T "$file" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -1 || true)"
+            if [[ -n "$version" ]]; then
+              echo "$file: $version"
+              versions+="${version}"$'\n'
+            fi
+          done < <(find frontend/release \( -name 'pty.node' -o -name 'node-pty.node' \) -type f)
+          max_glibc="$(printf '%s' "$versions" | sort -V | tail -1 || true)"
           echo "node-pty max glibc symbol: ${max_glibc:-unknown}"
           if [[ -z "$max_glibc" ]]; then
             echo "ERROR: could not determine node-pty glibc requirement" >&2
