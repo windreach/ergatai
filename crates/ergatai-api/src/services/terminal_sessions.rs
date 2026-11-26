@@ -355,7 +355,7 @@ fn set_pty_size(fd: i32, cols: u16, rows: u16) -> Result<(), std::io::Error> {
         ws_ypixel: 0,
     };
 
-    if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &window_size) } == -1 {
+    if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ as libc::c_ulong, &window_size) } == -1 {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
@@ -364,7 +364,9 @@ fn set_pty_size(fd: i32, cols: u16, rows: u16) -> Result<(), std::io::Error> {
 fn open_pty(cols: u16, rows: u16) -> Result<(File, File), std::io::Error> {
     let mut master_fd = -1;
     let mut slave_fd = -1;
-    let window_size = libc::winsize {
+    // `openpty` takes mutable pointers on macOS but const pointers on Linux.
+    // Passing mutable pointers works on both because *mut T coerces to *const T.
+    let mut window_size = libc::winsize {
         ws_col: cols,
         ws_row: rows,
         ws_xpixel: 0,
@@ -376,8 +378,8 @@ fn open_pty(cols: u16, rows: u16) -> Result<(File, File), std::io::Error> {
             &mut master_fd,
             &mut slave_fd,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            &window_size,
+            std::ptr::null_mut(),
+            &mut window_size,
         )
     } != 0
     {
@@ -677,7 +679,12 @@ fn spawn_terminal(
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::ioctl(controlling_tty.as_raw_fd(), libc::TIOCSCTTY, 0) == -1 {
+                    if libc::ioctl(
+                        controlling_tty.as_raw_fd(),
+                        libc::TIOCSCTTY as libc::c_ulong,
+                        0,
+                    ) == -1
+                    {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())
