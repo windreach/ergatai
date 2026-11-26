@@ -14,6 +14,7 @@ import {
   previousAgentChatIdAtom,
   conversationFilesAtom,
   justCreatedIdsAtom,
+  loadingConversationsAtom,
   pendingUserQuestionsAtom,
   undoStackAtom,
 } from "../agents"
@@ -386,6 +387,13 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
   const [justCreatedIds, _setJustCreatedIds] = useAtom(justCreatedIdsAtom)
   const pendingQuestionsMap = useAtomValue(pendingUserQuestionsAtom)
   const unseenChanges = useAtomValue(agentsConversationUnseenChangesAtom)
+  const loadingConversations = useAtomValue(loadingConversationsAtom)
+  // Chats with at least one conversation currently generating. The atom maps
+  // conversationId -> parentChatId, so invert it to look up by chat id.
+  const runningChatIds = useMemo(
+    () => new Set(loadingConversations.values()),
+    [loadingConversations],
+  )
   const rawMode = useAtomValue(defaultAgentModeAtom)
   const defaultAgentMode = rawMode === "plan" ? "plan" : "agent"
   const isDesktop = useAtomValue(isDesktopAtom)
@@ -565,7 +573,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
       const isJustCreated = justCreatedIds.has(chat.id)
       const hasPendingQuestion = pendingQuestionsMap.has(chat.id)
       const hasUnseen = unseenChanges.has(chat.id)
-      const isLoading = false // Workspace chats don't have loading state per chat
+      const isLoading = runningChatIds.has(chat.id)
       const mode = defaultAgentMode
 
       // Get draft text for this chat
@@ -601,7 +609,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
         />
       )
     },
-    [selectedChatId, pinnedChatIds, justCreatedIds, pendingQuestionsMap, unseenChanges, defaultAgentMode, draftsCache, workspaceId, conversationFiles, handleChatClick, handlePinChat, handleArchiveChat, filteredChats.length, chatAgentLogos]
+    [selectedChatId, pinnedChatIds, justCreatedIds, pendingQuestionsMap, unseenChanges, runningChatIds, defaultAgentMode, draftsCache, workspaceId, conversationFiles, handleChatClick, handlePinChat, handleArchiveChat, filteredChats.length, chatAgentLogos]
   )
 
   return (
