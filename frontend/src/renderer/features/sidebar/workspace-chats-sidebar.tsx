@@ -9,7 +9,7 @@ import { Button } from "../../components/ui/button"
 import { Input } from "../../components/ui/input"
 import { cn } from "../../lib/utils"
 import {
-  agentsConversationUnseenChangesAtom,
+  agentsUnseenChangesAtom,
   selectedAgentChatIdAtom,
   previousAgentChatIdAtom,
   conversationFilesAtom,
@@ -211,23 +211,7 @@ const ChatItem = memo(function ChatItem({
                   <AgentIcon className="w-4 h-4 text-muted-foreground" />
                 )}
               </div>
-              {/* Status badge in bottom-right corner */}
-              {(isLoading || hasUnseen) && !hasPendingQuestion && (
-                <div
-                  className={cn(
-                    "absolute -bottom-1 -right-1 w-3 h-3 rounded-full flex items-center justify-center",
-                    isActive
-                      ? "bg-[#E8E8E8] dark:bg-[#1B1B1B]"
-                      : "bg-[#F4F4F4] group-hover:bg-[#E8E8E8] dark:bg-[#101010] dark:group-hover:bg-[#1B1B1B]"
-                  )}
-                >
-                  {isLoading ? (
-                    <LoadingDot isLoading={true} className="w-2.5 h-2.5 text-muted-foreground" />
-                  ) : (
-                    <LoadingDot isLoading={false} className="w-2.5 h-2.5 text-muted-foreground" />
-                  )}
-                </div>
-              )}
+              {/* status badge moved to right-side action slot */}
             </div>
             {/* Content area */}
             <div className="flex-1 min-w-0 flex flex-col gap-0.5">
@@ -244,26 +228,60 @@ const ChatItem = memo(function ChatItem({
                     showPlaceholder={true}
                   />
                 </span>
-                <ConversationDropdownMenu
-                  conversation={{
-                    id: chat.id,
-                    name: chat.name || "New Chat",
-                    created_at: chat.createdAt?.toISOString(),
-                    updated_at: chat.updatedAt?.toISOString(),
-                  }}
-                  isPinned={isPinned}
-                  onTogglePin={onPinChat}
-                  onArchive={onArchiveChat}
-                  isOnlyChat={totalCount === 1}
-                  currentIndex={globalIndex}
-                  totalCount={totalCount}
-                  chatId={chat.id}
-                  isActiveTab={isActive}
-                  isSplitTab={false}
-                  entityLabel="chat"
-                  exportWholeChat={true}
-                  hideOpenInNewWindow={true}
-                />
+                <div className="relative flex-shrink-0 w-4 h-4 flex items-center justify-center">
+                  {(isLoading || hasUnseen) && !hasPendingQuestion && (
+                    <div
+                      className={cn(
+                        "absolute inset-0 flex items-center justify-center transition-opacity duration-150",
+                        "group-hover:opacity-0 group-hover:pointer-events-none",
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "w-4 h-4 rounded-full flex items-center justify-center",
+                          isActive
+                            ? "bg-[#E8E8E8] dark:bg-[#1B1B1B]"
+                            : "bg-[#F4F4F4] group-hover:bg-[#E8E8E8] dark:bg-[#101010] dark:group-hover:bg-[#1B1B1B]",
+                        )}
+                      >
+                        {isLoading ? (
+                          <LoadingDot isLoading={true} className="w-3 h-3 text-muted-foreground" />
+                        ) : (
+                          <LoadingDot isLoading={false} className="w-3 h-3 text-muted-foreground" />
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  <div
+                    className={cn(
+                      "absolute inset-0 flex items-center justify-center transition-opacity duration-150",
+                      (isLoading || hasUnseen) && !hasPendingQuestion
+                        ? "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto"
+                        : "opacity-100 pointer-events-auto",
+                    )}
+                  >
+                    <ConversationDropdownMenu
+                      conversation={{
+                        id: chat.id,
+                        name: chat.name || "New Chat",
+                        created_at: chat.createdAt?.toISOString(),
+                        updated_at: chat.updatedAt?.toISOString(),
+                      }}
+                      isPinned={isPinned}
+                      onTogglePin={onPinChat}
+                      onArchive={onArchiveChat}
+                      isOnlyChat={totalCount === 1}
+                      currentIndex={globalIndex}
+                      totalCount={totalCount}
+                      chatId={chat.id}
+                      isActiveTab={isActive}
+                      isSplitTab={false}
+                      entityLabel="chat"
+                      exportWholeChat={true}
+                      hideOpenInNewWindow={true}
+                    />
+                  </div>
+                </div>
               </div>
               {/* Second line: draft or file stats + timestamp */}
               <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60 min-w-0">
@@ -376,7 +394,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
     },
   })
 
-  const setConversationUnseenChanges = useSetAtom(agentsConversationUnseenChangesAtom)
+  const setUnseenChanges = useSetAtom(agentsUnseenChangesAtom)
 
   // File changes and drafts for stats display
   const conversationFiles = useAtomValue(conversationFilesAtom)
@@ -386,7 +404,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
   const newAgentHotkey = useResolvedHotkeyDisplay("new-agent")
   const [justCreatedIds, _setJustCreatedIds] = useAtom(justCreatedIdsAtom)
   const pendingQuestionsMap = useAtomValue(pendingUserQuestionsAtom)
-  const unseenChanges = useAtomValue(agentsConversationUnseenChangesAtom)
+  const unseenChanges = useAtomValue(agentsUnseenChangesAtom)
   const loadingConversations = useAtomValue(loadingConversationsAtom)
   // Chats with at least one conversation currently generating. The atom maps
   // conversationId -> parentChatId, so invert it to look up by chat id.
@@ -501,7 +519,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
       useAgentConversationStore.getState().setChatId(chatId)
 
       // 4. Clear unseen indicator
-      setConversationUnseenChanges((prev) => {
+      setUnseenChanges((prev) => {
         const next = new Set(prev)
         next.delete(chatId)
         return next
@@ -510,7 +528,7 @@ export const WorkspaceChatsSidebar = memo(function WorkspaceChatsSidebar({
       // 5. Call parent callback
       onChatSelect(chatId)
     },
-    [setActiveChat, setSelectedChatId, setConversationUnseenChanges, onChatSelect]
+    [setActiveChat, setSelectedChatId, setUnseenChanges, onChatSelect]
   )
 
   // Handle archive chat
