@@ -73,7 +73,13 @@ export default defineConfig({
       // },
       rollupOptions: {
         treeshake: {
-          moduleSideEffects: false,
+          // Marking every module as side-effect-free drops Monaco's
+          // registration-only modules (e.g. platform/undoRedo/common/
+          // undoRedoService.js), which crashes `monaco.editor.create` with
+          // "[createInstance] modelService depends on undoRedoService which is
+          // NOT registered". Monaco relies on import side effects, so keep
+          // them for its modules while still tree-shaking the rest.
+          moduleSideEffects: (id) => id.includes("node_modules/monaco-editor"),
         },
         input: {
           index: resolve(__dirname, "src/renderer/index.html"),
