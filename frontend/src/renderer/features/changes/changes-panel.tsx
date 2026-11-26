@@ -1,6 +1,6 @@
 // Modified from 1Code (Apache-2.0) by Ergatai — see MODIFICATIONS.md
 import { useState } from "react"
-import { ChevronDown, GitMerge, X } from "lucide-react"
+import { ChevronDown, GitMerge, RefreshCw, X } from "lucide-react"
 import type { ChangeCategory, ChangedFile } from "../../../shared/changes-types";
 import { ChangesView } from "./changes-view";
 import { trpc } from "../../lib/trpc";
@@ -192,12 +192,45 @@ export function ChangesPanel({
 		},
 	});
 
+	const syncMutation = trpc.changes.syncWorktreeToBase.useMutation({
+		onSuccess: (result) => {
+			if (result.status === "synced") {
+				setBaseActionStatus({
+					tone: "success",
+					message: `Synced ${result.filesChanged ?? 0} file(s) to ${baseBranch ?? "base"} working tree (not committed)`,
+				});
+			} else if (result.status === "nothing_to_sync") {
+				setBaseActionStatus({
+					tone: "info",
+					message: `${baseBranch ?? "Base"} working tree is already up to date`,
+				});
+			} else if (result.status === "needs_manual_merge") {
+				setBaseActionStatus({
+					tone: "error",
+					message: `Sync needs manual resolution: ${result.reason ?? "conflict"}`,
+					details: formatConflictDetails(result.conflictedFiles),
+				});
+			} else if (result.status === "error") {
+				setBaseActionStatus({
+					tone: "error",
+					message: result.error || "Sync failed",
+				});
+			}
+		},
+		onError: (error) => {
+			setBaseActionStatus({
+				tone: "error",
+				message: error.message || "Sync failed",
+			});
+		},
+	});
+
 	// A branch only has something to merge into a *different* base branch.
 	// Showing the action when both are the same invites a no-op at best and
 	// races with the user's own edits on that branch at worst.
 	const canMergeIntoBase =
 		!!chatBranch && !!baseBranch && chatBranch !== baseBranch;
-	const isBaseActionPending = mergeMutation.isPending;
+	const isBaseActionPending = mergeMutation.isPending || syncMutation.isPending;
 
 	if (!worktreePath) {
 		return (
@@ -218,48 +251,74 @@ export function ChangesPanel({
 						>
 							{chatBranch} → {baseBranch}
 						</span>
-						<DropdownMenu>
-							<DropdownMenuTrigger asChild>
-								<Button
-									variant="ghost"
-									size="sm"
-									className="h-6 min-w-0 max-w-[70%] gap-1.5 px-2 text-xs"
-									disabled={isBaseActionPending}
-									title={`Merge this branch into ${baseBranch}. Nothing is pushed.`}
-								>
-									<GitMerge className="size-3.5 shrink-0" />
-									<span className="truncate">
-										{mergeMutation.isPending
-											? "Merging..."
-											: `Merge into ${baseBranch}`}
-									</span>
-									<ChevronDown className="size-3 shrink-0" />
-								</Button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="end" className="w-72">
-								{MERGE_STRATEGIES.map((strategy) => (
-									<DropdownMenuItem
-										key={strategy.value}
+						<div className="flex shrink-0 items-center gap-1">
+							<Button
+								variant="ghost"
+								size="sm"
+								className="h-6 gap-1.5 px-2 text-xs"
+								disabled={isBaseActionPending}
+								onClick={() => {
+									syncMutation.mutate({
+										worktreePath,
+										chatBranch,
+										baseBranch,
+									});
+								}}
+								title={`Copy uncommitted changes from ${chatBranch} into the ${baseBranch} working tree. Nothing is committed or pushed.`}
+							>
+								<RefreshCw
+									className={cn(
+										"size-3.5 shrink-0",
+										syncMutation.isPending && "animate-spin",
+									)}
+								/>
+								<span className="truncate">
+									{syncMutation.isPending ? "Syncing..." : "Sync changes"}
+								</span>
+							</Button>
+							<DropdownMenu>
+								<DropdownMenuTrigger asChild>
+									<Button
+										variant="ghost"
+										size="sm"
+										className="h-6 min-w-0 gap-1.5 px-2 text-xs"
 										disabled={isBaseActionPending}
-										onClick={() => {
-											mergeMutation.mutate({
-												worktreePath,
-												chatBranch,
-												baseBranch,
-												strategy: strategy.value,
-											});
-										}}
+										title={`Merge this branch into ${baseBranch}. Nothing is pushed.`}
 									>
-										<div className="flex-1">
-											<div className="text-xs">{strategy.label}</div>
-											<div className="text-[10px] text-muted-foreground">
-												{strategy.description}
+										<GitMerge className="size-3.5 shrink-0" />
+										<span className="truncate">
+											{mergeMutation.isPending
+												? "Merging..."
+												: `Merge into ${baseBranch}`}
+										</span>
+										<ChevronDown className="size-3 shrink-0" />
+									</Button>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent align="end" className="w-72">
+									{MERGE_STRATEGIES.map((strategy) => (
+										<DropdownMenuItem
+											key={strategy.value}
+											disabled={isBaseActionPending}
+											onClick={() => {
+												mergeMutation.mutate({
+													worktreePath,
+													chatBranch,
+													baseBranch,
+													strategy: strategy.value,
+												});
+											}}
+										>
+											<div className="flex-1">
+												<div className="text-xs">{strategy.label}</div>
+												<div className="text-[10px] text-muted-foreground">
+													{strategy.description}
+												</div>
 											</div>
-										</div>
-									</DropdownMenuItem>
-								))}
-							</DropdownMenuContent>
-						</DropdownMenu>
+										</DropdownMenuItem>
+									))}
+								</DropdownMenuContent>
+							</DropdownMenu>
+						</div>
 					</div>
 					{baseActionStatus && (
 						<div
