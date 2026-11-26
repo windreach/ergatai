@@ -148,12 +148,12 @@ flowchart LR
 ## 下载与构建
 
 预编译的便携包发布在 [GitHub Releases](https://github.com/windreach/ergatai/releases) 页面（tag `v*`），
-每个 release 包含 `ergatai-portable-*.zip`（Linux / macOS；暂不支持 Windows）与 `SHA256SUMS.txt`。
+每个 release 包含 `ergatai-portable-*.zip` 和桌面安装包（Linux `.AppImage`/`.deb`，macOS `.dmg`；暂不支持 Windows）与 `SHA256SUMS.txt`。
 
 本地构建：
 
 - 便携包：`./scripts/bundle.sh` → `frontend/release/ergatai-portable-*.zip`
-- 打包应用：`./scripts/package.sh --platform linux|mac|win|all`
+- 打包应用：`./scripts/package.sh --platform linux|mac|all`
 - 手动：`cargo build --workspace` + `cd frontend && bun install && bun run build`
 
 <sub>目前仅 Linux 经过完整实测；macOS 由 CI 构建但尚未验证；Windows 暂不支持，因为锁 IPC 与终端 PTY 当前依赖 Unix API。</sub>
@@ -183,7 +183,7 @@ flowchart LR
 打包发布：
 
 ```bash
-./scripts/package.sh --platform linux   # mac | linux | win | all
+./scripts/package.sh --platform linux   # mac | linux | all
 ```
 
 <sub>注：仅 Linux 经过完整实测；macOS 构建尚未验证；Windows 暂不支持。打包脚本会把当前平台的 `ergatai-server`（以及 PATH 中的 `nats-server`）放进 Electron 资源目录，桌面应用启动时按需拉起后端；已有后端则直接复用。跨平台打包或 `--platform all` 请使用 `--skip-backend` 生成仅前端产物。</sub>

@@ -6,7 +6,7 @@
 # platform. The packaged app starts ergatai-server on demand.
 #
 # Usage:
-#   scripts/package.sh [--platform mac|linux|win|all] [--skip-backend] [--skip-frontend]
+#   scripts/package.sh [--platform mac|linux|all] [--skip-backend] [--skip-frontend]
 #
 # Notes:
 #   - Self-contained packaging only supports the host platform/arch.
@@ -28,8 +28,7 @@ ELECTRON_PLATFORM=""
 case "$(uname -s)" in
   Darwin) HOST_PLATFORM="mac"; ELECTRON_PLATFORM="darwin" ;;
   Linux) HOST_PLATFORM="linux"; ELECTRON_PLATFORM="linux" ;;
-  MINGW*|MSYS*|CYGWIN*) HOST_PLATFORM="win"; ELECTRON_PLATFORM="win32" ;;
-  *) echo "Unsupported host OS: $(uname -s)" >&2; exit 1 ;;
+  *) echo "Unsupported host OS: $(uname -s) (Windows is not supported yet)" >&2; exit 1 ;;
 esac
 
 case "$(uname -m)" in
@@ -54,8 +53,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$PLATFORM" in
-  mac|linux|win|all) ;;
-  *) echo "Unsupported platform: $PLATFORM" >&2; exit 1 ;;
+  mac|linux|all) ;;
+  *) echo "Unsupported platform: $PLATFORM (Windows is not supported yet)" >&2; exit 1 ;;
 esac
 
 # The backend is a native executable. electron-builder can package the app for
@@ -80,26 +79,18 @@ if [[ $SKIP_BACKEND -eq 0 ]]; then
   cd "$ROOT_DIR"
   cargo build --release -p ergatai-api
 
-  BACKEND_EXE=""
-  if [[ "$HOST_PLATFORM" == "win" ]]; then
-    BACKEND_EXE=".exe"
-  fi
-
   RESOURCE_BIN_DIR="$FRONTEND_DIR/resources/bin/${ELECTRON_PLATFORM}-${HOST_ARCH}"
   mkdir -p "$RESOURCE_BIN_DIR"
 
   echo "==> Bundling backend into $RESOURCE_BIN_DIR"
-  cp "$ROOT_DIR/target/release/ergatai-server${BACKEND_EXE}" "$RESOURCE_BIN_DIR/"
-  chmod +x "$RESOURCE_BIN_DIR/ergatai-server${BACKEND_EXE}"
+  cp "$ROOT_DIR/target/release/ergatai-server" "$RESOURCE_BIN_DIR/"
+  chmod +x "$RESOURCE_BIN_DIR/ergatai-server"
 
   # ergatai-server launches nats-server from a sibling path first, then PATH.
   NATS_BIN="$(command -v nats-server 2>/dev/null || true)"
-  if [[ -z "$NATS_BIN" ]]; then
-    NATS_BIN="$(command -v nats-server.exe 2>/dev/null || true)"
-  fi
   if [[ -n "$NATS_BIN" ]]; then
-    cp "$NATS_BIN" "$RESOURCE_BIN_DIR/nats-server${BACKEND_EXE}"
-    chmod +x "$RESOURCE_BIN_DIR/nats-server${BACKEND_EXE}"
+    cp "$NATS_BIN" "$RESOURCE_BIN_DIR/nats-server"
+    chmod +x "$RESOURCE_BIN_DIR/nats-server"
     echo "   nats-server: $NATS_BIN"
   else
     echo "   WARNING: nats-server not found in PATH; the packaged backend will" >&2
@@ -125,7 +116,6 @@ ELECTRON_BUILDER="$FRONTEND_DIR/node_modules/.bin/electron-builder"
 case "$PLATFORM" in
   mac) "$ELECTRON_BUILDER" --mac "--${HOST_ARCH}" ;;
   linux) "$ELECTRON_BUILDER" --linux "--${HOST_ARCH}" ;;
-  win) "$ELECTRON_BUILDER" --win "--${HOST_ARCH}" ;;
   all) "$ELECTRON_BUILDER" "--${HOST_ARCH}" ;;
 esac
 

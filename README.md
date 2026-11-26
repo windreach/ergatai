@@ -152,12 +152,12 @@ flowchart LR
 ## Download & build
 
 Prebuilt portable bundles are published on the [GitHub Releases](https://github.com/windreach/ergatai/releases) page
-(tagged `v*`); each release ships `ergatai-portable-*.zip` (Linux / macOS; Windows is not supported yet) plus `SHA256SUMS.txt`.
+(tagged `v*`); each release ships `ergatai-portable-*.zip` and desktop installers (Linux `.AppImage`/`.deb`, macOS `.dmg`; Windows is not supported yet) plus `SHA256SUMS.txt`.
 
 Build locally:
 
 - Portable bundle: `./scripts/bundle.sh` → `frontend/release/ergatai-portable-*.zip`
-- Packaged app: `./scripts/package.sh --platform linux|mac|win|all`
+- Packaged app: `./scripts/package.sh --platform linux|mac|all`
 - Manual: `cargo build --workspace` + `cd frontend && bun install && bun run build`
 
 <sub>Only Linux has been fully tested; macOS builds are produced by CI but have not been verified. Windows is not supported yet because the lock IPC and terminal PTY layers currently depend on Unix-only APIs.</sub>
@@ -190,7 +190,7 @@ Development (starts backend + frontend together):
 Package for release:
 
 ```bash
-./scripts/package.sh --platform linux   # mac | linux | win | all
+./scripts/package.sh --platform linux   # mac | linux | all
 ```
 
 <sub>Note: only Linux has been fully tested; macOS builds have not been verified, and Windows is not supported yet. The packaging script bundles the current platform's `ergatai-server` (plus `nats-server` from PATH) into the Electron resources. The desktop app starts the backend on demand and reuses an already-running one. Use `--skip-backend` for a frontend-only artifact (required for cross-platform or `--platform all` builds).</sub>

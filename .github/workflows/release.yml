@@ -37,11 +37,29 @@ jobs:
         shell: bash
         run: bash scripts/bundle.sh
 
-      - name: Upload artifact
+      - name: Build desktop installers
+        shell: bash
+        # The frontend was already built by bundle.sh.
+        env:
+          # CI has no Developer ID certificate; produce unsigned macOS artifacts.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: bash scripts/package.sh --skip-frontend
+
+      - name: Upload portable bundle
         uses: actions/upload-artifact@v4
         with:
-          name: ergatai-${{ matrix.os }}
+          name: ergatai-portable-${{ matrix.os }}
           path: frontend/release/ergatai-portable-*.zip
+
+      - name: Upload desktop installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ergatai-installers-${{ matrix.os }}
+          path: |
+            frontend/release/*.AppImage
+            frontend/release/*.deb
+            frontend/release/*.dmg
+            frontend/release/Ergatai-*.zip
 
   release:
     name: Publish GitHub Release
@@ -60,9 +78,15 @@ jobs:
         shell: bash
         run: |
           mkdir -p release-assets
-          find artifacts -type f -name 'ergatai-portable-*.zip' -exec cp {} release-assets/ \;
+          find artifacts -type f \
+            \( -name 'ergatai-portable-*.zip' \
+               -o -name '*.AppImage' \
+               -o -name '*.deb' \
+               -o -name '*.dmg' \
+               -o -name 'Ergatai-*.zip' \) \
+            -exec cp {} release-assets/ \;
           cd release-assets
-          sha256sum ergatai-portable-*.zip > SHA256SUMS.txt
+          sha256sum * > SHA256SUMS.txt
           ls -lh
 
       - name: Create release and upload assets
@@ -70,6 +94,10 @@ jobs:
         with:
           files: |
             release-assets/ergatai-portable-*.zip
+            release-assets/*.AppImage
+            release-assets/*.deb
+            release-assets/*.dmg
+            release-assets/Ergatai-*.zip
             release-assets/SHA256SUMS.txt
           generate_release_notes: true
           draft: false

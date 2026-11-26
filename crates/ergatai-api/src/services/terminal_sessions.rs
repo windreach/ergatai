@@ -365,13 +365,25 @@ fn open_pty(cols: u16, rows: u16) -> Result<(File, File), std::io::Error> {
     let mut master_fd = -1;
     let mut slave_fd = -1;
     // `openpty` takes mutable pointers on macOS but const pointers on Linux.
-    // Passing mutable pointers works on both because *mut T coerces to *const T.
+    #[cfg(target_os = "macos")]
     let mut window_size = libc::winsize {
         ws_col: cols,
         ws_row: rows,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
+    #[cfg(not(target_os = "macos"))]
+    let window_size = libc::winsize {
+        ws_col: cols,
+        ws_row: rows,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+
+    #[cfg(target_os = "macos")]
+    let window_size_ptr = &mut window_size as *mut libc::winsize;
+    #[cfg(not(target_os = "macos"))]
+    let window_size_ptr = &window_size as *const libc::winsize;
 
     if unsafe {
         libc::openpty(
@@ -379,7 +391,7 @@ fn open_pty(cols: u16, rows: u16) -> Result<(File, File), std::io::Error> {
             &mut slave_fd,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut window_size,
+            window_size_ptr,
         )
     } != 0
     {
