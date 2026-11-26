@@ -323,9 +323,9 @@ Not yet. The project still has many rough edges and known defects; use with caut
 </details>
 
 <details>
-<summary><b>Q5: Does the project support Windows and macOS?</b></summary>
+<summary><b>Q5: Does the project collect telemetry?</b></summary>
 
-Other platforms have not been tested in practice, so runtime behavior on them cannot be guaranteed.
+No. The project is local-first and has zero telemetry.
 
 </details>
 

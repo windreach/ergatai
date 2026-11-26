@@ -96,16 +96,35 @@ set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 "$DIR/bin/ergatai-server" --port 3000 >"$DIR/server.log" 2>&1 &
 SERVER_PID=$!
+cleanup() {
+  kill "$SERVER_PID" 2>/dev/null || true
+  wait "$SERVER_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
 for _ in $(seq 1 60); do
   curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1 && break
   sleep 1
 done
+
+# Electron's SUID sandbox helper must be root-owned and mode 4755.
+# A portable bundle cannot preserve that ownership through a zip, so fall
+# back to --no-sandbox (Chromium still applies its other isolation layers).
+SANDBOX_ARGS=()
+if [[ -f "$DIR/app/chrome-sandbox" ]]; then
+  SANDBOX_STATE="$(stat -c '%u:%a' "$DIR/app/chrome-sandbox" 2>/dev/null || true)"
+  if [[ "$SANDBOX_STATE" != "0:4755" ]]; then
+    echo "⚠️  chrome-sandbox is not root:root 4755; starting with --no-sandbox."
+    echo "    To enable the Chromium sandbox:"
+    echo "      sudo chown root:root \"$DIR/app/chrome-sandbox\""
+    echo "      sudo chmod 4755 \"$DIR/app/chrome-sandbox\""
+    SANDBOX_ARGS=(--no-sandbox)
+  fi
+fi
+
 set +e
-"$DIR/app/ergatai"
+"$DIR/app/ergatai" "${SANDBOX_ARGS[@]}"
 APP_STATUS=$?
 set -e
-kill "$SERVER_PID" 2>/dev/null || true
-wait "$SERVER_PID" 2>/dev/null || true
 exit "$APP_STATUS"
 EOF
     ;;

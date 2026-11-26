@@ -314,9 +314,9 @@ cd frontend && bun run ts:check
 </details>
 
 <details>
-<summary><b>Q5：项目支持 Windows 和 macOS 吗？</b></summary>
+<summary><b>Q5：项目会收集遥测数据吗？</b></summary>
 
-其他平台未经实测，无法确定运行情况。
+不会。项目本地优先，零遥测。
 
 </details>
 

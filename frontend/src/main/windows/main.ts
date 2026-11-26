@@ -435,6 +435,20 @@ function getUseNativeFramePreference(): boolean {
 }
 
 /**
+ * Resolve the packaged app icon for Linux/Windows window decoration.
+ * The build assets live next to `out/` in dev and inside app.asar when
+ * packaged (see package.json `build.files`).
+ */
+function getWindowIcon(): Electron.NativeImage | undefined {
+  if (process.platform === "darwin") return undefined
+  const ext = process.platform === "win32" ? "icon.ico" : "icon.png"
+  const iconPath = join(__dirname, "../../build", ext)
+  return existsSync(iconPath)
+    ? nativeImage.createFromPath(iconPath)
+    : undefined
+}
+
+/**
  * Create a new application window
  * @param options Optional settings for the new window
  * @param options.chatId Open this chat in the new window
@@ -446,6 +460,7 @@ export function createWindow(options?: { chatId?: string; conversationId?: strin
 
   // Read Windows frame preference
   const useNativeFrame = getUseNativeFramePreference()
+  const windowIcon = getWindowIcon()
 
   const window = new BrowserWindow({
     width: 1400,
@@ -455,6 +470,7 @@ export function createWindow(options?: { chatId?: string; conversationId?: strin
     show: false,
     title: "Ergatai",
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#09090b" : "#ffffff",
+    ...(windowIcon && { icon: windowIcon }),
     // hiddenInset shows native traffic lights inset in the window
     // hiddenInset hides the native title bar but keeps traffic lights visible
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",

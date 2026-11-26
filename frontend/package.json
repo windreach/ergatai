@@ -1,5 +1,5 @@
 {
-  "name": "ergatai-ui",
+  "name": "ergatai",
   "version": "0.1.0",
   "private": true,
   "description": "Ergatai - UI for parallel work with AI agents",
@@ -158,7 +158,9 @@
       "output": "release"
     },
     "files": [
-      "out/**/*"
+      "out/**/*",
+      "build/*.png",
+      "build/*.ico"
     ],
     "extraResources": [
       {
@@ -238,7 +240,7 @@
         "AppImage",
         "deb"
       ],
-      "icon": "build/icon.png",
+      "icon": "build/icons",
       "category": "Development",
       "syncDesktopName": true,
       "maintainer": "Ergatai <windreach@users.noreply.github.com>"
