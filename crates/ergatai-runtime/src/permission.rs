@@ -127,6 +127,34 @@ fn is_auto_approve_kind(kind: &ToolKind) -> bool {
     )
 }
 
+/// Whether a permission request must be surfaced to the user.
+///
+/// Kept pure so the policy can be tested without mutating the global mode.
+fn should_force_ask(
+    mode: crate::permission_service::PermissionMode,
+    autonomous: bool,
+    outside: bool,
+    kind: &ToolKind,
+) -> bool {
+    // AutoBash: Bash/Execute is unconditionally auto-approved. Neither the
+    // workspace-boundary check nor a file-lock conflict may turn it into a
+    // prompt or a rejection. All other tool kinds keep their usual policy.
+    if mode == crate::permission_service::PermissionMode::AutoBash && *kind == ToolKind::Execute {
+        return false;
+    }
+    if autonomous {
+        return outside;
+    }
+    match mode {
+        crate::permission_service::PermissionMode::FullAccess => false,
+        crate::permission_service::PermissionMode::AutoBash => outside || *kind == ToolKind::Fetch,
+        crate::permission_service::PermissionMode::Auto => {
+            outside || *kind == ToolKind::Execute || *kind == ToolKind::Fetch
+        }
+        crate::permission_service::PermissionMode::Ask => outside || !is_auto_approve_kind(kind),
+    }
+}
+
 /// Human-readable label for a tool kind.
 fn tool_kind_label(kind: &ToolKind) -> &'static str {
     match kind {
@@ -228,29 +256,22 @@ impl PermissionHandler for InteractivePermissionHandler {
 
         // Bash / shell (Execute) is never auto-approved in Auto mode — it always
         // goes through ask, even when all paths are inside the workspace.
-        // Search (glob/grep) is read-only, so it is auto-approved in Auto mode.
+        // In AutoBash mode it is approved unconditionally, including commands
+        // that touch paths outside the workspace. Search (glob/grep) is
+        // read-only, so it is auto-approved in Auto mode.
         //
         // Autonomous DAG agents have no interactive user to answer the prompt,
         // so any in-workspace operation is approved automatically; file-lock
         // checks for write/edit/execute still apply in the auto path below.
-        let force_ask = if autonomous {
-            outside
-        } else {
-            match mode {
-                PermissionMode::FullAccess => false,
-                PermissionMode::AutoBash => outside || kind == ToolKind::Fetch,
-                PermissionMode::Auto => {
-                    outside || kind == ToolKind::Execute || kind == ToolKind::Fetch
-                }
-                PermissionMode::Ask => outside || !is_auto_approve_kind(&kind),
-            }
-        };
+        let force_ask = should_force_ask(mode, autonomous, outside, &kind);
+        let auto_bash = mode == PermissionMode::AutoBash && kind == ToolKind::Execute;
 
         if !force_ask {
             debug!(agent_id = %agent_id, ?mode, "InteractivePermissionHandler: auto-approving per permission mode");
-            if mode == PermissionMode::FullAccess {
-                // FullAccess: allow everything. Best-effort pre-lock only for
-                // in-workspace paths; never reject on lock failure.
+            if mode == PermissionMode::FullAccess || auto_bash {
+                // FullAccess / AutoBash+Bash: allow unconditionally. Best-effort
+                // pre-lock only for in-workspace paths; never reject on lock
+                // failure or on paths outside the registered projects.
                 if !outside {
                     let _ = try_pre_lock_files(agent_id, session_id, &kind, &locations, raw_input)
                         .await;
@@ -941,6 +962,82 @@ mod tests {
         crate::permission_service::unmark_agent_autonomous(agent_id);
 
         assert_eq!(decision.option_id, Some("allow".to_string()));
+    }
+
+    #[test]
+    fn test_auto_bash_mode_never_asks_for_execute() {
+        use crate::permission_service::PermissionMode;
+
+        // In-workspace Bash: auto-approved in every mode except Auto/Ask.
+        assert!(!should_force_ask(
+            PermissionMode::AutoBash,
+            false,
+            false,
+            &ToolKind::Execute
+        ));
+        // The whole point: Bash touching paths outside registered projects is
+        // still approved without a prompt.
+        assert!(!should_force_ask(
+            PermissionMode::AutoBash,
+            false,
+            true,
+            &ToolKind::Execute
+        ));
+        // Autonomous agents have no interactive user either.
+        assert!(!should_force_ask(
+            PermissionMode::AutoBash,
+            true,
+            true,
+            &ToolKind::Execute
+        ));
+    }
+
+    #[test]
+    fn test_auto_bash_mode_keeps_other_policies() {
+        use crate::permission_service::PermissionMode;
+
+        // Fetch always asks in AutoBash.
+        assert!(should_force_ask(
+            PermissionMode::AutoBash,
+            false,
+            false,
+            &ToolKind::Fetch
+        ));
+        // Non-Bash writes outside the workspace still ask.
+        assert!(should_force_ask(
+            PermissionMode::AutoBash,
+            false,
+            true,
+            &ToolKind::Edit
+        ));
+        // In-workspace edits are auto-approved (and still subject to locks).
+        assert!(!should_force_ask(
+            PermissionMode::AutoBash,
+            false,
+            false,
+            &ToolKind::Edit
+        ));
+        // Auto mode still forces Bash through ask.
+        assert!(should_force_ask(
+            PermissionMode::Auto,
+            false,
+            false,
+            &ToolKind::Execute
+        ));
+        // FullAccess never asks.
+        assert!(!should_force_ask(
+            PermissionMode::FullAccess,
+            false,
+            true,
+            &ToolKind::Fetch
+        ));
+        // Ask mode asks for every mutating tool.
+        assert!(should_force_ask(
+            PermissionMode::Ask,
+            false,
+            false,
+            &ToolKind::Execute
+        ));
     }
 
     #[test]

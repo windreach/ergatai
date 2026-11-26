@@ -283,8 +283,9 @@ pub enum PermissionMode {
     Ask,
     /// Auto-approve tool permission requests; elicitations still surface.
     Auto,
-    /// Auto-approve tool permission requests including Bash/Execute; file-lock
-    /// checks still apply to writes (conflicts reject).
+    /// Auto-approve tool permission requests including Bash/Execute. Bash is
+    /// approved unconditionally (no prompt, no lock rejection); file-lock
+    /// checks still apply to other write operations.
     AutoBash,
     /// Auto-approve everything and bypass file-lock checks (full computer access).
     FullAccess,
