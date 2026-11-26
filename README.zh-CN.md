@@ -14,7 +14,7 @@
 ![Rust](https://img.shields.io/badge/Rust-1.88+-dea584?logo=rust&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
-![Electron](https://img.shields.io/badge/Electron-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-2B2E3A?logo=electron&logoColor=9FEAF9)
+![Electron](https://img.shields.io/badge/Electron-macOS%20%C2%B7%20Linux-2B2E3A?logo=electron&logoColor=9FEAF9)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 
 <br>
@@ -148,7 +148,7 @@ flowchart LR
 ## 下载与构建
 
 预编译的便携包发布在 [GitHub Releases](https://github.com/windreach/ergatai/releases) 页面（tag `v*`），
-每个 release 包含 `ergatai-portable-*.zip`（Linux / macOS / Windows）与 `SHA256SUMS.txt`。
+每个 release 包含 `ergatai-portable-*.zip`（Linux / macOS；暂不支持 Windows）与 `SHA256SUMS.txt`。
 
 本地构建：
 
@@ -156,7 +156,7 @@ flowchart LR
 - 打包应用：`./scripts/package.sh --platform linux|mac|win|all`
 - 手动：`cargo build --workspace` + `cd frontend && bun install && bun run build`
 
-<sub>目前仅 Linux 经过实测；Windows 与 macOS 由 CI 构建，但尚未验证。</sub>
+<sub>目前仅 Linux 经过完整实测；macOS 由 CI 构建但尚未验证；Windows 暂不支持，因为锁 IPC 与终端 PTY 当前依赖 Unix API。</sub>
 
 ## 快速开始
 
@@ -186,7 +186,7 @@ flowchart LR
 ./scripts/package.sh --platform linux   # mac | linux | win | all
 ```
 
-<sub>注：仅 Linux 经过实际测试；Windows 与 macOS 构建尚未验证。打包脚本会把当前平台的 `ergatai-server`（以及 PATH 中的 `nats-server`）放进 Electron 资源目录，桌面应用启动时按需拉起后端；已有后端则直接复用。跨平台打包或 `--platform all` 请使用 `--skip-backend` 生成仅前端产物。</sub>
+<sub>注：仅 Linux 经过完整实测；macOS 构建尚未验证；Windows 暂不支持。打包脚本会把当前平台的 `ergatai-server`（以及 PATH 中的 `nats-server`）放进 Electron 资源目录，桌面应用启动时按需拉起后端；已有后端则直接复用。跨平台打包或 `--platform all` 请使用 `--skip-backend` 生成仅前端产物。</sub>
 
 便携包：
 

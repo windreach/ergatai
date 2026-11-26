@@ -16,7 +16,7 @@ agent vendors.</sub>
 ![Rust](https://img.shields.io/badge/Rust-1.88+-dea584?logo=rust&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
-![Electron](https://img.shields.io/badge/Electron-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-2B2E3A?logo=electron&logoColor=9FEAF9)
+![Electron](https://img.shields.io/badge/Electron-macOS%20%C2%B7%20Linux-2B2E3A?logo=electron&logoColor=9FEAF9)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 
 <br>
@@ -152,7 +152,7 @@ flowchart LR
 ## Download & build
 
 Prebuilt portable bundles are published on the [GitHub Releases](https://github.com/windreach/ergatai/releases) page
-(tagged `v*`); each release ships `ergatai-portable-*.zip` (Linux / macOS / Windows) plus `SHA256SUMS.txt`.
+(tagged `v*`); each release ships `ergatai-portable-*.zip` (Linux / macOS; Windows is not supported yet) plus `SHA256SUMS.txt`.
 
 Build locally:
 
@@ -160,7 +160,7 @@ Build locally:
 - Packaged app: `./scripts/package.sh --platform linux|mac|win|all`
 - Manual: `cargo build --workspace` + `cd frontend && bun install && bun run build`
 
-<sub>Only Linux has been actually tested; Windows and macOS builds are produced by CI but have not been verified.</sub>
+<sub>Only Linux has been fully tested; macOS builds are produced by CI but have not been verified. Windows is not supported yet because the lock IPC and terminal PTY layers currently depend on Unix-only APIs.</sub>
 
 ## Quick start
 
@@ -193,7 +193,7 @@ Package for release:
 ./scripts/package.sh --platform linux   # mac | linux | win | all
 ```
 
-<sub>Note: only Linux has been actually tested; Windows and macOS builds have not been verified. The packaging script bundles the current platform's `ergatai-server` (plus `nats-server` from PATH) into the Electron resources. The desktop app starts the backend on demand and reuses an already-running one. Use `--skip-backend` for a frontend-only artifact (required for cross-platform or `--platform all` builds).</sub>
+<sub>Note: only Linux has been fully tested; macOS builds have not been verified, and Windows is not supported yet. The packaging script bundles the current platform's `ergatai-server` (plus `nats-server` from PATH) into the Electron resources. The desktop app starts the backend on demand and reuses an already-running one. Use `--skip-backend` for a frontend-only artifact (required for cross-platform or `--platform all` builds).</sub>
 
 Portable bundle:
 
