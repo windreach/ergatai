@@ -96,6 +96,10 @@ if [[ $SKIP_BACKEND -eq 0 ]]; then
     echo "   WARNING: nats-server not found in PATH; the packaged backend will" >&2
     echo "            fall back to a system installation at runtime." >&2
   fi
+
+  echo "==> Preparing bundled Node runtime and ACP adapters"
+  node "$ROOT_DIR/scripts/prepare-runtime.mjs"
+  node "$ROOT_DIR/scripts/prepare-adapters.mjs"
 fi
 
 if [[ $SKIP_FRONTEND -eq 0 ]]; then

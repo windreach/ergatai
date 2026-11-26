@@ -184,20 +184,8 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        }
+        "dmg",
+        "zip"
       ],
       "icon": "build/icon.icns",
       "hardenedRuntime": true,
@@ -244,6 +232,21 @@
       "category": "Development",
       "syncDesktopName": true,
       "maintainer": "Ergatai <windreach@users.noreply.github.com>"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "libc6 (>= 2.35)",
+        "git"
+      ]
     },
     "nsis": {
       "oneClick": false,

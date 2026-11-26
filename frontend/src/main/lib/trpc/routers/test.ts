@@ -381,51 +381,6 @@ const testAgentProfileStore = {
   },
 }
 
-// File Lock 存储
-interface TestFileLock {
-  token: string
-  agentId: string
-  path: string
-  acquiredAt: string
-  expiresAt: string
-}
-
-const testLockStore = {
-  locks: new Map<string, TestFileLock>(), // key: token
-  auditLog: Array<{ timestamp: string; agentId: string; path: string; action: string }>(),
-
-  list(): TestFileLock[] {
-    return Array.from(this.locks.values())
-  },
-
-  acquire(agentId: string, filePath: string): TestFileLock {
-    const token = uniqueId('lock')
-    const lock: TestFileLock = {
-      token,
-      agentId,
-      path: filePath,
-      acquiredAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(), // 30 min TTL
-    }
-    this.locks.set(token, lock)
-    this.auditLog.push({ timestamp: lock.acquiredAt, agentId, path: filePath, action: 'acquire' })
-    return lock
-  },
-
-  release(token: string): boolean {
-    const lock = this.locks.get(token)
-    if (!lock) return false
-    this.locks.delete(token)
-    this.auditLog.push({ timestamp: new Date().toISOString(), agentId: lock.agentId, path: lock.path, action: 'release' })
-    return true
-  },
-
-  clear() {
-    this.locks.clear()
-    this.auditLog.length = 0
-  },
-}
-
 // Rate Limiter mock state (sliding window simulation)
 interface RateLimitState {
   agentId: string
@@ -1370,50 +1325,6 @@ ${input.prompt}
   }),
 
   /**
-   * File Locks Mock - 零信任文件访问控制
-   */
-  locks: router({
-    list: testProcedure.query(() => {
-      return testLockStore.list()
-    }),
-
-    getAuditLog: testProcedure.query(() => {
-      return testLockStore.auditLog
-    }),
-
-    getContention: testProcedure.query(() => {
-      // Mock contention detection - return locks that are close to expiry
-      const now = Date.now()
-      const locks = testLockStore.list()
-      const contention = locks.filter(lock => {
-        const expiresAt = new Date(lock.expiresAt).getTime()
-        return expiresAt - now < 5 * 60 * 1000 // Less than 5 minutes remaining
-      })
-      return {
-        contendedLocks: contention,
-        totalActive: locks.length,
-      }
-    }),
-
-    acquireLock: testProcedure
-      .input(z.object({
-        agentId: z.string(),
-        path: z.string(),
-      }))
-      .mutation(({ input }) => {
-        const lock = testLockStore.acquire(input.agentId, input.path)
-        return lock
-      }),
-
-    releaseLock: testProcedure
-      .input(z.object({ token: z.string() }))
-      .mutation(({ input }) => {
-        const success = testLockStore.release(input.token)
-        return { success }
-      }),
-  }),
-
-  /**
    * Rate Limiter Mock - 滑动窗口速率限制
    */
   rateLimiter: router({
@@ -1606,7 +1517,6 @@ ${input.prompt}
       testMessageStore.clear()
       testAgentOutputStore.clear()
       testAgentProfileStore.clear()
-      testLockStore.clear()
       testRateLimiterState.clear()
 
       return results

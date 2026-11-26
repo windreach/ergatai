@@ -24,11 +24,12 @@ import {
   statSync,
   truncateSync,
 } from "node:fs"
-import { join, resolve } from "node:path"
+import { delimiter, dirname, join, resolve } from "node:path"
 import {
   getErgataiAuthConfig,
   getErgataiUserDataDir,
 } from "./ergatai/api"
+import { getClaudeShellEnvironment } from "./claude/env"
 
 const PROBE_TIMEOUT_MS = 1_000
 const READY_TIMEOUT_MS = 15_000
@@ -204,8 +205,17 @@ function ensureExitHook(): void {
 
 function spawnManagedBackend(binary: string, target: LocalTarget): ChildProcess {
   const auth = getErgataiAuthConfig()
+
+  // GUI launches (desktop menu, .deb, AppImage) start Electron with a minimal
+  // PATH that usually lacks nvm/fnm/volta and ~/.opencode/bin. The backend
+  // spawns `node`-based ACP adapters and the `opencode` CLI, so inherit the
+  // login-shell PATH when possible.
+  const shellEnv = getClaudeShellEnvironment()
+  const inheritedPath = shellEnv.PATH || process.env.PATH || ""
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    // The server directory contains the bundled `node` runtime.
+    PATH: [dirname(binary), inheritedPath].filter(Boolean).join(delimiter),
     ERGATAI_USER_DATA_DIR: getErgataiUserDataDir(),
     RUST_LOG: process.env.RUST_LOG ?? (app.isPackaged ? "info" : "debug"),
   }

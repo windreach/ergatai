@@ -4,7 +4,7 @@
  */
 
 import { exec } from "node:child_process"
-import { existsSync, lstatSync, readlinkSync } from "node:fs"
+import { existsSync, lstatSync, readdirSync, readlinkSync } from "node:fs"
 import * as path from "node:path"
 import { promisify } from "node:util"
 import { BasePlatformProvider } from "./base"
@@ -33,6 +33,16 @@ export class LinuxPlatformProvider extends BasePlatformProvider {
 
   getPathConfig(): PathConfig {
     const home = this.getHome()
+    const nvmBins: string[] = []
+    try {
+      const nvmRoot = path.join(home, ".nvm", "versions", "node")
+      for (const version of readdirSync(nvmRoot)) {
+        const bin = path.join(nvmRoot, version, "bin")
+        if (existsSync(bin)) nvmBins.push(bin)
+      }
+    } catch {
+      // nvm is optional.
+    }
 
     return {
       separator: ":",
@@ -56,7 +66,9 @@ export class LinuxPlatformProvider extends BasePlatformProvider {
         path.join(home, ".cargo", "bin"),
         path.join(home, ".deno", "bin"),
         // NVM managed Node.js
-        path.join(home, ".nvm", "versions", "node", "*", "bin"),
+        ...nvmBins,
+        // OpenCode CLI
+        path.join(home, ".opencode", "bin"),
         // ASDF version manager
         path.join(home, ".asdf", "shims"),
         // Linuxbrew

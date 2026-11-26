@@ -25,6 +25,18 @@ case "$OS" in
   *) echo "Unsupported OS: $OS" >&2; exit 1 ;;
 esac
 
+case "$PLATFORM" in
+  mac) ELECTRON_PLATFORM="darwin" ;;
+  linux) ELECTRON_PLATFORM="linux" ;;
+  windows) ELECTRON_PLATFORM="win32" ;;
+esac
+case "$ARCH" in
+  x86_64|amd64) ELECTRON_ARCH="x64" ;;
+  arm64|aarch64) ELECTRON_ARCH="arm64" ;;
+  *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
+RESOURCE_BIN_DIR="$FRONTEND_DIR/resources/bin/${ELECTRON_PLATFORM}-${ELECTRON_ARCH}"
+
 echo "==> Building backend (release)"
 cd "$ROOT_DIR"
 cargo build --release -p ergatai-api
@@ -34,6 +46,10 @@ echo "==> Building frontend"
 cd "$FRONTEND_DIR"
 if [[ ! -d node_modules ]]; then bun install; fi
 bun run build
+
+echo "==> Preparing bundled Node runtime and ACP adapters"
+node "$ROOT_DIR/scripts/prepare-runtime.mjs"
+node "$ROOT_DIR/scripts/prepare-adapters.mjs"
 
 echo "==> Unpacked app"
 bun run package
@@ -60,6 +76,13 @@ if [[ -n "$NATS_BIN" ]]; then
 else
   echo "   WARNING: nats-server not found in PATH; runtime will need it installed" >&2
 fi
+if [[ -f "$RESOURCE_BIN_DIR/node" ]]; then
+  cp "$RESOURCE_BIN_DIR/node" "$BUNDLE_DIR/bin/node"
+  chmod +x "$BUNDLE_DIR/bin/node"
+fi
+if [[ -d "$RESOURCE_BIN_DIR/adapters" ]]; then
+  cp -R "$RESOURCE_BIN_DIR/adapters" "$BUNDLE_DIR/bin/adapters"
+fi
 if [[ -f "$LAUNCHER" ]]; then
   cp "$LAUNCHER" "$BUNDLE_DIR/"
   chmod +x "$BUNDLE_DIR/ergatai-launcher" 2>/dev/null || true
@@ -75,6 +98,7 @@ case "$PLATFORM" in
 #!/usr/bin/env bash
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
+export PATH="$DIR/bin:$PATH"
 "$DIR/bin/ergatai-server" --port 3000 >"$DIR/server.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 60); do
@@ -94,6 +118,7 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
+export PATH="$DIR/bin:$PATH"
 "$DIR/bin/ergatai-server" --port 3000 >"$DIR/server.log" 2>&1 &
 SERVER_PID=$!
 cleanup() {

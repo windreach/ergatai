@@ -27,11 +27,5 @@ libc.workspace = true
 tokio-util.workspace = true
 parking_lot.workspace = true
 
-[features]
-default = []
-# Opt-in for integration tests that need root/CAP_SYS_ADMIN and fanotify support.
-# Skipped by default in unprivileged CI.
-fanotify-integration = []
-
 [dev-dependencies]
 tempfile.workspace = true

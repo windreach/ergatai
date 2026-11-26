@@ -6440,6 +6440,8 @@ impl AcpBackendInterface for AcpBackend {
             "NODE_PATH",
             "NPM_CONFIG_PREFIX",
             "NPM_CONFIG_CACHE",
+            // Codex ACP adapter
+            "CODEX_PATH",
             // Python runtime
             "PYTHONPATH",
             "VIRTUAL_ENV",
@@ -6448,6 +6450,23 @@ impl AcpBackendInterface for AcpBackend {
         for var in allowed_parent_vars {
             if let Ok(val) = std::env::var(var) {
                 full_env.insert(var.to_string(), val);
+            }
+        }
+
+        // Bundled adapters omit the large native agent binaries. Point them at
+        // the user's externally installed agent CLIs when available.
+        if command.contains("claude-agent-acp") && !full_env.contains_key("CLAUDE_CODE_EXECUTABLE")
+        {
+            if let Ok(claude) = which::which("claude") {
+                full_env.insert(
+                    "CLAUDE_CODE_EXECUTABLE".to_string(),
+                    claude.display().to_string(),
+                );
+            }
+        }
+        if command.contains("codex-acp") && !full_env.contains_key("CODEX_PATH") {
+            if let Ok(codex) = which::which("codex") {
+                full_env.insert("CODEX_PATH".to_string(), codex.display().to_string());
             }
         }
 

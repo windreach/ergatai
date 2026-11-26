@@ -106,8 +106,29 @@ struct Args {
     insecure_no_auth: bool,
 }
 
+/// Make sibling runtime tools (bundled `node`) discoverable by ACP adapters
+/// even when the server was launched outside the desktop app.
+fn prepend_exe_dir_to_path() {
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    let Some(dir) = executable.parent() else {
+        return;
+    };
+
+    let mut paths = vec![dir.to_path_buf()];
+    if let Some(path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&path));
+    }
+    if let Ok(joined) = std::env::join_paths(paths) {
+        // Safety: called before the tokio runtime starts, only main thread exists.
+        unsafe { std::env::set_var("PATH", joined) };
+    }
+}
+
 /// Parse arguments and set environment variables BEFORE the tokio runtime starts.
 fn setup_env_before_runtime() -> Args {
+    prepend_exe_dir_to_path();
     let args = Args::parse();
 
     if args.verbose {

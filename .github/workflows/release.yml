@@ -19,7 +19,10 @@ jobs:
       matrix:
         # Windows is not supported yet: the lock IPC and terminal PTY layers
         # currently depend on Unix-only APIs.
-        os: [ubuntu-latest, macos-latest]
+        #
+        # Build Linux on 22.04 so node-pty is linked against glibc 2.35
+        # instead of the newest runner glibc (24.04/26.04).
+        os: [ubuntu-22.04, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -27,10 +30,28 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Node/Bun
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Cache Bun
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install Bun
         uses: oven-sh/setup-bun@v2
 
       - name: Build portable bundle
@@ -44,6 +65,31 @@ jobs:
           # CI has no Developer ID certificate; produce unsigned macOS artifacts.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: bash scripts/package.sh --skip-frontend
+
+      - name: Verify Linux glibc baseline
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          max_glibc="$(
+            find frontend/release -name 'pty.node' -o -name 'node-pty.node' \
+              | while read -r file; do
+                  objdump -T "$file" 2>/dev/null \
+                    | grep -o 'GLIBC_[0-9.]*' \
+                    | sort -V \
+                    | tail -1
+                done \
+              | sort -V \
+              | tail -1
+          )"
+          echo "node-pty max glibc symbol: ${max_glibc:-unknown}"
+          if [[ -z "$max_glibc" ]]; then
+            echo "ERROR: could not determine node-pty glibc requirement" >&2
+            exit 1
+          fi
+          if [[ "$(printf '%s\n' "$max_glibc" 'GLIBC_2.35' | sort -V | tail -1)" != "GLIBC_2.35" ]]; then
+            echo "ERROR: release now requires $max_glibc, expected <= GLIBC_2.35" >&2
+            exit 1
+          fi
 
       - name: Upload portable bundle
         uses: actions/upload-artifact@v4

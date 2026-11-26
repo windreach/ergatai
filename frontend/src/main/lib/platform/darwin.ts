@@ -9,6 +9,7 @@ import {
 import {
   existsSync,
   lstatSync,
+  readdirSync,
   readlinkSync
 } from "node:fs"
 import * as path from "node:path"
@@ -43,6 +44,16 @@ export class DarwinPlatformProvider extends BasePlatformProvider {
 
   getPathConfig(): PathConfig {
     const home = this.getHome()
+    const nvmBins: string[] = []
+    try {
+      const nvmRoot = path.join(home, ".nvm", "versions", "node")
+      for (const version of readdirSync(nvmRoot)) {
+        const bin = path.join(nvmRoot, version, "bin")
+        if (existsSync(bin)) nvmBins.push(bin)
+      }
+    } catch {
+      // nvm is optional.
+    }
 
     return {
       separator: ":",
@@ -67,8 +78,10 @@ export class DarwinPlatformProvider extends BasePlatformProvider {
         path.join(home, ".bun", "bin"),
         path.join(home, ".cargo", "bin"),
         path.join(home, ".deno", "bin"),
-        // NVM managed Node.js (common pattern)
-        path.join(home, ".nvm", "versions", "node", "*", "bin"),
+        // NVM managed Node.js
+        ...nvmBins,
+        // OpenCode CLI
+        path.join(home, ".opencode", "bin"),
       ],
     }
   }

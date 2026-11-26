@@ -60,6 +60,11 @@ const CURRENT_POINTER: &str = "current";
 const STAGING_DIR: &str = "staging";
 const MANIFEST_FILE: &str = "manifest.json";
 
+/// Reserved release id for adapters shipped inside the application bundle.
+/// The managed store exposes them through a symlink so the normal release
+/// resolution and profile-refresh paths keep working unchanged.
+const BUNDLED_RELEASE_ID: &str = "bundled";
+
 /// Placeholder "release id" for managed profiles that have no active release.
 /// Must never collide with a real release id (real ids are timestamp-based).
 const PENDING_RELEASE_ID: &str = "pending";
@@ -167,6 +172,10 @@ pub fn spawn_adapter_manager(profile_registry_db: String, adapters_base: PathBuf
 }
 
 async fn run_startup_check(db_path: String, managed: PathBuf) {
+    // Make adapters shipped with the app available before resolving the
+    // current release, so a clean install works without npm/network.
+    let _ = ensure_bundled_release(&managed);
+
     // Startup duties: point managed profile rows at the current release first,
     // then retire old releases. Retiring first could delete the release an
     // existing profile command still points to if a previous activation
@@ -179,6 +188,13 @@ async fn run_startup_check(db_path: String, managed: PathBuf) {
 
     if let Err(error) = retire_old_releases(&managed) {
         warn!(error = %error, "Adapter release cleanup failed (non-fatal)");
+    }
+
+    // Runtime updates need npm. Bundled Node does not ship npm, so keep the
+    // bundled baseline and let app releases update it unless npm is present.
+    if which::which("npm").is_err() {
+        info!("npm not found; keeping bundled ACP adapters");
+        return;
     }
 
     // Wait briefly for startup/network to settle, then check for updates once.
@@ -443,6 +459,71 @@ pub fn current_release_dir(managed: &Path) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// Locate adapters shipped next to the server binary.
+///
+/// Packaged layouts place them at `resources/bin/adapters` (Electron
+/// extraResources) or `bin/adapters` (portable bundle). Tests and custom
+/// deployments can override with `ERGATAI_BUNDLED_ADAPTERS`.
+pub fn bundled_adapters_dir() -> Option<PathBuf> {
+    if let Ok(value) = std::env::var("ERGATAI_BUNDLED_ADAPTERS") {
+        let path = PathBuf::from(value);
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+
+    let executable = std::env::current_exe().ok()?;
+    let path = executable.parent()?.join("adapters");
+    path.is_dir().then_some(path)
+}
+
+/// Expose bundled adapters as the `bundled` managed release and make it
+/// current when no real managed release exists yet.
+#[cfg(unix)]
+fn ensure_bundled_release(managed: &Path) -> Option<PathBuf> {
+    let bundled = bundled_adapters_dir()?;
+    let releases = managed.join(RELEASES_DIR);
+    if let Err(error) = std::fs::create_dir_all(&releases) {
+        warn!(error = %error, "Failed to create adapter releases directory");
+        return None;
+    }
+
+    let link = releases.join(BUNDLED_RELEASE_ID);
+    let needs_update = match std::fs::read_link(&link) {
+        Ok(target) => target != bundled,
+        Err(_) => true,
+    };
+    if needs_update {
+        let _ = std::fs::remove_file(&link);
+        if let Err(error) = std::os::unix::fs::symlink(&bundled, &link) {
+            warn!(
+                error = %error,
+                bundled = %bundled.display(),
+                "Failed to expose bundled adapters"
+            );
+            return None;
+        }
+    }
+
+    if current_release_dir(managed).is_none() {
+        if let Err(error) = write_current_pointer(managed, BUNDLED_RELEASE_ID) {
+            warn!(error = %error, "Failed to activate bundled adapters");
+            return None;
+        }
+        info!(
+            bundled = %bundled.display(),
+            "Activated bundled ACP adapters"
+        );
+    }
+
+    Some(link)
+}
+
+#[cfg(not(unix))]
+fn ensure_bundled_release(_managed: &Path) -> Option<PathBuf> {
+    None
+}
+
 fn write_current_pointer(managed: &Path, release_id: &str) -> Result<(), ErgataiError> {
     std::fs::create_dir_all(managed)
         .map_err(|e| ErgataiError::internal(format!("Failed to create managed dir: {}", e)))?;
@@ -495,7 +576,7 @@ fn retire_old_releases(managed: &Path) -> Result<(), ErgataiError> {
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if current == name || !entry.path().is_dir() {
+        if current == name || name == BUNDLED_RELEASE_ID || !entry.path().is_dir() {
             continue;
         }
         match std::fs::remove_dir_all(entry.path()) {
@@ -741,6 +822,10 @@ async fn npm_install_package(
     let mut cmd = Command::new("npm");
     cmd.args([
         "install",
+        // Keep adapter updates JS-only. Native agent CLIs are external and are
+        // resolved through CLAUDE_CODE_EXECUTABLE / CODEX_PATH at spawn time.
+        "--omit=optional",
+        "--ignore-scripts",
         // NOTE: no `--prefer-offline`. It trusts cached registry metadata
         // without revalidation, so a packument cached before a dependency
         // version was published makes npm fail with ETARGET ("No matching
