@@ -1182,30 +1182,6 @@ export function ChatView({
     },
   })
 
-  // Sync from main mutation (for resolving merge conflicts)
-  const mergeChatBranchMutation = trpc.changes.mergeChatBranch.useMutation({
-    onSuccess: (result) => {
-      if (result.status === "merged") {
-        toast.success("Merged into base branch", { position: "top-center" })
-      } else if (result.status === "nothing_to_merge") {
-        toast.info("Nothing to merge", { position: "top-center" })
-      } else if (result.status === "needs_manual_merge") {
-        toast.error(
-          result.reason === "conflict"
-            ? `Merge conflict: ${(result.conflictedFiles ?? []).join(", ")}`
-            : `Merge needs manual resolution: ${result.reason ?? ""}`,
-          { position: "top-center", duration: 8000 },
-        )
-      } else if (result.status === "error") {
-        toast.error(result.error || "Merge failed", { position: "top-center" })
-      }
-      refetchGitStatus()
-    },
-    onError: (error) => {
-      toast.error(error.message || "Merge failed", { position: "top-center" })
-    },
-  })
-
   const mergeFromDefaultMutation = trpc.changes.mergeFromDefault.useMutation({
     onSuccess: () => {
       toast.success("Branch synced with main. You can now merge the PR.", { position: "top-center" })

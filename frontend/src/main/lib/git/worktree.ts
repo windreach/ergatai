@@ -4,28 +4,23 @@ import {
 } from "node:child_process";
 import { t } from "../i18n"
 import {
-  createHash,
   randomBytes
 } from "node:crypto";
 import {
   chmod,
   copyFile,
-  lstat,
   mkdir,
   readFile,
-  readlink,
   rm,
   stat,
   symlink,
-  unlink,
-  writeFile
+  unlink
 } from "node:fs/promises";
 import {
   devNull,
   homedir
 } from "node:os";
 import {
-  dirname,
   isAbsolute,
   join,
   resolve
@@ -1435,12 +1430,15 @@ export async function pushWorktreeBranch(
 /**
  * Get current git status summary
  */
+export type MergeChatBranchStrategy = "ff-only" | "no-ff" | "squash";
+
 export interface MergeChatBranchResult {
 	status:
 		| "nothing_to_merge"
 		| "needs_manual_merge"
 		| "merged"
 		| "error";
+	strategy?: MergeChatBranchStrategy;
 	reason?: string;
 	conflictedFiles?: string[];
 	error?: string;
@@ -1472,8 +1470,13 @@ export async function mergeChatBranchIntoBase(
 	projectPath: string,
 	chatBranch: string,
 	baseBranch: string,
-	options?: { push?: boolean },
+	options?: { push?: boolean; strategy?: MergeChatBranchStrategy },
 ): Promise<MergeChatBranchResult> {
+	// The UI always picks a strategy explicitly; default to a merge commit so
+	// callers that omit it still get a visible merge rather than a silent
+	// fast-forward.
+	const strategy: MergeChatBranchStrategy = options?.strategy ?? "no-ff";
+
 	// Resolve base checkout location.
 	let baseRepoPath = await findCheckedOutWorktreePath(projectPath, baseBranch);
 	let needCheckout = false;
@@ -1533,26 +1536,46 @@ export async function mergeChatBranchIntoBase(
 	}
 
 	if (ahead === 0) {
-		return { status: "nothing_to_merge" };
+		return { status: "nothing_to_merge", strategy };
 	}
 
-	// Attempt merge.
+	// Attempt merge. Each strategy maps to exactly one git invocation so the
+	// result is the same as running the command by hand.
 	try {
-		await git.merge([chatBranch, "--no-edit"]);
+		if (strategy === "squash") {
+			await git.raw(["merge", "--squash", chatBranch]);
+			await git.commit(`Squash merge ${chatBranch} into ${baseBranch}`);
+			await removeSquashMessage(baseRepoPath);
+		} else {
+			await git.merge([
+				chatBranch,
+				strategy === "ff-only" ? "--ff-only" : "--no-ff",
+				"--no-edit",
+			]);
+		}
 	} catch (error) {
 		const status = await git.status().catch(() => null);
 		const conflicted = status?.conflicted ?? [];
-		await git.merge(["--abort"]).catch(() => {});
+		if (strategy === "squash") {
+			// `git merge --squash` has no MERGE_HEAD, so `merge --abort` cannot
+			// always clean it up; `reset --merge` restores the pre-merge state.
+			await git.raw(["reset", "--merge"]).catch(() => {});
+		} else {
+			await git.merge(["--abort"]).catch(() => {});
+		}
 		if (conflicted.length > 0) {
 			return {
 				status: "needs_manual_merge",
+				strategy,
 				reason: "conflict",
 				conflictedFiles: conflicted,
 			};
 		}
 		return {
 			status: "needs_manual_merge",
-			reason: "merge_failed",
+			strategy,
+			reason:
+				strategy === "ff-only" ? "not_fast_forwardable" : "merge_failed",
 			error: error instanceof Error ? error.message : String(error),
 		};
 	}
@@ -1565,168 +1588,8 @@ export async function mergeChatBranchIntoBase(
 		}
 	}
 
-	return { status: "merged" };
+	return { status: "merged", strategy };
 }
-
-export interface SyncWorktreeToBaseResult {
-	status:
-		| "nothing_to_sync"
-		| "needs_manual_merge"
-		| "synced"
-		| "error";
-	filesChanged?: number;
-	reason?: string;
-	conflictedFiles?: string[];
-	error?: string;
-}
-
-/**
- * Paths that belong to the harness/tooling rather than the project. They exist
- * in both the main checkout and every worktree, but usually hold per-worktree
- * state, so syncing them back would create noisy conflicts.
- */
-const SYNC_EXCLUDED_PREFIXES = [
-	".git/",
-	".claude/",
-	".codex/",
-	".cursor/",
-	".ergatai/",
-	".next/",
-	".opencode/",
-	".turbo/",
-	"coverage/",
-	"node_modules/",
-	"target/",
-	"worktrees/",
-];
-
-const SYNC_EXCLUDED_FILES = new Set([".DS_Store", "Thumbs.db"]);
-
-function isSyncExcludedPath(relativePath: string): boolean {
-	const normalized = relativePath.replaceAll("\\", "/");
-	if (SYNC_EXCLUDED_FILES.has(normalized)) return true;
-	return SYNC_EXCLUDED_PREFIXES.some(
-		(prefix) =>
-			normalized === prefix.slice(0, -1) || normalized.startsWith(prefix),
-	);
-}
-
-/** Git's blob hash is sha1("blob <byte-length>\\0" + content). */
-function gitBlobHash(content: Buffer): string {
-	const header = Buffer.from(`blob ${content.length}\0`, "utf8");
-	return createHash("sha1").update(header).update(content).digest("hex");
-}
-
-const MAX_SYNC_FILE_BYTES = 100 * 1024 * 1024;
-
-async function getPathContentHash(absPath: string): Promise<string | null> {
-	let info: Awaited<ReturnType<typeof lstat>>;
-	try {
-		info = await lstat(absPath);
-	} catch (error: unknown) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-		throw error;
-	}
-
-	if (info.isSymbolicLink()) {
-		// Git stores a symlink as a blob containing its target path.
-		return gitBlobHash(Buffer.from(await readlink(absPath), "utf8"));
-	}
-	if (!info.isFile()) return null;
-	if (info.size > MAX_SYNC_FILE_BYTES) {
-		throw new Error(
-			`Refusing to sync ${absPath}: file is larger than 100 MB`,
-		);
-	}
-	return gitBlobHash(await readFile(absPath));
-}
-
-async function getBlobHashAtRevision(
-	repoPath: string,
-	revision: string,
-	relativePath: string,
-): Promise<string | null> {
-	try {
-		const { stdout } = await execFileAsync("git", [
-			"-C",
-			repoPath,
-			"rev-parse",
-			"--verify",
-			"--quiet",
-			`${revision}:${relativePath}`,
-		]);
-		return stdout.trim() || null;
-	} catch {
-		return null;
-	}
-}
-
-/**
- * Remember which content this app last wrote into the base working tree for a
- * given worktree. Without it, the second sync would mistake our own previous
- * (still uncommitted) output for a user edit and refuse to update the file.
- *
- * The file lives under the repository's common .git directory, so it survives
- * restarts without polluting the project or creating commits.
- */
-type SyncState = {
-	version: 1;
-	/** relative path -> blob hash last written, or null for a deletion */
-	paths: Record<string, string | null>;
-	/** Chat branch HEAD that was squash-applied to the base working tree. */
-	lastSyncedCommit?: string;
-};
-
-async function getSyncStatePath(
-	projectPath: string,
-	worktreePath: string,
-	chatBranch: string,
-): Promise<string> {
-	const { stdout } = await execFileAsync("git", [
-		"-C",
-		projectPath,
-		"rev-parse",
-		"--git-common-dir",
-	]);
-	const commonDirRaw = stdout.trim();
-	const commonDir = isAbsolute(commonDirRaw)
-		? commonDirRaw
-		: resolve(projectPath, commonDirRaw);
-	const id = createHash("sha1")
-		.update(`${resolve(worktreePath)}\0${chatBranch}`)
-		.digest("hex")
-		.slice(0, 16);
-	return join(commonDir, "ergatai-sync", `${id}.json`);
-}
-
-async function readSyncState(statePath: string): Promise<SyncState> {
-	try {
-		const parsed = JSON.parse(await readFile(statePath, "utf8")) as Partial<SyncState>;
-		if (parsed && parsed.version === 1 && parsed.paths && typeof parsed.paths === "object") {
-			return {
-				version: 1,
-				paths: { ...parsed.paths },
-				lastSyncedCommit:
-					typeof parsed.lastSyncedCommit === "string"
-						? parsed.lastSyncedCommit
-						: undefined,
-			};
-		}
-	} catch {
-		// Missing or malformed state is treated as a first sync.
-	}
-	return { version: 1, paths: {} };
-}
-
-async function writeSyncState(
-	statePath: string,
-	state: SyncState,
-): Promise<void> {
-	await mkdir(dirname(statePath), { recursive: true });
-	await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-}
-
-const SYNC_COMMIT_PREFIX = "ergatai-sync:";
 
 async function runGit(
 	repoPath: string,
@@ -1739,152 +1602,6 @@ async function runGit(
 		{ maxBuffer },
 	);
 	return stdout;
-}
-
-async function hasStagedChanges(repoPath: string): Promise<boolean> {
-	try {
-		await runGit(repoPath, ["diff", "--cached", "--quiet"]);
-		return false;
-	} catch (error) {
-		if (isExecFileException(error) && error.code === 1) return true;
-		throw error;
-	}
-}
-
-/**
- * Stage the worktree, excluding harness/tooling directories. Returns true when
- * there is at least one staged project change.
- */
-async function stageWorktreeChanges(worktreePath: string): Promise<boolean> {
-	await runGit(worktreePath, ["add", "-A", "--", "."]);
-
-	const staged = (
-		await runGit(worktreePath, ["diff", "--cached", "--name-only", "-z"])
-	)
-		.split("\0")
-		.filter(Boolean);
-	const excluded = staged.filter(isSyncExcludedPath);
-	for (let index = 0; index < excluded.length; index += 100) {
-		// react-doctor-disable-next-line async-await-in-loop
-		await runGit(worktreePath, [
-			"reset",
-			"-q",
-			"--",
-			...excluded.slice(index, index + 100),
-		]);
-	}
-
-	return hasStagedChanges(worktreePath);
-}
-
-/**
- * Create (or amend) the single disposable snapshot commit on the chat branch.
- * This commit is the merge source for `git merge --squash`; it is never pushed
- * and never becomes part of the base branch history.
- */
-async function commitStagedSnapshot(
-	worktreePath: string,
-	chatBranch: string,
-	hasStagedChanges: boolean,
-): Promise<{ head: string; committed: boolean }> {
-	if (!hasStagedChanges) {
-		return {
-			head: (await runGit(worktreePath, ["rev-parse", "HEAD"])).trim(),
-			committed: false,
-		};
-	}
-
-	const subject = (
-		await runGit(worktreePath, ["log", "-1", "--format=%s"])
-	).trim();
-	const identity = [
-		"-c",
-		"user.name=Ergatai",
-		"-c",
-		"user.email=ergatai@local",
-		"-c",
-		"commit.gpgsign=false",
-	];
-	if (subject.startsWith(SYNC_COMMIT_PREFIX)) {
-		// Reverting the worktree back to the previous snapshot would make the
-		// amend an empty commit. Drop our disposable commit instead.
-		const parent = await runGit(worktreePath, [
-			"rev-parse",
-			"HEAD^",
-		]).catch(() => null);
-		if (parent) {
-			const parentTree = (
-				await runGit(worktreePath, [
-					"rev-parse",
-					`${parent.trim()}^{tree}`,
-				])
-			).trim();
-			const stagedTree = (
-				await runGit(worktreePath, ["write-tree"])
-			).trim();
-			if (stagedTree === parentTree) {
-				await runGit(worktreePath, ["reset", "--mixed", "HEAD^"]);
-				return { head: parent.trim(), committed: false };
-			}
-		}
-
-		await runGit(worktreePath, [
-			...identity,
-			"commit",
-			"--no-verify",
-			"--amend",
-			"--no-edit",
-		]);
-	} else {
-		await runGit(worktreePath, [
-			...identity,
-			"commit",
-			"--no-verify",
-			"-m",
-			`${SYNC_COMMIT_PREFIX} ${chatBranch}`,
-		]);
-	}
-
-	return {
-		head: (await runGit(worktreePath, ["rev-parse", "HEAD"])).trim(),
-		committed: true,
-	};
-}
-
-/**
- * Preflight a merge without touching either working tree. Returns null when
- * `git merge-tree` is unavailable (older git), an empty array for a clean
- * merge, or the conflicted file names.
- */
-async function getMergeTreeConflicts(
-	repoPath: string,
-	baseRevision: string,
-	chatRevision: string,
-): Promise<string[] | null> {
-	try {
-		await runGit(repoPath, [
-			"merge-tree",
-			"--write-tree",
-			"--name-only",
-			baseRevision,
-			chatRevision,
-		]);
-		return [];
-	} catch (error) {
-		if (isExecFileException(error) && error.code === 1) {
-			const output = typeof error.stdout === "string" ? error.stdout : "";
-			const lines = output.split("\n");
-			const files: string[] = [];
-			for (let index = 1; index < lines.length; index += 1) {
-				const line = lines[index].trim();
-				if (!line) break;
-				files.push(line);
-			}
-			return files;
-		}
-		// merge-tree is not available (or failed for a non-conflict reason).
-		return null;
-	}
 }
 
 async function removeSquashMessage(repoPath: string): Promise<void> {
@@ -1901,548 +1618,6 @@ async function removeSquashMessage(repoPath: string): Promise<void> {
 	} catch {
 		// Best effort: a stale SQUASH_MSG only affects the next manual commit.
 	}
-}
-
-async function resetIndexPaths(
-	repoPath: string,
-	paths: string[],
-): Promise<void> {
-	for (let index = 0; index < paths.length; index += 100) {
-		// react-doctor-disable-next-line async-await-in-loop
-		await runGit(repoPath, [
-			"reset",
-			"-q",
-			"--",
-			...paths.slice(index, index + 100),
-		]);
-	}
-}
-
-async function stagePaths(repoPath: string, paths: string[]): Promise<void> {
-	for (let index = 0; index < paths.length; index += 100) {
-		// react-doctor-disable-next-line async-await-in-loop
-		await runGit(repoPath, [
-			"add",
-			"-A",
-			"--",
-			...paths.slice(index, index + 100),
-		]);
-	}
-}
-
-async function restorePathToHead(
-	repoPath: string,
-	relativePath: string,
-	headHash: string | null,
-): Promise<void> {
-	if (headHash === null) {
-		await unlink(join(repoPath, relativePath)).catch(
-			(error: NodeJS.ErrnoException) => {
-				if (error.code !== "ENOENT") throw error;
-			},
-		);
-		return;
-	}
-	await runGit(repoPath, ["checkout", "HEAD", "--", relativePath]);
-}
-
-/**
- * Rebase the disposable chat branch onto the current base tip. This advances
- * the merge-base so a previous squash (committed by the user) is not mistaken
- * for an independent edit on the base side.
- */
-async function rebaseChatBranchOnto(
-	worktreePath: string,
-	ontoRevision: string,
-): Promise<
-	| { ok: true; head: string }
-	| { ok: false; conflicts: string[]; error: string }
-> {
-	try {
-		await runGit(worktreePath, [
-			"rebase",
-			"--autostash",
-			"--no-verify",
-			ontoRevision,
-		]);
-		return {
-			ok: true,
-			head: (await runGit(worktreePath, ["rev-parse", "HEAD"])).trim(),
-		};
-	} catch (error) {
-		let conflicts: string[] = [];
-		try {
-			conflicts = (
-				await runGit(worktreePath, [
-					"diff",
-					"--name-only",
-					"--diff-filter=U",
-					"-z",
-				])
-			)
-				.split("\0")
-				.filter(Boolean);
-		} catch {
-			// Best effort; the abort below restores the worktree anyway.
-		}
-		await runGit(worktreePath, ["rebase", "--abort"]).catch(() => {});
-		return {
-			ok: false,
-			conflicts,
-			error: error instanceof Error ? error.message : String(error),
-		};
-	}
-}
-
-/**
- * Undo the files written by the previous sync, but only when they still match
- * exactly what we recorded. User edits and staged changes are left untouched.
- */
-async function clearPreviousSyncPaths(
-	baseRepoPath: string,
-	syncState: SyncState,
-	stagedPaths: Set<string>,
-): Promise<{ error?: string }> {
-	for (const [relativePath, recordedHash] of Object.entries(
-		syncState.paths,
-	)) {
-		if (isSyncExcludedPath(relativePath)) continue;
-		if (stagedPaths.has(relativePath)) continue;
-
-		const baseAbsPath = join(baseRepoPath, relativePath);
-		let baseWorkingHash: string | null;
-		try {
-			baseWorkingHash = await getPathContentHash(baseAbsPath);
-		} catch {
-			continue;
-		}
-		const baseHeadHash = await getBlobHashAtRevision(
-			baseRepoPath,
-			"HEAD",
-			relativePath,
-		);
-
-		if (baseWorkingHash === baseHeadHash) continue;
-		if (baseWorkingHash !== recordedHash) continue;
-
-		try {
-			await restorePathToHead(
-				baseRepoPath,
-				relativePath,
-				baseHeadHash,
-			);
-		} catch (error) {
-			return {
-				error:
-					error instanceof Error ? error.message : String(error),
-			};
-		}
-	}
-	return {};
-}
-
-/**
- * Apply the current state of a chat worktree to the base branch's working tree
- * without adding commits to the base branch or touching the remote.
- *
- * The chat worktree is committed into one disposable snapshot commit (amended
- * in place on every sync). That commit is only a merge source:
- *
- *   worktree snapshot commit
- *     -> git merge --squash into the base checkout
- *     -> git reset (leave ordinary unstaged changes)
- *
- * The base branch ref never moves and `git log` on the base branch is
- * unchanged. A per-worktree state file records which paths were written, so a
- * later sync can first undo its own previous output without touching the
- * user's edits.
- */
-export async function syncWorktreeChangesToBase(
-	projectPath: string,
-	worktreePath: string,
-	chatBranch: string,
-	baseBranch: string,
-): Promise<SyncWorktreeToBaseResult> {
-	if (resolve(projectPath) === resolve(worktreePath)) {
-		return {
-			status: "error",
-			error: "Worktree path and project path are the same",
-		};
-	}
-
-	// 1. Read the current chat HEAD. The worktree may still have uncommitted
-	// changes; they are preserved by the autostash rebase below.
-	let chatHead: string;
-	try {
-		chatHead = (
-			await runGit(worktreePath, ["rev-parse", "HEAD"])
-		).trim();
-	} catch (error) {
-		return {
-			status: "error",
-			error: error instanceof Error ? error.message : String(error),
-		};
-	}
-
-	// 2. Resolve where the base branch is checked out.
-	let baseRepoPath = await findCheckedOutWorktreePath(projectPath, baseBranch);
-	if (!baseRepoPath) {
-		baseRepoPath = projectPath;
-		try {
-			await safeCheckoutBranch(baseRepoPath, baseBranch);
-		} catch (error) {
-			const dirty = await hasUncommittedChanges(baseRepoPath).catch(
-				() => false,
-			);
-			return {
-				status: "needs_manual_merge",
-				reason: dirty ? "base_dirty" : "checkout_failed",
-				error: error instanceof Error ? error.message : String(error),
-			};
-		}
-	}
-
-	const repoState = await getRepositoryState(baseRepoPath).catch(() => null);
-	if (
-		repoState &&
-		(repoState.isRebasing ||
-			repoState.isMerging ||
-			repoState.isCherryPicking ||
-			repoState.isReverting)
-	) {
-		return { status: "needs_manual_merge", reason: "repo_busy" };
-	}
-
-	// Only write into a checkout that is actually on the base branch.
-	try {
-		const currentBaseBranch = (
-			await simpleGit(baseRepoPath).revparse(["--abbrev-ref", "HEAD"])
-		).trim();
-		if (currentBaseBranch !== baseBranch) {
-			return {
-				status: "error",
-				error: `Base checkout is on "${currentBaseBranch}", expected "${baseBranch}"`,
-			};
-		}
-	} catch (error) {
-		return {
-			status: "error",
-			error: error instanceof Error ? error.message : String(error),
-		};
-	}
-
-	// 3. Load the per-worktree sync state.
-	let syncStatePath: string;
-	try {
-		syncStatePath = await getSyncStatePath(
-			projectPath,
-			worktreePath,
-			chatBranch,
-		);
-	} catch (error) {
-		return {
-			status: "error",
-			error: error instanceof Error ? error.message : String(error),
-		};
-	}
-	// Read sync state and inspect the worktree state concurrently; neither
-	// depends on the other.
-	const [syncState, chatState] = await Promise.all([
-		readSyncState(syncStatePath),
-		getRepositoryState(worktreePath).catch(() => null),
-	]);
-	if (
-		chatState &&
-		(chatState.isRebasing ||
-			chatState.isMerging ||
-			chatState.isCherryPicking ||
-			chatState.isReverting)
-	) {
-		return { status: "needs_manual_merge", reason: "worktree_busy" };
-	}
-
-	// 4. If the base advanced since the chat branch forked, rebase the
-	// disposable snapshot commit onto the new base tip. Otherwise every later
-	// sync sees the user's previously committed sync as an independent base
-	// edit and reports a false conflict.
-	let baseHead: string;
-	try {
-		baseHead = (
-			await runGit(baseRepoPath, ["rev-parse", "HEAD"])
-		).trim();
-	} catch (error) {
-		return {
-			status: "error",
-			error: error instanceof Error ? error.message : String(error),
-		};
-	}
-
-	let mergeBase: string;
-	try {
-		mergeBase = (
-			await runGit(projectPath, ["merge-base", baseHead, chatHead])
-		).trim();
-	} catch (error) {
-		return {
-			status: "error",
-			error: error instanceof Error ? error.message : String(error),
-		};
-	}
-	if (!mergeBase) {
-		return { status: "error", error: "Could not resolve merge base" };
-	}
-
-	if (mergeBase !== baseHead) {
-		const rebased = await rebaseChatBranchOnto(worktreePath, baseHead);
-		if (!rebased.ok) {
-			return {
-				status: "needs_manual_merge",
-				reason:
-					rebased.conflicts.length > 0 ? "conflict" : "rebase_failed",
-				conflictedFiles: rebased.conflicts.slice(0, 50),
-				error: rebased.error,
-			};
-		}
-		chatHead = rebased.head;
-	}
-
-	// Stage and snapshot the current worktree state on the (possibly rebased)
-	// chat branch. The snapshot commit is amended in place on every sync.
-	let committed = false;
-	try {
-		const hasChanges = await stageWorktreeChanges(worktreePath);
-		const snapshot = await commitStagedSnapshot(
-			worktreePath,
-			chatBranch,
-			hasChanges,
-		);
-		chatHead = snapshot.head;
-		committed = snapshot.committed;
-	} catch (error) {
-		return {
-			status: "error",
-			error: error instanceof Error ? error.message : String(error),
-		};
-	}
-
-	// Nothing new since the last successful squash.
-	if (!committed && syncState.lastSyncedCommit === chatHead) {
-		return { status: "nothing_to_sync" };
-	}
-
-	// 5. Compute the committed delta between the base HEAD and the snapshot.
-	let mergePaths: string[];
-	try {
-		mergePaths = (
-			await runGit(
-				projectPath,
-				[
-					"diff",
-					"--name-only",
-					"-z",
-					"--no-renames",
-					`${baseHead}..${chatHead}`,
-				],
-				50 * 1024 * 1024,
-			)
-		)
-			.split("\0")
-			.filter(Boolean)
-			.filter((relativePath) => !isSyncExcludedPath(relativePath));
-	} catch (error) {
-		return {
-			status: "error",
-			error: error instanceof Error ? error.message : String(error),
-		};
-	}
-
-	let stagedPaths: Set<string>;
-	try {
-		stagedPaths = new Set(
-			(
-				await runGit(baseRepoPath, [
-					"diff",
-					"--cached",
-					"--name-only",
-					"-z",
-				])
-			)
-				.split("\0")
-				.filter(Boolean),
-		);
-	} catch (error) {
-		return {
-			status: "error",
-			error: error instanceof Error ? error.message : String(error),
-		};
-	}
-
-	// The worktree was reverted to the base state. Remove the previous sync
-	// from the base working tree as well.
-	if (mergePaths.length === 0) {
-		const cleanup = await clearPreviousSyncPaths(
-			baseRepoPath,
-			syncState,
-			stagedPaths,
-		);
-		if (cleanup.error) {
-			return { status: "error", error: cleanup.error };
-		}
-		await writeSyncState(syncStatePath, {
-			version: 1,
-			paths: {},
-			lastSyncedCommit: chatHead,
-		}).catch(() => {});
-		return { status: "nothing_to_sync" };
-	}
-
-	// 5. Refuse to overwrite local edits in the base checkout.
-
-	const conflicts: string[] = [];
-	let hasDirtyConflict = false;
-
-	for (const relativePath of mergePaths) {
-		const baseAbsPath = join(baseRepoPath, relativePath);
-		let baseWorkingHash: string | null;
-		try {
-			// react-doctor-disable-next-line async-await-in-loop
-			baseWorkingHash = await getPathContentHash(baseAbsPath);
-		} catch (error) {
-			return {
-				status: "error",
-				error: error instanceof Error ? error.message : String(error),
-			};
-		}
-
-		const baseHeadHash = await getBlobHashAtRevision(
-			baseRepoPath,
-			"HEAD",
-			relativePath,
-		);
-		const hasState = Object.prototype.hasOwnProperty.call(
-			syncState.paths,
-			relativePath,
-		);
-		const stateHash = hasState
-			? syncState.paths[relativePath]
-			: undefined;
-
-		// A staged edit is always the user's; our sync leaves changes unstaged.
-		if (stagedPaths.has(relativePath)) {
-			conflicts.push(relativePath);
-			hasDirtyConflict = true;
-			continue;
-		}
-
-		// Clean checkout at this path.
-		if (baseWorkingHash === baseHeadHash) continue;
-
-		// Our previous sync, still untouched by the user.
-		if (hasState && baseWorkingHash === stateHash) continue;
-
-		conflicts.push(relativePath);
-		hasDirtyConflict = true;
-	}
-
-	if (conflicts.length > 0) {
-		return {
-			status: "needs_manual_merge",
-			reason: "base_dirty",
-			conflictedFiles: conflicts.slice(0, 50),
-		};
-	}
-
-	// 6. Preflight committed-side conflicts without touching the worktree.
-	const mergeTreeConflicts = await getMergeTreeConflicts(
-		baseRepoPath,
-		baseHead,
-		chatHead,
-	);
-	if (mergeTreeConflicts && mergeTreeConflicts.length > 0) {
-		return {
-			status: "needs_manual_merge",
-			reason: "conflict",
-			conflictedFiles: mergeTreeConflicts.slice(0, 50),
-		};
-	}
-
-	// 7. Remove our own previous sync from the base working tree. This makes
-	// the new snapshot apply cleanly even though the base already contains the
-	// previous (uncommitted) sync. User edits are never touched.
-	const cleanup = await clearPreviousSyncPaths(
-		baseRepoPath,
-		syncState,
-		stagedPaths,
-	);
-	if (cleanup.error) {
-		return { status: "error", error: cleanup.error };
-	}
-
-	// 8. Squash the snapshot commit into the base checkout.
-	const baseGit = simpleGit(baseRepoPath);
-	try {
-		await baseGit.merge(["--squash", chatBranch]);
-	} catch (error) {
-		await runGit(baseRepoPath, ["reset", "--merge"]).catch(() => {});
-		// `reset --merge` clears the index; put back any edits the user had
-		// staged before the sync.
-		await stagePaths(baseRepoPath, [...stagedPaths]).catch(() => {});
-		await removeSquashMessage(baseRepoPath);
-		const status = await baseGit.status().catch(() => null);
-		const conflicted = status?.conflicted ?? [];
-		return {
-			status: "needs_manual_merge",
-			reason: conflicted.length > 0 ? "conflict" : "merge_failed",
-			conflictedFiles:
-				conflicted.length > 0 ? conflicted.slice(0, 50) : undefined,
-			error: error instanceof Error ? error.message : String(error),
-		};
-	}
-
-	// `merge --squash` stages the result; keep the files but unstage only the
-	// paths this sync touched, preserving unrelated staged edits.
-	await resetIndexPaths(baseRepoPath, mergePaths).catch(() => {});
-	await removeSquashMessage(baseRepoPath);
-
-	// 9. Record what we wrote so the next sync can clean up its own output.
-	const nextState: SyncState = {
-		version: 1,
-		paths: {},
-		lastSyncedCommit: chatHead,
-	};
-	let filesChanged = 0;
-	for (const relativePath of mergePaths) {
-		let writtenHash: string | null;
-		try {
-			// react-doctor-disable-next-line async-await-in-loop
-			writtenHash = await getPathContentHash(
-				join(baseRepoPath, relativePath),
-			);
-		} catch (error) {
-			return {
-				status: "error",
-				error: error instanceof Error ? error.message : String(error),
-			};
-		}
-		const headHash = await getBlobHashAtRevision(
-			baseRepoPath,
-			"HEAD",
-			relativePath,
-		);
-		if (writtenHash !== headHash) filesChanged += 1;
-		nextState.paths[relativePath] = writtenHash;
-	}
-
-	try {
-		await writeSyncState(syncStatePath, nextState);
-	} catch (error) {
-		return {
-			status: "error",
-			error: error instanceof Error ? error.message : String(error),
-		};
-	}
-
-	return { status: "synced", filesChanged };
 }
 
 export async function getGitStatus(worktreePath: string): Promise<{
