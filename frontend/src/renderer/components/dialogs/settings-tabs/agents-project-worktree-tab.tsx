@@ -5,7 +5,6 @@ import { useListKeyboardNav } from "./use-list-keyboard-nav"
 import { useAtomValue, useSetAtom } from "jotai"
 import { trpc } from "../../../lib/trpc"
 import { Button, buttonVariants } from "../../ui/button"
-import { Switch } from "../../ui/switch"
 import { Input } from "../../ui/input"
 import { Plus, Trash2, FolderOpen } from "lucide-react"
 import { AIPenIcon, ExternalLinkIcon, FolderFilledIcon, ImageIcon } from "../../ui/icons"
@@ -158,7 +157,6 @@ function ProjectDetail({ projectId }: { projectId: string }) {
   const [unixCommands, setUnixCommands] = useState<string[]>([])
   const [windowsCommands, setWindowsCommands] = useState<string[]>([])
   const [showPlatformSpecific, setShowPlatformSpecific] = useState(false)
-  const [autoMerge, setAutoMerge] = useState(false)
 
   // Ref to track last saved state for dirty checking
   const savedConfigRef = useRef<string>("")
@@ -196,11 +194,6 @@ function ProjectDetail({ projectId }: { projectId: string }) {
           // react-doctor-disable-next-line no-adjust-state-on-prop-change
           setShowPlatformSpecific(true)
         }
-
-        setAutoMerge(configData.config?.["auto-merge"] === true)
-      } else {
-        // react-doctor-disable-next-line no-adjust-state-on-prop-change
-        setAutoMerge(false)
       }
 
       setCommands(newCommands)
@@ -213,7 +206,6 @@ function ProjectDetail({ projectId }: { projectId: string }) {
         unixCommands: newUnix,
         windowsCommands: newWin,
         saveTarget: newSaveTarget,
-        autoMerge: configData.config?.["auto-merge"] === true,
       })
       configReadyRef.current = true
     }
@@ -222,7 +214,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
   const doSave = useCallback(() => {
     if (!projectId || !configReadyRef.current) return
 
-    const currentState = JSON.stringify({ commands, unixCommands, windowsCommands, saveTarget, autoMerge })
+    const currentState = JSON.stringify({ commands, unixCommands, windowsCommands, saveTarget })
     if (currentState === savedConfigRef.current) return
 
     const config: Record<string, unknown> = {}
@@ -233,11 +225,10 @@ function ProjectDetail({ projectId }: { projectId: string }) {
     if (filteredCommands.length > 0) config["setup-worktree"] = filteredCommands
     if (filteredUnix.length > 0) config["setup-worktree-unix"] = filteredUnix
     if (filteredWin.length > 0) config["setup-worktree-windows"] = filteredWin
-    config["auto-merge"] = autoMerge
 
     saveMutation.mutate({ projectId, config, target: saveTarget })
     savedConfigRef.current = currentState
-  }, [projectId, commands, unixCommands, windowsCommands, saveTarget, autoMerge, saveMutation])
+  }, [projectId, commands, unixCommands, windowsCommands, saveTarget, saveMutation])
 
   const updateCommand = (index: number, value: string, list: string[], setter: (v: string[]) => void) => {
     const newList = [...list]
@@ -490,16 +481,6 @@ function ProjectDetail({ projectId }: { projectId: string }) {
             </Button>
           </div>
           <div className="bg-background rounded-lg border border-border overflow-hidden">
-            {/* Auto-sync */}
-             <div className="p-4 flex items-center justify-between border-b border-border">
-               <div>
-                 <span className="text-sm font-medium text-foreground">{i18n.t('Auto-sync worktree to base')}</span>
-                 <p className="text-sm text-muted-foreground">
-                   {i18n.t('When all agents are idle, apply changes from the chat worktree to the base branch working tree. Main history is unchanged; the temporary chat snapshot is never pushed.')}
-                 </p>
-               </div>
-               <Switch checked={autoMerge} onCheckedChange={setAutoMerge} />
-             </div>
              {/* Setup commands */}
             <div className="p-4 space-y-3">
               <div>

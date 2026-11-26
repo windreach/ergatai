@@ -10,7 +10,6 @@ export interface WorktreeConfig {
   "setup-worktree-unix"?: string[] | string
   "setup-worktree-windows"?: string[] | string
   "setup-worktree"?: string[] | string
-  "auto-merge"?: boolean
 }
 
 export type WorktreeConfigSource =

@@ -1540,8 +1540,6 @@
     }
   },
   "{{platform}} ({{arch}})": "{{platform}} ({{arch}})",
-  "Auto-sync worktree to base": "自动同步工作树到基础分支",
-  "When all agents are idle, apply changes from the chat worktree to the base branch working tree. Main history is unchanged; the temporary chat snapshot is never pushed.": "当所有 Agent 空闲时，将对话工作树的改动应用到基础分支工作区。main 历史不变；临时快照不会推送到远程。",
   "Open local folder": "打开本地文件夹",
   "Projects": "项目",
   "Inherited": "继承",

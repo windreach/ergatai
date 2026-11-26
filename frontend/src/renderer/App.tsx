@@ -14,7 +14,6 @@ import i18n from "./lib/i18n"
 import { resolveLanguage } from "./lib/language"
 import { useAgentConversationStore } from "./features/agents"
 import { AgentsLayout } from "./features/layout"
-import { AutoMergeManager } from "./features/agents/components/auto-merge-manager"
 import { identify, initAnalytics, shutdown } from "./lib/analytics"
 import { appStore } from "./lib/jotai-store"
 import { VSCodeThemeProvider } from "./lib/themes/theme-provider"
@@ -165,12 +164,7 @@ function AppContent() {
   // 原因：这段代码会导致竞态条件和数据不一致
   // 用户应该手动选择或创建项目，而不是自动创建"默认项目"
 
-  return (
-    <>
-      <AutoMergeManager />
-      <AgentsLayout />
-    </>
-  )
+  return <AgentsLayout />
 }
 
 export function App() {
