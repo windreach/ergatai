@@ -157,7 +157,14 @@ impl PermissionRequestService {
 
     /// Register a pending request together with a decision waiter so the
     /// creator can await the user decision oneshot directly.
-    pub fn register_with_waiter(
+    ///
+    /// The pending entry, the waiter and the SSE notification are published as
+    /// one unit: the write lock is held until all three are in place. In
+    /// particular, never use `try_write()` here. Under contention it could fail
+    /// silently, leaving the waiter registered but the request invisible to
+    /// `respond()` — the UI would then get a 404 for an approval the user is
+    /// looking at, while the ACP handler blocked until its 5 minute timeout.
+    pub async fn register_with_waiter(
         &self,
         mut request: PendingPermissionRequest,
         waiter: oneshot::Sender<PermissionDecisionKind>,
@@ -169,16 +176,30 @@ impl PermissionRequestService {
         };
         request.request_id = request_id.clone();
 
-        if let Ok(mut pending) = self.pending.try_write() {
+        {
+            let mut pending = self.pending.write().await;
             pending.insert(request_id.clone(), request.clone());
+            self.waiters
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(request_id.clone(), waiter);
+            // Broadcast while still holding the write lock so a pending-list
+            // poll cannot observe the request before the event is announced
+            // (and vice versa).
+            let _ = self
+                .events
+                .send(PermissionEvent::Request(Box::new(request)));
         }
-        if let Ok(mut waiters) = self.waiters.lock() {
-            waiters.insert(request_id.clone(), waiter);
-        }
-        let _ = self
-            .events
-            .send(PermissionEvent::Request(Box::new(request)));
+
         request_id
+    }
+
+    /// Remove and return the waiter for a request, if any.
+    fn take_waiter(&self, request_id: &str) -> Option<oneshot::Sender<PermissionDecisionKind>> {
+        self.waiters
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(request_id)
     }
 
     /// Resolve a waiter-based request (ACP handler or launch gate).
@@ -195,9 +216,24 @@ impl PermissionRequestService {
             ErgataiError::PermissionDenied(format!("Permission request {} not found", request_id))
         })?;
 
-        if let Ok(mut waiters) = self.waiters.lock() {
-            if let Some(sender) = waiters.remove(request_id) {
-                let _ = sender.send(decision);
+        match self.take_waiter(request_id) {
+            Some(sender) => {
+                if let Err(decision) = sender.send(decision) {
+                    // The requester timed out (or the agent was stopped) while
+                    // the user was answering. The decision is now moot, but the
+                    // request must still be retired from the pending list.
+                    tracing::debug!(
+                        request_id = %request_id,
+                        ?decision,
+                        "Permission decision received after the waiter was dropped"
+                    );
+                }
+            }
+            None => {
+                tracing::debug!(
+                    request_id = %request_id,
+                    "Permission request has no live waiter; retiring it"
+                );
             }
         }
         let _ = self.events.send(PermissionEvent::Resolved {
@@ -207,19 +243,29 @@ impl PermissionRequestService {
         Ok(request)
     }
 
-    /// Resolve a request created without a waiter (elicitation flow).
+    /// Resolve a request without a caller-provided decision path (timeout,
+    /// elicitation, forced rejection).
+    ///
+    /// Any waiter still registered for the request is notified with `decision`,
+    /// so a forced rejection cannot leave the ACP handler waiting for the full
+    /// timeout while the request is already gone from the pending list.
     /// No-op when the request is unknown or already resolved.
     pub async fn resolve(&self, request_id: &str, decision: PermissionDecisionKind) {
         let existed = {
             let mut pending = self.pending.write().await;
             pending.remove(request_id).is_some()
         };
-        if existed {
-            let _ = self.events.send(PermissionEvent::Resolved {
-                request_id: request_id.to_string(),
-                decision,
-            });
+        if !existed {
+            return;
         }
+
+        if let Some(sender) = self.take_waiter(request_id) {
+            let _ = sender.send(decision);
+        }
+        let _ = self.events.send(PermissionEvent::Resolved {
+            request_id: request_id.to_string(),
+            decision,
+        });
     }
 
     /// Force-resolve a timed-out waiter-based request as rejected.
@@ -248,11 +294,9 @@ impl PermissionRequestService {
         };
 
         if !removed_request_ids.is_empty() {
-            if let Ok(mut waiters) = self.waiters.lock() {
-                for request_id in &removed_request_ids {
-                    if let Some(sender) = waiters.remove(request_id) {
-                        let _ = sender.send(PermissionDecisionKind::RejectOnce);
-                    }
+            for request_id in &removed_request_ids {
+                if let Some(sender) = self.take_waiter(request_id) {
+                    let _ = sender.send(PermissionDecisionKind::RejectOnce);
                 }
             }
 
@@ -389,6 +433,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_register_with_waiter_and_respond_under_contention() {
+        let service = std::sync::Arc::new(PermissionRequestService::new());
+        let mut handles = Vec::new();
+
+        for index in 0..32 {
+            let service = service.clone();
+            handles.push(tokio::spawn(async move {
+                let request_id = format!("contended-{index}");
+                let (decision_tx, decision_rx) = tokio::sync::oneshot::channel();
+
+                service
+                    .register_with_waiter(
+                        PendingPermissionRequest {
+                            request_id: request_id.clone(),
+                            kind: PermissionRequestKind::Tool,
+                            agent_id: Some(format!("agent-{index}")),
+                            session_id: Some("session-1".to_string()),
+                            title: request_id.clone(),
+                            tool_name: Some("edit".to_string()),
+                            input: None,
+                            locations: vec![],
+                            source: PermissionSource::Acp,
+                            created_at_ms: now_ms() + index,
+                        },
+                        decision_tx,
+                    )
+                    .await;
+
+                // Mimic the UI's pending-list poll racing with registration.
+                assert!(service.get(&request_id).await.is_some());
+
+                service
+                    .respond(&request_id, PermissionDecisionKind::RejectOnce)
+                    .await
+                    .expect("registered request must be respondable");
+
+                assert_eq!(decision_rx.await, Ok(PermissionDecisionKind::RejectOnce));
+            }));
+        }
+
+        for handle in handles {
+            handle.await.expect("registration task panicked");
+        }
+
+        assert!(service.pending().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_forced_resolve_notifies_waiter_and_cleans_up() {
+        let service = PermissionRequestService::new();
+        let (decision_tx, decision_rx) = tokio::sync::oneshot::channel();
+
+        service
+            .register_with_waiter(
+                PendingPermissionRequest {
+                    request_id: "forced-request".to_string(),
+                    kind: PermissionRequestKind::Tool,
+                    agent_id: Some("agent-1".to_string()),
+                    session_id: Some("session-1".to_string()),
+                    title: "Forced".to_string(),
+                    tool_name: Some("edit".to_string()),
+                    input: None,
+                    locations: vec![],
+                    source: PermissionSource::Acp,
+                    created_at_ms: now_ms(),
+                },
+                decision_tx,
+            )
+            .await;
+
+        service.force_resolve_rejected("forced-request").await;
+
+        assert_eq!(decision_rx.await, Ok(PermissionDecisionKind::RejectOnce));
+        assert!(service.get("forced-request").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_force_resolve_after_waiter_dropped_cleans_pending() {
+        let service = PermissionRequestService::new();
+        let (decision_tx, decision_rx) = tokio::sync::oneshot::channel();
+        service
+            .register_with_waiter(
+                PendingPermissionRequest {
+                    request_id: "cancelled-request".to_string(),
+                    kind: PermissionRequestKind::Tool,
+                    agent_id: Some("agent-1".to_string()),
+                    session_id: Some("session-1".to_string()),
+                    title: "Cancelled".to_string(),
+                    tool_name: Some("edit".to_string()),
+                    input: None,
+                    locations: vec![],
+                    source: PermissionSource::Acp,
+                    created_at_ms: now_ms(),
+                },
+                decision_tx,
+            )
+            .await;
+
+        // Simulate the ACP permission future being cancelled while it waits.
+        drop(decision_rx);
+        service.force_resolve_rejected("cancelled-request").await;
+
+        assert!(service.get("cancelled-request").await.is_none());
+        assert!(service.pending().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_permission_request_service_pending_list() {
         let service = PermissionRequestService::new();
 
@@ -465,21 +616,23 @@ mod tests {
             ("target-request", "agent-target", Some(target_sender)),
             ("other-request", "agent-other", Some(other_sender)),
         ] {
-            service.register_with_waiter(
-                PendingPermissionRequest {
-                    request_id: request_id.to_string(),
-                    kind: PermissionRequestKind::Tool,
-                    agent_id: Some(agent_id.to_string()),
-                    session_id: Some("session-1".to_string()),
-                    title: request_id.to_string(),
-                    tool_name: Some("edit".to_string()),
-                    input: None,
-                    locations: vec![],
-                    source: PermissionSource::Acp,
-                    created_at_ms: now_ms(),
-                },
-                waiter.unwrap(),
-            );
+            service
+                .register_with_waiter(
+                    PendingPermissionRequest {
+                        request_id: request_id.to_string(),
+                        kind: PermissionRequestKind::Tool,
+                        agent_id: Some(agent_id.to_string()),
+                        session_id: Some("session-1".to_string()),
+                        title: request_id.to_string(),
+                        tool_name: Some("edit".to_string()),
+                        input: None,
+                        locations: vec![],
+                        source: PermissionSource::Acp,
+                        created_at_ms: now_ms(),
+                    },
+                    waiter.unwrap(),
+                )
+                .await;
         }
 
         let mut receiver = service.subscribe();

@@ -156,6 +156,7 @@ export function toQueuedFile(file: UploadedFile): QueuedFile {
     filename: file.filename,
     mediaType: file.type,
     size: file.size,
+    base64Data: file.base64Data,
   }
 }
 

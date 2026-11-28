@@ -10,6 +10,7 @@ type LoadingStateProps = {
   conversationId: string
   parentChatId: string
   isStreaming: boolean
+  isActive?: boolean
 }
 
 function setup() {
@@ -75,5 +76,20 @@ describe("useConversationLoadingState", () => {
 
     expect(store.get(loadingConversationsAtom).get("conversation-a")).toBe("chat-a")
     expect(store.get(loadingConversationsAtom).has("conversation-b")).toBe(false)
+  })
+
+  it("does not clear loading from an inactive pane", () => {
+    const { store, rerender } = setup()
+
+    act(() => {
+      rerender({
+        conversationId: "conversation-a",
+        parentChatId: "chat-a",
+        isStreaming: false,
+        isActive: false,
+      })
+    })
+
+    expect(store.get(loadingConversationsAtom).get("conversation-a")).toBe("chat-a")
   })
 })

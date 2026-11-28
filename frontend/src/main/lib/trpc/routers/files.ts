@@ -42,7 +42,7 @@ import {
   assertRegisteredWorktree
 } from "../../git/security/path-validation"
 import {
-  conversationKeySchema
+  pastedTextScopeSchema
 } from "../../validation/ids"
 
 // Directories to ignore when scanning
@@ -684,7 +684,7 @@ export const filesRouter = router({
   writePastedText: publicProcedure
     .input(
       z.object({
-        conversationId: conversationKeySchema,
+        conversationId: pastedTextScopeSchema,
         text: z.string(),
         filename: z.string().optional(),
       })

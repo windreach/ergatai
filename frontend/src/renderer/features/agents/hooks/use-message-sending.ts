@@ -25,6 +25,8 @@ import {
 } from "../lib/queue-utils"
 import { waitForStreamingReady } from "../utils/stream-utils"
 import { buildQuoteMentionToken, buildDiffMentionToken, buildPastedMentionToken } from "../mentions/mentions-utils"
+import { clearLoading, loadingConversationsAtom, setLoading } from "../atoms"
+import { appStore } from "../../../lib/jotai-store"
 
 const ACKNOWLEDGMENT_TEXT = i18n.t("acknowledgment")
 
@@ -201,11 +203,13 @@ export function useMessageSending({
     const currentPastedTexts = inputRefsRef.current.pastedTexts.current
     const hasImages =
       currentImages.filter((img) => !img.isLoading && img.url).length > 0
+    const hasFiles =
+      currentFiles.filter((file) => !file.isLoading && file.url).length > 0
     const hasTextContexts = currentTextContexts.length > 0
     const hasDiffTextContexts = currentDiffTextContexts.length > 0
     const hasPastedTexts = currentPastedTexts.length > 0
 
-    if (!hasText && !hasImages && !hasTextContexts && !hasDiffTextContexts && !hasPastedTexts) return
+    if (!hasText && !hasImages && !hasFiles && !hasTextContexts && !hasDiffTextContexts && !hasPastedTexts) return
 
     // If streaming, add to queue instead of sending directly
     if (inputRefsRef.current.isStreaming.current) {
@@ -573,10 +577,25 @@ export function useMessageSending({
 
     messagingRef.current.submitImplicitInteraction(text)
 
+    // Mark the sidebar as loading immediately. The turn orchestrator also
+    // tracks this, but doing it here makes the indicator appear even before
+    // the send resolves its adapter/session.
+    const sendingConversationId = conversationRef.current.id
+    const sendingParentChatId = conversationRef.current.parentChatId
+    const setLoadingMarker = (fn: (prev: Map<string, string>) => Map<string, string>) => {
+      appStore.set(loadingConversationsAtom, fn(appStore.get(loadingConversationsAtom)))
+    }
+    if (sendingParentChatId) {
+      setLoading(setLoadingMarker, sendingConversationId, sendingParentChatId)
+    }
+
     // Send via service
     try {
       await serviceRef.current!.send(parts)
     } catch (error) {
+      if (sendingParentChatId) {
+        clearLoading(setLoadingMarker, sendingConversationId)
+      }
       (console as any).error("[ChatSend] Failed to send message:", error)
       (toast as any).error(error instanceof Error ? error.message : i18n.t('Failed to send message'))
       // Restore editor content so the user can retry
@@ -633,8 +652,10 @@ export function useMessageSending({
     const currentFiles = filesRefLocal.current
     const hasImages =
       currentImages.filter((img) => !img.isLoading && img.url).length > 0
+    const hasFiles =
+      currentFiles.filter((file) => !file.isLoading && file.url).length > 0
 
-    if (!hasText && !hasImages) return
+    if (!hasText && !hasImages && !hasFiles) return
 
     // Stop current stream if streaming and wait for status to become ready.
     // The server-side save block sets sessionId=null on abort, so the next

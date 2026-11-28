@@ -156,7 +156,21 @@ export function extractGitActivity(parts: any[]): GitActivity | null {
 
 function countLines(text: string): number {
   if (!text) return 0
-  return text.split("\n").length
+  // A trailing newline terminates the last line; it should not be counted as
+  // an extra empty line in the change stats.
+  const lines = text.split("\n")
+  return text.endsWith("\n") ? lines.length - 1 : lines.length
+}
+
+function pickString(
+  input: Record<string, unknown> | undefined,
+  keys: string[],
+): string {
+  for (const key of keys) {
+    const value = input?.[key]
+    if (typeof value === "string") return value
+  }
+  return ""
 }
 
 /**
@@ -200,8 +214,11 @@ export function extractChangedFiles(parts: any[], projectPath?: string): Changed
     const existing = fileMap.get(filePath)
 
     if (part.type === "tool-Edit") {
-      const oldLines = countLines(part.input?.old_string || "")
-      const newLines = countLines(part.input?.new_string || "")
+      // Different runtimes report edit payloads in snake_case or camelCase.
+      // Missing the camelCase form made every stat render as +0 -0.
+      const input = part.input as Record<string, unknown> | undefined
+      const oldLines = countLines(pickString(input, ["old_string", "oldString"]))
+      const newLines = countLines(pickString(input, ["new_string", "newString"]))
       if (existing) {
         existing.additions += newLines
         existing.deletions += oldLines
@@ -210,7 +227,8 @@ export function extractChangedFiles(parts: any[], projectPath?: string): Changed
       }
     } else {
       // tool-Write: all new content = additions
-      const lines = countLines(part.input?.content || "")
+      const input = part.input as Record<string, unknown> | undefined
+      const lines = countLines(pickString(input, ["content"]))
       if (existing) {
         existing.additions += lines
       } else {

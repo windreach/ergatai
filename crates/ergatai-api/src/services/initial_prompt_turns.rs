@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use ergatai_error::{ChatId, ConversationId, MessageId, WorkspaceId};
-use ergatai_runtime::types::AgentImage;
+use ergatai_runtime::types::{AgentFile, AgentImage};
 
 /// Convert Ergatai discovery mention tokens into agent-native prompt text.
 ///
@@ -185,6 +185,7 @@ pub struct InitialPromptTurn {
     pub model: Option<String>,
     pub prompt: String,
     pub images: Vec<AgentImage>,
+    pub files: Vec<AgentFile>,
     pub status: InitialPromptStatus,
     pub attempt: i64,
     pub error: Option<String>,
@@ -238,14 +239,15 @@ pub struct InitialPromptInput {
     pub model: Option<String>,
     pub prompt: String,
     pub images: Vec<AgentImage>,
+    pub files: Vec<AgentFile>,
 }
 
 const SELECT_COLUMNS: &str = "turn_id, conversation_id, chat_id, workspace_id, message_id, \
-    client_request_id, agent_command, provider_connection_id, model, prompt, images, status, attempt, error, created_at, \
+    client_request_id, agent_command, provider_connection_id, model, prompt, images, files, status, attempt, error, created_at, \
     updated_at, dispatched_at, completed_at";
 
 fn row_to_turn(row: &rusqlite::Row<'_>) -> rusqlite::Result<InitialPromptTurn> {
-    let status: String = row.get(11)?;
+    let status: String = row.get(12)?;
     let images_json: String = row.get(10)?;
     let images = match serde_json::from_str::<Vec<AgentImage>>(&images_json) {
         Ok(imgs) => imgs,
@@ -254,6 +256,18 @@ fn row_to_turn(row: &rusqlite::Row<'_>) -> rusqlite::Result<InitialPromptTurn> {
                 images_json = %images_json,
                 error = %error,
                 "Failed to parse images JSON, defaulting to empty array"
+            );
+            Vec::new()
+        }
+    };
+    let files_json: String = row.get(11)?;
+    let files = match serde_json::from_str::<Vec<AgentFile>>(&files_json) {
+        Ok(files) => files,
+        Err(error) => {
+            warn!(
+                files_json = %files_json,
+                error = %error,
+                "Failed to parse files JSON, defaulting to empty array"
             );
             Vec::new()
         }
@@ -271,13 +285,14 @@ fn row_to_turn(row: &rusqlite::Row<'_>) -> rusqlite::Result<InitialPromptTurn> {
         model: row.get(8)?,
         prompt: row.get(9)?,
         images,
+        files,
         status: InitialPromptStatus::from_str(&status),
-        attempt: row.get(12)?,
-        error: row.get(13)?,
-        created_at: row.get(14)?,
-        updated_at: row.get(15)?,
-        dispatched_at: row.get(16)?,
-        completed_at: row.get(17)?,
+        attempt: row.get(13)?,
+        error: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
+        dispatched_at: row.get(17)?,
+        completed_at: row.get(18)?,
     })
 }
 
@@ -308,9 +323,9 @@ pub fn enqueue(input: InitialPromptInput) -> Result<InitialPromptTurn> {
         r#"
         INSERT INTO initial_prompt_turns (
             turn_id, conversation_id, chat_id, workspace_id, message_id,
-            client_request_id, agent_command, provider_connection_id, model, prompt, images,
+            client_request_id, agent_command, provider_connection_id, model, prompt, images, files,
             status, attempt, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', 0, ?12, ?12)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'pending', 0, ?13, ?13)
         ON CONFLICT(conversation_id) DO NOTHING
         "#,
         params![
@@ -325,6 +340,7 @@ pub fn enqueue(input: InitialPromptInput) -> Result<InitialPromptTurn> {
             input.model,
             input.prompt,
             serde_json::to_string(&input.images)?,
+            serde_json::to_string(&input.files)?,
             now,
         ],
     )?;
@@ -697,18 +713,42 @@ async fn dispatch_turn(mut turn: InitialPromptTurn) -> Result<()> {
             };
             let converted_prompt = convert_prompt_tokens(&prompt_with_context, agent_kind_str);
 
-            let delivery = if turn.images.is_empty() {
-                runtime
-                    .inject_message_to_conversation(&turn.conversation_id, &converted_prompt)
-                    .await
-            } else {
-                runtime
-                    .inject_message_to_conversation_with_images(
-                        &turn.conversation_id,
-                        &converted_prompt,
-                        turn.images.clone(),
-                    )
-                    .await
+            let delivery = match crate::services::agent_service::prepare_file_attachments(
+                &converted_prompt,
+                &turn.files,
+                agent_kind_str,
+                Some(&turn.conversation_id),
+            ) {
+                Ok((delivery_prompt, resources)) => {
+                    if resources.is_empty() {
+                        if turn.images.is_empty() {
+                            runtime
+                                .inject_message_to_conversation(
+                                    &turn.conversation_id,
+                                    &delivery_prompt,
+                                )
+                                .await
+                        } else {
+                            runtime
+                                .inject_message_to_conversation_with_images(
+                                    &turn.conversation_id,
+                                    &delivery_prompt,
+                                    turn.images.clone(),
+                                )
+                                .await
+                        }
+                    } else {
+                        runtime
+                            .inject_message_to_conversation_with_resources(
+                                &turn.conversation_id,
+                                &delivery_prompt,
+                                turn.images.clone(),
+                                resources,
+                            )
+                            .await
+                    }
+                }
+                Err(error) => Err(ergatai_error::ErgataiError::from(error)),
             };
 
             match delivery {
@@ -1040,6 +1080,7 @@ mod tests {
             model: None,
             prompt: "hello".to_string(),
             images: vec![],
+            files: vec![],
         })
         .unwrap();
         let t2 = enqueue(InitialPromptInput {
@@ -1053,6 +1094,7 @@ mod tests {
             model: None,
             prompt: "hello".to_string(),
             images: vec![],
+            files: vec![],
         })
         .unwrap();
         assert_eq!(t1.turn_id, t2.turn_id);
@@ -1060,5 +1102,37 @@ mod tests {
 
         let fetched = get_by_conversation(conversation_id).unwrap().unwrap();
         assert_eq!(fetched.turn_id, t1.turn_id);
+    }
+
+    #[test]
+    fn test_enqueue_persists_file_only_initial_prompt() {
+        let _g = lock_db();
+        let (conversation_id, chat_id, workspace_id) = setup_conversation();
+        let files = vec![AgentFile {
+            base64_data: "aGVsbG8=".to_string(),
+            media_type: Some("text/plain".to_string()),
+            filename: "hello.txt".to_string(),
+            size: Some(5),
+        }];
+        let enqueued = enqueue(InitialPromptInput {
+            conversation_id,
+            chat_id,
+            workspace_id,
+            message_id: MessageId::generate(),
+            client_request_id: "req-files".to_string(),
+            agent_command: "opencode".to_string(),
+            provider_connection_id: None,
+            model: None,
+            prompt: String::new(),
+            images: vec![],
+            files: files.clone(),
+        })
+        .unwrap();
+
+        assert_eq!(enqueued.files, files);
+        let fetched = get_by_conversation(conversation_id).unwrap().unwrap();
+        assert_eq!(fetched.prompt, "");
+        assert!(fetched.images.is_empty());
+        assert_eq!(fetched.files, files);
     }
 }

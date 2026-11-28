@@ -707,6 +707,45 @@ pub async fn flush_pending_prompt(agent_id: &str) {
     }
 }
 
+/// Save file attachments and prepare the prompt/resources used for delivery.
+///
+/// OpenCode receives ACP resource links for saved files. Other agent kinds
+/// receive absolute paths appended to the prompt so their file tools can read
+/// the attachments. Keeping this in one place makes direct prompts, NATS
+/// delivery, and durable initial prompts behave consistently.
+pub fn prepare_file_attachments(
+    message: &str,
+    files: &[ergatai_runtime::AgentFile],
+    agent_kind: Option<&str>,
+    conversation_id: Option<&str>,
+) -> anyhow::Result<(String, Vec<ergatai_runtime::AgentResource>)> {
+    if files.is_empty() {
+        return Ok((message.to_string(), Vec::new()));
+    }
+
+    let saved_paths = save_file_attachments(files, conversation_id)?;
+    if agent_kind == Some("opencode") {
+        let resources = files
+            .iter()
+            .zip(saved_paths)
+            .map(|(file, (_filename, path))| ergatai_runtime::AgentResource {
+                uri: format!("file://{}", path),
+                name: Some(file.filename.clone()),
+                mime_type: file.media_type.clone(),
+                text: None,
+                blob: None,
+            })
+            .collect();
+        Ok((message.to_string(), resources))
+    } else {
+        let mut prepared_message = message.to_string();
+        for (_filename, path) in &saved_paths {
+            prepared_message.push_str(&format!("\n{}", path));
+        }
+        Ok((prepared_message, Vec::new()))
+    }
+}
+
 /// Prompt an agent with images and file attachments.
 ///
 /// Files are decoded from base64, saved to the attachments directory, and
@@ -737,32 +776,8 @@ pub async fn prompt_agent_with_images(
     // delivery. Raw tokens are kept in storage; transformation happens here.
     let message =
         crate::services::initial_prompt_turns::convert_prompt_tokens(message, agent_kind_str);
-    let (message, resources) = if files.is_empty() {
-        (message.to_string(), Vec::new())
-    } else {
-        let saved_paths = save_file_attachments(&files, conversation_id.as_deref())?;
-        if agent_kind_str == Some("opencode") {
-            // OpenCode supports resource_link for file:// URIs; send them as
-            // ACP resource links instead of plain text paths.
-            let resources = saved_paths
-                .into_iter()
-                .map(|(filename, path)| ergatai_runtime::AgentResource {
-                    uri: format!("file://{}", path),
-                    name: Some(filename),
-                    mime_type: None,
-                    text: None,
-                    blob: None,
-                })
-                .collect();
-            (message.to_string(), resources)
-        } else {
-            let mut msg = message.to_string();
-            for (_filename, path) in &saved_paths {
-                msg.push_str(&format!("\n{}", path));
-            }
-            (msg, Vec::new())
-        }
-    };
+    let (message, resources) =
+        prepare_file_attachments(&message, &files, agent_kind_str, conversation_id.as_deref())?;
 
     set_current_prompt_conversation(agent_id, conversation_id.clone());
     if resources.is_empty() {

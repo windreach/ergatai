@@ -664,12 +664,12 @@ export const AgentsFileMention = memo(function AgentsFileMention({
         default:
           return
       }
+      const selectedOption = options[selectedIndex]
+      if (!selectedOption || selectedOption.type === "group-header") return
       e.preventDefault()
       e.stopPropagation()
       e.stopImmediatePropagation()
-      if (options[selectedIndex] && options[selectedIndex].type !== "group-header") {
-        onSelect(options[selectedIndex])
-      }
+      onSelect(selectedOption)
     }
 
     window.addEventListener("keydown", handleSelectKey, { capture: true })

@@ -16,6 +16,7 @@
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
 ![Electron](https://img.shields.io/badge/Electron-macOS%20%C2%B7%20Linux-2B2E3A?logo=electron&logoColor=9FEAF9)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
+[![GitHub stars](https://img.shields.io/github/stars/windreach/ergatai?style=social)](https://github.com/windreach/ergatai/stargazers)
 
 <br>
 
@@ -319,6 +320,12 @@ cd frontend && bun run ts:check
 不会。项目本地优先，零遥测。
 
 </details>
+
+## 支持 Ergatai
+
+如果 Ergatai 节约了你的时间，让 agent 可以更好的协作，欢迎点个 Star ⭐ —— 这能让更多开发者发现这个项目，也是我们持续维护的动力。
+
+[![GitHub stars](https://img.shields.io/github/stars/windreach/ergatai?style=social)](https://github.com/windreach/ergatai/stargazers)
 
 ## 贡献
 

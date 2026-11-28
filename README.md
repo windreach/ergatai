@@ -18,6 +18,7 @@ agent vendors.</sub>
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
 ![Electron](https://img.shields.io/badge/Electron-macOS%20%C2%B7%20Linux-2B2E3A?logo=electron&logoColor=9FEAF9)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
+[![GitHub stars](https://img.shields.io/github/stars/windreach/ergatai?style=social)](https://github.com/windreach/ergatai/stargazers)
 
 <br>
 
@@ -328,6 +329,12 @@ Not yet. The project still has many rough edges and known defects; use with caut
 No. The project is local-first and has zero telemetry.
 
 </details>
+
+## Star Ergatai
+
+If Ergatai saves you time and helps your agents collaborate better, please consider giving it a star ⭐ — stars help more developers discover the project and tell us it is worth maintaining.
+
+[![GitHub stars](https://img.shields.io/github/stars/windreach/ergatai?style=social)](https://github.com/windreach/ergatai/stargazers)
 
 ## Contributing
 

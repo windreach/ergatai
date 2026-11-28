@@ -72,6 +72,12 @@ export const conversationKeySchema = z.union([
   z.string().regex(runtimeConversationPattern, "Invalid runtime conversation key"),
 ])
 
+/** Local-only scope used to stage large pastes before a new chat has an ID. */
+export const pastedTextScopeSchema = z.union([
+  conversationKeySchema,
+  z.string().regex(/^new-chat-[A-Za-z0-9_-]+$/, "Invalid new chat paste scope"),
+])
+
 /**
  * Persisted message IDs are opaque strings emitted by the backend. Runtime
  * prompt IDs use the prefixed snowflake format.

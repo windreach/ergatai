@@ -10,6 +10,7 @@ export function useActiveChatEffects({
   conversationId,
   isStreaming,
   isRuntimeStreaming,
+  isActive,
   messages,
   pendingInitialPrompt,
   setPendingInitialPrompt,
@@ -19,6 +20,7 @@ export function useActiveChatEffects({
   conversationId: string
   isStreaming: boolean
   isRuntimeStreaming: boolean
+  isActive: boolean
   messages: any[]
   pendingInitialPrompt: any
   setPendingInitialPrompt: (v: any) => void
@@ -61,10 +63,14 @@ export function useActiveChatEffects({
 
     if (isStreaming || isBackendStreaming) {
       setLoading(setLoadingConversations, conversationId, storedParentChatId)
-    } else {
+    } else if (isActive) {
+      // Only the active conversation owns the clear path here. A background
+      // tab can briefly report a non-streaming status while switching panes,
+      // which used to wipe the sidebar marker for a still-running turn.
+      // Background completion is cleared globally by the turn orchestrator.
       clearLoading(setLoadingConversations, conversationId)
     }
-  }, [isStreaming, conversationRuntime?.status, conversationId, setLoadingConversations])
+  }, [isStreaming, conversationRuntime?.status, conversationId, isActive, setLoadingConversations])
 
   const setPendingPlanApprovals = useSetAtom(pendingPlanApprovalsAtom)
 

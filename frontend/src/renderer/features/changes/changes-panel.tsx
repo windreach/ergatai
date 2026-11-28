@@ -106,6 +106,8 @@ interface ChangesPanelProps {
 	onCommitSuccess?: () => void;
 	/** Called after discarding/deleting changes to refresh diff */
 	onDiscardSuccess?: () => void;
+	/** Called after a sync attempt to refresh worktree-derived views */
+	onSyncSuccess?: () => void;
 	/** Available conversations for filtering */
 	conversations?: ConversationFilterItem[];
 	/** Currently selected conversation ID for filtering (passed from Review button) */
@@ -133,6 +135,7 @@ export function ChangesPanel({
 	onCreatePr,
 	onCommitSuccess,
 	onDiscardSuccess,
+	onSyncSuccess,
 	conversations,
 	initialConversationFilter,
 	chatId,
@@ -142,6 +145,7 @@ export function ChangesPanel({
 	onActiveTabChange,
 	pushCount,
 }: ChangesPanelProps) {
+	const utils = trpc.useUtils();
 	const chatQuery = trpc.chats.get.useQuery(
 		{ id: chatId! },
 		{ enabled: !!chatId },
@@ -222,6 +226,13 @@ export function ChangesPanel({
 				tone: "error",
 				message: error.message || "Sync failed",
 			});
+		},
+		onSettled: () => {
+			// A sync may also uncommit a legacy snapshot, so refresh the status
+			// and diff data even when no worktree file changed.
+			utils.changes.getStatus.invalidate({ worktreePath });
+			utils.chats.getParsedDiff.invalidate();
+			onSyncSuccess?.();
 		},
 	});
 

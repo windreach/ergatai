@@ -189,8 +189,20 @@ pub async fn respond_permission(
 
     let service = global_permission_service();
     let Some(request) = service.get(&request_id).await else {
+        tracing::warn!(
+            request_id = %request_id,
+            decision = ?body.decision,
+            "Permission response rejected: request is not pending (already resolved or expired)"
+        );
         return crate::http_error::not_found("Permission request", &request_id).into_response();
     };
+
+    tracing::info!(
+        request_id = %request_id,
+        source = ?request.source,
+        decision = ?body.decision,
+        "Permission response received"
+    );
 
     match request.source {
         PermissionSource::Elicitation => {

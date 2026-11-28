@@ -141,20 +141,18 @@ export const AgentsSlashCommand = memo(function AgentsSlashCommand({
       switch (e.key) {
         case "Enter":
           if (e.shiftKey) return
+          if (!displayOptions[selectedIndex]) return
           e.preventDefault()
           e.stopPropagation()
           e.stopImmediatePropagation()
-          if (displayOptions[selectedIndex]) {
-            onSelect(displayOptions[selectedIndex])
-          }
+          onSelect(displayOptions[selectedIndex])
           break
         case "Tab":
+          if (!displayOptions[selectedIndex]) return
           e.preventDefault()
           e.stopPropagation()
           e.stopImmediatePropagation()
-          if (displayOptions[selectedIndex]) {
-            onSelect(displayOptions[selectedIndex])
-          }
+          onSelect(displayOptions[selectedIndex])
           break
       }
     }

@@ -26,7 +26,6 @@ Analytics (PostHog) and error tracking (Sentry) are **disabled by default** in o
 3. Make your changes
 4. Submit a PR
 
-Join our [Discord](https://discord.gg/8ektTZGnj4) for discussions.
 
 ## License
 

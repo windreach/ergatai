@@ -338,13 +338,11 @@ export const chatsRouter = router({
               ...(event.type === "error" ? { event } : {}),
             })
             emit.next(event)
-            if (event.type === "done" || event.type === "error") {
-              console.log("[trpc][ergatai-chats.subscribeAgentStream] complete after terminal event", {
-                input,
-                type: event.type,
-              })
-              emit.complete()
-            }
+            // Keep the subscription open across turns. Closing it here made a
+            // subscriber that attached just after a turn ended miss the next
+            // turn's output (its fresh subscriber consumed the previous turn's
+            // terminal event and was torn down). Consumers unsubscribe when
+            // they accept the terminal event for the turn they own.
           },
           (error) => {
             console.error("[trpc][ergatai-chats.subscribeAgentStream] error", { input, error })

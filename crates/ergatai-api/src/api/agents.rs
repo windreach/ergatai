@@ -3934,6 +3934,16 @@ pub async fn prompt_agent(
                             filename: img.filename.clone(),
                         })
                         .collect(),
+                    files: body
+                        .files
+                        .into_iter()
+                        .map(|file| ergatai_nats::events::AgentFile {
+                            base64_data: file.base64_data,
+                            media_type: file.media_type,
+                            filename: file.filename,
+                            size: file.size,
+                        })
+                        .collect(),
                 };
 
                 // Publish to NATS JetStream

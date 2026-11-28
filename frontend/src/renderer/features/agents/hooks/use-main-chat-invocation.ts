@@ -479,6 +479,7 @@ export function useMainChatInvocation({
               mediaType: f.mediaType,
               filename: f.filename,
               size: f.size,
+              base64Data: f.base64Data,
             },
           })
         }

@@ -72,17 +72,15 @@ if (process.platform === "linux" && !app.isPackaged) {
 
 // Keep all Ergatai-owned frontend data under the same user data root as the
 // backend. Chromium runtime files still live inside this userData directory.
-// Dev/prod use sibling directories so development cannot pollute production.
+// Dev and production share the same frontend data directory so development
+// does not create a separate data set.
 const globalDataRoot = process.env.ERGATAI_USER_DATA_DIR
   ? process.env.ERGATAI_USER_DATA_DIR
   : join(app.getPath("home"), ".local", "share", "ergatai")
-const frontendDataPath = join(globalDataRoot, IS_DEV ? "ui-dev" : "ui")
+const frontendDataPath = join(globalDataRoot, "ui")
 mkdirSync(frontendDataPath, { recursive: true })
 app.setPath("userData", frontendDataPath)
-console.log(
-  `[Data] Using ${IS_DEV ? "development" : "production"} frontend data path:`,
-  frontendDataPath,
-)
+console.log("[Data] Using frontend data path:", frontendDataPath)
 
 // Increase V8 old-space limit for renderer/main processes to reduce OOM frequency
 // under heavy multi-chat workloads. Must be set before app readiness/window creation.

@@ -40,7 +40,6 @@ import { ChevronDown, Columns3 } from "lucide-react"
 const AuthDialog = (_props: { open: boolean; onOpenChange: (open: boolean) => void }) => null
 // Desktop: archive is handled inline, not via hook
 // import { DiscordIcon } from "@/components/icons"
-import { DiscordIcon } from "../../icons"
 // Desktop: mock Clerk hook (matches pattern in agents-content.tsx — Clerk is not installed)
 // Account sign-out temporarily hidden
 // const useClerk = () => ({ signOut: () => {} })
@@ -126,10 +125,6 @@ import {
   findChatOutsideCollaborationMode,
 } from "../agents"
 import { useCollaborationMode } from "../agents"
-
-// Feedback URL: uses env variable for hosted version, falls back to public Discord for open source
-const FEEDBACK_URL =
-  import.meta.env.VITE_FEEDBACK_URL || "https://discord.gg/8ektTZGnj4"
 
 function _getWorkspaceCollaborationMode(chat: {
   id: string
@@ -458,17 +453,6 @@ const SidebarHeader = memo(function SidebarHeader({
         sideOffset={6}
         alignOffset={-4}
       >
-        <DropdownMenuItem
-          onSelect={() => {
-            // react-doctor-disable-next-line window-open-without-noopener
-            window.open("https://discord.gg/8ektTZGnj4", "_blank")
-            setIsDropdownOpen(false)
-          }}
-          className="gap-2"
-        >
-          <DiscordIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          <span className="flex-1">{i18n.t('Discord')}</span>
-        </DropdownMenuItem>
         {!isMobileFullscreen && (
           <DropdownMenuItem
             onSelect={() => {

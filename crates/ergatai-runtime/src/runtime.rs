@@ -689,12 +689,23 @@ impl AgentRuntime {
         conversation_id: &str,
         message: &str,
     ) -> ErgataiResult<()> {
-        // Direct lookup: conversation_id → AgentInfo (skips agent_id intermediary)
+        // Direct lookup: conversation_id → AgentInfo (skips agent_id intermediary).
+        //
+        // This is deliberately `NotFound` (not `internal`): a conversation with
+        // no live agent commonly means the agent was idle-suspended while the
+        // message was queued. The delivery consumer uses the error kind to
+        // auto-resume the suspended agent and retry instead of treating the
+        // message as a transient infrastructure failure.
         let info = self
             .registry
             .resolve_conversation_id(conversation_id)
             .await
-            .ok_or_else(|| ErgataiError::internal(format!("Cov {} not found", conversation_id)))?;
+            .ok_or_else(|| {
+                ErgataiError::NotFound(format!(
+                    "Conversation {} is not bound to a running agent",
+                    conversation_id
+                ))
+            })?;
 
         tracing::debug!(
             conversation_id = %conversation_id,
@@ -727,12 +738,18 @@ impl AgentRuntime {
         message: &str,
         images: Vec<crate::types::AgentImage>,
     ) -> ErgataiResult<()> {
-        // Direct lookup: conversation_id → AgentInfo (skips agent_id intermediary)
+        // Direct lookup: conversation_id → AgentInfo (skips agent_id intermediary).
+        // See `inject_message_to_conversation` for why this is `NotFound`.
         let info = self
             .registry
             .resolve_conversation_id(conversation_id)
             .await
-            .ok_or_else(|| ErgataiError::internal(format!("Cov {} not found", conversation_id)))?;
+            .ok_or_else(|| {
+                ErgataiError::NotFound(format!(
+                    "Conversation {} is not bound to a running agent",
+                    conversation_id
+                ))
+            })?;
 
         tracing::debug!(
             conversation_id = %conversation_id,
@@ -756,6 +773,46 @@ impl AgentRuntime {
         transition_to_idle(&self.registry, &info.agent_id).await;
 
         // Mark guard as completed to prevent cleanup task from running
+        state_guard.complete();
+
+        result
+    }
+
+    /// Inject a message with images and resources directly to a Cov.
+    ///
+    /// This is the conversation-centric counterpart of
+    /// [`inject_message_with_resources`](Self::inject_message_with_resources),
+    /// used when attachments are delivered through a durable conversation id.
+    pub async fn inject_message_to_conversation_with_resources(
+        &self,
+        conversation_id: &str,
+        message: &str,
+        images: Vec<crate::types::AgentImage>,
+        resources: Vec<crate::types::AgentResource>,
+    ) -> ErgataiResult<()> {
+        let info = self
+            .registry
+            .resolve_conversation_id(conversation_id)
+            .await
+            .ok_or_else(|| ErgataiError::internal(format!("Cov {} not found", conversation_id)))?;
+
+        tracing::debug!(
+            conversation_id = %conversation_id,
+            agent_id = %info.agent_id,
+            image_count = images.len(),
+            resource_count = resources.len(),
+            "Injecting message with resources directly to Cov"
+        );
+
+        let state_guard = StateGuard::new(self.registry.clone(), info.agent_id.clone());
+        transition_to_running(&self.registry, &info.agent_id).await;
+
+        let result = self
+            .backend
+            .inject_message_with_resources(&info.handle, message, &images, &resources)
+            .await;
+
+        transition_to_idle(&self.registry, &info.agent_id).await;
         state_guard.complete();
 
         result

@@ -582,6 +582,7 @@ useActiveChatEffects({
     conversationId,
     isStreaming,
     isRuntimeStreaming,
+    isActive,
     messages,
     pendingInitialPrompt,
     setPendingInitialPrompt,

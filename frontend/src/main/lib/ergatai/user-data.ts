@@ -178,6 +178,12 @@ export type BackendInitialPromptTurn = {
     mediaType: string
     filename: string | null
   }>
+  files: Array<{
+    base64Data: string
+    mediaType: string | null
+    filename: string
+    size: number | null
+  }>
   status: "pending" | "dispatching" | "running" | "completed" | "failed"
   attempt: number
   error: string | null
@@ -536,6 +542,12 @@ export async function createInitialPromptTurn(
       base64Data: string
       mediaType: string
       filename: string | null
+    }>
+    files: Array<{
+      base64Data: string
+      mediaType: string | null
+      filename: string
+      size: number | null
     }>
   },
 ): Promise<BackendInitialPromptTurn> {

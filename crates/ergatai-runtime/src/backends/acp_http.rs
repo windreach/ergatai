@@ -299,6 +299,10 @@ impl AcpHttpBackend {
 
         // Spawn connection task - holds the connection for the lifetime of the agent
         let join_handle = tokio::spawn(async move {
+            // Keep a copy for cleanup after `connect_with` moves the working id
+            // into its connection closure.
+            let cleanup_agent_id = task_agent_id.clone();
+
             // Create HTTP client
             let http_client = match HttpClient::new(&task_endpoint) {
                 Ok(client) => client,
@@ -606,6 +610,9 @@ impl AcpHttpBackend {
                                                 .send_notification(agent_client_protocol::schema::v1::CancelNotification::new(
                                                     session_id.clone(),
                                                 ));
+                                            crate::permission_service::global_permission_service()
+                                                .force_resolve_rejected_for_agent(&task_agent_id)
+                                                .await;
                                             match cancel_result {
                                                 Ok(()) => {
                                                     info!(agent_id = %task_agent_id, "Sent session/cancel notification");
@@ -709,6 +716,9 @@ impl AcpHttpBackend {
                                             .send_notification(agent_client_protocol::schema::v1::CancelNotification::new(
                                                 session_id.clone(),
                                             ));
+                                        crate::permission_service::global_permission_service()
+                                            .force_resolve_rejected_for_agent(&task_agent_id)
+                                            .await;
                                         match cancel_result {
                                             Ok(()) => {
                                                 info!(agent_id = %task_agent_id, "Sent session/cancel notification");
@@ -738,6 +748,10 @@ impl AcpHttpBackend {
 
                     Ok(())
                 })
+                .await;
+
+            crate::permission_service::global_permission_service()
+                .force_resolve_rejected_for_agent(&cleanup_agent_id)
                 .await;
 
             match connect_result {

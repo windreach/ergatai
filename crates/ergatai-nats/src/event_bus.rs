@@ -1173,6 +1173,7 @@ mod tests {
             timeout_ms: None,
             message_type: "request".to_string(),
             images: vec![],
+            files: vec![],
         };
 
         bus.publish_agent_message(&payload).await.unwrap();

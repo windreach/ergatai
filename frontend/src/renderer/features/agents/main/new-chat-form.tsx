@@ -44,6 +44,8 @@ import {
   lastSelectedWorkModeAtom,
   type WorkMode,
   pendingInitialPromptAtomFamily,
+  loadingConversationsAtom,
+  setLoading,
   selectedAgentChatIdAtom,
   selectedDraftIdAtom,
   selectedWorkspaceAtom,
@@ -853,6 +855,12 @@ export const NewChatForm = memo(function NewChatForm({
     setPastedTextsFromDraft,
   } = usePastedTextFiles(tempPastedIdRef.current)
 
+  const hasSendableAttachments =
+    images.some((img) => !img.isLoading && img.url) ||
+    files.some((file) => !file.isLoading && !file.isFolder && file.url) ||
+    pastedTexts.length > 0
+  const canSend = hasContent || hasSendableAttachments
+
   // File contents cache - stores content for file mentions (keyed by mentionId)
   // This content gets added to the prompt when sending, without showing a separate card
   const fileContentsRef = useRef<Map<string, string>>(new Map())
@@ -1277,6 +1285,12 @@ export const NewChatForm = memo(function NewChatForm({
           pendingInitialPromptAtomFamily(data.initialPromptTurn.conversationId),
           data.initialPromptTurn,
         )
+        // Surface loading state in the sidebar even before the conversation is opened.
+        setLoading(
+          (fn) => appStore.set(loadingConversationsAtom, fn(appStore.get(loadingConversationsAtom))),
+          data.initialPromptTurn.conversationId,
+          data.id,
+        )
       }
 
       if (collaborationMode === "group") {
@@ -1353,7 +1367,7 @@ export const NewChatForm = memo(function NewChatForm({
     // Allow send if there's text, images, files, or pasted text files
     const hasText = message.trim().length > 0
     const hasImages = images.filter((img) => !img.isLoading && img.url).length > 0
-    const hasFiles = files.filter((f) => !f.isLoading).length > 0
+    const hasFiles = files.some((f) => !f.isLoading && !f.isFolder && f.url)
     const hasPastedTexts = pastedTexts.length > 0
 
     if ((!hasText && !hasImages && !hasFiles && !hasPastedTexts) || !selectedWorkspace) {
@@ -1369,6 +1383,16 @@ export const NewChatForm = memo(function NewChatForm({
             url: string
             mediaType?: string
             filename?: string
+            base64Data?: string
+          }
+        }
+      | {
+          type: "data-file"
+          data: {
+            url: string
+            mediaType?: string
+            filename?: string
+            size?: number
             base64Data?: string
           }
         }
@@ -1389,6 +1413,21 @@ export const NewChatForm = memo(function NewChatForm({
           base64Data: img.base64Data,
         },
       }))
+
+    parts.push(
+      ...files
+        .filter((file) => !file.isLoading && !file.isFolder && file.url)
+        .map((file) => ({
+          type: "data-file" as const,
+          data: {
+            url: file.url,
+            mediaType: file.type,
+            filename: file.filename,
+            size: file.size,
+            base64Data: file.base64Data,
+          },
+        })),
+    )
 
     // Add pasted text as pasted mentions (format: pasted:size:preview|filepath)
     // Using | as separator since filepath can contain colons
@@ -2319,11 +2358,11 @@ export const NewChatForm = memo(function NewChatForm({
                             isUploading
                           }
                           disabled={Boolean(
-                            !hasContent || !selectedWorkspace || isUploading,
+                            !canSend || !selectedWorkspace || isUploading,
                           )}
                           onClick={handleSend}
                           mode={agentMode}
-                          hasContent={hasContent}
+                          hasContent={canSend}
                           showVoiceInput={isVoiceAvailable}
                           isRecording={isVoiceRecording}
                           isTranscribing={isTranscribing}

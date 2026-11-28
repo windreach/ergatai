@@ -260,12 +260,16 @@ export const AgentEditTool = memo(function AgentEditTool({
     _locations?: Array<{ path?: string }>
     old_string?: string
     new_string?: string
+    oldString?: string
+    newString?: string
     content?: string
   } | undefined
 
   const filePath = getToolFilePath(part)
-  const _oldString = toolInput?.old_string || ""
-  const newString = toolInput?.new_string || ""
+  // Accept both snake_case (Claude-style) and camelCase (other runtimes/AI SDK)
+  // edit payloads so the diff preview and fallback stats stay populated.
+  const _oldString = toolInput?.old_string || toolInput?.oldString || ""
+  const newString = toolInput?.new_string || toolInput?.newString || ""
 
   // For Write mode, content is in input.content
   const writeContent = toolInput?.content || ""

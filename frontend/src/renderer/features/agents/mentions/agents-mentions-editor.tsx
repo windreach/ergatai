@@ -1103,9 +1103,18 @@ export const AgentsMentionsEditor = memo(
           // Some platforms (Electron/Chromium on Wayland) report the Enter that
           // commits a composition as isComposing=false, so also check keyCode 229.
           if (e.key === "Enter" && !e.shiftKey && !isImeComposing(e.nativeEvent)) {
-            if (activeDiscoveryTrigger.current !== null) {
-              // Let dropdown handle Enter
-              return
+            // A dropdown with a selectable option consumes Enter in its capture
+            // handler. If the event reaches the editor, there was no option to
+            // select (for example a pasted absolute path), so dismiss the stale
+            // trigger and submit the original text instead of swallowing Enter.
+            const activeTrigger = activeDiscoveryTrigger.current
+            if (activeTrigger) {
+              activeDiscoveryTrigger.current = null
+              if (activeTrigger.kind === "slash") {
+                onCloseSlashTrigger?.()
+              } else {
+                onCloseTrigger()
+              }
             }
             e.preventDefault()
             // Opt+Enter = force submit (bypass queue, stop stream and send immediately)

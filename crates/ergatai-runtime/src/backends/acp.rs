@@ -5601,15 +5601,23 @@ impl AcpBackend {
         };
 
         if let (Some(connection), Some(session_id)) = (connection, session_id) {
-            connection
+            let cancel_result = connection
                 .send_notification(agent_client_protocol::schema::v1::CancelNotification::new(
                     session_id,
                 ))
                 .map_err(|error| {
                     ErgataiError::internal(format!("Failed to send session/cancel: {error}"))
-                })?;
-            info!(agent_id = %agent_id, "Sent session/cancel notification (out-of-band)");
-            return Ok(());
+                });
+            if cancel_result.is_ok() {
+                info!(agent_id = %agent_id, "Sent session/cancel notification (out-of-band)");
+            }
+            // A pending interactive permission can prevent the ACP prompt from
+            // observing cancellation. Always release its waiter, even when the
+            // notification itself failed, so the next message cannot inherit it.
+            crate::permission_service::global_permission_service()
+                .force_resolve_rejected_for_agent(agent_id)
+                .await;
+            return cancel_result;
         }
 
         // Fallback for entries without a direct connection (e.g. test mocks).
@@ -5619,10 +5627,14 @@ impl AcpBackend {
             .await
             .map_err(|_| ErgataiError::internal("ACP command channel closed"))?;
 
-        match response_rx.await {
+        let result = match response_rx.await {
             Ok(result) => result,
             Err(_) => Err(ErgataiError::internal("ACP response channel closed")),
-        }
+        };
+        crate::permission_service::global_permission_service()
+            .force_resolve_rejected_for_agent(agent_id)
+            .await;
+        result
     }
 
     /// Execute a slash command on an agent and return the captured output.
@@ -7931,6 +7943,9 @@ impl AcpBackendInterface for AcpBackend {
                                             )
                                             .await;
                                         }
+                                        crate::permission_service::global_permission_service()
+                                            .force_resolve_rejected_for_agent(&connection_agent_id)
+                                            .await;
                                         // End turn lifecycle with error: Done(error) + flush + clear token
                                         end_turn_lifecycle(
                                             &turn_token,
@@ -8128,6 +8143,9 @@ impl AcpBackendInterface for AcpBackend {
                                             .await;
                                         }
 
+                                        crate::permission_service::global_permission_service()
+                                            .force_resolve_rejected_for_agent(&connection_agent_id)
+                                            .await;
                                         end_turn_lifecycle(
                                             &turn_token,
                                             &task_current_turn_token,
@@ -8380,6 +8398,9 @@ impl AcpBackendInterface for AcpBackend {
                                             )
                                             .await;
                                         }
+                                        crate::permission_service::global_permission_service()
+                                            .force_resolve_rejected_for_agent(&connection_agent_id)
+                                            .await;
                                         // End turn lifecycle with error: Done(error) + flush + clear token
                                         end_turn_lifecycle(
                                             &turn_token,
@@ -8396,6 +8417,9 @@ impl AcpBackendInterface for AcpBackend {
                             }
                             Some(AcpCommand::Stop) => {
                                 info!("ACP connection task received stop command");
+                                crate::permission_service::global_permission_service()
+                                    .force_resolve_rejected_for_agent(&connection_agent_id)
+                                    .await;
                                 // Finalize any active turn (autonomous or prompt) on stop.
                                 let tok = task_current_turn_token.read().clone();
                                 if tok.is_some() {
@@ -8500,6 +8524,9 @@ impl AcpBackendInterface for AcpBackend {
                                     .send_notification(agent_client_protocol::schema::v1::CancelNotification::new(
                                         session_id.clone(),
                                     ));
+                                crate::permission_service::global_permission_service()
+                                    .force_resolve_rejected_for_agent(&connection_agent_id)
+                                    .await;
                                 match result {
                                     Ok(()) => {
                                         info!("Sent session/cancel notification");
@@ -8852,6 +8879,12 @@ impl AcpBackendInterface for AcpBackend {
                     Ok(())
                 })
                 .await;
+
+                // Connection loss cancels the permission-handler futures. Make
+                // sure no pending request or oneshot waiter survives this task.
+                crate::permission_service::global_permission_service()
+                    .force_resolve_rejected_for_agent(&task_agent_id)
+                    .await;
 
                 // Mark agent as not alive and report death for lazy reaping.
                 task_alive.store(false, std::sync::atomic::Ordering::SeqCst);

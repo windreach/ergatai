@@ -75,6 +75,10 @@ import {
   messageIdSchema,
   projectIdSchema
 } from "../../validation/ids"
+import {
+  extractInitialPrompt,
+  initialMessagePartSchema
+} from "./chat-initial-message"
 
 type WorktreeSetupFailurePayload = {
   kind: "create-failed" | "setup-failed"
@@ -110,58 +114,6 @@ type ChatsRouterConversation = {
   createdAt: Date
   updatedAt: Date
   archivedAt: Date | null
-}
-
-type InitialMessagePart =
-  | { type: "text"; text: string }
-  | {
-      type: "data-image"
-      data: {
-        url?: string
-        mediaType?: string
-        filename?: string
-        base64Data?: string
-      }
-    }
-  | { type: "file-content"; filePath: string; content: string }
-
-function extractInitialPrompt(parts: unknown[]): {
-  prompt: string
-  images: Array<{
-    base64Data: string
-    mediaType: string
-    filename: string | null
-  }>
-} {
-  const promptChunks: string[] = []
-  const images: Array<{
-    base64Data: string
-    mediaType: string
-    filename: string | null
-  }> = []
-
-  for (const part of parts) {
-    if (
-      typeof part === "object" &&
-      part !== null &&
-      "type" in part
-    ) {
-      const typedPart = part as InitialMessagePart
-      if (typedPart.type === "text") {
-        promptChunks.push(typedPart.text)
-      } else if (typedPart.type === "data-image" && typedPart.data.base64Data) {
-        images.push({
-          base64Data: typedPart.data.base64Data,
-          mediaType: typedPart.data.mediaType || "image/png",
-          filename: typedPart.data.filename ?? null,
-        })
-      } else if (typedPart.type === "file-content") {
-        promptChunks.push(`\n\n[File: ${typedPart.filePath}]\n${typedPart.content}`)
-      }
-    }
-  }
-
-  return { prompt: promptChunks.join(""), images }
 }
 
 async function resolveChatWorkspace(
@@ -438,28 +390,7 @@ export const chatsRouter = router({
         model: z.string().optional(),
         providerConnectionId: z.string().optional(),
         initialMessage: z.string().optional(),
-        initialMessageParts: z
-          .array(
-            z.union([
-              z.object({ type: z.literal("text"), text: z.string() }),
-              z.object({
-                type: z.literal("data-image"),
-                data: z.object({
-                  url: z.string(),
-                  mediaType: z.string().optional(),
-                  filename: z.string().optional(),
-                  base64Data: z.string().optional(),
-                }),
-              }),
-              // Hidden file content - sent to agent but not displayed in UI
-              z.object({
-                type: z.literal("file-content"),
-                filePath: z.string(),
-                content: z.string(),
-              }),
-            ]),
-          )
-          .optional(),
+        initialMessageParts: z.array(initialMessagePartSchema).optional(),
         baseBranch: z.string().optional(), // Branch to base the worktree off
         branch: z.string().optional(), // Branch name for the chat
         branchType: z.enum(["local", "remote"]).optional(), // Whether baseBranch is local or remote
@@ -654,7 +585,7 @@ export const chatsRouter = router({
       let initialPromptTurn: Awaited<ReturnType<typeof createInitialPromptTurn>> | null = null
       if (initialMessages.length > 0 && input.collaborationMode !== "group") {
         const initialMessage = initialMessages[0]
-        const { prompt, images } = extractInitialPrompt(
+        const { prompt, images, files } = extractInitialPrompt(
           Array.isArray(initialMessage.parts) ? initialMessage.parts : [],
         )
         initialPromptTurn = await createInitialPromptTurn(conversation.id, {
@@ -665,6 +596,7 @@ export const chatsRouter = router({
           model: input.model ?? null,
           prompt,
           images,
+          files,
         })
       }
 
@@ -1672,10 +1604,17 @@ export const chatsRouter = router({
             type: string
             input?: {
               file_path?: string
+              filePath?: string
+              path?: string
+              file?: string
               old_string?: string
               new_string?: string
+              oldString?: string
+              newString?: string
               content?: string
+              _locations?: Array<{ path?: string }>
             }
+            locations?: Array<{ path?: string }>
           }>
         }>
 
@@ -1689,7 +1628,15 @@ export const chatsRouter = router({
           if (msg.role !== "assistant") continue
           for (const part of msg.parts || []) {
             if (part.type === "tool-Edit" || part.type === "tool-Write") {
-              const filePath = part.input?.file_path
+              // Older parts use `file_path` + snake_case fields, while
+              // ACP/camelCase runtimes use `path` + `oldString`/`newString`.
+              const filePath =
+                part.input?._locations?.[0]?.path ||
+                part.locations?.[0]?.path ||
+                part.input?.file_path ||
+                part.input?.filePath ||
+                part.input?.path ||
+                part.input?.file
               if (!filePath) continue
               // Skip session files
               if (
@@ -1698,9 +1645,13 @@ export const chatsRouter = router({
               )
                 continue
 
-              const oldString = part.input?.old_string || ""
+              const oldString =
+                part.input?.old_string || part.input?.oldString || ""
               const newString =
-                part.input?.new_string || part.input?.content || ""
+                part.input?.new_string ||
+                part.input?.newString ||
+                part.input?.content ||
+                ""
 
               const existing = fileStates.get(filePath)
               if (existing) {

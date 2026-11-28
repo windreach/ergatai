@@ -28,11 +28,13 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_nats::jetstream::message::AckKind;
+use async_nats::jetstream::Message;
 use futures::StreamExt;
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use ergatai_core::id::parse_to_i64;
@@ -118,8 +120,18 @@ fn now_unix_ms() -> i64 {
 /// Errors that cannot succeed by retrying the exact same prompt. These are
 /// acked immediately so a permanent provider/model configuration problem does
 /// not flood the conversation with duplicate error turns.
+///
+/// `NotFound`/`AgentNotFound` are included on purpose: the delivery path first
+/// tries to auto-resume a suspended agent, so if the target is still missing
+/// afterwards, retrying the same message cannot succeed. Leaving them on the
+/// transient path caused a ~13 minute retry storm per stale message (20
+/// attempts with exponential backoff), during which the queue made no
+/// progress.
 fn is_permanent_delivery_error(error: &ErgataiError) -> bool {
-    if matches!(error, ErgataiError::AgentNotFound(_)) {
+    if matches!(
+        error,
+        ErgataiError::AgentNotFound(_) | ErgataiError::NotFound(_)
+    ) {
         return true;
     }
 
@@ -406,8 +418,11 @@ async fn init_pull_consumer_with_retry(
 
 /// Main message processing loop.
 ///
-/// Pulls messages from the stream, attempts delivery via AgentRuntime injection,
-/// and acks/naks based on the result.
+/// Pulls messages from the stream and dispatches each to the worker that owns
+/// its conversation. This loop deliberately never awaits an agent turn:
+/// `inject_message` only returns when the prompt finishes, so awaiting it here
+/// would serialize every conversation behind the slowest one (and behind any
+/// pending permission approval).
 async fn process_messages(
     mut messages: futures::stream::BoxStream<
         'static,
@@ -433,7 +448,7 @@ async fn process_messages(
 
                     // Message received
                     Some(Ok(msg)) => {
-                        handle_message(&msg).await;
+                        dispatch_message(msg);
                     }
 
                     // Transport error
@@ -447,8 +462,191 @@ async fn process_messages(
     }
 }
 
+/// Per-conversation delivery workers.
+///
+/// `handle_message` awaits the whole agent turn (`inject_message` only returns
+/// when the ACP prompt completes), which used to serialize every conversation
+/// behind the slowest turn. One worker per conversation preserves ordering for
+/// a single conversation while allowing unrelated chats — and their permission
+/// prompts — to make progress concurrently. This is what prevents a long turn
+/// in chat A from starving a new message in chat B.
+static DELIVERY_WORKERS: OnceLock<Mutex<HashMap<String, mpsc::UnboundedSender<QueuedDelivery>>>> =
+    OnceLock::new();
+
+/// A JetStream message paired with the progress-ack guard that keeps it alive
+/// while it waits in a worker queue and during the agent turn.
+struct QueuedDelivery {
+    msg: Message,
+    progress_ack: ProgressAckGuard,
+}
+
+/// How long an idle per-conversation worker stays alive before exiting.
+const DELIVERY_WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+fn delivery_workers() -> &'static Mutex<HashMap<String, mpsc::UnboundedSender<QueuedDelivery>>> {
+    DELIVERY_WORKERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Ordering key for a delivery: conversation first, agent as fallback.
+fn delivery_key_for_payload(payload: &AgentMessagePayload) -> String {
+    payload
+        .target_conversation_id
+        .map(|conversation_id| conversation_id.to_string())
+        .unwrap_or_else(|| payload.to_agent.clone())
+}
+
+fn delivery_key(msg: &Message) -> String {
+    match serde_json::from_slice::<AgentMessagePayload>(&msg.payload) {
+        Ok(payload) => delivery_key_for_payload(&payload),
+        // Malformed payloads are acked/discarded by `handle_message`; they do
+        // not need per-conversation ordering.
+        Err(_) => "__invalid__".to_string(),
+    }
+}
+
+/// Hand a message to the worker that owns its conversation.
+fn dispatch_message(msg: Message) {
+    let key = delivery_key(&msg);
+    // Start renewing the ack deadline immediately: a worker may be busy with an
+    // earlier turn in the same conversation, and an unacked queued message
+    // would otherwise be redelivered every `ack_wait`.
+    let mut delivery = QueuedDelivery {
+        progress_ack: ProgressAckGuard::spawn(&msg),
+        msg,
+    };
+
+    for _ in 0..2 {
+        let sender = {
+            let mut workers = delivery_workers()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match workers.get(&key) {
+                Some(sender) if !sender.is_closed() => sender.clone(),
+                _ => {
+                    let (tx, rx) = mpsc::unbounded_channel();
+                    let worker_tx = tx.clone();
+                    let worker_key = key.clone();
+                    tokio::spawn(async move {
+                        run_delivery_worker(worker_key, worker_tx, rx).await;
+                    });
+                    workers.insert(key.clone(), tx.clone());
+                    tx
+                }
+            }
+        };
+
+        match sender.send(delivery) {
+            Ok(()) => return,
+            Err(error) => {
+                // The worker exited between the liveness check and the send.
+                let QueuedDelivery { msg, progress_ack } = error.0;
+                delivery = QueuedDelivery { msg, progress_ack };
+            }
+        }
+
+        if let Ok(mut workers) = delivery_workers().lock() {
+            workers.remove(&key);
+        }
+    }
+
+    warn!(
+        conversation = %key,
+        "Failed to dispatch agent message to a delivery worker; dropping it"
+    );
+}
+
+/// Sequentially deliver messages that belong to the same conversation.
+async fn run_delivery_worker(
+    key: String,
+    sender: mpsc::UnboundedSender<QueuedDelivery>,
+    mut receiver: mpsc::UnboundedReceiver<QueuedDelivery>,
+) {
+    loop {
+        match tokio::time::timeout(DELIVERY_WORKER_IDLE_TIMEOUT, receiver.recv()).await {
+            Ok(Some(delivery)) => {
+                let QueuedDelivery { msg, progress_ack } = delivery;
+                handle_message(&msg, progress_ack).await;
+            }
+            Ok(None) => break,
+            Err(_) => {
+                // Idle timeout. Remove ourselves from the registry first and
+                // close the receiving end, then drain anything that was
+                // dispatched before we shut down. Without the close, a
+                // concurrent dispatch could send into the channel after the
+                // drain and lose the message when the receiver is dropped.
+                unregister_worker(&key, &sender);
+                receiver.close();
+                while let Ok(delivery) = receiver.try_recv() {
+                    let QueuedDelivery { msg, progress_ack } = delivery;
+                    handle_message(&msg, progress_ack).await;
+                }
+                break;
+            }
+        }
+    }
+
+    // Also clean up on the "all senders dropped" path.
+    unregister_worker(&key, &sender);
+}
+
+/// Remove a worker from the registry, but only if it is still the registered
+/// sender for its conversation.
+fn unregister_worker(key: &str, sender: &mpsc::UnboundedSender<QueuedDelivery>) {
+    if let Ok(mut workers) = delivery_workers().lock() {
+        let is_current = workers
+            .get(key)
+            .is_some_and(|current| current.same_channel(sender));
+        if is_current {
+            workers.remove(key);
+        }
+    }
+}
+
+/// Keeps a JetStream delivery alive while a long agent turn is in flight.
+///
+/// `ack_wait` is 30 seconds, but a prompt turn routinely runs for minutes.
+/// Without periodic `Progress` acks JetStream redelivers the same user message
+/// mid-turn; the duplicate is then acked by the dedup path while the original
+/// is still running, so a later delivery failure can no longer be retried.
+struct ProgressAckGuard {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl ProgressAckGuard {
+    fn spawn(msg: &Message) -> Self {
+        let msg = msg.clone();
+        let handle = tokio::spawn(async move {
+            // Renew well before the 30s ack_wait deadline.
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await; // consume the immediate first tick
+            loop {
+                interval.tick().await;
+                if let Err(error) = msg.ack_with(AckKind::Progress).await {
+                    debug!(
+                        error = %error,
+                        "Failed to send progress ack for in-flight message"
+                    );
+                    break;
+                }
+            }
+        });
+        Self { handle }
+    }
+}
+
+impl Drop for ProgressAckGuard {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
 /// Handle a single message: deserialize, deliver, ack/nak.
-async fn handle_message(msg: &async_nats::jetstream::Message) {
+///
+/// `_progress_ack` is kept alive for the whole function so the JetStream ack
+/// deadline is renewed while the agent turn runs and, if this message waited in
+/// the worker queue, while it was queued.
+async fn handle_message(msg: &Message, _progress_ack: ProgressAckGuard) {
     // Deserialize the payload
     let payload: AgentMessagePayload = match serde_json::from_slice(&msg.payload) {
         Ok(p) => p,
@@ -879,92 +1077,100 @@ async fn handle_message(msg: &async_nats::jetstream::Message) {
     let delivery_message = prepare_delivery_message(from, formatted_message, agent_kind.as_str());
 
     // ── Deliver via AgentRuntime injection (ACP protocol) ──
-    // Choose delivery method based on whether images are present
-    let mut delivery_result = if payload.images.is_empty() {
-        runtime
-            .inject_message_to_conversation(&conversation_id.to_string(), &delivery_message)
-            .await
-    } else {
-        // Convert NATS AgentImage to runtime AgentImage
-        let runtime_images: Vec<ergatai_runtime::types::AgentImage> = payload
-            .images
-            .iter()
-            .map(|img| ergatai_runtime::types::AgentImage {
-                base64_data: img.base64_data.clone(),
-                media_type: img.media_type.clone(),
-                filename: img.filename.clone(),
-            })
-            .collect();
+    // A single prompt turn can outlive `ack_wait` by minutes. The
+    // `_progress_ack` passed into this function keeps the JetStream delivery
+    // alive while the agent works so the same user message is not redelivered
+    // as a second turn (and so a late failure can still be retried).
+    let delivery_result = {
+        // Choose delivery method based on whether images are present
+        let mut result = if payload.images.is_empty() {
+            runtime
+                .inject_message_to_conversation(&conversation_id.to_string(), &delivery_message)
+                .await
+        } else {
+            // Convert NATS AgentImage to runtime AgentImage
+            let runtime_images: Vec<ergatai_runtime::types::AgentImage> = payload
+                .images
+                .iter()
+                .map(|img| ergatai_runtime::types::AgentImage {
+                    base64_data: img.base64_data.clone(),
+                    media_type: img.media_type.clone(),
+                    filename: img.filename.clone(),
+                })
+                .collect();
 
-        runtime
-            .inject_message_to_conversation_with_images(
-                &conversation_id.to_string(),
-                &delivery_message,
-                runtime_images.clone(),
-            )
-            .await
-    };
-
-    // If delivery failed because agent/conversation not found, try to auto-resume suspended agent
-    if let Err(ref e) = delivery_result {
-        let is_not_found = matches!(
-            e,
-            ergatai_error::ErgataiError::NotFound(_)
-                | ergatai_error::ErgataiError::AgentNotFound(_)
-        );
-        if is_not_found {
-            tracing::info!(
-                from = from,
-                to = to,
-                conversation_id = %conversation_id,
-                "Delivery failed with not found error, checking for suspended agent"
-            );
-
-            if let Some(_resumed_id) =
-                crate::services::agent_service::try_auto_resume_suspended_agent(
-                    &runtime,
-                    to,
-                    Some(&conversation_id.to_string()),
+            runtime
+                .inject_message_to_conversation_with_images(
+                    &conversation_id.to_string(),
+                    &delivery_message,
+                    runtime_images.clone(),
                 )
                 .await
-            {
+        };
+
+        // If delivery failed because agent/conversation not found, try to auto-resume suspended agent
+        if let Err(ref e) = result {
+            let is_not_found = matches!(
+                e,
+                ergatai_error::ErgataiError::NotFound(_)
+                    | ergatai_error::ErgataiError::AgentNotFound(_)
+            );
+            if is_not_found {
                 tracing::info!(
                     from = from,
                     to = to,
                     conversation_id = %conversation_id,
-                    "Auto-resumed suspended agent, retrying delivery"
+                    "Delivery failed with not found error, checking for suspended agent"
                 );
 
-                // Retry delivery
-                delivery_result = if payload.images.is_empty() {
-                    runtime
-                        .inject_message_to_conversation(
-                            &conversation_id.to_string(),
-                            &delivery_message,
-                        )
-                        .await
-                } else {
-                    let runtime_images: Vec<ergatai_runtime::types::AgentImage> = payload
-                        .images
-                        .iter()
-                        .map(|img| ergatai_runtime::types::AgentImage {
-                            base64_data: img.base64_data.clone(),
-                            media_type: img.media_type.clone(),
-                            filename: img.filename.clone(),
-                        })
-                        .collect();
+                if let Some(_resumed_id) =
+                    crate::services::agent_service::try_auto_resume_suspended_agent(
+                        &runtime,
+                        to,
+                        Some(&conversation_id.to_string()),
+                    )
+                    .await
+                {
+                    tracing::info!(
+                        from = from,
+                        to = to,
+                        conversation_id = %conversation_id,
+                        "Auto-resumed suspended agent, retrying delivery"
+                    );
 
-                    runtime
-                        .inject_message_to_conversation_with_images(
-                            &conversation_id.to_string(),
-                            &delivery_message,
-                            runtime_images,
-                        )
-                        .await
-                };
+                    // Retry delivery
+                    result = if payload.images.is_empty() {
+                        runtime
+                            .inject_message_to_conversation(
+                                &conversation_id.to_string(),
+                                &delivery_message,
+                            )
+                            .await
+                    } else {
+                        let runtime_images: Vec<ergatai_runtime::types::AgentImage> = payload
+                            .images
+                            .iter()
+                            .map(|img| ergatai_runtime::types::AgentImage {
+                                base64_data: img.base64_data.clone(),
+                                media_type: img.media_type.clone(),
+                                filename: img.filename.clone(),
+                            })
+                            .collect();
+
+                        runtime
+                            .inject_message_to_conversation_with_images(
+                                &conversation_id.to_string(),
+                                &delivery_message,
+                                runtime_images,
+                            )
+                            .await
+                    };
+                }
             }
         }
-    }
+
+        result
+    };
 
     // Extract external_message_id once for delivery status tracking (used in both success and error paths)
     let external_message_id = payload
@@ -1305,6 +1511,64 @@ mod tests {
 
         let transient = ErgataiError::internal("upstream request timed out");
         assert!(!is_permanent_delivery_error(&transient));
+    }
+
+    #[test]
+    fn test_missing_target_is_not_retried() {
+        // A conversation without a live agent is handled by the auto-resume
+        // path first; if it still fails, retrying the same message cannot help.
+        let missing_conversation =
+            ErgataiError::NotFound("Conversation conv_1 is not bound to a running agent".into());
+        assert!(is_permanent_delivery_error(&missing_conversation));
+
+        let missing_agent = ErgataiError::AgentNotFound("agent_1".into());
+        assert!(is_permanent_delivery_error(&missing_agent));
+    }
+
+    #[test]
+    fn test_delivery_key_prefers_conversation() {
+        let conversation_id = ergatai_error::ConversationId::new(1234567890);
+        let payload = AgentMessagePayload {
+            from_agent: "user".to_string(),
+            to_agent: "agent_1".to_string(),
+            content: "hello".to_string(),
+            timestamp: 0,
+            metadata: HashMap::new(),
+            message_id: "msg_1".to_string(),
+            requires_receipt: false,
+            correlation_id: None,
+            timeout_ms: None,
+            message_type: "request".to_string(),
+            target_conversation_id: Some(conversation_id),
+            images: Vec::new(),
+            files: Vec::new(),
+        };
+
+        assert_eq!(
+            delivery_key_for_payload(&payload),
+            conversation_id.to_string()
+        );
+    }
+
+    #[test]
+    fn test_delivery_key_falls_back_to_agent() {
+        let payload = AgentMessagePayload {
+            from_agent: "user".to_string(),
+            to_agent: "agent_1".to_string(),
+            content: "hello".to_string(),
+            timestamp: 0,
+            metadata: HashMap::new(),
+            message_id: "msg_1".to_string(),
+            requires_receipt: false,
+            correlation_id: None,
+            timeout_ms: None,
+            message_type: "request".to_string(),
+            target_conversation_id: None,
+            images: Vec::new(),
+            files: Vec::new(),
+        };
+
+        assert_eq!(delivery_key_for_payload(&payload), "agent_1");
     }
 
     #[test]

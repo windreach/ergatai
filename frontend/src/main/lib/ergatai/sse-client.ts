@@ -739,16 +739,11 @@ export function subscribeRawAgentStream(
 
     onEvent(event)
 
-    // Auto-cleanup on done/error events
-    if ((event.type === "done" || event.type === "error") && cleanupRef) {
-      console.log("[sse-client][subscribeRawAgentStream] completing stream due to terminal event", {
-        agentId,
-        promptId,
-        conversationId,
-        type: event.type,
-      })
-      cleanupRef()
-    }
+    // Do NOT tear down the stream on done/error: a new turn can start
+    // immediately after the previous one, and the next subscriber may attach
+    // while the previous turn's terminal event is still in flight. Consumers
+    // (the chat transport) close their own stream when they accept a terminal
+    // event that belongs to the turn they started.
   }
 
   cleanupRef = createSseStream(url, parseAndDispatch, onError, onComplete)

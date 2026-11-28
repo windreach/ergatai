@@ -4,13 +4,21 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 const mocks = vi.hoisted(() => ({
   useQuery: vi.fn(),
   mergeMutation: { mutate: vi.fn(), isPending: false },
+  syncMutation: { mutate: vi.fn(), isPending: false },
+  invalidateStatus: vi.fn(),
+  invalidateParsedDiff: vi.fn(),
 }))
 
 vi.mock("@/lib/trpc", () => ({
   trpc: {
+    useUtils: () => ({
+      changes: { getStatus: { invalidate: mocks.invalidateStatus } },
+      chats: { getParsedDiff: { invalidate: mocks.invalidateParsedDiff } },
+    }),
     chats: { get: { useQuery: mocks.useQuery } },
     changes: {
       mergeChatBranch: { useMutation: () => mocks.mergeMutation },
+      syncWorktreeToBase: { useMutation: () => mocks.syncMutation },
     },
   },
 }))

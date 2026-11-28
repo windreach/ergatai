@@ -313,6 +313,7 @@ fn agent_message_payload_roundtrip() {
         timeout_ms: None,
         message_type: "request".to_string(),
         images: vec![],
+        files: vec![],
     };
 
     let json = serde_json::to_string(&payload).unwrap();

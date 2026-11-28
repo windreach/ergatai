@@ -107,6 +107,7 @@ fn initialize_tables(conn: &Connection) -> Result<()> {
         [],
     );
     let _ = conn.execute("ALTER TABLE initial_prompt_turns ADD COLUMN model TEXT", []);
+    migrate_initial_prompt_files(conn)?;
     migrate_agent_runtime_model_columns(conn)?;
     migrate_conversation_launch_settings(conn)?;
     Ok(())
@@ -168,6 +169,23 @@ fn migrate_workspace_projects(conn: &Connection) -> Result<()> {
         "#,
     )?;
 
+    Ok(())
+}
+
+/// Add durable file attachments to initial prompt turns on existing databases.
+fn migrate_initial_prompt_files(conn: &Connection) -> Result<()> {
+    let existing_columns: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(initial_prompt_turns)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        rows.collect::<Result<std::collections::HashSet<_>>>()?
+    };
+
+    if !existing_columns.contains("files") {
+        conn.execute(
+            "ALTER TABLE initial_prompt_turns ADD COLUMN files TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -467,6 +485,7 @@ fn create_tables_if_not_exists(conn: &Connection) -> Result<()> {
             model TEXT,
             prompt TEXT NOT NULL,
             images TEXT NOT NULL DEFAULT '[]',
+            files TEXT NOT NULL DEFAULT '[]',
             status TEXT NOT NULL CHECK (status IN ('pending', 'dispatching', 'running', 'completed', 'failed')),
             attempt INTEGER NOT NULL DEFAULT 0,
             error TEXT,
@@ -6616,6 +6635,43 @@ mod tests {
             [],
         );
         assert!(duplicate.is_err());
+    }
+
+    #[test]
+    fn test_initial_prompt_files_migration_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE initial_prompt_turns (turn_id TEXT PRIMARY KEY);
+             INSERT INTO initial_prompt_turns (turn_id) VALUES ('turn-1');",
+        )
+        .unwrap();
+
+        migrate_initial_prompt_files(&conn).unwrap();
+        let default_files: String = conn
+            .query_row(
+                "SELECT files FROM initial_prompt_turns WHERE turn_id = 'turn-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(default_files, "[]");
+
+        let persisted_files = r#"[{"base64Data":"aGVsbG8=","filename":"hello.txt"}]"#;
+        conn.execute(
+            "UPDATE initial_prompt_turns SET files = ?1 WHERE turn_id = 'turn-1'",
+            params![persisted_files],
+        )
+        .unwrap();
+        migrate_initial_prompt_files(&conn).unwrap();
+
+        let files_after_second_migration: String = conn
+            .query_row(
+                "SELECT files FROM initial_prompt_turns WHERE turn_id = 'turn-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(files_after_second_migration, persisted_files);
     }
 
     #[test]

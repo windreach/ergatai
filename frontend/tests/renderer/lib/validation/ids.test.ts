@@ -6,6 +6,7 @@ import {
   conversationIdSchema,
   conversationKeySchema,
   messageIdSchema,
+  pastedTextScopeSchema,
   projectIdSchema,
   workspaceIdSchema,
 } from "../../../../src/main/lib/validation/ids"
@@ -37,6 +38,13 @@ describe("core ID schemas", () => {
     expect(conversationKeySchema.safeParse("conv_503994318188_000_0000").success).toBe(true)
     expect(conversationKeySchema.safeParse("conv-agent_a-agent_b").success).toBe(true)
     expect(conversationIdSchema.safeParse("conv-agent_a-agent_b").success).toBe(false)
+  })
+
+  it("accepts a local paste scope before a new chat has a conversation ID", () => {
+    expect(pastedTextScopeSchema.safeParse("new-chat-1760000000000").success).toBe(true)
+    expect(pastedTextScopeSchema.safeParse("conv_503994318188_000_0000").success).toBe(true)
+    expect(pastedTextScopeSchema.safeParse("new-chat-../escape").success).toBe(false)
+    expect(conversationKeySchema.safeParse("new-chat-1760000000000").success).toBe(false)
   })
 
   it("accepts configured agent profile identifiers", () => {

@@ -51,6 +51,29 @@ describe("extractChangedFiles", () => {
     expect(res[0].additions).toBe(3)
     expect(res[0].deletions).toBe(2)
   })
+  it("tracks camelCase edit payloads", () => {
+    const parts = [
+      {
+        type: "tool-Edit",
+        input: { _locations: [{ path: "/p/a.ts" }], oldString: "a\nb", newString: "x\ny\nz" },
+      },
+    ]
+    const res = extractChangedFiles(parts, "/p")
+    expect(res).toHaveLength(1)
+    expect(res[0].additions).toBe(3)
+    expect(res[0].deletions).toBe(2)
+  })
+  it("does not count a trailing newline as an extra line", () => {
+    const parts = [
+      {
+        type: "tool-Edit",
+        input: { _locations: [{ path: "/p/a.ts" }], old_string: "a\n", new_string: "x\ny\n" },
+      },
+    ]
+    const res = extractChangedFiles(parts, "/p")
+    expect(res[0].additions).toBe(2)
+    expect(res[0].deletions).toBe(1)
+  })
   it("write counts additions", () => {
     const parts = [
       {

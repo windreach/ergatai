@@ -4,7 +4,8 @@ import {
 } from "node:child_process";
 import { t } from "../i18n"
 import {
-  createHash
+  createHash,
+  randomUUID
 } from "node:crypto";
 import {
   chmod,
@@ -21,7 +22,8 @@ import {
 } from "node:fs/promises";
 import {
   devNull,
-  homedir
+  homedir,
+  tmpdir
 } from "node:os";
 import {
   dirname,
@@ -1713,114 +1715,106 @@ async function writeSyncState(
 
 const SYNC_COMMIT_PREFIX = "ergatai-sync:";
 
-async function hasStagedChanges(repoPath: string): Promise<boolean> {
+/**
+ * Older builds stored the sync snapshot as a real commit on the chat branch.
+ * That hid every uncommitted change from the Changes panel (it only diffs
+ * against HEAD). Move the branch back one commit so those files appear as
+ * ordinary local changes again; the worktree on disk is left untouched.
+ */
+async function uncommitLegacySyncSnapshot(
+	worktreePath: string,
+): Promise<boolean> {
+	let subject: string;
 	try {
-		await runGit(repoPath, ["diff", "--cached", "--quiet"]);
+		subject = (
+			await runGit(worktreePath, ["log", "-1", "--format=%s"])
+		).trim();
+	} catch {
 		return false;
-	} catch (error) {
-		if (isExecFileException(error) && error.code === 1) return true;
-		throw error;
 	}
+	if (!subject.startsWith(SYNC_COMMIT_PREFIX)) return false;
+
+	const parent = await runGit(worktreePath, ["rev-parse", "HEAD^"]).catch(
+		() => null,
+	);
+	if (!parent) return false;
+
+	await runGit(worktreePath, ["reset", "--mixed", parent.trim()]);
+	return true;
 }
 
 /**
- * Stage the worktree, excluding harness/tooling directories. Returns true when
- * there is at least one staged project change.
+ * Build a throwaway commit containing the current worktree state. It is used
+ * only as the merge source for `git merge --squash`, so it deliberately does
+ * not move HEAD, the chat branch, or the user's real index: the Changes panel
+ * must keep showing the same, still-uncommitted work after a sync.
  */
-async function stageWorktreeChanges(worktreePath: string): Promise<boolean> {
-	await runGit(worktreePath, ["add", "-A", "--", "."]);
-
-	const staged = (
-		await runGit(worktreePath, ["diff", "--cached", "--name-only", "-z"])
-	)
-		.split("\0")
-		.filter(Boolean);
-	const excluded = staged.filter(isSyncExcludedPath);
-	for (let index = 0; index < excluded.length; index += 100) {
-		// react-doctor-disable-next-line async-await-in-loop
-		await runGit(worktreePath, [
-			"reset",
-			"-q",
-			"--",
-			...excluded.slice(index, index + 100),
-		]);
-	}
-
-	return hasStagedChanges(worktreePath);
-}
-
-/**
- * Create (or amend) the single disposable snapshot commit on the chat branch.
- * This commit is the merge source for `git merge --squash`; it is never pushed
- * and never becomes part of the base branch history.
- */
-async function commitStagedSnapshot(
+async function createSnapshotCommit(
 	worktreePath: string,
 	chatBranch: string,
-	hasStagedChanges: boolean,
-): Promise<{ head: string; committed: boolean }> {
-	if (!hasStagedChanges) {
-		return {
-			head: (await runGit(worktreePath, ["rev-parse", "HEAD"])).trim(),
-			committed: false,
-		};
-	}
+): Promise<{ commit: string; head: string; hasChanges: boolean }> {
+	const head = (await runGit(worktreePath, ["rev-parse", "HEAD"])).trim();
+	const env = {
+		...(await getGitEnv()),
+		GIT_INDEX_FILE: join(
+			tmpdir(),
+			`ergatai-sync-${randomUUID()}.index`,
+		),
+	};
+	const git = (...args: string[]) =>
+		execFileAsync("git", ["-C", worktreePath, ...args], {
+			env,
+			maxBuffer: 50 * 1024 * 1024,
+		});
 
-	const subject = (
-		await runGit(worktreePath, ["log", "-1", "--format=%s"])
-	).trim();
-	const identity = [
-		"-c",
-		"user.name=Ergatai",
-		"-c",
-		"user.email=ergatai@local",
-		"-c",
-		"commit.gpgsign=false",
-	];
-	if (subject.startsWith(SYNC_COMMIT_PREFIX)) {
-		// Reverting the worktree back to the previous snapshot would make the
-		// amend an empty commit. Drop our disposable commit instead.
-		const parent = await runGit(worktreePath, [
-			"rev-parse",
-			"HEAD^",
-		]).catch(() => null);
-		if (parent) {
-			const parentTree = (
-				await runGit(worktreePath, [
-					"rev-parse",
-					`${parent.trim()}^{tree}`,
-				])
-			).trim();
-			const stagedTree = (
-				await runGit(worktreePath, ["write-tree"])
-			).trim();
-			if (stagedTree === parentTree) {
-				await runGit(worktreePath, ["reset", "--mixed", "HEAD^"]);
-				return { head: parent.trim(), committed: false };
-			}
+	try {
+		// Populate a temporary index from HEAD, then mirror the worktree into
+		// it. The real index is never read or written.
+		await git("read-tree", "HEAD");
+		await git("add", "-A", "--", ".");
+
+		const staged = (await git("diff", "--cached", "--name-only", "-z"))
+			.stdout.split("\0")
+			.filter(Boolean);
+		const excluded = staged.filter(isSyncExcludedPath);
+		for (let index = 0; index < excluded.length; index += 100) {
+			// react-doctor-disable-next-line async-await-in-loop
+			await git(
+				"reset",
+				"-q",
+				"--",
+				...excluded.slice(index, index + 100),
+			);
 		}
 
-		await runGit(worktreePath, [
-			...identity,
-			"commit",
-			"--no-verify",
-			"--amend",
-			"--no-edit",
-		]);
-	} else {
-		await runGit(worktreePath, [
-			...identity,
-			"commit",
-			"--no-verify",
-			"-m",
-			`${SYNC_COMMIT_PREFIX} ${chatBranch}`,
-		]);
-	}
+		const tree = (await git("write-tree")).stdout.trim();
+		const headTree = (
+			await runGit(worktreePath, ["rev-parse", "HEAD^{tree}"])
+		).trim();
+		if (tree === headTree) {
+			return { commit: head, head, hasChanges: false };
+		}
 
-	return {
-		head: (await runGit(worktreePath, ["rev-parse", "HEAD"])).trim(),
-		committed: true,
-	};
+		const commit = (
+			await git(
+				"-c",
+				"user.name=Ergatai",
+				"-c",
+				"user.email=ergatai@local",
+				"-c",
+				"commit.gpgsign=false",
+				"commit-tree",
+				tree,
+				"-p",
+				head,
+				"-m",
+				`${SYNC_COMMIT_PREFIX} ${chatBranch}`,
+			)
+		).stdout.trim();
+		return { commit, head, hasChanges: true };
+	} finally {
+		await rm(env.GIT_INDEX_FILE, { force: true }).catch(() => {});
+	}
 }
 
 /**
@@ -2000,10 +1994,12 @@ async function clearPreviousSyncPaths(
  * Apply the current state of a chat worktree to the base branch's working tree
  * without adding commits to the base branch or touching the remote.
  *
- * The chat worktree is committed into one disposable snapshot commit (amended
- * in place on every sync). That commit is only a merge source:
+ * The chat worktree is materialised into a throwaway snapshot commit built
+ * from a temporary index. HEAD, the chat branch, and the user's index are
+ * never modified, so the changes remain visible in the Changes panel. That
+ * commit is only a merge source:
  *
- *   worktree snapshot commit
+ *   worktree snapshot commit (dangling)
  *     -> git merge --squash into the base checkout
  *     -> git reset (leave ordinary unstaged changes)
  *
@@ -2116,10 +2112,30 @@ export async function syncWorktreeChangesToBase(
 		return { status: "needs_manual_merge", reason: "worktree_busy" };
 	}
 
-	// 4. If the base advanced since the chat branch forked, rebase the
-	// disposable snapshot commit onto the new base tip. Otherwise every later
-	// sync sees the user's previously committed sync as an independent base
-	// edit and reports a false conflict.
+	// Older versions materialised the sync snapshot as a real commit on the
+	// chat branch, which made the worktree look clean and emptied the diff.
+	// Restore those changes as ordinary uncommitted work before continuing.
+	if (await uncommitLegacySyncSnapshot(worktreePath).catch(() => false)) {
+		console.log(
+			"[sync] restored legacy ergatai-sync commit as uncommitted changes:",
+			worktreePath,
+		);
+		try {
+			chatHead = (
+				await runGit(worktreePath, ["rev-parse", "HEAD"])
+			).trim();
+		} catch (error) {
+			return {
+				status: "error",
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+	}
+
+	// 4. If the base advanced since the chat branch forked, rebase the chat
+	// branch onto the new base tip. Otherwise every later sync sees the user's
+	// previously committed sync as an independent base edit and reports a
+	// false conflict.
 	let baseHead: string;
 	try {
 		baseHead = (
@@ -2161,28 +2177,23 @@ export async function syncWorktreeChangesToBase(
 		chatHead = rebased.head;
 	}
 
-	// Stage and snapshot the current worktree state on the (possibly rebased)
-	// chat branch. The snapshot commit is amended in place on every sync.
-	let committed = false;
+	// Build a throwaway snapshot of the current worktree state. It must not
+	// move the chat branch or touch the user's index, otherwise the Changes
+	// panel (which diffs against HEAD) would appear empty after the sync.
+	let mergeSource: string;
 	try {
-		const hasChanges = await stageWorktreeChanges(worktreePath);
-		const snapshot = await commitStagedSnapshot(
-			worktreePath,
-			chatBranch,
-			hasChanges,
-		);
+		const snapshot = await createSnapshotCommit(worktreePath, chatBranch);
 		chatHead = snapshot.head;
-		committed = snapshot.committed;
+		mergeSource = snapshot.commit;
+		// Nothing new since the last successful squash.
+		if (!snapshot.hasChanges && syncState.lastSyncedCommit === chatHead) {
+			return { status: "nothing_to_sync" };
+		}
 	} catch (error) {
 		return {
 			status: "error",
 			error: error instanceof Error ? error.message : String(error),
 		};
-	}
-
-	// Nothing new since the last successful squash.
-	if (!committed && syncState.lastSyncedCommit === chatHead) {
-		return { status: "nothing_to_sync" };
 	}
 
 	// 5. Compute the committed delta between the base HEAD and the snapshot.
@@ -2196,7 +2207,7 @@ export async function syncWorktreeChangesToBase(
 					"--name-only",
 					"-z",
 					"--no-renames",
-					`${baseHead}..${chatHead}`,
+					`${baseHead}..${mergeSource}`,
 				],
 				50 * 1024 * 1024,
 			)
@@ -2311,7 +2322,7 @@ export async function syncWorktreeChangesToBase(
 	const mergeTreeConflicts = await getMergeTreeConflicts(
 		baseRepoPath,
 		baseHead,
-		chatHead,
+		mergeSource,
 	);
 	if (mergeTreeConflicts && mergeTreeConflicts.length > 0) {
 		return {
@@ -2336,7 +2347,7 @@ export async function syncWorktreeChangesToBase(
 	// 8. Squash the snapshot commit into the base checkout.
 	const baseGit = simpleGit(baseRepoPath);
 	try {
-		await baseGit.merge(["--squash", chatBranch]);
+		await baseGit.merge(["--squash", mergeSource]);
 	} catch (error) {
 		await runGit(baseRepoPath, ["reset", "--merge"]).catch(() => {});
 		// `reset --merge` clears the index; put back any edits the user had

@@ -26,6 +26,11 @@ import { getRuntimeSessionStore } from "./runtime-session-store"
 import { getAdapterRegistry } from "./runtime-adapter"
 import { generateTicketId, generateQueueItemId } from "./id-generators"
 import { useStreamingStatusStore } from "../../agents"
+import {
+  clearLoading,
+  loadingConversationsAtom,
+} from "../../agents/public/loading"
+import { appStore } from "../../../lib/jotai-store"
 import { trpcClient } from "../../../lib/trpc"
 
 // ============================================================================
@@ -129,6 +134,14 @@ class ConversationInvocationServiceImpl implements ConversationInvocationService
    * Used to deduplicate concurrent stop() calls and prevent race conditions.
    */
   private stoppingSet = new Set<string>()
+
+  private setLoadingMarker = (fn: (prev: Map<string, string>) => Map<string, string>) => {
+    appStore.set(loadingConversationsAtom, fn(appStore.get(loadingConversationsAtom)))
+  }
+
+  private clearLoadingMarker(conversationId: string): void {
+    clearLoading(this.setLoadingMarker, conversationId)
+  }
 
   /**
    * Send a message in a conversation.
@@ -248,6 +261,7 @@ class ConversationInvocationServiceImpl implements ConversationInvocationService
       // Now safe to set status to ready - cancel API has resolved or timed out
       // Update streaming status (legacy compatibility)
       useStreamingStatusStore.getState().setStatus(conversationId, "ready")
+      this.clearLoadingMarker(conversationId)
 
       // Update session state (ensure session exists first so setStatus doesn't no-op)
       sessionStore.ensureSession(conversationId)
@@ -338,6 +352,7 @@ class ConversationInvocationServiceImpl implements ConversationInvocationService
   releaseSession(conversationId: string): void {
     // Cleanup session state
     getRuntimeSessionStore().releaseSession(conversationId)
+    this.clearLoadingMarker(conversationId)
 
     // Cleanup streaming status (legacy compatibility)
     useStreamingStatusStore.getState().clearStatus(conversationId)

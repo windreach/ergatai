@@ -52,7 +52,7 @@ pub struct CancelConversationRetryRequest {
     pub message_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateInitialPromptRequest {
     pub message_id: String,
@@ -63,7 +63,43 @@ pub struct CreateInitialPromptRequest {
     #[serde(default)]
     pub prompt: String,
     #[serde(default)]
+    #[schema(value_type = Vec<Object>)]
     pub images: Vec<ergatai_runtime::AgentImage>,
+    #[serde(default)]
+    #[schema(value_type = Vec<Object>)]
+    pub files: Vec<ergatai_runtime::AgentFile>,
+}
+
+fn validate_initial_prompt_request(request: &CreateInitialPromptRequest) -> Result<(), String> {
+    if MessageId::decode(&request.message_id).is_err() {
+        return Err("Invalid initial message ID".to_string());
+    }
+    if MessageId::decode(&request.client_request_id).is_err() {
+        return Err("Invalid client request ID".to_string());
+    }
+    if request.agent_command.trim().is_empty() {
+        return Err("Agent command is required".to_string());
+    }
+    for (index, image) in request.images.iter().enumerate() {
+        if let Err(reason) = image.validate() {
+            return Err(format!(
+                "Invalid image attachment at index {}: {}",
+                index, reason
+            ));
+        }
+    }
+    for (index, file) in request.files.iter().enumerate() {
+        if let Err(reason) = file.validate() {
+            return Err(format!(
+                "Invalid file attachment at index {}: {}",
+                index, reason
+            ));
+        }
+    }
+    if request.prompt.trim().is_empty() && request.images.is_empty() && request.files.is_empty() {
+        return Err("Initial prompt is empty".to_string());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1167,32 +1203,11 @@ pub async fn create_initial_prompt(
         }
     };
 
-    let message_id = match MessageId::decode(&request.message_id) {
-        Ok(id) => id,
-        Err(_) => {
-            return crate::http_error::bad_request("Invalid initial message ID").into_response();
-        }
-    };
-    if MessageId::decode(&request.client_request_id).is_err() {
-        return crate::http_error::bad_request("Invalid client request ID").into_response();
+    if let Err(error) = validate_initial_prompt_request(&request) {
+        return crate::http_error::bad_request(error).into_response();
     }
-    if request.agent_command.trim().is_empty() {
-        return crate::http_error::bad_request("Agent command is required").into_response();
-    }
-    for (index, image) in request.images.iter().enumerate() {
-        if let Err(reason) = image.validate() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid image attachment at index {}: {}", index, reason),
-                }),
-            )
-                .into_response();
-        }
-    }
-    if request.prompt.trim().is_empty() && request.images.is_empty() {
-        return crate::http_error::bad_request("Initial prompt is empty").into_response();
-    }
+    let message_id =
+        MessageId::decode(&request.message_id).expect("initial prompt request was validated above");
 
     let input = crate::services::initial_prompt_turns::InitialPromptInput {
         conversation_id,
@@ -1205,6 +1220,7 @@ pub async fn create_initial_prompt(
         model: request.model,
         prompt: request.prompt,
         images: request.images,
+        files: request.files,
     };
 
     match crate::services::initial_prompt_turns::enqueue(input) {

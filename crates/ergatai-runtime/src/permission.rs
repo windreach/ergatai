@@ -119,6 +119,47 @@ impl PermissionHandler for YoloPermissionHandler {
 /// How long to wait for a user decision before default-deny.
 const INTERACTIVE_PERMISSION_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Retires a registered permission request when the evaluating future is
+/// cancelled (for example because the ACP connection or agent is stopping).
+///
+/// `evaluate` cannot await cleanup from `Drop`, so removal is best-effort on the
+/// Tokio runtime. Normal decision/timeout paths disarm this guard explicitly.
+struct PermissionWaiterCleanup {
+    request_id: Option<String>,
+}
+
+impl PermissionWaiterCleanup {
+    fn new(request_id: String) -> Self {
+        Self {
+            request_id: Some(request_id),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.request_id = None;
+    }
+}
+
+impl Drop for PermissionWaiterCleanup {
+    fn drop(&mut self) {
+        let Some(request_id) = self.request_id.take() else {
+            return;
+        };
+        debug!(
+            request_id = %request_id,
+            "Permission evaluator cancelled; retiring pending request"
+        );
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        tokio::spawn(async move {
+            crate::permission_service::global_permission_service()
+                .force_resolve_rejected(&request_id)
+                .await;
+        });
+    }
+}
+
 /// Whether a tool kind never requires user approval.
 fn is_auto_approve_kind(kind: &ToolKind) -> bool {
     matches!(
@@ -312,36 +353,55 @@ impl PermissionHandler for InteractivePermissionHandler {
             .unwrap_or_else(|| format!("{} operation approval", tool_kind_label(&kind)));
 
         let (decision_tx, decision_rx) = tokio::sync::oneshot::channel();
-        let request_id = service.register_with_waiter(
-            crate::permission_service::PendingPermissionRequest {
-                request_id: String::new(),
-                kind: crate::permission_service::PermissionRequestKind::Tool,
-                agent_id: Some(agent_id.to_string()),
-                session_id: Some(session_id.to_string()),
-                title,
-                tool_name: Some(tool_kind_label(&kind).to_string()),
-                input: request.tool_call.fields.raw_input.clone(),
-                locations: locations.clone(),
-                source: crate::permission_service::PermissionSource::Acp,
-                created_at_ms: crate::permission_service::now_ms(),
-            },
-            decision_tx,
-        );
+        let request_id = service
+            .register_with_waiter(
+                crate::permission_service::PendingPermissionRequest {
+                    request_id: String::new(),
+                    kind: crate::permission_service::PermissionRequestKind::Tool,
+                    agent_id: Some(agent_id.to_string()),
+                    session_id: Some(session_id.to_string()),
+                    title,
+                    tool_name: Some(tool_kind_label(&kind).to_string()),
+                    input: request.tool_call.fields.raw_input.clone(),
+                    locations: locations.clone(),
+                    source: crate::permission_service::PermissionSource::Acp,
+                    created_at_ms: crate::permission_service::now_ms(),
+                },
+                decision_tx,
+            )
+            .await;
 
         debug!(agent_id = %agent_id, request_id = %request_id, "InteractivePermissionHandler: awaiting user decision");
+        let mut cleanup = PermissionWaiterCleanup::new(request_id.clone());
+        let wait_started = std::time::Instant::now();
         let decision = match tokio::time::timeout(INTERACTIVE_PERMISSION_TIMEOUT, decision_rx).await
         {
             Ok(Ok(decision)) => Some(decision),
             _ => None,
         };
+        cleanup.disarm();
 
         let Some(decision) = decision else {
+            tracing::warn!(
+                agent_id = %agent_id,
+                request_id = %request_id,
+                waited_ms = wait_started.elapsed().as_millis() as u64,
+                "InteractivePermissionHandler: permission request timed out, rejecting"
+            );
             service.force_resolve_rejected(&request_id).await;
             return select_decision_option(
                 request,
                 crate::permission_service::PermissionDecisionKind::RejectOnce,
             );
         };
+
+        debug!(
+            agent_id = %agent_id,
+            request_id = %request_id,
+            ?decision,
+            waited_ms = wait_started.elapsed().as_millis() as u64,
+            "InteractivePermissionHandler: user decision received"
+        );
 
         if decision.is_allow() {
             // Paths outside the workspace project root cannot be locked by the
@@ -807,6 +867,42 @@ mod tests {
             agent_client_protocol::schema::v1::ToolCallUpdateFields::default(),
         );
         RequestPermissionRequest::new("test-session", tool_call, options)
+    }
+
+    #[tokio::test]
+    async fn test_waiter_cleanup_retires_request_when_evaluator_is_dropped() {
+        let service = crate::permission_service::global_permission_service();
+        let request_id = "permission-waiter-cleanup-test".to_string();
+        let (decision_tx, decision_rx) = tokio::sync::oneshot::channel();
+        service
+            .register_with_waiter(
+                crate::permission_service::PendingPermissionRequest {
+                    request_id: request_id.clone(),
+                    kind: crate::permission_service::PermissionRequestKind::Tool,
+                    agent_id: Some("agent-cleanup-test".to_string()),
+                    session_id: Some("session-cleanup-test".to_string()),
+                    title: "Cleanup".to_string(),
+                    tool_name: Some("edit".to_string()),
+                    input: None,
+                    locations: vec![],
+                    source: crate::permission_service::PermissionSource::Acp,
+                    created_at_ms: crate::permission_service::now_ms(),
+                },
+                decision_tx,
+            )
+            .await;
+
+        let cleanup = PermissionWaiterCleanup::new(request_id.clone());
+        drop(cleanup);
+        drop(decision_rx);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while service.get(&request_id).await.is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("dropped evaluator should retire its pending request");
     }
 
     #[tokio::test]

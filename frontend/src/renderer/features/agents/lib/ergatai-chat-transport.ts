@@ -132,6 +132,14 @@ type Unsubscribable = {
 /** How long to wait for the backend stream handshake before sending a prompt. */
 const STREAM_READY_TIMEOUT_MS = 2_000
 
+/**
+ * Grace period for the backend's `turn_started` marker. Terminal events that
+ * arrive before it belong to the previous turn and are ignored; if a turn never
+ * announces itself (legacy accumulator-less path), accept terminal events again
+ * after this window rather than hanging the stream forever.
+ */
+const TURN_START_GRACE_MS = 10_000
+
 function parseStreamedToolInput(value: string | undefined): Record<string, unknown> | null {
   if (!value) return null
 
@@ -426,7 +434,16 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
     const baseTextBlockId = `text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const baseReasoningBlockId = `thinking-${baseTextBlockId}`
     let finished = false
+    let detachAbortListener: (() => void) | undefined
+    let turnStartFallback: ReturnType<typeof setTimeout> | undefined
     let activeBlock: "text" | "reasoning" | null = null
+    // Set once the backend announces the new turn on this stream. A previous
+    // turn's terminal event can still be in flight when the user sends the next
+    // message immediately after a turn ends. Treating that stale `done` as ours
+    // used to close the new stream before its prompt was even delivered, so the
+    // reply never appeared.
+    let turnStarted = false
+    let pendingTerminalEvent: AgentOutputEvent | undefined
     let subscription: Unsubscribable | null = null
     const toolCallInputs = new Map<string, string>()
     // Map tool call IDs back to the subagent that owns them, so tool results
@@ -457,12 +474,32 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               controller.enqueue({ type: "text-end", id: getTextBlockId() })
             }
             subscription?.unsubscribe()
+            detachAbortListener?.()
+            if (turnStartFallback) {
+              clearTimeout(turnStartFallback)
+              turnStartFallback = undefined
+            }
+            pendingTerminalEvent = undefined
+            // Unblock prompt startup if the stream closed while we were waiting
+            // for stream_ready. The active-send check below prevents publishing
+            // a prompt after an abort or terminal stream event.
+            notifyStreamReady?.()
             subagentToolOwners.clear()
             for (const chunk of chunks) {
               controller.enqueue(chunk)
             }
             controller.close()
           }
+        }
+
+        const applyTerminalEvent = (
+          event: AgentOutputEvent,
+          conversationId: string,
+        ) => {
+          if (event.type !== "done" && event.type !== "error") return
+          appStore.set(agentStatusLineAtomFamily(conversationId), null)
+          // Let close() handle the closing of text/reasoning blocks.
+          close([...transformEvent(event, getTextBlockId(), getReasoningBlockId())])
         }
 
         const handleAbort = () => {
@@ -474,6 +511,14 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
 
         let notifyStreamReady: (() => void) | null = null
         let streamReadyPromise: Promise<void> = Promise.resolve()
+
+        const assertSendActive = () => {
+          if (finished || options.abortSignal?.aborted) {
+            const error = new Error("Message send cancelled")
+            error.name = "AbortError"
+            throw error
+          }
+        }
 
         const openAgentStream = (
           agentId: string,
@@ -597,6 +642,14 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                 // Carry it onto the local AI SDK assistant projection so the
                 // runtime store can merge it with runtime and canonical data.
                 if (event.type === "turn_started") {
+                  turnStarted = true
+                  // A terminal event seen before this marker belongs to the
+                  // previous turn and must not close the newly announced one.
+                  pendingTerminalEvent = undefined
+                  if (turnStartFallback) {
+                    clearTimeout(turnStartFallback)
+                    turnStartFallback = undefined
+                  }
                   if (event.turn_id) {
                     controller.enqueue({
                       type: "message-metadata",
@@ -816,10 +869,17 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                   return
                 }
 
+                // A terminal event can be the previous turn's tail while the
+                // new subscription is attaching. Hold it until turn_started
+                // confirms ownership. Non-terminal output is still delivered so
+                // runtimes that omit turn_started cannot lose their reply.
+                if (!turnStarted && (event.type === "done" || event.type === "error")) {
+                  pendingTerminalEvent = event
+                  return
+                }
+
                 if (event.type === "done" || event.type === "error") {
-                  appStore.set(agentStatusLineAtomFamily(conversationId), null)
-                  // Let close() handle the closing of text/reasoning blocks
-                  close([...transformEvent(event, getTextBlockId(), getReasoningBlockId())])
+                  applyTerminalEvent(event, conversationId)
                 } else {
                   if (event.type === "thinking" && activeBlock !== "reasoning") {
                     if (activeBlock === "text") {
@@ -869,6 +929,8 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
           return
         }
         options.abortSignal?.addEventListener("abort", handleAbort, { once: true })
+        detachAbortListener = () =>
+          options.abortSignal?.removeEventListener("abort", handleAbort)
 
         void (async () => {
           try {
@@ -887,6 +949,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
             if (!effectiveAgentId) {
               throw new Error(i18n.t('Agent ID is not available — cannot send message'))
             }
+            assertSendActive()
 
             // Model detection is now handled by the backend.
             // Use `refreshAgentProfileModels` tRPC mutation to trigger model detection.
@@ -945,6 +1008,8 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               }
             }
 
+            assertSendActive()
+
             // Remember which runtime agent is serving this conversation so that
             // Stop/cancel can target it without guessing from chat bindings.
             if (effectiveConversationId && effectiveAgentId) {
@@ -971,6 +1036,7 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
               // A transport error will close the stream; still let prompt
               // errors surface in the normal try/catch below.
             }
+            assertSendActive()
 
             if (isAgentToAgent) {
               // Agent-to-agent communication
@@ -1034,6 +1100,28 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
                 })
               }
             }
+
+            // Safety net: a stale terminal event is ignored until the backend
+            // announces the new turn. Start the grace period only after the
+            // prompt was accepted; if no announcement ever arrives (e.g. a
+            // runtime without the accumulator registry), replay a pending
+            // terminal event instead of hanging forever.
+            if (!turnStarted && !turnStartFallback) {
+              turnStartFallback = setTimeout(() => {
+                turnStartFallback = undefined
+                if (finished || turnStarted) return
+                console.warn(
+                  "[ErgataiChatTransport] No turn_started received; enabling terminal handling",
+                  { agentId: effectiveAgentId, conversationId: effectiveConversationId },
+                )
+                turnStarted = true
+                const terminalEvent = pendingTerminalEvent
+                pendingTerminalEvent = undefined
+                if (terminalEvent) {
+                  applyTerminalEvent(terminalEvent, effectiveConversationId)
+                }
+              }, TURN_START_GRACE_MS)
+            }
           } catch (error) {
             console.error("[ErgataiTransport] Failed to start agent:", error)
             close([
@@ -1052,6 +1140,12 @@ export class ErgataiChatTransport implements ChatTransport<UIMessage> {
           // Transport layer should NOT call cancelPrompt here to avoid duplicate calls
         }
         subscription?.unsubscribe()
+        detachAbortListener?.()
+        if (turnStartFallback) {
+          clearTimeout(turnStartFallback)
+          turnStartFallback = undefined
+        }
+        pendingTerminalEvent = undefined
         finished = true
       },
     })

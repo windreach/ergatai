@@ -814,8 +814,9 @@ impl MessageSender {
                 message_type: req.message_type.clone(),
                 // Conversation ID for direct delivery (bypasses agent_id intermediary).
                 target_conversation_id: Some(target_conversation_id),
-                // Images (empty for agent-to-agent messages, used for user messages)
+                // Images/files (empty for agent-to-agent messages, used for user messages)
                 images: vec![],
+                files: vec![],
             };
 
             // Track request for reqwatch monitoring

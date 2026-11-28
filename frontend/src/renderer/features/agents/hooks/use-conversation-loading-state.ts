@@ -15,10 +15,13 @@ export function useConversationLoadingState({
   conversationId,
   parentChatId,
   isStreaming,
+  isActive = true,
 }: {
   conversationId: string
   parentChatId: string
   isStreaming: boolean
+  /** Only the active pane may clear the marker; background panes can see a stale ready status. */
+  isActive?: boolean
 }) {
   const setLoadingConversations = useSetAtom(loadingConversationsAtom)
 
@@ -27,8 +30,8 @@ export function useConversationLoadingState({
 
     if (isStreaming) {
       setLoading(setLoadingConversations, conversationId, parentChatId)
-    } else {
+    } else if (isActive) {
       clearLoading(setLoadingConversations, conversationId)
     }
-  }, [conversationId, parentChatId, isStreaming, setLoadingConversations])
+  }, [conversationId, parentChatId, isStreaming, isActive, setLoadingConversations])
 }

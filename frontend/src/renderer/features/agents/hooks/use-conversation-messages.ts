@@ -590,8 +590,8 @@ class ConversationPipeline {
           this.scheduleStreamRetry()
         },
         onComplete: () => {
-          // The stream closes after every turn (done) — reopen it so later
-          // turns keep streaming while unknown consumer is attached.
+          // The backend stream ended (disconnect/shutdown). Reopen it so later
+          // turns keep streaming while this consumer is attached.
           this.scheduleStreamRetry()
         },
       },

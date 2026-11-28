@@ -32,6 +32,12 @@ import { getRuntimeSessionStore } from "./runtime-session-store"
 import { getAdapterRegistry } from "./runtime-adapter"
 import { generateTicketId, generateQueueItemId } from "./id-generators"
 import { getMessageCorrelationService } from "./message-correlation-service"
+import {
+  clearLoading,
+  loadingConversationsAtom,
+  setLoading,
+} from "../../agents/public/loading"
+import { appStore } from "../../../lib/jotai-store"
 
 // ============================================================================
 // ORCHESTRATOR INTERFACE - Public API
@@ -76,6 +82,46 @@ export interface TurnOrchestrator {
  * 7. Update session state
  */
 class TurnOrchestratorImpl implements TurnOrchestrator {
+  /**
+   * Sidebar loading-marker subscriptions. Kept outside React so a turn that
+   * finishes after its conversation tab was unmounted still clears the marker.
+   */
+  private loadingUnsubscribes = new Map<string, () => void>()
+
+  private setLoadingMarker = (fn: (prev: Map<string, string>) => Map<string, string>) => {
+    appStore.set(loadingConversationsAtom, fn(appStore.get(loadingConversationsAtom)))
+  }
+
+  private trackLoading(conversationId: string, parentChatId: string): void {
+    if (!parentChatId) return
+
+    setLoading(this.setLoadingMarker, conversationId, parentChatId)
+
+    if (this.loadingUnsubscribes.has(conversationId)) return
+
+    const sessionStore = getRuntimeSessionStore()
+    const unsubscribe = sessionStore.subscribe(conversationId, (state) => {
+      if (state.isStreaming) {
+        // Re-assert the marker while the turn is live. Other effects may have
+        // cleared it when a conversation tab was hidden/unmounted.
+        setLoading(this.setLoadingMarker, conversationId, parentChatId)
+        return
+      }
+      this.clearLoadingMarker(conversationId)
+    })
+    this.loadingUnsubscribes.set(conversationId, unsubscribe)
+  }
+
+  private clearLoadingMarker(conversationId: string): void {
+    clearLoading(this.setLoadingMarker, conversationId)
+
+    const unsubscribe = this.loadingUnsubscribes.get(conversationId)
+    if (unsubscribe) {
+      this.loadingUnsubscribes.delete(conversationId)
+      unsubscribe()
+    }
+  }
+
   /**
    * Handle send errors by updating session state.
    * Extracted to avoid duplication between .catch() and outer catch blocks.
@@ -221,6 +267,10 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
       const ticketId = generateTicketId()
       const turnId = `turn_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`
 
+      // Mark the sidebar indicator before the first stream event reaches the
+      // mounted conversation component. This keeps background conversations
+      // observable even when their tab is not selected.
+      this.trackLoading(conversationId, input.conversation.chatId)
       sessionStore.setStatus(conversationId, "streaming")
       sessionStore.setCurrentTurnId(conversationId, turnId)
 
@@ -244,6 +294,7 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
             // Stream completed successfully
             sessionStore.setStatus(conversationId, "completed")
             sessionStore.setCurrentTurnId(conversationId, null)
+            this.clearLoadingMarker(conversationId)
             // Remove interrupt queue item if present (defense-in-depth: message_inserted
             // event should have removed it, but this handles lost events)
             if (interruptQueueItemId) {
@@ -254,8 +305,15 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
           }
         })
         .catch((error) => {
+          // A stopped/superseded turn can reject after the next turn has already
+          // started. Never let that stale failure overwrite the new turn state.
+          if (sessionStore.getCurrentTurnId(conversationId) !== turnId) {
+            return
+          }
+
           // Use shared error handler
           this.handleSendError(conversationId, error, turnId)
+          this.clearLoadingMarker(conversationId)
           // Remove interrupt queue item if present (failed send should not leave stale queue item)
           if (interruptQueueItemId) {
             sessionStore.removeQueueItem(conversationId, interruptQueueItemId)
@@ -288,6 +346,7 @@ class TurnOrchestratorImpl implements TurnOrchestrator {
 
       // Use shared error handler
       this.handleSendError(conversationId, error)
+      this.clearLoadingMarker(conversationId)
 
       throw error
     }

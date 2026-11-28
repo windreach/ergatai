@@ -249,6 +249,30 @@ pub struct AgentMessagePayload {
     /// Image attachments (base64-encoded). Used for user messages with images.
     #[serde(default)]
     pub images: Vec<AgentImage>,
+    /// File attachments (base64-encoded). Used for user messages with files.
+    #[serde(default)]
+    pub files: Vec<AgentFile>,
+}
+
+/// File attachment for agent messages.
+///
+/// Mirrors the runtime attachment payload without coupling the NATS crate to
+/// `ergatai-runtime`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFile {
+    /// Base64-encoded file data.
+    #[serde(default)]
+    pub base64_data: String,
+    /// MIME type of the file payload.
+    #[serde(default)]
+    pub media_type: Option<String>,
+    /// Original filename.
+    #[serde(default)]
+    pub filename: String,
+    /// Original file size in bytes, when known.
+    #[serde(default)]
+    pub size: Option<u64>,
 }
 
 /// Image attachment for agent messages
@@ -1100,6 +1124,7 @@ mod tests {
                 message_type: "request".to_string(),
                 target_conversation_id: None,
                 images: vec![],
+                files: vec![],
             }),
         ];
 
@@ -1129,6 +1154,7 @@ mod tests {
             message_type: "request".to_string(),
             target_conversation_id: None,
             images: vec![],
+            files: vec![],
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -1156,12 +1182,79 @@ mod tests {
             message_type: "request".to_string(),
             target_conversation_id: None,
             images: vec![],
+            files: vec![],
         };
 
         let json = serde_json::to_string(&payload).unwrap();
         let restored: AgentMessagePayload = serde_json::from_str(&json).unwrap();
 
         assert!(restored.metadata.is_empty());
+    }
+
+    #[test]
+    fn test_agent_file_roundtrip() {
+        let file = AgentFile {
+            base64_data: "aGVsbG8=".to_string(),
+            media_type: Some("text/plain".to_string()),
+            filename: "hello.txt".to_string(),
+            size: Some(5),
+        };
+
+        let json = serde_json::to_value(&file).unwrap();
+        assert_eq!(json["base64Data"], "aGVsbG8=");
+        assert_eq!(json["mediaType"], "text/plain");
+        assert_eq!(serde_json::from_value::<AgentFile>(json).unwrap(), file);
+
+        let restored: AgentFile =
+            serde_json::from_str(r#"{"base64Data":"aGVsbG8=","filename":"hello.txt"}"#).unwrap();
+        assert_eq!(restored.media_type, None);
+        assert_eq!(restored.size, None);
+    }
+
+    #[test]
+    fn test_agent_message_files_roundtrip() {
+        let file = AgentFile {
+            base64_data: "aGVsbG8=".to_string(),
+            media_type: Some("text/plain".to_string()),
+            filename: "hello.txt".to_string(),
+            size: Some(5),
+        };
+        let payload = AgentMessagePayload {
+            from_agent: "user".to_string(),
+            to_agent: "agent-1".to_string(),
+            content: String::new(),
+            timestamp: 1,
+            metadata: HashMap::new(),
+            message_id: "msg-files".to_string(),
+            requires_receipt: false,
+            correlation_id: None,
+            timeout_ms: None,
+            message_type: "request".to_string(),
+            target_conversation_id: None,
+            images: vec![],
+            files: vec![file.clone()],
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let restored: AgentMessagePayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.files, vec![file]);
+    }
+
+    #[test]
+    fn test_agent_message_defaults_missing_files_to_empty() {
+        let restored: AgentMessagePayload = serde_json::from_str(
+            r#"{
+                "from_agent":"user",
+                "to_agent":"agent-1",
+                "content":"legacy message",
+                "timestamp":1,
+                "metadata":{},
+                "images":[]
+            }"#,
+        )
+        .unwrap();
+
+        assert!(restored.files.is_empty());
     }
 
     // ── FileAccessRequestPayload ──
@@ -1271,6 +1364,7 @@ mod tests {
             message_type: "request".to_string(),
             target_conversation_id: None,
             images: vec![],
+            files: vec![],
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -1294,6 +1388,7 @@ mod tests {
             message_type: "request".to_string(),
             target_conversation_id: None,
             images: vec![],
+            files: vec![],
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -1317,6 +1412,7 @@ mod tests {
             message_type: "request".to_string(),
             target_conversation_id: None,
             images: vec![],
+            files: vec![],
         };
 
         let json = serde_json::to_string(&payload).unwrap();

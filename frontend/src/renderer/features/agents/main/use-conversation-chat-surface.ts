@@ -453,6 +453,7 @@ export function useConversationChatSurface({
     conversationId: runtimeConversationId,
     parentChatId: chatId,
     isStreaming: status === "streaming" || status === "submitted",
+    isActive,
   })
 
   const syncExternalMessages = useSetAtom(syncMessagesWithStatusAtom)
@@ -585,6 +586,7 @@ export function useConversationChatSurface({
           url: file.url,
           size: file.size,
           mediaType: file.type,
+          base64Data: file.base64Data,
         },
       })),
     ]

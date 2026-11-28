@@ -103,7 +103,11 @@ vi.mock("@/features/conversation/runtime/runtime-session-store", () => {
           session.queue = session.queue.filter((i) => i.id !== itemId)
         }
       }),
-      setError: vi.fn(),
+      setError: vi.fn((id, error) => {
+        const session = sessions.get(id)
+        if (session) session.error = error
+      }),
+      subscribe: vi.fn(() => () => {}),
     })),
     resetRuntimeSessionStore: vi.fn(() => {
       sessions.clear()
@@ -124,12 +128,19 @@ import {
   getTurnOrchestrator,
   resetTurnOrchestrator,
 } from "@/features/conversation/runtime/turn-orchestrator"
-import { resetRuntimeSessionStore } from "@/features/conversation/runtime/runtime-session-store"
+import {
+  getRuntimeSessionStore,
+  resetRuntimeSessionStore,
+} from "@/features/conversation/runtime/runtime-session-store"
+import { getAdapterRegistry } from "@/features/conversation/runtime/runtime-adapter"
+import { loadingConversationsAtom } from "@/features/agents/atoms"
+import { appStore } from "@/lib/jotai-store"
 
 describe("TurnOrchestrator", () => {
   beforeEach(() => {
     resetTurnOrchestrator()
     resetRuntimeSessionStore()
+    appStore.set(loadingConversationsAtom, new Map())
     vi.resetAllMocks()
   })
 
@@ -190,6 +201,73 @@ describe("TurnOrchestrator", () => {
 
       // Should accept interrupt flag
       expect(ticket).toBeDefined()
+    })
+
+    it("keeps the sidebar loading marker until the adapter send settles", async () => {
+      let resolveSend!: () => void
+      const sendPromise = new Promise<void>((resolve) => {
+        resolveSend = resolve
+      })
+      vi.mocked(getAdapterRegistry).mockReturnValue({
+        get: vi.fn(() => ({
+          sendMessage: vi.fn(() => sendPromise),
+          subscribe: vi.fn(() => () => {}),
+        })),
+      } as any)
+
+      const orchestrator = getTurnOrchestrator()
+      await orchestrator.send({
+        conversation: {
+          conversationId: "conv-loading",
+          chatId: "chat-loading",
+        },
+        parts: [{ type: "text", text: "Hello" }],
+      })
+
+      expect(appStore.get(loadingConversationsAtom).get("conv-loading")).toBe(
+        "chat-loading",
+      )
+
+      resolveSend()
+      await vi.waitFor(() => {
+        expect(appStore.get(loadingConversationsAtom).has("conv-loading")).toBe(
+          false,
+        )
+      })
+    })
+
+    it("ignores a stale adapter rejection after a newer turn starts", async () => {
+      let rejectSend!: (error: Error) => void
+      const sendPromise = new Promise<void>((_resolve, reject) => {
+        rejectSend = reject
+      })
+      vi.mocked(getAdapterRegistry).mockReturnValue({
+        get: vi.fn(() => ({
+          sendMessage: vi.fn(() => sendPromise),
+          subscribe: vi.fn(() => () => {}),
+        })),
+      } as any)
+
+      const orchestrator = getTurnOrchestrator()
+      const conversationId = "conv-stale-error"
+      await orchestrator.send({
+        conversation: { conversationId, chatId: "chat-stale-error" },
+        parts: [{ type: "text", text: "Old turn" }],
+      })
+
+      const sessionStore = getRuntimeSessionStore()
+      sessionStore.setCurrentTurnId(conversationId, "turn-new")
+      sessionStore.setStatus(conversationId, "streaming")
+      rejectSend(new Error("Old turn failed after it was superseded"))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      const session = sessionStore.getSession(conversationId)
+      expect(session?.currentTurnId).toBe("turn-new")
+      expect(session?.status).toBe("streaming")
+      expect(session?.error).toBeUndefined()
+      expect(appStore.get(loadingConversationsAtom).get(conversationId)).toBe(
+        "chat-stale-error",
+      )
     })
 
     it("should generate unique ticket IDs", async () => {
