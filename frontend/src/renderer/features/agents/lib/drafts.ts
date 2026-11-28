@@ -4,6 +4,7 @@ import type {
   UploadedImage,
   UploadedFile,
 } from "../hooks/use-agents-file-upload"
+import type { PastedTextFile } from "../hooks/use-pasted-text-files"
 import type { SelectedTextContext } from "./queue-utils"
 
 // Constants
@@ -30,9 +31,21 @@ export interface DraftImage {
 export interface DraftFile {
   id: string
   filename: string
-  base64Data: string
+  base64Data?: string
   size?: number
   type?: string
+  isFolder?: boolean
+  folderFiles?: string[]
+}
+
+export interface DraftPastedTextFile {
+  id: string
+  filePath: string
+  filename: string
+  size: number
+  preview: string
+  createdAt: string
+  kind?: "pasted" | "chatHistory"
 }
 
 export interface DraftTextContext {
@@ -69,6 +82,8 @@ export interface NewChatDraft {
   isVisible?: boolean // Only show in sidebar when user navigates away from the form
   images?: DraftImage[]
   files?: DraftFile[]
+  pastedTexts?: DraftPastedTextFile[]
+  fileContents?: Record<string, string>
   textContexts?: DraftTextContext[]
 }
 
@@ -153,6 +168,87 @@ export function saveNewChatDraft(
   } else {
     delete globalDrafts[draftId]
   }
+  saveGlobalDrafts(globalDrafts)
+}
+
+export interface SaveNewChatDraftOptions {
+  images?: UploadedImage[]
+  files?: UploadedFile[]
+  pastedTexts?: PastedTextFile[]
+  fileContents?: Record<string, string>
+}
+
+/**
+ * Save the complete NewChat composer state. Uploaded files already carry their
+ * base64 payload, so this stays synchronous and can safely flush on unmount.
+ */
+export function saveNewChatDraftWithAttachments(
+  draftId: string,
+  text: string,
+  project?: DraftProject,
+  options?: SaveNewChatDraftOptions,
+): void {
+  const globalDrafts = loadGlobalDrafts()
+  const images = options?.images ?? []
+  const files = options?.files ?? []
+  const pastedTexts = options?.pastedTexts ?? []
+  const fileContents = options?.fileContents ?? {}
+  const hasContent =
+    text.trim() ||
+    images.length > 0 ||
+    files.length > 0 ||
+    pastedTexts.length > 0
+
+  if (!hasContent) {
+    delete globalDrafts[draftId]
+    saveGlobalDrafts(globalDrafts)
+    return
+  }
+
+  const existing = globalDrafts[draftId] as NewChatDraft | undefined
+  const draft: NewChatDraft = {
+    id: draftId,
+    text,
+    updatedAt: Date.now(),
+    ...(project && { project }),
+    ...(existing?.isVisible && { isVisible: true }),
+    ...(images.length > 0 && {
+      images: images
+        .map(toDraftImage)
+        .filter((image): image is DraftImage => image !== null),
+    }),
+    ...(files.length > 0 && {
+      files: files
+        .map(toDraftFileSync)
+        .filter((file): file is DraftFile => file !== null),
+    }),
+    ...(pastedTexts.length > 0 && {
+      pastedTexts: pastedTexts.map((pasted) => ({
+        ...pasted,
+        createdAt: pasted.createdAt.toISOString(),
+      })),
+    }),
+    ...(Object.keys(fileContents).length > 0 && { fileContents }),
+  }
+
+  if (wouldExceedStorageLimit(globalDrafts, draft, draftId)) {
+    console.warn(
+      "[drafts] Storage limit would be exceeded, skipping NewChat attachment persistence",
+    )
+    globalDrafts[draftId] = {
+      id: draftId,
+      text,
+      updatedAt: Date.now(),
+      ...(project && { project }),
+      ...(existing?.isVisible && { isVisible: true }),
+      ...(pastedTexts.length > 0 && {
+        pastedTexts: draft.pastedTexts,
+      }),
+    }
+  } else {
+    globalDrafts[draftId] = draft
+  }
+
   saveGlobalDrafts(globalDrafts)
 }
 
@@ -339,9 +435,15 @@ export function estimateDraftSize(
  */
 function wouldExceedStorageLimit(
   existingDrafts: GlobalDraftsRaw,
-  newDraft: DraftContent | NewChatDraft
+  newDraft: DraftContent | NewChatDraft,
+  replacedKey?: string,
 ): boolean {
-  const existingSize = JSON.stringify(existingDrafts).length * 2
+  let draftsToMeasure = existingDrafts
+  if (replacedKey && existingDrafts[replacedKey]) {
+    draftsToMeasure = { ...existingDrafts }
+    delete draftsToMeasure[replacedKey]
+  }
+  const existingSize = JSON.stringify(draftsToMeasure).length * 2
   const newSize = estimateDraftSize(newDraft)
   return existingSize + newSize > MAX_DRAFT_STORAGE_BYTES
 }
@@ -382,11 +484,39 @@ export function toDraftImage(img: UploadedImage): DraftImage | null {
 }
 
 /**
- * Convert UploadedFile to DraftFile (requires async conversion)
+ * Convert an UploadedFile that already has a base64 payload. Folder uploads do
+ * not have a blob payload and are persisted as metadata instead.
+ */
+export function toDraftFileSync(file: UploadedFile): DraftFile | null {
+  if (file.isFolder) {
+    return {
+      id: file.id,
+      filename: file.filename,
+      size: file.size,
+      type: file.type,
+      isFolder: true,
+      folderFiles: file.folderFiles,
+    }
+  }
+  if (!file.base64Data) return null
+  return {
+    id: file.id,
+    filename: file.filename,
+    base64Data: file.base64Data,
+    size: file.size,
+    type: file.type,
+  }
+}
+
+/**
+ * Convert UploadedFile to DraftFile (requires async conversion when the base64
+ * payload is not already available).
  */
 export async function toDraftFile(
   file: UploadedFile
 ): Promise<DraftFile | null> {
+  const syncDraft = toDraftFileSync(file)
+  if (syncDraft) return syncDraft
   if (!file.url) return null
   try {
     const base64Data = await blobUrlToBase64(file.url)
@@ -478,6 +608,18 @@ export function fromDraftImage(draft: DraftImage): UploadedImage | null {
  * Tracks blob URL for cleanup to prevent memory leaks
  */
 export function fromDraftFile(draft: DraftFile): UploadedFile | null {
+  if (draft.isFolder) {
+    return {
+      id: draft.id,
+      filename: draft.filename,
+      url: "",
+      isLoading: false,
+      size: draft.size,
+      type: draft.type,
+      isFolder: true,
+      folderFiles: draft.folderFiles,
+    }
+  }
   if (!draft.base64Data) return null
   try {
     const byteCharacters = atob(draft.base64Data)
@@ -536,6 +678,40 @@ export interface FullDraftData {
   images: UploadedImage[]
   files: UploadedFile[]
   textContexts: SelectedTextContext[]
+}
+
+export interface NewChatDraftFull {
+  text: string
+  images: UploadedImage[]
+  files: UploadedFile[]
+  pastedTexts: PastedTextFile[]
+  fileContents: Record<string, string>
+  project?: DraftProject
+}
+
+/** Get a restorable NewChat composer draft, including attachment payloads. */
+export function getNewChatDraftFull(draftId: string): NewChatDraftFull | null {
+  const draft = loadGlobalDrafts()[draftId] as NewChatDraft | undefined
+  if (!draft) return null
+
+  return {
+    text: draft.text || "",
+    images:
+      draft.images
+        ?.map(fromDraftImage)
+        .filter((image): image is UploadedImage => image !== null) ?? [],
+    files:
+      draft.files
+        ?.map(fromDraftFile)
+        .filter((file): file is UploadedFile => file !== null) ?? [],
+    pastedTexts:
+      draft.pastedTexts?.map((pasted) => ({
+        ...pasted,
+        createdAt: new Date(pasted.createdAt),
+      })) ?? [],
+    fileContents: { ...(draft.fileContents ?? {}) },
+    project: draft.project,
+  }
 }
 
 /**

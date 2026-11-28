@@ -157,6 +157,7 @@ export function useChatInstanceFactory({
   // Common teardown logic shared by onError and onFinish callbacks
   const finalizeConversation = useCallback(
     (conversationId: string, chatInstance: Chat<any>) => {
+      clearLoading(stateRef.current.setLoadingConversations, conversationId)
       useStreamingStatusStore.getState().setStatus(conversationId, "ready")
       syncFinishedMessagesToChatCache(conversationId, chatInstance)
       pruneIfDetachedAndIdle(conversationId, chatRef.current.chatId)
@@ -250,10 +251,8 @@ export function useChatInstanceFactory({
           })
           finalizeConversation(conversationId, newChat)
         },
-        // Clear loading when streaming completes (works even if component unmounted)
+        // Finalization clears loading even if this pane has been unmounted.
         onFinish: () => {
-          clearLoading(stateRef.current.setLoadingConversations, conversationId)
-
           // Check if this was a manual abort (ESC/Ctrl+C) - skip sound if so
           const wasManuallyAborted =
             agentChatStore.wasManuallyAborted(conversationId)

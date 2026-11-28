@@ -3,7 +3,7 @@
  *
  * Consolidates the blocker scenarios from the UI test plan (Section 7):
  *   UI-NAV-001, UI-NAV-002, UI-WS-001, UI-WS-002, UI-CONV-001,
- *   UI-CONV-002, UI-CONV-005, UI-SB-003, UI-SET-001, UI-SET-002,
+ *   UI-CONV-002, UI-CONV-018, UI-CONV-005, UI-SB-003, UI-SET-001, UI-SET-002,
  *   UI-TB-001.
  *
  * Follows the established patterns in message-interrupt.test.ts and
@@ -202,6 +202,19 @@ test.describe.serial("P0 smoke (Ergatai Electron UI)", () => {
       .or(page.getByRole("button", { name: /send/i }))
       .first()
     await expect(sendButton).toBeVisible()
+  })
+
+  test("UI-CONV-018 New chat input preserves spaces @smoke", async () => {
+    const chatInput = page.locator('[contenteditable="true"]').first()
+    await expect(chatInput).toBeVisible()
+    await chatInput.click()
+    await page.keyboard.type("hello world")
+    await expect(chatInput).toHaveText("hello world")
+
+    // Keep the serial send/reply scenario independent of this draft.
+    await chatInput.press("ControlOrMeta+A")
+    await chatInput.press("Backspace")
+    await expect(chatInput).toHaveText("")
   })
 
   test("UI-CONV-002 Send message and receive reply @smoke @slow", async () => {

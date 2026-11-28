@@ -80,6 +80,7 @@ import {
 import { AgentsSlashCommand } from "../commands"
 import { useAgentsFileUpload } from "../hooks/use-agents-file-upload"
 import { usePastedTextFiles } from "../hooks/use-pasted-text-files"
+import { useNewChatDraft } from "../hooks/use-new-chat-draft"
 import { useFocusInputOnEnter } from "../hooks/use-focus-input-on-enter"
 import { useToggleFocusOnCmdEsc } from "../hooks/use-toggle-focus-on-cmd-esc"
 import {
@@ -150,13 +151,6 @@ import {
 import { CreateBranchDialog } from "../components/create-branch-dialog"
 import { formatTimeAgo } from "../utils/format-time-ago"
 import { handlePasteEvent } from "../utils/paste-text"
-import {
-  loadGlobalDrafts,
-  saveGlobalDrafts,
-  generateDraftId,
-  deleteNewChatDraft,
-  markDraftVisible,
-} from "../lib/drafts"
 import {
   CODEX_MODELS,
   type CodexThinkingLevel,
@@ -320,8 +314,6 @@ export const NewChatForm = memo(function NewChatForm({
 
   // (debug logging removed for performance)
 
-  // Current draft ID being edited (generated when user starts typing in empty form)
-  const currentDraftIdRef = useRef<string | null>(null)
   const unseenChanges = useAtomValue(agentsUnseenChangesAtom)
 
   // Check if unknown chat has unseen changes
@@ -847,6 +839,8 @@ export const NewChatForm = memo(function NewChatForm({
     clearImages,
     clearFiles,
     isUploading,
+    setImagesFromDraft,
+    setFilesFromDraft,
   } = useAgentsFileUpload()
 
   // Pasted text files - use a stable temp ID for new chat
@@ -856,11 +850,32 @@ export const NewChatForm = memo(function NewChatForm({
     addPastedText,
     removePastedText,
     clearPastedTexts,
+    setPastedTextsFromDraft,
   } = usePastedTextFiles(tempPastedIdRef.current)
 
   // File contents cache - stores content for file mentions (keyed by mentionId)
   // This content gets added to the prompt when sending, without showing a separate card
   const fileContentsRef = useRef<Map<string, string>>(new Map())
+
+  const { handleContentChange, clearDraft, flushDraft } = useNewChatDraft({
+    scopeKey: selectedWorkspaceId ?? validatedProject?.id ?? "default",
+    selectedDraftId,
+    project: validatedProject ?? undefined,
+    editorRef,
+    images,
+    files,
+    pastedTexts,
+    fileContentsRef,
+    setHasContent,
+    setImagesFromDraft,
+    setFilesFromDraft,
+    setPastedTextsFromDraft,
+  })
+
+  const clearCurrentDraft = useCallback(() => {
+    clearDraft()
+    setSelectedDraftId(null)
+  }, [clearDraft, setSelectedDraftId])
 
   // Mention dropdown state
   const [showMentionDropdown, setShowMentionDropdown] = useState(false)
@@ -1072,11 +1087,6 @@ export const NewChatForm = memo(function NewChatForm({
     }
   }, [validatedProject?.path, fetchRemoteMutation, branchesQuery])
 
-  // Stable ref for handleRefreshBranches to avoid re-running effects on every render
-  const handleRefreshBranchesRef = useRef(handleRefreshBranches)
-  // react-doctor-disable-next-line no-ref-current-in-render
-  handleRefreshBranchesRef.current = handleRefreshBranches
-
   // Handle work mode changes, auto-initializing git when needed
   const handleWorkModeChange = useCallback(
     (mode: WorkMode) => {
@@ -1243,69 +1253,6 @@ export const NewChatForm = memo(function NewChatForm({
 
     return () => clearTimeout(timeoutId)
   }, [isMobileFullscreen]) // Run on mount and when mobile state changes
-
-  // Track last saved text to avoid unnecessary updates
-  const lastSavedTextRef = useRef<string>("")
-
-  // Track previous draft ID to detect when switching away from a draft
-  const prevSelectedDraftIdRef = useRef<string | null>(null)
-
-  // Restore draft when a specific draft is selected from sidebar
-  // Or clear editor when "New Workspace" is clicked (selectedDraftId becomes null)
-  useEffect(() => {
-    const hadDraftBefore = prevSelectedDraftIdRef.current !== null
-    prevSelectedDraftIdRef.current = selectedDraftId
-
-    if (!selectedDraftId) {
-      // No draft selected - only clear if we had a draft before (user clicked "New Workspace")
-      // Don't clear if user is currently typing (currentDraftIdRef has a value)
-      if (hadDraftBefore) {
-        currentDraftIdRef.current = null
-        lastSavedTextRef.current = ""
-        if (editorRef.current) {
-          editorRef.current.clear()
-          setHasContent(false)
-        }
-
-        // Fetch remote branches in background when starting new workspace
-        if (validatedProject?.path) {
-          handleRefreshBranchesRef.current()
-        }
-      }
-      return
-    }
-
-    const globalDrafts = loadGlobalDrafts()
-    const draft = globalDrafts[selectedDraftId]
-    if (draft?.text) {
-      currentDraftIdRef.current = selectedDraftId
-      lastSavedTextRef.current = draft.text // Initialize to prevent immediate re-save
-
-      // Try to set value immediately if editor is ready
-      if (editorRef.current) {
-        editorRef.current.setValue(draft.text)
-        setHasContent(true)
-      } else {
-        // Fallback: wait for editor to initialize (rare case)
-        const timeoutId = setTimeout(() => {
-          editorRef.current?.setValue(draft.text)
-          setHasContent(true)
-        }, 50)
-        return () => clearTimeout(timeoutId)
-      }
-    }
-  }, [selectedDraftId, validatedProject?.path])
-
-  // Mark draft as visible when component unmounts (user navigates away)
-  // This ensures the draft only appears in the sidebar after leaving the form
-  useEffect(() => {
-    return () => {
-      // On unmount, mark current draft as visible so it appears in sidebar
-      if (currentDraftIdRef.current) {
-        markDraftVisible(currentDraftIdRef.current)
-      }
-    }
-  }, [])
 
   // Create chat mutation (real tRPC)
   const utils = trpc.useUtils()
@@ -1557,84 +1504,6 @@ export const NewChatForm = memo(function NewChatForm({
     setShowingFilesList(false)
     setShowingAgentsList(false)
   }, [])
-
-  // Save draft to localStorage when content changes
-  const validatedProjectRef = useRef(validatedProject)
-  useEffect(() => {
-    validatedProjectRef.current = validatedProject
-  }, [validatedProject])
-
-  const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const hasContentRef = useRef(false)
-
-  const handleContentChange = useCallback(
-    (hasContent: boolean) => {
-      if (hasContentRef.current !== hasContent) {
-        hasContentRef.current = hasContent
-        setHasContent(hasContent)
-      }
-      const text = editorRef.current?.getValue() || ""
-
-      // Skip if text hasn't changed
-      if (text === lastSavedTextRef.current) {
-        return
-      }
-      lastSavedTextRef.current = text
-
-      // Debounce draft persistence so typing does not hit localStorage on
-      // every keystroke.
-      if (draftSaveTimerRef.current) {
-        clearTimeout(draftSaveTimerRef.current)
-      }
-      draftSaveTimerRef.current = setTimeout(() => {
-        const project = validatedProjectRef.current
-        const globalDrafts = loadGlobalDrafts()
-
-        if (text.trim() && project) {
-          if (!currentDraftIdRef.current) {
-            currentDraftIdRef.current = generateDraftId()
-          }
-
-          const key = currentDraftIdRef.current
-          globalDrafts[key] = {
-            text,
-            updatedAt: Date.now(),
-            project: {
-              id: project.id,
-              name: project.name,
-              path: project.path,
-              gitOwner: project.gitOwner,
-              gitRepo: project.gitRepo,
-              gitProvider: project.gitProvider,
-            },
-          }
-          saveGlobalDrafts(globalDrafts)
-        } else if (currentDraftIdRef.current) {
-          deleteNewChatDraft(currentDraftIdRef.current)
-          currentDraftIdRef.current = null
-        }
-      }, 300)
-    },
-    [],
-  )
-
-  useEffect(() => {
-    return () => {
-      if (draftSaveTimerRef.current) {
-        clearTimeout(draftSaveTimerRef.current)
-      }
-    }
-  }, [])
-
-  // Clear current draft when chat is created
-  const clearCurrentDraft = useCallback(() => {
-    if (!currentDraftIdRef.current) return
-
-    deleteNewChatDraft(currentDraftIdRef.current)
-    currentDraftIdRef.current = null
-    setSelectedDraftId(null)
-  }, [setSelectedDraftId])
 
   // Memoized callbacks to prevent re-renders
   // Measure the editor container so dropdowns align with the input box instead
@@ -1911,7 +1780,10 @@ export const NewChatForm = memo(function NewChatForm({
   const handleEditorFocus = useCallback(() => {
     if (document.documentElement.dataset.focusMethod === "keyboard") setIsFocused(true)
   }, [setIsFocused])
-  const handleEditorBlur = useCallback(() => setIsFocused(false), [setIsFocused])
+  const handleEditorBlur = useCallback(() => {
+    setIsFocused(false)
+    flushDraft()
+  }, [flushDraft, setIsFocused])
 
   useEffect(() => {
     const handlePointerDown = () => setIsFocused(false)
@@ -2258,6 +2130,10 @@ export const NewChatForm = memo(function NewChatForm({
                 role="button"
                 tabIndex={0}
                 onKeyDown={(e) => {
+                  // Key events from the editor and toolbar bubble here. Only
+                  // activate the container itself when it is the focused target,
+                  // otherwise Space is prevented from being typed into the editor.
+                  if (e.target !== e.currentTarget) return
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault()
                     ;(e.currentTarget as HTMLElement).click()

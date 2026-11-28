@@ -3,9 +3,16 @@ import { useMessageQueueStore } from "./message-queue-store"
 import { useStreamingStatusStore } from "./streaming-status-store"
 import { agentChatStore } from "./agent-chat-store"
 import { getWindowId } from "../../../contexts/WindowContext"
+import { appStore } from "../../../lib/jotai-store"
 import { clearTaskSnapshotCache } from "../ui/agent-task-tools"
 import { clearConversationRuntimeCaches } from "./conversation-runtime-cleanup"
-import { getDefaultRatios, addPaneRatio, removePaneRatio } from "../atoms"
+import {
+  clearLoading,
+  getDefaultRatios,
+  addPaneRatio,
+  loadingConversationsAtom,
+  removePaneRatio,
+} from "../atoms"
 
 const MAX_SPLIT_PANES = 4
 
@@ -263,6 +270,10 @@ export const useAgentConversationStore = create<AgentConversationStore>((set, ge
     const cleanups = [
       () => useMessageQueueStore.getState().removeConversation(conversationId),
       () => useStreamingStatusStore.getState().clearStatus(conversationId),
+      () => clearLoading(
+        (fn) => appStore.set(loadingConversationsAtom, fn(appStore.get(loadingConversationsAtom))),
+        conversationId,
+      ),
       () => clearConversationRuntimeCaches(conversationId),
       () => agentChatStore.delete(conversationId),
       () => clearTaskSnapshotCache(conversationId),

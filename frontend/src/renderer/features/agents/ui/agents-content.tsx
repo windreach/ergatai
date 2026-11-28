@@ -1175,6 +1175,7 @@ export function AgentsContent() {
             ) : (
               <div className="h-full flex flex-col relative overflow-hidden">
                 <NewChatForm
+                  key={`new-chat-${selectedWorkspaceId ?? "default"}-${newChatFormKeyRef.current}`}
                   isMobileFullscreen={true}
                   selectedWorkspaceId={selectedWorkspaceId}
                   onBackToChats={handleBackToChats}
@@ -1258,7 +1259,7 @@ export function AgentsContent() {
               ) : (
                 <div className="h-full flex flex-col relative overflow-hidden">
                   <NewChatForm
-                    key={`new-chat-${newChatFormKeyRef.current}`}
+                    key={`new-chat-${selectedWorkspaceId ?? "default"}-${newChatFormKeyRef.current}`}
                     selectedWorkspaceId={selectedWorkspaceId}
                   />
                 </div>

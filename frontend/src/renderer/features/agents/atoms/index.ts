@@ -209,6 +209,16 @@ export const previousAgentChatIdAtom = atom<string | null>(null)
 // Reset to null when i18n.t('New Workspace') is clicked or chat is created
 export const selectedDraftIdAtom = atom<string | null>(null)
 
+// Active NewChat draft per workspace. Persisted per window so reopening NewChat
+// restores the in-progress input instead of showing an empty editor.
+export const activeNewChatDraftIdAtomFamily = atomFamily((scopeKey: string) =>
+  atomWithWindowStorage<string | null>(
+    `agents:activeNewChatDraftId:${scopeKey}`,
+    null,
+    { getOnInit: true },
+  ),
+)
+
 // Show new chat form explicitly - true by default so new users see the form, not kanban
 // Set to false when kanban is explicitly opened (via hotkey or button)
 // Set to true when i18n.t('New Workspace') is clicked

@@ -5,6 +5,7 @@ import type { RefObject } from "react"
 import { useSetAtom } from "jotai"
 import type { UIMessage } from "@ai-sdk/react"
 import { useChatInstance } from "../hooks/use-chat-instance"
+import { useConversationLoadingState } from "../hooks/use-conversation-loading-state"
 import { useMainChatInvocation } from "../hooks/use-main-chat-invocation"
 import { useChangedFilesTracking } from "../hooks/use-changed-files-tracking"
 import { useMessageTokenData } from "../hooks/use-message-token-data"
@@ -432,16 +433,11 @@ export function useConversationChatSurface({
     }
   }, [status, runtimeConversationId, setStreamingStatus])
 
-  useEffect(() => {
-    if (!runtimeConversationId) return
-    if (status === "streaming" || status === "submitted") {
-      if (chatId) setLoading(setLoadingConversations, runtimeConversationId, chatId)
-      return
-    }
-    if (status === "ready" || status === "error") {
-      clearLoading(setLoadingConversations, runtimeConversationId)
-    }
-  }, [status, runtimeConversationId, chatId, setLoadingConversations])
+  useConversationLoadingState({
+    conversationId: runtimeConversationId,
+    parentChatId: chatId,
+    isStreaming: status === "streaming" || status === "submitted",
+  })
 
   const syncExternalMessages = useSetAtom(syncMessagesWithStatusAtom)
   const externalRuntimeStatus = runtimeStatus === "streaming" ? "streaming" : "ready"
@@ -522,10 +518,11 @@ export function useConversationChatSurface({
 
   useEffect(() => {
     return () => {
-      if (runtimeConversationId) clearLoading(setLoadingConversations, runtimeConversationId)
+      // Loading is cleared by terminal transport callbacks, not pane unmounts:
+      // background conversations must keep their sidebar indicator while streaming.
       clearConversationRuntimeCaches(runtimeConversationId)
     }
-  }, [runtimeConversationId, setLoadingConversations])
+  }, [runtimeConversationId])
 
   const { handleRollback } = useRollback({
     isRollingBack,
