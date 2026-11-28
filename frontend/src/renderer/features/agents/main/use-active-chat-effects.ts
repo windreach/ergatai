@@ -36,8 +36,9 @@ export function useActiveChatEffects({
 
     if (
       isRuntimeStreaming ||
+      conversationRuntime?.status === "completed" ||
       conversationRuntime?.status === "error" ||
-      messages.some((message: any) => message.role === "assistant")
+      messages.length > 0
     ) {
       // A failed initial prompt has no assistant message to wait for. The
       // backend publishes a terminal runtime error, so clear the local

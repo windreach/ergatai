@@ -248,6 +248,20 @@ export function useConversationChatSurface({
     invocationQueue,
   } = chatInvocation
 
+  // Clear a stale "Generating" handle as soon as the runtime reports a
+  // terminal status or messages have loaded, so reopening a finished
+  // conversation does not keep it in the streaming state while its
+  // messages are still loading.
+  useEffect(() => {
+    if (
+      runtimeStatus === "completed" ||
+      runtimeStatus === "error" ||
+      (Array.isArray(messages) && (messages as any[]).length > 0)
+    ) {
+      if (pendingInitialPrompt) setPendingInitialPrompt(null)
+    }
+  }, [runtimeStatus, messages, pendingInitialPrompt, setPendingInitialPrompt])
+
   const setMessages = chatInstance.setMessages
   const stop = stopInvocation
 
@@ -272,9 +286,11 @@ export function useConversationChatSurface({
   const isLocalStreaming =
     chatInstance.status === "streaming" || chatInstance.status === "submitted"
   const isInitialPromptBusy =
-    pendingInitialPrompt?.status === "pending" ||
-    pendingInitialPrompt?.status === "dispatching" ||
-    pendingInitialPrompt?.status === "running"
+    (pendingInitialPrompt?.status === "pending" ||
+      pendingInitialPrompt?.status === "dispatching" ||
+      pendingInitialPrompt?.status === "running") &&
+    runtimeStatus !== "completed" &&
+    runtimeStatus !== "error"
 
   const isBackendStreaming =
     isInitialPromptBusy ||

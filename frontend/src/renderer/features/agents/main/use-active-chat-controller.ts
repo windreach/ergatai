@@ -407,9 +407,11 @@ stopRef.current = stop
 const isLocalStreaming = status === "streaming" || status === "submitted"
 
 const isInitialPromptBusy =
-    pendingInitialPrompt?.status === "pending" ||
-    pendingInitialPrompt?.status === "dispatching" ||
-    pendingInitialPrompt?.status === "running"
+    (pendingInitialPrompt?.status === "pending" ||
+      pendingInitialPrompt?.status === "dispatching" ||
+      pendingInitialPrompt?.status === "running") &&
+    conversationRuntime?.status !== "completed" &&
+    conversationRuntime?.status !== "error"
 
 // A persisted runtime snapshot can outlive the durable chat history on a page
 // refresh (hydration race). Until durable messages have loaded, do not treat
